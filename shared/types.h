@@ -5,6 +5,7 @@
 #include <stddef.h>   /* offsetof — Layer B of #479 station_secret guard */
 #include <stdint.h>
 #include "actor_principal.h"
+#include "public_actor_id.h"
 #include "cell_geometry.h"
 #include "math_util.h"
 #include "mining.h"
@@ -39,6 +40,7 @@ enum {
     MAX_NPC_SHIPS = 100,  /* uint8 index — see banner above (#285 to lift) */
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_CARGO_PODS = 64, /* uint8 wire index; towable engine-less cargo bodies */
+    MAX_TOW_LINKS = 512, /* canonical live source -> towable relationships */
     CARGO_POD_MANIFEST_CAP = 200, /* one rich ore fragment can become one full smelt pod */
     CARGO_POD_UNIT_CAPACITY = CELL_HEX_PAYLOAD_CAPACITY,
     AUDIO_VOICE_COUNT = 24,
@@ -87,6 +89,8 @@ typedef struct {
     uint8_t slot;       /* source-local formation/hold slot */
     uint8_t state;      /* tow_link_state_t */
     uint8_t _pad;
+    uint32_t attached_tick;
+    uint32_t revision;
 } tow_link_t;
 
 static inline entity_ref_t entity_ref_none(void) {
@@ -721,6 +725,22 @@ enum {
 };
 
 typedef struct {
+    uint8_t player_pubkey[32];    /* Ed25519 pubkey of the supplier */
+    float balance;                /* spendable station-local credits */
+    float lifetime_supply;        /* total ore contributed */
+    /* Station-player relationship data (#257) — tracks dock history,
+     * trade volume, and absence for AI personality generation. */
+    uint64_t first_dock_tick;     /* tick of first dock; 0 = never */
+    uint64_t last_dock_tick;      /* tick of most recent dock; 0 = never */
+    uint32_t total_docks;
+    uint32_t lifetime_ore_units;  /* sum of ore sold here */
+    uint32_t lifetime_credits_in; /* credits issued by this station */
+    uint32_t lifetime_credits_out;/* credits redeemed at this station */
+    uint8_t top_commodity;        /* most-frequent ore commodity index */
+    uint8_t _pad[3];
+} station_ledger_entry_t;
+
+typedef struct {
     uint32_t id;             /* stable ID, survives array slot changes (0 = unassigned) */
     char name[32];
     vec2 pos;
@@ -780,21 +800,7 @@ typedef struct {
     /* Economy ledger: per-player supply tracking for passive income.
      * Keyed by player_pubkey (Layer A.1/A.2 of #479); legacy session_token
      * entries are migrated to pubkey on load (see sim_save.c v45+ migration). */
-    struct {
-        uint8_t player_pubkey[32];    /* Ed25519 pubkey of the supplier */
-        float balance;                /* spendable station-local credits */
-        float lifetime_supply;        /* total ore contributed */
-        /* Station-player relationship data (#257) — tracks dock history,
-         * trade volume, and absence for AI personality generation. */
-        uint64_t first_dock_tick;     /* sim tick of first dock at this station; 0 = never */
-        uint64_t last_dock_tick;      /* sim tick of most recent dock; 0 = never */
-        uint32_t total_docks;
-        uint32_t lifetime_ore_units;  /* sum of ore sold here, all commodities */
-        uint32_t lifetime_credits_in; /* total credits issued by this station to bearer */
-        uint32_t lifetime_credits_out;/* total credits redeemed against this station's ledger */
-        uint8_t top_commodity;        /* most-frequent ore commodity index, for prompt flavor */
-        uint8_t _pad[3];
-    } ledger[STATION_LEDGER_MAX];
+    station_ledger_entry_t ledger[STATION_LEDGER_MAX];
     int ledger_count;
     /* Shipyard: pending scaffold orders awaiting materials */
     struct {
@@ -1120,15 +1126,41 @@ typedef struct {
     uint16_t shipment_id; /* delivery_shipment_t::shipment_id when this wraps credit cargo */
     uint8_t summary_flags; /* live net summary flags; not persisted as authority */
     uint8_t summary_grade; /* live net best manifest grade; not persisted as authority */
+    /* Opaque server-issued PRESENT/UNPACK selection token. Authoritative
+     * worlds compute it from exact contents + live entity generation at
+     * serialization time; remote mirrors retain it for the signed action.
+     * Never persisted and never treated as cargo proof. */
+    uint8_t selection_token[32];
     vec2 pos;
     vec2 vel;
     float radius;
     float rotation;
     float spin;
     float age;
+    /*
+     * Durable player tow ownership. The tractor binding below is only a live
+     * projection and may be empty while the verified owner is offline.
+     * UNATTRIBUTED permits a live anonymous tow but is never rebound after a
+     * restart. A non-zero quarantine record pairs with NONE and keeps ambiguous
+     * legacy slot ownership inert until an operator resolves it.
+     */
+    actor_principal_t tow_owner_principal;
+    uint64_t tow_owner_quarantine_record_id;
     tractor_binding_t tractor;
     uint8_t tow_hardpoint_tag; /* 0 = none; 1..6 = complete-edge hardpoint */
     uint8_t custody_station; /* 0 = none; station index + 1 owns/charges this pod */
+    /*
+     * Server-only, persisted aggregate charge anchor for a station-custody
+     * pod that is being PRESENTed in bounded durable batches.  The total is
+     * quoted and rounded exactly once.  `units_processed` is an original
+     * manifest-prefix ordinal, and the digest binds the exact ordered suffix
+     * still in the pod.  These fields are deliberately absent from the wire;
+     * clients retain only the opaque selection_token above.
+     */
+    int64_t custody_charge_total;
+    uint16_t custody_charge_unit_count;
+    uint16_t custody_charge_units_processed;
+    uint8_t custody_charge_manifest_digest[32];
 } cargo_pod_t;
 
 static inline void cargo_pod_clear_module_tractor(cargo_pod_t *pod) {
@@ -1213,15 +1245,28 @@ static inline int cargo_pod_custody_station(const cargo_pod_t *pod) {
     return (station >= 0 && station < MAX_STATIONS) ? station : -1;
 }
 
+static inline void cargo_pod_clear_custody_charge_anchor(cargo_pod_t *pod) {
+    if (!pod) return;
+    pod->custody_charge_total = 0;
+    pod->custody_charge_unit_count = 0;
+    pod->custody_charge_units_processed = 0;
+    memset(pod->custody_charge_manifest_digest, 0,
+           sizeof(pod->custody_charge_manifest_digest));
+}
+
 static inline void cargo_pod_set_station_custody(cargo_pod_t *pod,
                                                  int station_idx) {
     if (!pod || station_idx < 0 || station_idx >= MAX_STATIONS) return;
-    pod->custody_station = (uint8_t)(station_idx + 1);
+    uint8_t custody = (uint8_t)(station_idx + 1);
+    if (pod->custody_station != custody)
+        cargo_pod_clear_custody_charge_anchor(pod);
+    pod->custody_station = custody;
 }
 
 static inline void cargo_pod_clear_station_custody(cargo_pod_t *pod) {
     if (!pod) return;
     pod->custody_station = 0;
+    cargo_pod_clear_custody_charge_anchor(pod);
 }
 
 typedef enum {
@@ -1429,6 +1474,11 @@ typedef struct {
     commodity_t buy_commodity;
     bool buy_station_pod;
     uint16_t buy_station_pod_index;
+    /* Client-only one-shot for the dedicated signed PRESENT_POD action.
+     * The generic INPUT wire never serializes this opaque token. */
+    bool present_pod;
+    uint8_t present_pod_index;
+    uint8_t present_pod_token[32];
     /* Optional grade hint for manifest-first buys. MINING_GRADE_COUNT =
      * "any grade available, FIFO"; a specific grade means "only transfer
      * a unit of this grade — if none exist, the float path still runs
@@ -1776,6 +1826,16 @@ typedef enum {
 typedef struct {
     sim_event_type_t type;
     int player_id;
+    /*
+     * Public attribution is independent of runtime slots, callsigns, and
+     * reconnect bearer tokens. For DEATH, subject_actor is the victim and
+     * source_actor is the killer. For NPC_KILL, subject_actor remains
+     * explicitly unattributed until NPCs have a persisted non-secret birth
+     * identifier; source_actor is the verified player. Other event types use
+     * explicit unattributed sentinels on the public wire.
+     */
+    public_actor_id_t subject_actor;
+    public_actor_id_t source_actor;
     union {
         struct { asteroid_tier_t tier; int asteroid_id; } fracture;
         struct { float ore; int fragments; } pickup;
@@ -1861,6 +1921,14 @@ enum {
     ORDER_REJECT_SELL_NOT_ACCEPTED = 9,             /* this station has no consumer for the picked commodity */
     ORDER_REJECT_SELL_STATION_BROKE = 10,           /* station ran out of credit pool mid-sale */
     ORDER_REJECT_SELL_INVENTORY_FULL = 11,          /* consumer here but its hopper is full */
+    ORDER_REJECT_POD_PRESENT_STALE = 12,             /* slot/content digest no longer matches selection */
+    ORDER_REJECT_POD_PRESENT_NOT_CARRIED = 13,       /* selected pod is not authoritatively towed here */
+    ORDER_REJECT_POD_PRESENT_WRONG_ORIGIN = 14,      /* payload was not produced at this source station */
+    ORDER_REJECT_POD_PRESENT_UNTRUSTED = 15,         /* exact local production proof or metadata failed */
+    ORDER_REJECT_POD_PRESENT_STORAGE = 16,           /* ship manifest/receipt staging could not accept payload */
+    ORDER_REJECT_POD_PRESENT_LOG = 17,               /* source chain unavailable or durable append failed */
+    ORDER_REJECT_POD_PRESENT_CUSTODY = 18,           /* shipment/custody envelope is not eligible here */
+    ORDER_REJECT_POD_PRESENT_IDENTITY = 19,          /* verified player identity required */
 };
 
 typedef struct {
@@ -1939,7 +2007,16 @@ typedef struct {
     float age;
     vec2 target_pos;        /* world position (DESTROY/SCAN target) */
     int target_index;       /* asteroid slot (DESTROY) or -1 */
-    int8_t claimed_by;      /* player/NPC id, -1 = open */
+    /*
+     * Runtime/client compatibility projection only. The authoritative owner
+     * is claimed_by_principal; this slot is never persisted by v81+ and may
+     * be -1 while the durable claimant is offline.
+     */
+    int8_t claimed_by;
+    actor_principal_t claimed_by_principal;
+    /* Non-zero binds an ambiguous legacy claimant to ownership_quarantine.
+     * A quarantined contract is not open even though its principal is NONE. */
+    uint64_t claimed_by_quarantine_record_id;
 } contract_t;
 
 /* Physical one-size carrier mass, complete-edge hardpoints, and hex hull. */

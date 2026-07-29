@@ -63,6 +63,7 @@
  *   WORLD_PLAYER_MOTIOND_Q (0x6C): [type:1][count:1] + count * PLAYER_MOTIOND_Q_RECORD_SIZE records
  *   WORLD_PLAYER_POSED_Q (0x6D): [type:1][count:1] + count * PLAYER_POSED_Q_RECORD_SIZE records
  *   WORLD_PLAYER_MOTIONM_Q (0x6E): [type:1][count:1] + mixed player delta records
+ *   WORLD_TOW_LINKS (0x71): atomic revisioned replacement of live tow relations
  *   STATION_DIAG    (0x40): [type:1][index:1][module_count:1][diag:MAX_MODULES_PER_STATION×u8]
  *   HAIL_RESPONSE   (0x25): [type:1][station:1][credits:f32][contract:1]
  *                         optional reason tail:
@@ -107,7 +108,9 @@ enum {
                                      * fields/order as CONTRACTS, with the
                                      * provenance tails present only when
                                      * nonzero. */
-    NET_MSG_SESSION         = 0x20, /* client -> server: [type:1][token:8] */
+    NET_MSG_SESSION         = 0x20, /* client -> server:
+                                    * [type:1][token:8][callsign:7]
+                                    * [protocol_version:u16] */
     NET_MSG_DEATH           = 0x21, /* server -> client: [type:1][player_id:1] */
     NET_MSG_WORLD_TIME      = 0x22, /* server -> client: [type:1][time:f32].
                                      * Low-rate reconciliation; clients advance
@@ -157,20 +160,11 @@ enum {
                                         * would torch the server (see PR description). Only events
                                         * that mutate persistent state need signatures.
                                         */
-    NET_MSG_LEGACY_SAVES_AVAILABLE = 0x34, /* server -> client. Layer A.4 of #479.
-                                            *
-                                            * Sent in response to NET_MSG_REGISTER_PUBKEY when no
-                                            * pubkey-keyed save exists for this pubkey but at least
-                                            * one legacy (token-keyed) save is present on disk. The
-                                            * client UI can prompt the player to import a legacy save.
-                                            *
-                                            *   [type:1=0x34][count:1][prefix:8][prefix:8]...
-                                            *
-                                            * `count` is the number of legacy saves listed (capped
-                                            * at LEGACY_SAVES_MAX_LIST). Each `prefix` is the first
-                                            * 8 ASCII bytes of the legacy save's hex token name —
-                                            * enough to identify it for a claim, not full disclosure
-                                            * of the original session token. */
+    NET_MSG_LEGACY_SAVES_AVAILABLE = 0x34, /* RETIRED server -> client value.
+                                            * Current authorities never emit
+                                            * legacy names or token prefixes;
+                                            * current clients ignore this
+                                            * message from stale peers. */
     NET_MSG_CARGO_RECEIPT_BUNDLE   = 0x36, /* server -> client. Layer D of #479.
                                             *
                                             * Sent immediately after a BUY_INGOT or
@@ -273,12 +267,25 @@ enum {
                                             * the legacy unchallenged v1 signature. A newer client may use that
                                             * legacy signature only after PROTOCOL_INFO explicitly advertises
                                             * protocol <= 2 and no challenge has been received. The server
-                                            * only rebinds the pubkey registry, restores pubkey-keyed saves, or
-                                            * advertises legacy saves after this verifies. */
+                                            * only rebinds the pubkey registry or restores
+                                            * pubkey-keyed saves after this verifies. Legacy
+                                            * save enumeration is retired. */
     NET_MSG_PUBKEY_CHALLENGE       = 0x70, /* server -> client:
                                             * [type:1][nonce:32].
                                             * Fresh for every transport and
                                             * consumed by one valid proof. */
+    NET_MSG_WORLD_TOW_LINKS        = 0x71, /* server -> client. Atomic replacement
+                                            * snapshot of canonical live towing
+                                            * relationships.
+                                            *
+                                            *   [type:1][count:u16]
+                                            *   [revision:u32][revision_tick:u32]
+                                            *     count x TOW_LINK_RECORD_SIZE
+                                            *
+                                            * Legacy ship/target tow fields remain
+                                            * compatibility projections. Clients that
+                                            * understand this stream rebuild those
+                                            * projections only from this snapshot. */
     NET_MSG_STATION_DIAG           = 0x40, /* server -> client: live per-module station diagnostics.
                                             *
                                             *   [type:1=0x40][station:1][module_count:1]
@@ -573,9 +580,10 @@ enum {
                                             *              [vx:f32][vy:f32][angle:f32]
                                             *
                                             * Full NET_MSG_WORLD_NPCS records still
-                                            * carry visibility, role, tint, session
-                                            * token, and home station; status churn
-                                            * rides NET_MSG_WORLD_NPC_STATUS. */
+                                            * carry visibility, role, tint, a
+                                            * reserved-zero legacy identity tail,
+                                            * and home station; status churn rides
+                                            * NET_MSG_WORLD_NPC_STATUS. */
     NET_MSG_WORLD_CARGO_POD_MOTION = 0x4F, /* server -> client. Compact live cargo
                                             * pod pose correction for already-known
                                             * relevant pods.
@@ -633,8 +641,9 @@ enum {
                                             * NPC_MOTION_Q_VEL_SCALE px/s per
                                             * step; angle covers one turn. Full
                                             * NET_MSG_WORLD_NPCS records still
-                                            * carry visibility, role, tint,
-                                            * session token, and home station;
+                                            * carry visibility, role, tint, a
+                                            * reserved-zero legacy identity tail,
+                                            * and home station;
                                             * status churn rides
                                             * NET_MSG_WORLD_NPC_STATUS. */
     NET_MSG_WORLD_NPC_STATUS       = 0x53, /* server -> client. Compact live
@@ -648,8 +657,9 @@ enum {
                                             *              [towed_fragment:u16]
                                             *
                                             * Full NET_MSG_WORLD_NPCS records
-                                            * carry visibility, role, tint,
-                                            * session token, and home station. */
+                                            * carry visibility, role, tint, a
+                                            * reserved-zero legacy identity tail,
+                                            * and home station. */
     NET_MSG_WORLD_CARGO_POD_MOTION_Q = 0x54, /* server -> client. Quantized live
                                             * cargo pod pose correction for
                                             * already-known relevant pods.
@@ -830,26 +840,34 @@ enum {
                                             * manifest into cargo hashes + portable
                                             * receipt-chain heads. This is display
                                             * telemetry, not authority. */
-    NET_MSG_CLAIM_LEGACY_SAVE      = 0x35, /* client -> server. Layer A.4 of #479.
-                                            *
-                                            *   [type:1=0x35][token_hex_len:1][token_hex:N]
-                                            *   [signature:64]
-                                            *
-                                            * Server verifies the Ed25519 signature over
-                                            *   "claim-legacy-save-v1" || token_hex
-                                            * against the connection's registered pubkey, then
-                                            * renames saves/legacy/<token_hex>.sav ->
-                                            * saves/pubkey/<pubkey_b58>.sav and loads the player
-                                            * state. First-claim-wins; second client to race the
-                                            * same legacy save sees ENOENT and gets dropped.
-                                            *
-                                            * Threat-model note: signature ties the claim to a
-                                            * specific pubkey-private-key holder and the server
-                                            * appends legacy_claims.log so operators can audit
-                                            * who claimed what.
-                                            * It does NOT prove the claimant was the original
-                                            * owner of the legacy session token — that data
-                                            * predates Layer A.3's signed actions. */
+    NET_MSG_CLAIM_LEGACY_SAVE      = 0x35, /* RETIRED client -> server value.
+                                            * Its claimant-chosen basename
+                                            * payload could not prove legacy
+                                            * save ownership. Current local
+                                            * and dedicated authorities reject
+                                            * every packet with this type
+                                            * without inspecting its payload
+                                            * or mutating state. */
+    NET_MSG_LEGACY_RECOVERY_OFFER  = 0x72, /* server -> client, protocol v5+.
+                                            * Opaque, connection-bound offer:
+                                            * [type:1][offer_id:16]
+                                            * [expires_in_seconds:u16].
+                                            * No path, token, basename, or
+                                            * reconnect material is exposed. */
+    NET_MSG_LEGACY_RECOVERY_RESULT = 0x73, /* server -> client, protocol v5+.
+                                            * [type:1][status:1]. Statuses are
+                                            * intentionally bounded and never
+                                            * disclose unrelated saves. */
+    NET_MSG_EVENTS_V2              = 0x74, /* server -> client: typed public
+                                            * actor event batch; never carries
+                                            * reconnect/session bearers */
+};
+
+enum {
+    SESSION_MSG_TOKEN_OFFSET = 1,
+    SESSION_MSG_CALLSIGN_OFFSET = 9,
+    SESSION_MSG_PROTOCOL_OFFSET = 16,
+    SESSION_MSG_SIZE = 18,
 };
 
 enum {
@@ -862,8 +880,13 @@ enum {
  * to PROTOCOL_INFO is normally discoverable via stream_count/capabilities.
  *
  * Version 3 makes the server-issued challenge mandatory for pubkey proofs.
- * Version 2 and older used the unchallenged "prove-pubkey-v1" signature. */
-#define SIGNAL_PROTOCOL_VERSION 3u
+ * Version 4 extends cargo-pod identity records with custody and an opaque,
+ * generation-bound PRESENT/UNPACK selection token.
+ * Version 5 replaces arbitrary-basename legacy claims with one opaque,
+ * connection-bound offer confirmed through the signed-action nonce stream.
+ * Version 6 replaces bearer-backed combat attribution with typed public
+ * actor IDs and marks legacy event attribution explicitly unknown. */
+#define SIGNAL_PROTOCOL_VERSION 6u
 #define SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION 3u
 
 enum {
@@ -962,15 +985,6 @@ enum {
      SIGNAL_PROTOCOL_CAP_NPC_LINEAR_Q | \
      SIGNAL_PROTOCOL_CAP_ASTEROID_POSD_Q)
 
-/* Layer A.4 of #479 — legacy-save migration constants. */
-#define LEGACY_SAVES_MAX_LIST     16   /* hard cap on legacy saves enumerated to a client */
-#define LEGACY_SAVES_PREFIX_LEN   8    /* first 8 hex chars of the legacy token name */
-#define LEGACY_SAVES_HEADER       2    /* type + count */
-/* The signed message used for NET_MSG_CLAIM_LEGACY_SAVE is the literal
- * string CLAIM_LEGACY_SAVE_DOMAIN concatenated with the full hex token. */
-#define CLAIM_LEGACY_SAVE_DOMAIN  "claim-legacy-save-v1"
-#define CLAIM_LEGACY_SAVE_TOKEN_HEX_LEN 16 /* lowercase hex of the 8-byte token */
-
 /* NET_MSG_REGISTER_PUBKEY wire size: 1 + 32 = 33 bytes. */
 #define REGISTER_PUBKEY_MSG_SIZE 33
 
@@ -990,6 +1004,24 @@ enum {
 #define PROVE_PUBKEY_TOKEN_OFFSET  33
 #define PROVE_PUBKEY_SIG_OFFSET    41
 #define PROVE_PUBKEY_MSG_SIZE      (1 + 32 + 8 + 64)
+
+/* Opaque authenticated legacy-save recovery (protocol v5+). */
+enum {
+    LEGACY_RECOVERY_OFFER_ID_SIZE = 16,
+    NET_LEGACY_RECOVERY_OFFER_SIZE =
+        1 + LEGACY_RECOVERY_OFFER_ID_SIZE + 2,
+    NET_LEGACY_RECOVERY_RESULT_SIZE = 2,
+};
+
+typedef enum {
+    LEGACY_RECOVERY_RESULT_NO_MATCH = 1,
+    LEGACY_RECOVERY_RESULT_STALE_OFFER,
+    LEGACY_RECOVERY_RESULT_REPLAY,
+    LEGACY_RECOVERY_RESULT_INVALID_SOURCE,
+    LEGACY_RECOVERY_RESULT_DESTINATION_CONFLICT,
+    LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE,
+    LEGACY_RECOVERY_RESULT_SUCCESS,
+} legacy_recovery_result_status_t;
 
 /* ------------------------------------------------------------------ */
 /* Signed-action types (#479 Layer A.3)                                */
@@ -1014,6 +1046,13 @@ typedef enum {
     SIGNED_ACTION_CANCEL_CONTRACT = 8, /* payload: [contract_id:1] */
     SIGNED_ACTION_INPUT_ACTION    = 9, /* payload: [net_action:1][buy_grade:1][station:1][ring:1][slot:1][action_id:u16 optional] */
     SIGNED_ACTION_PLAN            = 10, /* payload: NET_MSG_PLAN bytes after the type byte */
+    SIGNED_ACTION_PRESENT_POD     = 11, /* payload: [pod_index:1]
+                                        *          [selection_digest:32]
+                                        *          [action_id:u16 optional] */
+    SIGNED_ACTION_RECOVER_LEGACY_SAVE = 12, /* payload: [offer_id:16].
+                                             * The server derives the sole
+                                             * eligible source from the
+                                             * authenticated session token. */
     SIGNED_ACTION_COUNT
 } signed_action_type_t;
 
@@ -1022,7 +1061,7 @@ typedef enum {
  * Signature is appended after the payload, 64 bytes. */
 #define SIGNED_ACTION_HEADER_SIZE 12
 #define SIGNED_ACTION_SIG_SIZE    64
-/* Cap payload at 256 bytes; today's largest is 32 (BUY_INGOT pubkey). */
+/* Cap payload at 256 bytes; today's largest fixed payload is PRESENT_POD. */
 #define SIGNED_ACTION_MAX_PAYLOAD 256
 
 /* Top-N global leaderboard persisted server-side, broadcast on join and
@@ -1350,6 +1389,7 @@ enum {
     NET_ACTION_DELIVER_COMMODITY  = 70, /* +commodity offset, range [70..70+COMMODITY_COUNT) */
     NET_ACTION_AUTOPILOT_TOGGLE   = 90, /* toggle player mining autopilot on/off */
     NET_ACTION_COMMISSION_SHIP     = 91, /* +hull_class offset, range [91..91+HULL_CLASS_COUNT) */
+    NET_ACTION_PRESENT_POD        = 100, /* source-local receipt-backed POD unpack */
 };
 
 enum {
@@ -1454,11 +1494,80 @@ enum {
 /* Event broadcast (NET_MSG_EVENTS)                                   */
 /* ------------------------------------------------------------------ */
 
-/* Fixed-size event record: [type:1][player_id:1][payload:16] = 18 bytes.
- * Payload meaning depends on type — unused bytes are zero. */
+/* Fixed-size legacy event record:
+ * [type:1][player_id:1][payload:16] = 18 bytes.
+ * Protocol-v5 payload meaning depends on type. Unused bytes and the bytes
+ * formerly used for bearer attribution are reserved and zero. */
 enum {
     NET_EVENT_RECORD_SIZE   = 18,
 };
+
+/*
+ * Protocol-v6 public event record:
+ *   [type:1][presentation_player_id:1]
+ *   [subject_public_actor:33][source_public_actor:33][payload:16]
+ *
+ * player_id remains a presentation hint only. The typed public actor IDs are
+ * the attribution keys; callsigns are never part of identity.
+ */
+enum {
+    NET_EVENT_V2_HEADER_SIZE          = 2,
+    NET_EVENT_V2_SUBJECT_OFFSET       = 2,
+    NET_EVENT_V2_SOURCE_OFFSET        =
+        NET_EVENT_V2_SUBJECT_OFFSET + PUBLIC_ACTOR_ID_WIRE_SIZE,
+    NET_EVENT_V2_PAYLOAD_OFFSET       =
+        NET_EVENT_V2_SOURCE_OFFSET + PUBLIC_ACTOR_ID_WIRE_SIZE,
+    NET_EVENT_V2_PAYLOAD_SIZE         = 16,
+    NET_EVENT_V2_RECORD_SIZE          =
+        NET_EVENT_V2_PAYLOAD_OFFSET + NET_EVENT_V2_PAYLOAD_SIZE,
+};
+
+_Static_assert(NET_EVENT_V2_RECORD_SIZE == 84,
+               "public event v2 record layout drifted");
+
+/*
+ * Attribution-only decoders are shared so tests can pin the trust boundary
+ * without linking the platform network client. Legacy reserved bytes are
+ * intentionally ignored; there is no compatibility path from bearer-shaped
+ * data to public identity.
+ */
+static inline void net_event_decode_legacy_actor_fields(
+    const uint8_t record[NET_EVENT_RECORD_SIZE],
+    sim_event_t *event) {
+    (void)record;
+    if (!event ||
+        (event->type != SIM_EVENT_DEATH &&
+         event->type != SIM_EVENT_NPC_KILL)) {
+        return;
+    }
+    event->subject_actor =
+        public_actor_id_legacy_unattributed();
+    event->source_actor =
+        public_actor_id_legacy_unattributed();
+}
+
+static inline bool net_event_v2_decode_actor_fields(
+    const uint8_t record[NET_EVENT_V2_RECORD_SIZE],
+    sim_event_t *event) {
+    if (!record || !event ||
+        !public_actor_id_unpack(
+            &record[NET_EVENT_V2_SUBJECT_OFFSET],
+            &event->subject_actor) ||
+        !public_actor_id_unpack(
+            &record[NET_EVENT_V2_SOURCE_OFFSET],
+            &event->source_actor) ||
+        event->subject_actor.kind ==
+            (uint8_t)PUBLIC_ACTOR_ID_NONE ||
+        event->source_actor.kind ==
+            (uint8_t)PUBLIC_ACTOR_ID_NONE) {
+        if (event) {
+            event->subject_actor = public_actor_id_none();
+            event->source_actor = public_actor_id_none();
+        }
+        return false;
+    }
+    return true;
+}
 
 /* Compile-time check: action ranges must not overlap.
  * BUILD_MODULE is deprecated and no-op, so its range collapses to a
@@ -1522,6 +1631,15 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
 #define PLAYER_DOCK_RECORD_SIZE 2 /* id + compact status flags byte */
 #define PLAYER_DOCK_STATUS_FLAGS_MASK 0x05u /* thrusting + docked */
 
+/* Canonical tow relationship snapshot. Each entity reference is encoded as
+ * [kind:u8][index:i16][part:i16][generation:u16]. The record then carries
+ * [profile:u8][slot:u8][state:u8][reserved:u8]
+ * [attached_tick:u32][revision:u32]. */
+#define TOW_LINKS_MSG_HEADER_SIZE 11
+#define TOW_LINK_RECORD_SIZE 26
+#define TOW_LINKS_MAX_SIZE \
+    (TOW_LINKS_MSG_HEADER_SIZE + MAX_TOW_LINKS * TOW_LINK_RECORD_SIZE)
+
 /* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32]
  * [smelt:u8][grade:u8][crystal_stage:u8][phase:u8] */
 #define ASTEROID_MSG_HEADER 3  /* type + uint16 count */
@@ -1557,14 +1675,15 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
 /* Cargo pod record: [index:1][kind:1][commodity:1][towed_by:1][pos:2xf32]
  * [vel:2xf32][radius:f32][rotation:f32][quantity:u16]
  * [manifest_count:u16][shipment_id:u16][flags:1][best_grade:1]
- * [tractor_station_tag:1][tractor_module_tag:1][tow_hardpoint_tag:1].
+ * [tractor_station_tag:1][tractor_module_tag:1][tow_hardpoint_tag:1]
+ * [custody_station_tag:1][selection_token:32].
  * Manifest unit rows are not present on this live stream; the flags carry
- * server-derived summary truth for UI gates that need to agree with
- * authoritative material intake. */
-#define CARGO_POD_RECORD_SIZE 39
-#define CARGO_POD_Q_RECORD_SIZE 29
+ * server-derived summary truth for UI gates, while the opaque token lets a
+ * client bind a signed PRESENT action without learning private manifest rows. */
+#define CARGO_POD_RECORD_SIZE 72
+#define CARGO_POD_Q_RECORD_SIZE 62
 _Static_assert(CARGO_POD_Q_RECORD_SIZE ==
-               (4 + 4 * 2 + 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2 + 1),
+               (4 + 4 * 2 + 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2 + 1 + 1 + 32),
                "compact cargo pod identity record size drifted");
 #define CARGO_POD_MOTION_MSG_HEADER 2
 #define CARGO_POD_MOTION_RECORD_SIZE 21
@@ -1582,10 +1701,22 @@ enum {
 };
 
 /* NPC record: [id:1][flags:1][pos:2xf32][vel:2xf32][angle:f32]
- * [target:u16][towed_fragment:u16][rarity_tint:3][session_token:8][home_station:1],
- * 0xFFFF = none. The identity tail lets remote clients derive worker custody
- * pubkeys for receipt/provenance labels; station signatures remain authority. */
+ * [target:u16][towed_fragment:u16][rarity_tint:3][reserved_zero:8]
+ * [home_station:1], 0xFFFF = none.
+ *
+ * Protocol v6 retires the token-derived NPC identity tail. Bytes 29..36 are
+ * pinned to zero and must be ignored by clients; slot/role/home station are
+ * presentation and routing metadata, never public identity. */
 #define NPC_RECORD_SIZE 38
+#define NPC_RECORD_RESERVED_IDENTITY_OFFSET 29
+#define NPC_RECORD_RESERVED_IDENTITY_SIZE 8
+#define NPC_RECORD_HOME_STATION_OFFSET 37
+_Static_assert(NPC_RECORD_RESERVED_IDENTITY_OFFSET +
+                   NPC_RECORD_RESERVED_IDENTITY_SIZE ==
+               NPC_RECORD_HOME_STATION_OFFSET,
+               "NPC reserved-zero field layout drifted");
+_Static_assert(NPC_RECORD_HOME_STATION_OFFSET + 1 == NPC_RECORD_SIZE,
+               "NPC record tail layout drifted");
 #define NPC_MOTION_MSG_HEADER 2  /* type + count */
 #define NPC_MOTION_RECORD_SIZE 22 /* index + flags + pos/vel/angle floats */
 #define NPC_MOTION_Q_MSG_HEADER 2  /* type + count */

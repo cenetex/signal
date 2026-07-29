@@ -112,6 +112,27 @@ static void reject_origin_metadata(
     if (has_receipt) out->first_rejected_link = 0;
 }
 
+static void mark_craft_provenance(
+    cargo_receipt_station_evaluation_t *out,
+    const cargo_receipt_origin_proof_t *origin) {
+    if (!out || !origin ||
+        origin->event_type !=
+            CARGO_RECEIPT_ORIGIN_EVENT_CRAFT ||
+        origin->output_semantics_version !=
+            CARGO_RECEIPT_ORIGIN_SEMANTICS_V1) {
+        return;
+    }
+    out->craft_provenance =
+        CARGO_CRAFT_PROVENANCE_STATION_ATTESTED_V1;
+    /*
+     * CRAFT V1 has no origin/custody/consumption proof for its inputs.
+     * Keep both fields explicit even though zero-initialization would also
+     * make them false.
+     */
+    out->craft_input_lineage_proven = false;
+    out->craft_conservation_proven = false;
+}
+
 static bool registry_contains_authority(
     const station_t *station,
     const uint8_t pubkey[32],
@@ -320,6 +341,10 @@ cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
         },
         .origin_station = -1,
         .first_rejected_link = -1,
+        .craft_provenance =
+            CARGO_CRAFT_PROVENANCE_NOT_CRAFT,
+        .craft_input_lineage_proven = false,
+        .craft_conservation_proven = false,
     };
     if (!world || !unit || evaluating_station < 0 ||
         evaluating_station >= world->station_count ||
@@ -354,6 +379,7 @@ cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
                 reject_origin_metadata(&out, false);
                 return out;
             }
+            mark_craft_provenance(&out, &origin);
             mark_authority_legality(
                 &out.legality, authority.trust, screens);
             if (!authority_policy_accepts(
@@ -414,6 +440,7 @@ cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
             reject_origin_metadata(&out, true);
             return out;
         }
+        mark_craft_provenance(&out, &origin);
         mark_authority_legality(
             &out.legality, origin_authority.trust, screens);
         if (!authority_policy_accepts(

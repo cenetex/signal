@@ -153,6 +153,8 @@ jobs:
             '
           python3 scripts/check_deterministic_build_flags.py \
             build-web/compile_commands.json
+          python3 scripts/check_client_memory_budget.py \
+            build-web/signal.wasm
 
       - name: Run Chromium smoke on release WASM
         run: |

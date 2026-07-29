@@ -49,6 +49,53 @@ _Static_assert(CHAIN_UNSIGNED_HEADER_SIZE ==
                "unsigned-header span must equal sizeof header minus the "
                "64-byte trailing signature");
 
+/*
+ * Trust-evidence readers need two passes (verify, then interpret). A single
+ * path-backed descriptor blocks pathname replacement but can still change
+ * under in-place mutation. Freeze it once into an anonymous, bounded file so
+ * both passes consume exactly the same bytes.
+ */
+bool chain_log_snapshot_evidence_file(
+    FILE *source,
+    FILE **out_snapshot) {
+    if (out_snapshot) *out_snapshot = NULL;
+    if (!source || !out_snapshot ||
+        fseek(source, 0, SEEK_SET) != 0) {
+        return false;
+    }
+    FILE *snapshot = tmpfile();
+    if (!snapshot) return false;
+    uint8_t buffer[64 * 1024];
+    size_t total = 0;
+    for (;;) {
+        size_t got = fread(buffer, 1, sizeof(buffer), source);
+        if (got > 0u) {
+            if (got >
+                (size_t)CHAIN_LOG_EVIDENCE_SNAPSHOT_MAX_BYTES -
+                    total ||
+                fwrite(buffer, 1, got, snapshot) != got) {
+                fclose(snapshot);
+                return false;
+            }
+            total += got;
+        }
+        if (got < sizeof(buffer)) {
+            if (ferror(source)) {
+                fclose(snapshot);
+                return false;
+            }
+            break;
+        }
+    }
+    if (fflush(snapshot) != 0 ||
+        fseek(snapshot, 0, SEEK_SET) != 0) {
+        fclose(snapshot);
+        return false;
+    }
+    *out_snapshot = snapshot;
+    return true;
+}
+
 static bool chain_cargo_pub_is_zero(const uint8_t pub[32]) {
     static const uint8_t zero[32] = {0};
     return !pub || memcmp(pub, zero, sizeof(zero)) == 0;
@@ -186,92 +233,40 @@ static void chain_cargo_transform_decode_output(
 
     if (transform->type == CHAIN_EVT_SMELT) {
         const chain_payload_smelt_t *payload = &transform->smelt;
-        static const uint8_t zero_reserved[2] = {0};
-        cargo_unit_t canonical;
-        if (payload->semantics_version != CHAIN_CARGO_SEMANTICS_V1 ||
-            memcmp(payload->_reserved, zero_reserved,
-                   sizeof(zero_reserved)) != 0 ||
-            chain_cargo_pub_is_zero(payload->fragment_pub) ||
-            chain_cargo_pub_is_zero(payload->ingot_pub) ||
-            !hash_ingot(
-                (commodity_t)payload->commodity,
-                (mining_grade_t)payload->grade,
-                payload->fragment_pub, payload->output_index,
-                &canonical) ||
-            memcmp(canonical.pub, payload->ingot_pub, 32) != 0 ||
-            canonical.prefix_class != payload->prefix_class) {
+        /*
+         * Live lineage ignores V0 rather than paying its bounded but
+         * deliberately expensive uint16 identity-recovery scan for every
+         * historical row. Offline audit tooling evaluates V0 explicitly.
+         */
+        if (payload->semantics_version != CHAIN_CARGO_SEMANTICS_V1)
             return;
-        }
-        canonical.mined_block = payload->mined_block;
-        transform->output_cargo = canonical;
+        cargo_smelt_provenance_status_t status =
+            cargo_smelt_provenance_evaluate(
+                (const uint8_t *)payload, sizeof(*payload),
+                true, &transform->smelt_provenance);
+        if (status !=
+            CARGO_SMELT_PROVENANCE_STATION_ATTESTED_V1)
+            return;
+        transform->output_cargo =
+            transform->smelt_provenance.output_cargo;
         transform->output_semantics_version =
-            payload->semantics_version;
+            transform->smelt_provenance.semantics_version;
         return;
     }
 
     if (transform->type == CHAIN_EVT_CRAFT) {
         const chain_payload_craft_t *payload = &transform->craft;
-        cargo_kind_t expected_kind;
-        if (payload->semantics_version != CHAIN_CARGO_SEMANTICS_V1 ||
-            payload->input_count > RECIPE_INPUT_MAX ||
-            chain_cargo_pub_is_zero(payload->output_pub) ||
-            (unsigned)payload->output_grade >=
-                (unsigned)MINING_GRADE_COUNT ||
-            payload->output_quantity != 1u ||
-            !cargo_kind_for_commodity(
-                (commodity_t)payload->output_commodity,
-                &expected_kind) ||
-            expected_kind !=
-                (cargo_kind_t)payload->output_kind) {
+        cargo_craft_provenance_status_t status =
+            cargo_craft_provenance_evaluate(
+                (const uint8_t *)payload, sizeof(*payload),
+                true, &transform->craft_provenance);
+        if (status !=
+            CARGO_CRAFT_PROVENANCE_STATION_ATTESTED_V1) {
             return;
         }
-        for (size_t i = payload->input_count;
-             i < RECIPE_INPUT_MAX; i++) {
-            if (!chain_cargo_pub_is_zero(payload->input_pubs[i]))
-                return;
-        }
-        if (payload->recipe_id ==
-            (uint16_t)RECIPE_LEGACY_MIGRATE) {
-            if (payload->input_count != 0u) return;
-        } else {
-            const recipe_def_t *recipe =
-                recipe_get((recipe_id_t)payload->recipe_id);
-            if (!recipe ||
-                payload->input_count != recipe->input_count ||
-                payload->output_kind !=
-                    (uint8_t)recipe->output_kind ||
-                payload->output_commodity !=
-                    (uint8_t)recipe->output_commodity) {
-                return;
-            }
-            bool canonical_pub = false;
-            uint8_t parent_merkle[32] = {0};
-            for (uint32_t output_index = 0;
-                 output_index < (uint32_t)recipe->output_count;
-                 output_index++) {
-                uint8_t candidate_parent[32];
-                uint8_t candidate_pub[32];
-                if (!hash_product_identity_from_pubs(
-                        (recipe_id_t)payload->recipe_id,
-                        (const uint8_t (*)[32])payload->input_pubs,
-                        payload->input_count,
-                        (mining_grade_t)payload->output_grade,
-                        (uint16_t)output_index,
-                        candidate_parent, candidate_pub)) {
-                    return;
-                }
-                if (memcmp(candidate_pub, payload->output_pub,
-                           sizeof(candidate_pub)) == 0) {
-                    memcpy(parent_merkle, candidate_parent,
-                           sizeof(parent_merkle));
-                    canonical_pub = true;
-                    break;
-                }
-            }
-            if (!canonical_pub) return;
-            memcpy(transform->output_cargo.parent_merkle,
-                   parent_merkle, sizeof(parent_merkle));
-        }
+        memcpy(transform->output_cargo.parent_merkle,
+               transform->craft_provenance.parent_merkle,
+               sizeof(transform->output_cargo.parent_merkle));
         cargo_unit_t *output = &transform->output_cargo;
         output->kind = payload->output_kind;
         output->commodity = payload->output_commodity;
@@ -1302,15 +1297,32 @@ chain_log_find_cargo_transform_for_identity_pinned(
     char path[256];
     if (!chain_log_path_for(station_pubkey, path, sizeof(path)))
         return CHAIN_CARGO_TRANSFORM_READ_INVALID;
-    FILE *f = fopen(path, "rb");
-    if (!f) return CHAIN_CARGO_TRANSFORM_NOT_FOUND;
+    FILE *source = fopen(path, "rb");
+    if (!source) return CHAIN_CARGO_TRANSFORM_NOT_FOUND;
+    FILE *f = NULL;
+    bool snapshot_ok =
+        chain_log_snapshot_evidence_file(source, &f);
+    bool source_close_ok = fclose(source) == 0;
+    if (!snapshot_ok || !source_close_ok) {
+        if (f) fclose(f);
+        return CHAIN_CARGO_TRANSFORM_READ_INVALID;
+    }
+
+    chain_log_verify_report_t verified = {0};
+    if (!chain_log_verify_with_pubkey(
+            f, station_pubkey, &verified) ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return CHAIN_CARGO_TRANSFORM_READ_INVALID;
+    }
 
     bool found = false;
     bool invalid = false;
-    for (;;) {
+    for (uint64_t event_index = 0;
+         event_index < verified.valid_events;
+         event_index++) {
         uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
         size_t got = fread(hdr_bytes, 1, sizeof(hdr_bytes), f);
-        if (got == 0 && feof(f)) break;
         if (got != sizeof(hdr_bytes)) {
             invalid = true;
             break;
@@ -1403,20 +1415,27 @@ chain_log_find_cargo_transform_for_identity_pinned(
                  : CHAIN_CARGO_TRANSFORM_NOT_FOUND;
 }
 
-static bool chain_log_visit_cargo_transforms_open(
+static bool chain_log_visit_cargo_evidence_open(
     FILE *f,
     bool bounded,
     uint64_t event_limit,
-    chain_cargo_transform_visitor_t visitor,
-    void *user,
+    chain_cargo_transform_visitor_t transform_visitor,
+    void *transform_user,
+    chain_cargo_transfer_visitor_t transfer_visitor,
+    void *transfer_user,
     size_t *out_transform_count,
+    size_t *out_transfer_count,
     uint8_t out_last_hash[32]) {
     if (out_transform_count) *out_transform_count = 0;
+    if (out_transfer_count) *out_transfer_count = 0;
     if (out_last_hash) memset(out_last_hash, 0, 32);
-    if (!f || !visitor || fseek(f, 0, SEEK_SET) != 0)
+    if (!f || (!transform_visitor && !transfer_visitor) ||
+        fseek(f, 0, SEEK_SET) != 0) {
         return false;
+    }
 
-    size_t count = 0;
+    size_t transform_count = 0;
+    size_t transfer_count = 0;
     uint64_t visited_events = 0;
     uint8_t last_hash[32] = {0};
     bool ok = true;
@@ -1441,7 +1460,9 @@ static bool chain_log_visit_cargo_transforms_open(
         }
 
         chain_cargo_transform_t transform = {0};
+        chain_payload_transfer_t transfer = {0};
         bool is_transform = false;
+        bool is_transfer = false;
         if (hdr.type == CHAIN_EVT_SMELT &&
             plen == sizeof(chain_payload_smelt_t)) {
             if (fread(&transform.smelt, 1,
@@ -1462,31 +1483,53 @@ static bool chain_log_visit_cargo_transforms_open(
             }
             transform.type = CHAIN_EVT_CRAFT;
             is_transform = true;
+        } else if (hdr.type == CHAIN_EVT_TRANSFER &&
+                   transfer_visitor) {
+            if (plen != sizeof(transfer) ||
+                fread(&transfer, 1, sizeof(transfer), f) !=
+                    sizeof(transfer)) {
+                ok = false;
+                break;
+            }
+            is_transfer = true;
         } else if (fseek(f, plen, SEEK_CUR) != 0) {
             ok = false;
             break;
         }
         visited_events++;
         chain_event_header_hash(&hdr, last_hash);
-        if (!is_transform) continue;
-        transform.event_id = hdr.event_id;
-        transform.epoch = hdr.epoch;
-        chain_event_header_hash(&hdr, transform.header_hash);
-        memcpy(transform.authority, hdr.authority,
-               sizeof(transform.authority));
-        chain_cargo_transform_decode_output(&transform);
-        if (count == SIZE_MAX) {
-            ok = false;
-            break;
+        if (is_transform && transform_visitor) {
+            transform.event_id = hdr.event_id;
+            transform.epoch = hdr.epoch;
+            chain_event_header_hash(&hdr, transform.header_hash);
+            memcpy(transform.authority, hdr.authority,
+                   sizeof(transform.authority));
+            chain_cargo_transform_decode_output(&transform);
+            if (transform_count == SIZE_MAX) {
+                ok = false;
+                break;
+            }
+            transform_count++;
+            if (!transform_visitor(&transform, transform_user)) {
+                ok = false;
+                break;
+            }
         }
-        count++;
-        if (!visitor(&transform, user)) {
-            ok = false;
-            break;
+        if (is_transfer) {
+            if (transfer_count == SIZE_MAX) {
+                ok = false;
+                break;
+            }
+            transfer_count++;
+            if (!transfer_visitor(&transfer, transfer_user)) {
+                ok = false;
+                break;
+            }
         }
     }
     if (bounded && visited_events != event_limit) ok = false;
-    if (out_transform_count) *out_transform_count = count;
+    if (out_transform_count) *out_transform_count = transform_count;
+    if (out_transfer_count) *out_transfer_count = transfer_count;
     if (ok && out_last_hash)
         memcpy(out_last_hash, last_hash, sizeof(last_hash));
     return ok;
@@ -1499,9 +1542,27 @@ bool chain_log_visit_cargo_transforms_from_verified_file(
     void *user,
     size_t *out_transform_count,
     uint8_t out_last_hash[32]) {
-    return chain_log_visit_cargo_transforms_open(
-        log, true, verified_event_count, visitor, user,
-        out_transform_count, out_last_hash);
+    return chain_log_visit_cargo_evidence_open(
+        log, true, verified_event_count,
+        visitor, user, NULL, NULL,
+        out_transform_count, NULL, out_last_hash);
+}
+
+bool chain_log_visit_cargo_evidence_from_verified_file(
+    FILE *log,
+    uint64_t verified_event_count,
+    chain_cargo_transform_visitor_t transform_visitor,
+    void *transform_user,
+    chain_cargo_transfer_visitor_t transfer_visitor,
+    void *transfer_user,
+    size_t *out_transform_count,
+    size_t *out_transfer_count,
+    uint8_t out_last_hash[32]) {
+    return chain_log_visit_cargo_evidence_open(
+        log, true, verified_event_count,
+        transform_visitor, transform_user,
+        transfer_visitor, transfer_user,
+        out_transform_count, out_transfer_count, out_last_hash);
 }
 
 bool chain_log_visit_cargo_transforms_for_identity(
@@ -1514,10 +1575,26 @@ bool chain_log_visit_cargo_transforms_for_identity(
     char path[256];
     if (!chain_log_path_for(station_pubkey, path, sizeof(path)))
         return false;
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    bool ok = chain_log_visit_cargo_transforms_open(
-        f, false, 0, visitor, user, out_transform_count, NULL);
+    FILE *source = fopen(path, "rb");
+    if (!source) return false;
+    FILE *f = NULL;
+    bool snapshot_ok =
+        chain_log_snapshot_evidence_file(source, &f);
+    bool source_close_ok = fclose(source) == 0;
+    if (!snapshot_ok || !source_close_ok) {
+        if (f) fclose(f);
+        return false;
+    }
+    chain_log_verify_report_t verified = {0};
+    if (!chain_log_verify_with_pubkey(
+            f, station_pubkey, &verified)) {
+        fclose(f);
+        return false;
+    }
+    bool ok = chain_log_visit_cargo_evidence_open(
+        f, true, verified.valid_events,
+        visitor, user, NULL, NULL,
+        out_transform_count, NULL, NULL);
     if (fclose(f) != 0) ok = false;
     return ok;
 }

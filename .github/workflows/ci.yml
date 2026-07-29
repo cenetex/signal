@@ -31,6 +31,7 @@ jobs:
       replay: ${{ steps.paths.outputs.replay }}
       tools: ${{ steps.paths.outputs.tools }}
       programs: ${{ steps.paths.outputs.programs }}
+      deployment: ${{ steps.paths.outputs.deployment }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -77,14 +78,23 @@ jobs:
           node scripts/test-rati-anchor-batch.mjs
           node scripts/test-rati-anchor-stamp.mjs
           node scripts/test-relay-region-broker.mjs
+          node --test scripts/test-relay-traffic-probe.mjs
           node scripts/test-ws-backpressure-soak.mjs
           node scripts/test-ws-latency-proxy.mjs
       - name: Run checked policy self-tests
         run: |
           python3 scripts/check_banned_apis.py
+          python3 scripts/check_cargo_trust_boundaries.py
+          python3 scripts/test_check_cargo_trust_boundaries.py
           python3 scripts/check_deterministic_libm.py
+          python3 scripts/test_check_client_memory_budget.py
+          python3 scripts/check_make_build_isolation.py
+          python3 scripts/test_check_make_build_isolation.py
+          python3 scripts/test_check_memzero_codegen.py
           python3 scripts/check_container_workflow_inputs.py
           python3 scripts/test_check_container_workflow_inputs.py
+          python3 scripts/check_deployment_inputs.py
+          python3 scripts/test_check_deployment_inputs.py
           python3 scripts/check_fly_config.py
           python3 scripts/test_check_fly_config.py
           python3 scripts/check_soak_automation.py
@@ -105,13 +115,14 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y clang cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
       - name: Run native and policy gates
         run: |
           make build-server
           make test
           make test-san
-          make banned-apis deterministic-libm doc-freshness soak-automation vendor-drift
+          make memzero-codegen
+          make cargo-trust-audit banned-apis deterministic-libm doc-freshness soak-automation vendor-drift
           make cppcheck
 
   soak:
@@ -148,8 +159,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build clang
-      - name: Fuzz receipt and handoff decode paths
-        run: make fuzz-receipts FUZZ_TIME=300
+      - name: Replay corpus and fuzz all receipt/handoff modes
+        run: make fuzz-receipts FUZZ_TIME=120 FUZZ_TIMEOUT=10
+      - name: Prove standalone corpus and artifact replay
+        run: make fuzz-receipts-standalone
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -181,6 +194,8 @@ jobs:
             '
           python3 scripts/check_deterministic_build_flags.py \
             build-web/compile_commands.json
+          python3 scripts/check_client_memory_budget.py \
+            build-web/signal.wasm
       - name: Install locked browser test dependencies
         run: |
           npm ci
@@ -214,14 +229,23 @@ jobs:
             .
       - name: Record locked production dependency tree
         run: |
+          set -o pipefail
           mkdir -p test-results/container
           docker run --rm \
             --entrypoint npm \
             "signal-production:${GITHUB_SHA}" \
             ls --omit=dev --all \
             | tee test-results/container/npm-ls-production.txt
+      - name: Exercise packaged WebRTC gateway static serving
+        run: |
+          docker run --rm \
+            --volume "$PWD/scripts/test-webrtc-gateway.mjs:/app/scripts/test-webrtc-gateway.mjs:ro" \
+            --entrypoint sh \
+            "signal-production:${GITHUB_SHA}" \
+            -ec 'npm run test:rtc-gateway'
       - name: Verify final image dependency hygiene
         run: |
+          set -o pipefail
           docker run --rm \
             --entrypoint sh \
             "signal-production:${GITHUB_SHA}" \
@@ -299,6 +323,40 @@ jobs:
           ./build-packnft/test_msg
           ./build-packnft/test_core
 
+  deployment:
+    name: Locked deployment packages and entrypoints
+    needs: classify
+    if: needs.classify.outputs.deployment == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: aws/lambda/signal-lobby/package-lock.json
+      - name: Validate credential-free deployment contracts
+        run: |
+          python3 scripts/check_deployment_inputs.py
+          python3 scripts/check_fly_config.py
+          bash -n deploy/lightsail-user-data.sh
+          sh -n docker/entrypoint.sh
+      - name: Install locked Lambda production dependencies
+        run: |
+          npm ci --ignore-scripts --omit=dev \
+            --prefix aws/lambda/signal-lobby
+          npm ls --omit=dev --all \
+            --prefix aws/lambda/signal-lobby
+      - name: Link-check Lambda and Worker modules
+        env:
+          AWS_EC2_METADATA_DISABLED: "true"
+          AWS_REGION: us-east-1
+          SIGNAL_LOBBY_TABLE: ci-contract
+        run: |
+          node --input-type=module -e "const m = await import('./aws/lambda/signal-lobby/index.mjs'); if (typeof m.handler !== 'function') throw new Error('missing Lambda handler')"
+          node --input-type=module -e "const m = await import('./workers/fly-proxy.js'); if (typeof m.default?.fetch !== 'function') throw new Error('missing Worker fetch handler')"
+
   programs:
     name: Burn-to-mint locked manifests
     needs: classify
@@ -355,6 +413,7 @@ jobs:
       - replay
       - tools
       - programs
+      - deployment
     runs-on: ubuntu-latest
     env:
       CI_RESULT_CLASSIFY: ${{ needs.classify.result }}
@@ -368,6 +427,7 @@ jobs:
       CI_RESULT_REPLAY: ${{ needs.replay.result }}
       CI_RESULT_TOOLS: ${{ needs.tools.result }}
       CI_RESULT_PROGRAMS: ${{ needs.programs.result }}
+      CI_RESULT_DEPLOYMENT: ${{ needs.deployment.result }}
       CI_SELECTED_POLICY: ${{ needs.classify.outputs.policy }}
       CI_SELECTED_NATIVE: ${{ needs.classify.outputs.native }}
       CI_SELECTED_SOAK: ${{ needs.classify.outputs.soak }}
@@ -378,6 +438,7 @@ jobs:
       CI_SELECTED_REPLAY: ${{ needs.classify.outputs.replay }}
       CI_SELECTED_TOOLS: ${{ needs.classify.outputs.tools }}
       CI_SELECTED_PROGRAMS: ${{ needs.classify.outputs.programs }}
+      CI_SELECTED_DEPLOYMENT: ${{ needs.classify.outputs.deployment }}
     steps:
       - uses: actions/checkout@v6
       - name: Require every selected lane

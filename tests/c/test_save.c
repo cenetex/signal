@@ -2,9 +2,12 @@
 #include "sim_physics.h"
 #include "cargo_receipt_issue.h"
 #include "cargo_receipt_trust.h"
+#include "cargo_legacy_inventory.h"
 #include "chain_log.h"
 #include "faction.h"
 #include "actor_principal_resolver.h"
+#include "contract_ownership.h"
+#include "state_digest.h"
 #include <stddef.h>
 
 static void test_save_set_verified_identity(
@@ -131,6 +134,36 @@ static int test_count_exact_frame_pod_units(const world_t *w) {
         if (exact) total += (int)pod->manifest_count;
     }
     return total;
+}
+
+static int test_starter_refit_marker_count(const world_t *w,
+                                           bool active_only,
+                                           int *out_index) {
+    if (out_index) *out_index = -1;
+    if (!w) return 0;
+    int count = 0;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (!starter_refit_work_order_matches(
+                &w->contracts[i]) ||
+            (active_only && !w->contracts[i].active)) {
+            continue;
+        }
+        if (out_index && *out_index < 0) *out_index = i;
+        count++;
+    }
+    return count;
+}
+
+static void test_remove_starter_refit_markers(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (!starter_refit_work_order_matches(
+                &w->contracts[i])) {
+            continue;
+        }
+        memset(&w->contracts[i], 0,
+               sizeof(w->contracts[i]));
+    }
 }
 
 static bool test_patch_catalog_version(const char *path, uint32_t version) {
@@ -318,6 +351,105 @@ static long test_file_length(const char *path) {
         length = ftell(f);
     fclose(f);
     return length;
+}
+
+static uint8_t *test_read_file_bytes(
+    const char *path,
+    size_t *out_size) {
+    if (!path || !out_size) return NULL;
+    *out_size = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    long length = ftell(f);
+    if (length < 0 || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    size_t size = (size_t)length;
+    uint8_t *bytes = malloc(size > 0 ? size : 1u);
+    if (!bytes) {
+        fclose(f);
+        return NULL;
+    }
+    bool ok = fread(bytes, 1, size, f) == size &&
+              !ferror(f);
+    if (fclose(f) != 0) ok = false;
+    if (!ok) {
+        free(bytes);
+        return NULL;
+    }
+    *out_size = size;
+    return bytes;
+}
+
+static bool test_write_file_bytes(
+    const char *path,
+    const uint8_t *bytes,
+    size_t size) {
+    if (!path || (!bytes && size > 0)) return false;
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = fwrite(bytes, 1, size, f) == size &&
+              !ferror(f);
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+static bool test_rewrite_world_buffer_crc(
+    uint8_t *bytes,
+    size_t size) {
+    if (!bytes || size < 8u) return false;
+    uint32_t crc_magic = 0;
+    memcpy(&crc_magic, bytes + size - 8u, sizeof(crc_magic));
+    if (crc_magic != UINT32_C(0x43524332)) return false;
+    uint32_t crc =
+        test_crc32_update(0, bytes, size - 8u);
+    memcpy(bytes + size - sizeof(crc), &crc, sizeof(crc));
+    return true;
+}
+
+static bool test_world_load_bytes_rejection_is_transactional(
+    world_t *destination,
+    const uint8_t *bytes,
+    size_t size,
+    world_load_result_t expected,
+    const uint8_t *inline_snapshot,
+    const uint8_t before_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE]) {
+    if (!destination || !inline_snapshot || !before_digest) return false;
+    world_load_result_t result =
+        world_load_bytes(destination, bytes, size);
+    uint8_t after_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    signal_authoritative_state_digest(destination, after_digest);
+    return result == expected &&
+           memcmp(destination, inline_snapshot,
+                  sizeof(*destination)) == 0 &&
+           memcmp(before_digest, after_digest,
+                  sizeof(after_digest)) == 0 &&
+           world_ship_cached_views_valid(destination);
+}
+
+static bool test_world_load_path_rejection_is_transactional(
+    world_t *destination,
+    const char *path,
+    world_load_result_t expected,
+    const uint8_t *inline_snapshot,
+    const uint8_t before_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE]) {
+    if (!destination || !path || !inline_snapshot || !before_digest)
+        return false;
+    world_load_result_t result =
+        world_load_path(destination, path);
+    uint8_t after_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    signal_authoritative_state_digest(destination, after_digest);
+    return result == expected &&
+           memcmp(destination, inline_snapshot,
+                  sizeof(*destination)) == 0 &&
+           memcmp(before_digest, after_digest,
+                  sizeof(after_digest)) == 0 &&
+           world_ship_cached_views_valid(destination);
 }
 
 static bool test_world_load_rejected_file(const char *path) {
@@ -1218,6 +1350,12 @@ TEST(test_world_save_round_trips_station_manifest) {
     ASSERT(test_issue_station_receipt(&w.stations[0], unit.pub, 4242, &chain));
     ASSERT(station_manifest_push_with_chain(&w.stations[0], &unit, &chain));
     ASSERT_EQ_INT(w.stations[0].manifest.count, 1);
+    const ship_receipts_t *source_receipts =
+        station_get_receipts_const(&w.stations[0]);
+    ASSERT(source_receipts != NULL);
+    uint64_t source_generation = source_receipts->semantic_generation;
+    ASSERT(source_generation != 0);
+    ASSERT(source_generation != UINT64_MAX);
     ASSERT(world_save(&w, TMP("test_manifest_roundtrip.sav")));
     ASSERT(world_load(loaded, TMP("test_manifest_roundtrip.sav")));
     ASSERT_EQ_INT(loaded->stations[0].manifest.count, 1);
@@ -1228,6 +1366,9 @@ TEST(test_world_save_round_trips_station_manifest) {
     ASSERT(memcmp(loaded->stations[0].manifest.units[0].pub, unit.pub, 32) == 0);
     ship_receipts_t *loaded_receipts = station_get_receipts(&loaded->stations[0]);
     ASSERT(loaded_receipts != NULL);
+    ASSERT(loaded_receipts->semantic_generation != 0);
+    ASSERT(loaded_receipts->semantic_generation != UINT64_MAX);
+    ASSERT(loaded_receipts->semantic_generation != source_generation);
     ASSERT_EQ_INT((int)loaded_receipts->count, 1);
     ASSERT_EQ_INT((int)loaded_receipts->chains[0].len, 1);
     ASSERT_EQ_INT((int)loaded_receipts->chains[0].links[0].event_id, 4242);
@@ -1238,7 +1379,7 @@ TEST(test_world_save_round_trips_station_manifest) {
     remove(TMP("test_manifest_roundtrip.sav"));
 }
 
-TEST(test_validated_world_load_anchors_legacy_station_cargo_once) {
+TEST(test_resumed_world_load_reports_legacy_cargo_without_reattestation) {
     WORLD_DECL;
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
@@ -1269,27 +1410,46 @@ TEST(test_validated_world_load_anchors_legacy_station_cargo_once) {
     /*
      * This models the dedicated-server boundary immediately after
      * world_load has validated the save CRC and reconciled chain tails.
-     * The operator-owned legacy row is attested once; normal gameplay
-     * still rejects any missing origin outside this boundary.
+     * CRC validity is not provenance: startup inventories this row but
+     * must not synthesize a current V1 origin for it.
      */
-    ASSERT(world_anchor_validated_legacy_cargo_origins(loaded));
+    cargo_unit_t before_report =
+        loaded_kepler->manifest.units[loaded_idx];
+    uint64_t chain_count_before =
+        loaded_kepler->chain_event_count;
+    uint8_t chain_hash_before[32];
+    memcpy(chain_hash_before, loaded_kepler->chain_last_hash,
+           sizeof(chain_hash_before));
+    cargo_legacy_inventory_report_t first = {0};
+    cargo_legacy_inventory_report_t second = {0};
+    ASSERT(cargo_legacy_inventory_scan_world(loaded, &first));
+    ASSERT(cargo_legacy_inventory_scan_world(loaded, &second));
+    ASSERT(memcmp(&first, &second, sizeof(first)) == 0);
+    ASSERT(first.legacy_candidates >= 1u);
+    ASSERT(first.holder_candidate_count[
+               CARGO_LEGACY_HOLDER_STATION_MANIFEST] >= 1u);
     loaded_idx = manifest_find(
         &loaded_kepler->manifest, expected.pub);
     ASSERT(loaded_idx >= 0);
-    cargo_unit_t *migrated =
+    cargo_unit_t *reported =
         &loaded_kepler->manifest.units[loaded_idx];
-    ASSERT_EQ_INT(migrated->origin_station, 1);
-    uint64_t anchored_count = loaded_kepler->chain_event_count;
-    ASSERT(anchored_count > 0);
+    ASSERT(memcmp(reported, &before_report,
+                  sizeof(*reported)) == 0);
+    ASSERT_EQ_INT(reported->origin_station, 0);
+    ASSERT(loaded_kepler->chain_event_count ==
+           chain_count_before);
+    ASSERT(memcmp(loaded_kepler->chain_last_hash,
+                  chain_hash_before,
+                  sizeof(chain_hash_before)) == 0);
 
     cargo_receipt_station_evaluation_t evaluated =
         cargo_receipt_evaluate_at_station(
-            loaded, 1, migrated, NULL);
-    ASSERT(evaluated.accepted);
-    ASSERT(evaluated.local_origin_without_receipt);
-
-    ASSERT(world_anchor_validated_legacy_cargo_origins(loaded));
-    ASSERT(loaded_kepler->chain_event_count == anchored_count);
+            loaded, 1, reported, NULL);
+    ASSERT(!evaluated.accepted);
+    ASSERT(!evaluated.local_origin_without_receipt);
+    ASSERT_EQ_INT(
+        evaluated.trust.status,
+        CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN);
     remove(TMP("test_legacy_origin_migration.sav"));
 }
 
@@ -2056,7 +2216,14 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     w->players[0].id = 0;
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
+    test_save_set_verified_identity(&w->players[0], 0x48);
+    ASSERT(delivery_ownership_assign_player(
+        &w->delivery_shipments[0], w, 0));
+    actor_principal_t saved_debtor =
+        w->delivery_shipments[0].debtor_principal;
     ASSERT(world_cargo_pod_set_player_tractor(w, 7, 0));
+    actor_principal_t saved_tow_owner =
+        w->cargo_pods[7].tow_owner_principal;
     cargo_pod_set_tow_hardpoint(&w->cargo_pods[7], 4);
     w->cargo_pods[7].has_shell_frame = true;
     cargo_pod_set_station_custody(&w->cargo_pods[7], 2);
@@ -2074,6 +2241,8 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     ASSERT_EQ_INT(shipment->status, DELIVERY_SHIPMENT_DELIVERED);
     ASSERT_EQ_INT(shipment->origin_station, 0);
     ASSERT_EQ_INT(shipment->destination_station, 2);
+    ASSERT(actor_principal_equal(
+        &shipment->debtor_principal, &saved_debtor));
     ASSERT_EQ_INT(shipment->quantity_delivered, 1);
     ASSERT_EQ_FLOAT(shipment->debt_principal, 40.0f, 0.001f);
     ASSERT(memcmp(shipment->cargo_pub[0], w->delivery_shipments[0].cargo_pub[0], 32) == 0);
@@ -2090,7 +2259,12 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     ASSERT_EQ_INT(pod->commodity, COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(pod->quantity, 1);
     ASSERT_EQ_INT(pod->shipment_id, 11);
-    ASSERT_EQ_INT(cargo_pod_player_tractor(pod), 0);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(pod), -1);
+    ASSERT(actor_principal_equal(
+        &pod->tow_owner_principal,
+        &saved_tow_owner));
+    ASSERT_EQ_INT(
+        (int)pod->tow_owner_quarantine_record_id, 0);
     ASSERT_EQ_INT(cargo_pod_tow_hardpoint(pod), 4);
     ASSERT_EQ_INT(cargo_pod_custody_station(pod), 2);
     ASSERT(pod->has_shell_frame);
@@ -2102,6 +2276,59 @@ TEST(test_world_save_load_preserves_delivery_shipments) {
     ASSERT_EQ_FLOAT(pod->rotation, 0.7f, 0.001f);
     ASSERT_EQ_FLOAT(pod->spin, 0.25f, 0.001f);
     remove(TMP("test_delivery_shipments.sav"));
+}
+
+TEST(test_world_save_load_preserves_cargo_pod_charge_anchor) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    cargo_unit_t remaining[2] = {{0}};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"CHGRMN01",
+        COMMODITY_FRAME, 0, &remaining[0]));
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"CHGRMN01",
+        COMMODITY_FRAME, 1, &remaining[1]));
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        w, w->stations[0].pos, v2(0.0f, 0.0f),
+        COMMODITY_FRAME, remaining, 2, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    cargo_pod_set_station_custody(pod, 0);
+    pod->custody_charge_total = 793;
+    pod->custody_charge_unit_count = 200;
+    pod->custody_charge_units_processed = 198;
+    ASSERT(cargo_pod_ordered_manifest_digest(
+        pod, pod->custody_charge_manifest_digest));
+    ASSERT(cargo_pod_custody_charge_anchor_valid(pod));
+
+    ASSERT(world_save(
+        w, TMP("test_cargo_pod_charge_anchor.sav")));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(
+        loaded, TMP("test_cargo_pod_charge_anchor.sav")));
+
+    const cargo_pod_t *loaded_pod =
+        &loaded->cargo_pods[pod_idx];
+    ASSERT(loaded_pod->active);
+    ASSERT_EQ_INT(
+        cargo_pod_custody_station(loaded_pod), 0);
+    ASSERT_EQ_INT(
+        (int)loaded_pod->custody_charge_total, 793);
+    ASSERT_EQ_INT(
+        loaded_pod->custody_charge_unit_count, 200);
+    ASSERT_EQ_INT(
+        loaded_pod->custody_charge_units_processed, 198);
+    ASSERT_EQ_INT(loaded_pod->manifest_count, 2);
+    ASSERT(memcmp(
+        loaded_pod->custody_charge_manifest_digest,
+        pod->custody_charge_manifest_digest, 32) == 0);
+    ASSERT(cargo_pod_custody_charge_anchor_valid(loaded_pod));
+
+    remove(TMP("test_cargo_pod_charge_anchor.sav"));
 }
 
 TEST(test_world_load_v70_backfills_missing_starter_frame_pods) {
@@ -2166,57 +2393,251 @@ TEST(test_world_load_v71_does_not_duplicate_starter_laser_modules) {
                                          COMMODITY_LASER_MODULE), 8);
 }
 
-TEST(test_player_load_restores_towed_cargo_pods_from_world) {
+TEST(test_world_load_current_backfills_missing_starter_refit_order) {
+    const char *path =
+        TMP("test_current_missing_starter_refit.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+    ASSERT_EQ_INT(station_finished_count(
+                      &saved->stations[1],
+                      COMMODITY_LASER_MODULE), 8);
+    test_remove_starter_refit_markers(saved);
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            saved, false, NULL), 0);
+    ASSERT(world_save(saved, path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(world_load(loaded, path));
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            loaded, false, NULL), 1);
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            loaded, true, NULL), 1);
+
+    remove(path);
+}
+
+TEST(test_world_load_v80_backfills_missing_starter_refit_order) {
+    const char *path =
+        TMP("test_v80_missing_starter_refit.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+    ASSERT_EQ_INT(station_finished_count(
+                      &saved->stations[1],
+                      COMMODITY_LASER_MODULE), 8);
+    test_remove_starter_refit_markers(saved);
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            saved, false, NULL), 0);
+    ASSERT(world_save_legacy_v80_for_test(saved, path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(world_load(loaded, path));
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            loaded, false, NULL), 1);
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            loaded, true, NULL), 1);
+
+    remove(path);
+}
+
+TEST(test_consumed_starter_refit_tombstone_survives_reload_and_posting) {
+    const char *path =
+        TMP("test_consumed_starter_refit_tombstone.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+
+    int marker_index = -1;
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            saved, false, &marker_index), 1);
+    ASSERT(marker_index >= 0);
+    saved->contracts[marker_index].active = false;
+    saved->contracts[marker_index].quantity_needed = 0.0f;
+
+    /* Model later replenishment of the exact finite reserve. Even when the
+     * opening stock is byte-for-byte present again, the consumed marker is
+     * the durable fact that prevents a second onboarding payout. */
+    ASSERT_EQ_INT(station_finished_drain(
+                      &saved->stations[1],
+                      COMMODITY_LASER_MODULE, 8), 8);
+    ASSERT_EQ_INT(world_ensure_starter_laser_module_reserve(saved), 8);
+    ASSERT_EQ_INT(station_finished_count(
+                      &saved->stations[1],
+                      COMMODITY_LASER_MODULE), 8);
+    ASSERT_EQ_INT(
+        world_ensure_starter_mining_refit_work_order(saved),
+        marker_index);
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            saved, true, NULL), 0);
+    ASSERT(world_save(saved, path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(world_load(loaded, path));
+    int loaded_marker = -1;
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            loaded, false, &loaded_marker), 1);
+    ASSERT(loaded_marker >= 0);
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            loaded, true, NULL), 0);
+    contract_t tombstone =
+        loaded->contracts[loaded_marker];
+
+    /* Leave the tombstone as the only inactive slot, then advance ordinary
+     * demand generation. Generic posting must report "full" rather than
+     * recycle the one-shot marker. */
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (i == loaded_marker ||
+            loaded->contracts[i].active) {
+            continue;
+        }
+        loaded->contracts[i] = (contract_t){
+            .active = true,
+            .action = CONTRACT_DELIVERY,
+            .station_index = 0,
+            .commodity = COMMODITY_FRAME,
+            .quantity_needed = 1.0f,
+            .base_price = 1.0f,
+            .target_index = 1,
+            .claimed_by = -1,
+        };
+    }
+    loaded->player_only_mode = true;
+    world_sim_step(loaded, SIM_DT);
+    ASSERT(memcmp(&loaded->contracts[loaded_marker],
+                  &tombstone, sizeof(tombstone)) == 0);
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            loaded, false, NULL), 1);
+    ASSERT_EQ_INT(
+        test_starter_refit_marker_count(
+            loaded, true, NULL), 0);
+
+    remove(path);
+}
+
+TEST(test_cargo_pod_owner_survives_restart_and_slot_reuse) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
 
-    server_player_t *sp = &w->players[0];
-    player_init_ship(sp, w);
-    sp->id = 0;
-    sp->connected = true;
-    sp->session_ready = true;
-    memset(sp->session_token, 0x72, sizeof(sp->session_token));
-    sp->current_station = 0;
-    sp->ship->pos = v2(120.0f, -30.0f);
-    sp->ship->angle = 0.5f;
+    server_player_t *owner = &w->players[0];
+    player_init_ship(owner, w);
+    owner->id = 0;
+    owner->connected = true;
+    test_save_set_verified_identity(owner, 0x72);
+    owner->current_station = 0;
+    owner->ship->pos = v2(120.0f, -30.0f);
+    owner->ship->angle = 0.5f;
+    uint8_t owner_pubkey[32];
+    memcpy(owner_pubkey, owner->pubkey,
+           sizeof(owner_pubkey));
+
+    server_player_t *other = &w->players[1];
+    player_init_ship(other, w);
+    other->id = 1;
+    other->connected = true;
+    test_save_set_verified_identity(other, 0x33);
+    uint8_t other_pubkey[32];
+    memcpy(other_pubkey, other->pubkey,
+           sizeof(other_pubkey));
+
     cargo_unit_t frame_units[8] = {{0}};
     const uint8_t origin[8] = { 'S','A','V','E','P','O','D','1' };
     for (uint16_t i = 0; i < 8; i++) {
         ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_FRAME, i,
                                         &frame_units[i]));
     }
-    int pod_idx = spawn_cargo_pod_with_manifest(w, sp->ship->pos,
+    int pod_idx = spawn_cargo_pod_with_manifest(w, owner->ship->pos,
                                                 v2(0.0f, 0.0f),
                                                 COMMODITY_FRAME,
                                                 frame_units, 8,
                                                 CARGO_POD_CARGO);
     ASSERT(pod_idx >= 0);
     ASSERT(world_cargo_pod_set_player_tractor(w, pod_idx, 0));
+    actor_principal_t durable_owner =
+        w->cargo_pods[pod_idx].tow_owner_principal;
+    ASSERT_EQ_INT(
+        durable_owner.kind,
+        ACTOR_PRINCIPAL_PLAYER);
 
-    ASSERT(player_save(sp, test_tmp_dir(), 0));
+    ASSERT(player_save(owner, test_tmp_dir(), 0));
+    ASSERT(player_save(other, test_tmp_dir(), 1));
     ASSERT(world_save(w, TMP("test_towed_pods_world.sav")));
 
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     world_reset(loaded);
     ASSERT(world_load(loaded, TMP("test_towed_pods_world.sav")));
     ASSERT(loaded->cargo_pods[pod_idx].active);
-    ASSERT_EQ_INT(cargo_pod_player_tractor(&loaded->cargo_pods[pod_idx]), 0);
-    server_player_t *lp = &loaded->players[0];
-    lp->id = 0;
-    lp->connected = true;
-    lp->session_ready = true;
-    memset(lp->session_token, 0x72, sizeof(lp->session_token));
-    ASSERT(world_entity_ref_is_live(loaded, lp->ship_ref));
-    ASSERT(player_load_by_token(lp, loaded, test_tmp_dir(), sp->session_token));
+    ASSERT_EQ_INT(
+        cargo_pod_player_tractor(
+            &loaded->cargo_pods[pod_idx]), -1);
+    ASSERT(actor_principal_equal(
+        &loaded->cargo_pods[pod_idx].tow_owner_principal,
+        &durable_owner));
 
-    ASSERT_EQ_INT(lp->ship->towed_pod_count, 1);
-    int restored_idx = lp->ship->towed_pods[0];
+    /* A different verified actor takes the historical numeric slot and loads
+     * its own valid save. Reconcile must not import the old slot as custody. */
+    server_player_t *attacker =
+        &loaded->players[0];
+    player_init_ship(attacker, loaded);
+    attacker->id = 0;
+    attacker->connected = true;
+    test_save_set_verified_identity(
+        attacker, 0x33);
+    ASSERT(player_load_by_pubkey(
+        attacker, loaded, test_tmp_dir(),
+        other_pubkey));
+    ASSERT_EQ_INT(
+        attacker->ship->towed_pod_count, 0);
+    ASSERT_EQ_INT(
+        cargo_pod_player_tractor(
+            &loaded->cargo_pods[pod_idx]), -1);
+    ASSERT(!world_cargo_pod_set_player_tractor(
+        loaded, pod_idx, 0));
+
+    /* The genuine actor reconnects in a different runtime slot. Its principal
+     * resolves there and only then becomes a live tow projection. */
+    server_player_t *reconnected =
+        &loaded->players[1];
+    player_init_ship(reconnected, loaded);
+    reconnected->id = 1;
+    reconnected->connected = true;
+    test_save_set_verified_identity(
+        reconnected, 0x72);
+    ASSERT(player_load_by_pubkey(
+        reconnected, loaded, test_tmp_dir(),
+        owner_pubkey));
+
+    ASSERT_EQ_INT(
+        reconnected->ship->towed_pod_count, 1);
+    int restored_idx =
+        reconnected->ship->towed_pods[0];
     ASSERT_EQ_INT(restored_idx, pod_idx);
     ASSERT(loaded->cargo_pods[restored_idx].active);
     ASSERT_EQ_INT(cargo_pod_player_tractor(
                       &loaded->cargo_pods[restored_idx]),
-                  0);
+                  1);
+    ASSERT(actor_principal_equal(
+        &loaded->cargo_pods[restored_idx]
+             .tow_owner_principal,
+        &durable_owner));
     ASSERT_EQ_INT(loaded->cargo_pods[restored_idx].quantity, 8);
     ASSERT_EQ_INT(loaded->cargo_pods[restored_idx].manifest_count, 8);
     ASSERT(memcmp(loaded->cargo_pods[restored_idx].manifest_units[0].pub,
@@ -2224,9 +2645,268 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
     ASSERT(memcmp(loaded->cargo_pods[restored_idx].manifest_units[7].pub,
                   frame_units[7].pub, 32) == 0);
     ASSERT(v2_dist_sq(loaded->cargo_pods[restored_idx].pos,
-                      lp->ship->pos) < 120.0f * 120.0f);
+                      reconnected->ship->pos) <
+           120.0f * 120.0f);
 
     remove(TMP("test_towed_pods_world.sav"));
+}
+
+TEST(test_unattributed_cargo_tow_is_not_rebound_after_restart) {
+    const char *path =
+        TMP("test_unattributed_cargo_tow.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+    memset(saved->cargo_pods, 0,
+           sizeof(saved->cargo_pods));
+
+    server_player_t *anonymous =
+        &saved->players[0];
+    player_init_ship(anonymous, saved);
+    anonymous->id = 0;
+    anonymous->connected = true;
+    anonymous->session_ready = true;
+
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"ANONTOW1",
+        COMMODITY_FRAME, 0, &unit));
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        saved, anonymous->ship->pos,
+        v2(0.0f, 0.0f), COMMODITY_FRAME,
+        &unit, 1, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    ASSERT(world_cargo_pod_set_player_tractor(
+        saved, pod_idx, 0));
+    ASSERT_EQ_INT(
+        saved->cargo_pods[pod_idx]
+            .tow_owner_principal.kind,
+        ACTOR_PRINCIPAL_UNATTRIBUTED);
+    ASSERT(world_save(saved, path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(world_load(loaded, path));
+    cargo_pod_t *pod =
+        &loaded->cargo_pods[pod_idx];
+    ASSERT(pod->active);
+    ASSERT_EQ_INT(
+        pod->tow_owner_principal.kind,
+        ACTOR_PRINCIPAL_UNATTRIBUTED);
+    ASSERT_EQ_INT(
+        cargo_pod_player_tractor(pod), -1);
+
+    /*
+     * The anonymous marker is preserved for audit, but without durable proof
+     * it cannot project into a new session or be converted into module
+     * custody. Explicit release remains the only way to make it loose again.
+     */
+    server_player_t *later =
+        &loaded->players[0];
+    player_init_ship(later, loaded);
+    later->id = 0;
+    later->connected = true;
+    later->session_ready = true;
+    cargo_pod_t before = *pod;
+    ASSERT(!world_cargo_pod_set_player_tractor(
+        loaded, pod_idx, 0));
+    ASSERT(!world_cargo_pod_set_module_tractor(
+        loaded, pod_idx, 0, 0));
+    ASSERT(memcmp(pod, &before, sizeof(before)) == 0);
+
+    world_cargo_pod_clear_tractor(
+        loaded, pod_idx);
+    ASSERT_EQ_INT(
+        pod->tow_owner_principal.kind,
+        ACTOR_PRINCIPAL_NONE);
+
+    remove(path);
+}
+
+TEST(test_v81_writer_rejects_offline_stable_cargo_owner) {
+    const char *path =
+        TMP("test_v81_offline_cargo_owner.sav");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    memset(w->cargo_pods, 0,
+           sizeof(w->cargo_pods));
+
+    server_player_t *owner = &w->players[0];
+    player_init_ship(owner, w);
+    owner->id = 0;
+    owner->connected = true;
+    test_save_set_verified_identity(owner, 0x65);
+
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"V81OFFLN",
+        COMMODITY_FRAME, 0, &unit));
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        w, owner->ship->pos, v2(0.0f, 0.0f),
+        COMMODITY_FRAME, &unit, 1,
+        CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    ASSERT(world_cargo_pod_set_player_tractor(
+        w, pod_idx, 0));
+    ASSERT_EQ_INT(
+        w->cargo_pods[pod_idx]
+            .tow_owner_principal.kind,
+        ACTOR_PRINCIPAL_PLAYER);
+
+    /* Projection teardown leaves a valid v82 owner that v81 cannot encode. */
+    world_player_ship_slot_release(w, 0);
+    ASSERT_EQ_INT(
+        cargo_pod_player_tractor(
+            &w->cargo_pods[pod_idx]), -1);
+    ASSERT(!world_save_legacy_v81_for_test(
+        w, path));
+
+    remove(path);
+}
+
+TEST(test_v81_module_cargo_tow_remains_representable) {
+    const char *path =
+        TMP("test_v81_module_cargo_tow.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+    memset(saved->cargo_pods, 0,
+           sizeof(saved->cargo_pods));
+
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"V81MODUL",
+        COMMODITY_FRAME, 0, &unit));
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        saved, v2(12.0f, 14.0f),
+        v2(0.0f, 0.0f), COMMODITY_FRAME,
+        &unit, 1, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    ASSERT(world_cargo_pod_set_module_tractor(
+        saved, pod_idx, 0, 0));
+    ASSERT(world_save_legacy_v81_for_test(
+        saved, path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(world_load(loaded, path));
+    cargo_pod_t *pod =
+        &loaded->cargo_pods[pod_idx];
+    int station_idx = -1;
+    int module_idx = -1;
+    ASSERT(cargo_pod_module_tractor_indices(
+        pod, &station_idx, &module_idx));
+    ASSERT_EQ_INT(station_idx, 0);
+    ASSERT_EQ_INT(module_idx, 0);
+    ASSERT_EQ_INT(
+        pod->tow_owner_principal.kind,
+        ACTOR_PRINCIPAL_NONE);
+    ASSERT_EQ_INT(
+        (int)pod->tow_owner_quarantine_record_id,
+        0);
+
+    remove(path);
+}
+
+TEST(test_v81_cargo_pod_player_slot_migrates_to_bound_quarantine) {
+    const char *path =
+        TMP("test_v81_cargo_tow_quarantine.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+    memset(saved->cargo_pods, 0,
+           sizeof(saved->cargo_pods));
+
+    server_player_t *owner =
+        &saved->players[0];
+    player_init_ship(owner, saved);
+    owner->id = 0;
+    owner->connected = true;
+    test_save_set_verified_identity(owner, 0x5a);
+
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"V81TOW01",
+        COMMODITY_FRAME, 0, &unit));
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        saved, v2(41.0f, -17.0f),
+        v2(2.0f, 3.0f), COMMODITY_FRAME,
+        &unit, 1, CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+    ASSERT(world_cargo_pod_set_player_tractor(
+        saved, pod_idx, 0));
+    cargo_pod_set_tow_hardpoint(
+        &saved->cargo_pods[pod_idx], 3);
+    cargo_pod_set_station_custody(
+        &saved->cargo_pods[pod_idx], 1);
+    ASSERT(world_save_legacy_v81_for_test(
+        saved, path));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(world_load(loaded, path));
+    cargo_pod_t *pod =
+        &loaded->cargo_pods[pod_idx];
+    ASSERT(pod->active);
+    ASSERT_EQ_INT(
+        pod->tow_owner_principal.kind,
+        ACTOR_PRINCIPAL_NONE);
+    ASSERT(pod->tow_owner_quarantine_record_id != 0);
+    ASSERT_EQ_INT(
+        cargo_pod_player_tractor(pod), -1);
+    ASSERT_EQ_INT(
+        cargo_pod_tow_hardpoint(pod), 3);
+    ASSERT_EQ_INT(
+        cargo_pod_custody_station(pod), 1);
+    ASSERT_EQ_INT(pod->manifest_count, 1);
+    ASSERT(memcmp(
+        pod->manifest_units[0].pub,
+        unit.pub, sizeof(unit.pub)) == 0);
+
+    const ownership_quarantine_entry_t *row =
+        NULL;
+    for (uint16_t i = 0;
+         i < loaded->ownership_quarantine.count;
+         i++) {
+        if (loaded->ownership_quarantine
+                .entries[i].record_id ==
+            pod->tow_owner_quarantine_record_id) {
+            row = &loaded->ownership_quarantine
+                       .entries[i];
+            break;
+        }
+    }
+    ASSERT(row != NULL);
+    ASSERT_EQ_INT(
+        row->source_kind,
+        OWNERSHIP_QUARANTINE_SOURCE_CARGO_POD_TRACTOR);
+    ASSERT_EQ_INT(
+        row->reason,
+        OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN);
+    ASSERT_EQ_INT(
+        row->station_index,
+        OWNERSHIP_QUARANTINE_NA);
+    ASSERT_EQ_INT(row->row_index, pod_idx);
+    ASSERT_EQ_INT(row->legacy_actor_code, 0);
+
+    server_player_t *future =
+        &loaded->players[0];
+    player_init_ship(future, loaded);
+    future->id = 0;
+    future->connected = true;
+    test_save_set_verified_identity(future, 0x7c);
+    cargo_pod_t before = *pod;
+    ASSERT(!world_cargo_pod_set_player_tractor(
+        loaded, pod_idx, 0));
+    ASSERT(!world_cargo_pod_set_module_tractor(
+        loaded, pod_idx, 0, 0));
+    ASSERT(memcmp(pod, &before, sizeof(before)) == 0);
+
+    remove(path);
 }
 
 /*
@@ -2329,10 +3009,19 @@ TEST(test_player_load_restores_towed_cargo_pods_from_world) {
              * registry, across MAX_STATIONS=128.
              * v78: +10 bytes for the ownership-quarantine stable-ID
              * high-water mark and empty row count.
-             * v79: canonical station/build/asset principals, sparse birth
-             * choreography, exact quarantine-record bindings, and
-             * recomputable durable birth proof fields. */
-			#define EXPECTED_SAVE_SIZE 839086
+	             * v79: canonical station/build/asset principals, sparse birth
+	             * choreography, exact quarantine-record bindings, and
+	             * recomputable durable birth proof fields.
+             * v80: each active cargo pod appends a 44-byte aggregate
+             * station-custody charge anchor. Fresh worlds have two starter
+             * pods, so +88 bytes.
+             * v81: 24 contract claimant and 24 delivery debtor slot
+             * bytes become explicit 33-byte principals plus 8-byte
+             * quarantine bindings (+1,920 bytes).
+             * v82: each active cargo pod replaces its 1-byte player slot
+             * with a 33-byte principal plus 8-byte quarantine binding.
+             * Fresh worlds have two starter pods, so +80 bytes. */
+#define EXPECTED_SAVE_SIZE 841174
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -2369,7 +3058,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 79);
+    ASSERT_EQ_INT((int)version, 82);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -2985,8 +3674,8 @@ TEST(test_save_load_preserves_player_outpost) {
     remove(TMP("test_outpost.sav"));
 }
 
-TEST(test_relabelled_v79_stream_is_rejected_as_legacy) {
-    const char *path = TMP("test_relabelled_v79.sav");
+TEST(test_relabelled_v82_stream_is_rejected_as_v81) {
+    const char *path = TMP("test_relabelled_v82.sav");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
@@ -2994,7 +3683,7 @@ TEST(test_relabelled_v79_stream_is_rejected_as_legacy) {
 
     FILE *f = fopen(path, "r+b");
     ASSERT(f != NULL);
-    uint32_t legacy_version = 78;
+    uint32_t legacy_version = 81;
     ASSERT(fseek(f, 4, SEEK_SET) == 0);
     ASSERT_EQ_INT(
         (int)fwrite(
@@ -3004,9 +3693,9 @@ TEST(test_relabelled_v79_stream_is_rejected_as_legacy) {
     ASSERT(test_rewrite_crc32_trailer(path));
 
     /*
-     * Station, pending-build, birth-sidecar, and asset layouts all changed in
-     * v79. Merely relabeling a current stream must fail closed; compatibility
-     * coverage requires bytes emitted by the actual legacy writer.
+     * Cargo-pod ownership records grew in v82. Merely relabeling a current
+     * stream as v81 must fail closed; compatibility coverage requires bytes
+     * by the actual legacy writer.
      */
     ASSERT(test_world_load_rejected_file(path));
     remove(path);
@@ -3041,6 +3730,313 @@ TEST(test_save_future_version_rejected) {
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
     remove(TMP("test_future.sav"));
+}
+
+TEST(test_world_load_result_vocabulary_and_bounds) {
+    ASSERT_STR_EQ(
+        world_load_result_name(WORLD_LOAD_RESULT_OK), "ok");
+    ASSERT_STR_EQ(
+        world_load_result_name(
+            WORLD_LOAD_RESULT_INVALID_ARGUMENT),
+        "invalid-argument");
+    ASSERT_STR_EQ(
+        world_load_result_name(WORLD_LOAD_RESULT_IO), "io");
+    ASSERT_STR_EQ(
+        world_load_result_name(WORLD_LOAD_RESULT_TOO_LARGE),
+        "too-large");
+    ASSERT_STR_EQ(
+        world_load_result_name(WORLD_LOAD_RESULT_TRUNCATED),
+        "truncated");
+    ASSERT_STR_EQ(
+        world_load_result_name(WORLD_LOAD_RESULT_CHECKSUM),
+        "checksum");
+    ASSERT_STR_EQ(
+        world_load_result_name(
+            WORLD_LOAD_RESULT_UNSUPPORTED_VERSION),
+        "unsupported-version");
+    ASSERT_STR_EQ(
+        world_load_result_name(WORLD_LOAD_RESULT_MALFORMED),
+        "malformed");
+    ASSERT_STR_EQ(
+        world_load_result_name(
+            WORLD_LOAD_RESULT_TRAILING_DATA),
+        "trailing-data");
+    ASSERT_STR_EQ(
+        world_load_result_name(
+            WORLD_LOAD_RESULT_OUT_OF_MEMORY),
+        "out-of-memory");
+    ASSERT_STR_EQ(
+        world_load_result_name((world_load_result_t)999),
+        "unknown");
+
+    WORLD_HEAP destination = calloc(1, sizeof(*destination));
+    ASSERT(destination != NULL);
+    uint8_t byte = 0;
+    ASSERT(
+        world_load_bytes(NULL, NULL, 0) ==
+        WORLD_LOAD_RESULT_INVALID_ARGUMENT);
+    ASSERT(
+        world_load_bytes(destination, NULL, 1) ==
+        WORLD_LOAD_RESULT_INVALID_ARGUMENT);
+    ASSERT(
+        world_load_bytes(destination, NULL, 0) ==
+        WORLD_LOAD_RESULT_TRUNCATED);
+    ASSERT(
+        world_load_path(destination, "") ==
+        WORLD_LOAD_RESULT_INVALID_ARGUMENT);
+    ASSERT(
+        world_load_path(
+            destination,
+            TMP("world_load_result_missing.sav")) ==
+        WORLD_LOAD_RESULT_IO);
+    ASSERT(WORLD_SAVE_MAX_BYTES > UINT64_C(841174));
+    if (WORLD_SAVE_MAX_BYTES < (uint64_t)SIZE_MAX) {
+        size_t oversized =
+            (size_t)(WORLD_SAVE_MAX_BYTES + UINT64_C(1));
+        ASSERT(
+            world_load_bytes(destination, &byte, oversized) ==
+            WORLD_LOAD_RESULT_TOO_LARGE);
+    }
+}
+
+TEST(test_world_load_bytes_matches_path_and_rejects_transactionally) {
+    const char *path = TMP("test_world_load_bytes.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(*saved));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+
+    /*
+     * Keep station zero's dynamic section to one identifiable row. This
+     * makes the malformed-count case below target the count immediately
+     * before the marker without depending on unrelated save offsets.
+     */
+    station_t *station = &saved->stations[0];
+    ship_receipts_t *station_receipts =
+        station_get_receipts(station);
+    ASSERT(station_receipts != NULL);
+    manifest_clear(&station->manifest);
+    ship_receipts_clear(station_receipts);
+    const uint8_t marker_origin[8] = {
+        'W', 'L', 'B', 'Y', 'T', 'E', 'S', '1',
+    };
+    cargo_unit_t marker = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        marker_origin, COMMODITY_FRAME, 7, &marker));
+    ASSERT(station_manifest_push_with_chain(
+        station, &marker, NULL));
+    ASSERT(world_save(saved, path));
+
+    size_t valid_size = 0;
+    uint8_t *valid = test_read_file_bytes(path, &valid_size);
+    ASSERT(valid != NULL);
+    ASSERT(valid_size > 16u);
+    ASSERT((uint64_t)valid_size <= WORLD_SAVE_MAX_BYTES);
+
+    WORLD_HEAP path_loaded = calloc(1, sizeof(*path_loaded));
+    WORLD_HEAP bytes_loaded = calloc(1, sizeof(*bytes_loaded));
+    ASSERT(path_loaded != NULL);
+    ASSERT(bytes_loaded != NULL);
+    world_reset(path_loaded);
+    world_reset(bytes_loaded);
+    ASSERT(
+        world_load_path(path_loaded, path) ==
+        WORLD_LOAD_RESULT_OK);
+    ASSERT(
+        world_load_bytes(bytes_loaded, valid, valid_size) ==
+        WORLD_LOAD_RESULT_OK);
+    uint8_t path_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    uint8_t bytes_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    signal_authoritative_state_digest(path_loaded, path_digest);
+    signal_authoritative_state_digest(bytes_loaded, bytes_digest);
+    ASSERT(memcmp(path_digest, bytes_digest,
+                  sizeof(path_digest)) == 0);
+
+    WORLD_HEAP destination = calloc(1, sizeof(*destination));
+    ASSERT(destination != NULL);
+    world_reset(destination);
+    destination->rng = UINT32_C(0xdeadbeef);
+    destination->world_seq = UINT32_C(0x11223344);
+    snprintf(destination->stations[0].name,
+             sizeof(destination->stations[0].name),
+             "byte-api transaction sentinel");
+    ASSERT(test_set_station_finished_units(
+        &destination->stations[0], COMMODITY_FRAME, 1));
+    uint8_t *inline_snapshot = malloc(sizeof(*destination));
+    ASSERT(inline_snapshot != NULL);
+    memcpy(inline_snapshot, destination, sizeof(*destination));
+    uint8_t before_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    signal_authoritative_state_digest(
+        destination, before_digest);
+
+    ASSERT(test_world_load_bytes_rejection_is_transactional(
+        destination, valid, valid_size - 8u,
+        WORLD_LOAD_RESULT_TRUNCATED,
+        inline_snapshot, before_digest));
+
+    uint8_t *bad_checksum = malloc(valid_size);
+    ASSERT(bad_checksum != NULL);
+    memcpy(bad_checksum, valid, valid_size);
+    bad_checksum[12] ^= UINT8_C(0x5a);
+    ASSERT(test_world_load_bytes_rejection_is_transactional(
+        destination, bad_checksum, valid_size,
+        WORLD_LOAD_RESULT_CHECKSUM,
+        inline_snapshot, before_digest));
+    ASSERT(test_write_file_bytes(
+        path, bad_checksum, valid_size));
+    ASSERT(test_world_load_path_rejection_is_transactional(
+        destination, path,
+        WORLD_LOAD_RESULT_CHECKSUM,
+        inline_snapshot, before_digest));
+
+    uint8_t *bad_magic = malloc(valid_size);
+    ASSERT(bad_magic != NULL);
+    memcpy(bad_magic, valid, valid_size);
+    uint32_t wrong_magic = UINT32_C(0x42414421);
+    memcpy(bad_magic, &wrong_magic, sizeof(wrong_magic));
+    ASSERT(test_rewrite_world_buffer_crc(
+        bad_magic, valid_size));
+    ASSERT(test_world_load_bytes_rejection_is_transactional(
+        destination, bad_magic, valid_size,
+        WORLD_LOAD_RESULT_MALFORMED,
+        inline_snapshot, before_digest));
+    ASSERT(test_write_file_bytes(
+        path, bad_magic, valid_size));
+    ASSERT(test_world_load_path_rejection_is_transactional(
+        destination, path,
+        WORLD_LOAD_RESULT_MALFORMED,
+        inline_snapshot, before_digest));
+
+    uint8_t *future_version = malloc(valid_size);
+    ASSERT(future_version != NULL);
+    memcpy(future_version, valid, valid_size);
+    uint32_t future = UINT32_C(9999);
+    memcpy(future_version + 4, &future, sizeof(future));
+    ASSERT(test_rewrite_world_buffer_crc(
+        future_version, valid_size));
+    ASSERT(test_world_load_bytes_rejection_is_transactional(
+        destination, future_version, valid_size,
+        WORLD_LOAD_RESULT_UNSUPPORTED_VERSION,
+        inline_snapshot, before_digest));
+
+    uint8_t *trailing = malloc(valid_size + 1u);
+    ASSERT(trailing != NULL);
+    memcpy(trailing, valid, valid_size - 8u);
+    trailing[valid_size - 8u] = UINT8_C(0xa5);
+    memcpy(trailing + valid_size - 7u,
+           valid + valid_size - 8u, 8u);
+    ASSERT(test_rewrite_world_buffer_crc(
+        trailing, valid_size + 1u));
+    ASSERT(test_world_load_bytes_rejection_is_transactional(
+        destination, trailing, valid_size + 1u,
+        WORLD_LOAD_RESULT_TRAILING_DATA,
+        inline_snapshot, before_digest));
+
+    size_t marker_pub_offset = SIZE_MAX;
+    for (size_t i = 0;
+         i + sizeof(marker.pub) <= valid_size;
+         i++) {
+        if (memcmp(valid + i, marker.pub,
+                   sizeof(marker.pub)) == 0) {
+            marker_pub_offset = i;
+            break;
+        }
+    }
+    ASSERT(marker_pub_offset >=
+           offsetof(cargo_unit_t, pub) + sizeof(uint16_t));
+    size_t manifest_count_offset =
+        marker_pub_offset -
+        offsetof(cargo_unit_t, pub) -
+        sizeof(uint16_t);
+    uint8_t *bad_manifest_count = malloc(valid_size);
+    ASSERT(bad_manifest_count != NULL);
+    memcpy(bad_manifest_count, valid, valid_size);
+    uint16_t impossible_count = UINT16_MAX;
+    memcpy(bad_manifest_count + manifest_count_offset,
+           &impossible_count, sizeof(impossible_count));
+    ASSERT(test_rewrite_world_buffer_crc(
+        bad_manifest_count, valid_size));
+    ASSERT(test_world_load_bytes_rejection_is_transactional(
+        destination, bad_manifest_count, valid_size,
+        WORLD_LOAD_RESULT_MALFORMED,
+        inline_snapshot, before_digest));
+
+    free(bad_manifest_count);
+    free(trailing);
+    free(future_version);
+    free(bad_magic);
+    free(bad_checksum);
+    free(inline_snapshot);
+    free(valid);
+    remove(path);
+}
+
+TEST(test_world_load_bytes_matches_path_for_supported_v81) {
+    const char *path = TMP("test_world_load_bytes_v81.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(*saved));
+    ASSERT(saved != NULL);
+    world_reset(saved);
+    saved->rng = UINT32_C(0x81b17e5);
+    ASSERT(world_save_legacy_v81_for_test(saved, path));
+
+    size_t size = 0;
+    uint8_t *bytes = test_read_file_bytes(path, &size);
+    ASSERT(bytes != NULL);
+
+    WORLD_HEAP path_loaded = calloc(1, sizeof(*path_loaded));
+    WORLD_HEAP bytes_loaded = calloc(1, sizeof(*bytes_loaded));
+    ASSERT(path_loaded != NULL);
+    ASSERT(bytes_loaded != NULL);
+    world_reset(path_loaded);
+    world_reset(bytes_loaded);
+    ASSERT(
+        world_load_path(path_loaded, path) ==
+        WORLD_LOAD_RESULT_OK);
+    ASSERT(
+        world_load_bytes(bytes_loaded, bytes, size) ==
+        WORLD_LOAD_RESULT_OK);
+
+    uint8_t path_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    uint8_t bytes_digest[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    signal_authoritative_state_digest(path_loaded, path_digest);
+    signal_authoritative_state_digest(bytes_loaded, bytes_digest);
+    ASSERT(memcmp(path_digest, bytes_digest,
+                  sizeof(path_digest)) == 0);
+
+    free(bytes);
+    remove(path);
+}
+
+TEST(test_world_save_enforces_ship_manifest_bound) {
+    const char *path = TMP("test_ship_manifest_bound.sav");
+    WORLD_HEAP w = calloc(1, sizeof(*w));
+    ASSERT(w != NULL);
+    world_reset(w);
+    int npc_slot = spawn_npc(w, 0, NPC_ROLE_HAULER);
+    ASSERT(npc_slot >= 0);
+    ship_t *ship = world_npc_ship_for(w, npc_slot);
+    ASSERT(ship != NULL);
+    ASSERT(manifest_reserve(
+        &ship->manifest,
+        (uint16_t)(WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS + 1u)));
+    memset(
+        ship->manifest.units, 0,
+        (WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS + 1u) *
+            sizeof(*ship->manifest.units));
+
+    ship->manifest.count =
+        (uint16_t)WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS;
+    ASSERT(world_save(w, path));
+    WORLD_HEAP loaded = calloc(1, sizeof(*loaded));
+    ASSERT(loaded != NULL);
+    world_reset(loaded);
+    ASSERT(
+        world_load_path(loaded, path) ==
+        WORLD_LOAD_RESULT_OK);
+
+    ship->manifest.count =
+        (uint16_t)(WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS + 1u);
+    ASSERT(!world_save(w, path));
+    remove(path);
 }
 
 TEST(test_world_load_bad_crc_rejects_before_mutating_destination) {
@@ -3221,7 +4217,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_repairs_stale_npc_ship_asset_binding);
     RUN(test_player_save_uses_temp_then_atomic_rename);
     RUN(test_world_save_round_trips_station_manifest);
-    RUN(test_validated_world_load_anchors_legacy_station_cargo_once);
+    RUN(test_resumed_world_load_reports_legacy_cargo_without_reattestation);
     RUN(test_world_load_ignores_cache_only_station_finished_goods);
     RUN(test_player_load_clamps_negative_credits);
     RUN(test_player_save_round_trips_ship_manifest);
@@ -3232,6 +4228,9 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_clamps_upgrade_levels);
     RUN(test_player_load_invalid_station_falls_back);
     RUN(test_player_load_repairs_degenerate_dock_berth);
+    RUN(test_world_load_bytes_matches_path_and_rejects_transactionally);
+    RUN(test_world_load_bytes_matches_path_for_supported_v81);
+    RUN(test_world_save_enforces_ship_manifest_bound);
     RUN(test_world_load_bad_crc_rejects_before_mutating_destination);
     RUN(test_world_load_missing_crc_rejects_before_mutating_destination);
     RUN(test_world_load_crc_valid_semantic_failure_is_transactional);
@@ -3247,11 +4246,19 @@ void register_save_persistence_tests(void) {
     RUN(test_world_save_load_preserves_smelted_ingot_pod);
     RUN(test_world_save_load_preserves_hauler_manifest_cargo);
     RUN(test_world_save_load_preserves_delivery_shipments);
+    RUN(test_world_save_load_preserves_cargo_pod_charge_anchor);
     RUN(test_world_load_v70_backfills_missing_starter_frame_pods);
     RUN(test_world_load_current_does_not_duplicate_starter_frame_pods);
     RUN(test_world_load_v71_backfills_missing_starter_laser_modules);
     RUN(test_world_load_v71_does_not_duplicate_starter_laser_modules);
-    RUN(test_player_load_restores_towed_cargo_pods_from_world);
+    RUN(test_world_load_current_backfills_missing_starter_refit_order);
+    RUN(test_world_load_v80_backfills_missing_starter_refit_order);
+    RUN(test_consumed_starter_refit_tombstone_survives_reload_and_posting);
+    RUN(test_cargo_pod_owner_survives_restart_and_slot_reuse);
+    RUN(test_unattributed_cargo_tow_is_not_rebound_after_restart);
+    RUN(test_v81_writer_rejects_offline_stable_cargo_owner);
+    RUN(test_v81_module_cargo_tow_remains_representable);
+    RUN(test_v81_cargo_pod_player_slot_migrates_to_bound_quarantine);
     RUN(test_contract_target_pub_roundtrips);
     RUN(test_world_save_load_preserves_ownership_quarantine);
     RUN(test_v79_quarantine_bindings_survive_queue_compaction_and_roundtrip);
@@ -3268,8 +4275,9 @@ void register_save_format_tests(void) {
     RUN(test_save_file_size_stable);
     RUN(test_save_header_golden_bytes);
     RUN(test_save_load_preserves_player_outpost);
-    RUN(test_relabelled_v79_stream_is_rejected_as_legacy);
+    RUN(test_relabelled_v82_stream_is_rejected_as_v81);
     RUN(test_world_load_rejects_malformed_ownership_quarantine);
     RUN(test_save_v21_module_remap);
     RUN(test_save_future_version_rejected);
+    RUN(test_world_load_result_vocabulary_and_bounds);
 }

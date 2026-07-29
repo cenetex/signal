@@ -407,6 +407,13 @@ TEST(test_cross_station_single_hop_receipt) {
     cargo_receipt_origin_proof_t proof;
     ASSERT_EQ_INT(
         cargo_receipt_resolve_local_origin(helios, cargo_pk, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_ALREADY_TRANSFERRED);
+    ASSERT(memcmp(&proof, &(cargo_receipt_origin_proof_t){0},
+                  sizeof(proof)) == 0);
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_origin_for_authority_pinned(
+            helios, r.authoring_station, cargo_pk,
+            r.prev_receipt_hash, &proof),
         CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
     cargo_receipt_trust_result_t trust = cargo_receipt_trust_verify(
         &r, 1, cargo_pk, &proof,
@@ -608,6 +615,27 @@ TEST(test_receipt_trust_distinguishes_origin_proof_failures) {
         CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
     ASSERT_EQ_INT(result.status, CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO);
     ASSERT(memcmp(&proof, &wrong_cargo_before, sizeof(proof)) == 0);
+
+    proof = valid;
+    proof.output_semantics_version =
+        CARGO_RECEIPT_ORIGIN_SEMANTICS_UNBOUND;
+    const cargo_receipt_origin_proof_t unbound_metadata_before = proof;
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_ORIGIN_METADATA);
+    ASSERT(memcmp(&proof, &unbound_metadata_before, sizeof(proof)) == 0);
+
+    proof = valid;
+    proof.output_cargo.pub[3] ^= 0x10u;
+    const cargo_receipt_origin_proof_t wrong_metadata_cargo_before = proof;
+    result = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pk, &proof,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
+    ASSERT_EQ_INT(result.status,
+                  CARGO_RECEIPT_TRUST_REJECT_ORIGIN_METADATA);
+    ASSERT(memcmp(&proof, &wrong_metadata_cargo_before, sizeof(proof)) == 0);
 
     proof = valid;
     proof.event_hash[1] ^= 0x40u;
@@ -2319,6 +2347,8 @@ TEST(test_local_origin_resolver_status_names_cover_contract) {
             "transform_not_found",
         [CARGO_RECEIPT_ORIGIN_RESOLVE_TRANSFORM_AMBIGUOUS] =
             "transform_ambiguous",
+        [CARGO_RECEIPT_ORIGIN_RESOLVE_ALREADY_TRANSFERRED] =
+            "already_transferred",
     };
     for (int i = 0; i < CARGO_RECEIPT_ORIGIN_RESOLVE_STATUS_COUNT; i++) {
         ASSERT_STR_EQ(cargo_receipt_origin_resolve_status_name(
@@ -3226,15 +3256,17 @@ TEST(test_present_receipt_chain_rejects_existing_mismatch) {
     cargo_receipt_t original;
     cargo_receipt_t alternate;
     ASSERT(crs_first_hop(w, &w->stations[2], player_pk, cargo_pk, &original));
-    /* Mint a second valid transfer receipt from the same unique origin.
-     * Re-running crs_first_hop would append a second SMELT for the same
-     * cargo_pub, which is correctly rejected as an ambiguous origin. */
-    cargo_receipt_chain_t empty_chain = {0};
+    /*
+     * Canonical production now rejects a second empty-chain transfer for the
+     * same durable identity. Exercise the defensive mismatch guard with a
+     * deliberately off-log but correctly signed alternate first hop instead.
+     */
     cargo_unit_t unit =
         crs_test_ingot_at(cargo_pk, 2);
-    ASSERT(cargo_receipt_emit_transfer(
-        w, &w->stations[2], w->stations[2].station_pubkey, player_pk,
-        &unit, &empty_chain, &alternate) != 0);
+    ASSERT(cargo_receipt_issue(
+        &w->stations[2], original.epoch + 1u,
+        original.event_id + 1u, unit.pub, player_pk,
+        original.prev_receipt_hash, &alternate));
     ASSERT(memcmp(&original, &alternate, sizeof(original)) != 0);
 
     cargo_receipt_chain_t existing = {0};
@@ -3299,6 +3331,36 @@ TEST(test_handoff_ticket_roundtrip_verifies_ship_and_cargo) {
     crs_teardown();
 }
 
+TEST(test_handoff_ticket_issue_key_mismatch_fails_closed) {
+    crs_setup("handoff_key_mismatch");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL); crs_world_init(w, 0xD00E);
+
+    uint8_t player_pk[32]; fill_test_pubkey(player_pk, 0xB4);
+    SHIP_DECL(ship);
+    handoff_ticket_t ticket;
+    handoff_ticket_t zero = {0};
+
+    memset(&ticket, 0xA5, sizeof(ticket));
+    ASSERT(!handoff_ticket_issue_for_ship(
+        w->stations[2].station_pubkey,
+        w->stations[1].station_secret,
+        w->stations[1].station_pubkey,
+        player_pk,
+        2u, 1u, 100u, 160u, &ship, &ticket));
+    ASSERT(memcmp(&ticket, &zero, sizeof(ticket)) == 0);
+
+    memset(&ticket, 0xA5, sizeof(ticket));
+    ASSERT(!handoff_ticket_issue_for_ship(
+        NULL,
+        w->stations[2].station_secret,
+        w->stations[1].station_pubkey,
+        player_pk,
+        2u, 1u, 100u, 160u, &ship, &ticket));
+    ASSERT(memcmp(&ticket, &zero, sizeof(ticket)) == 0);
+
+    crs_teardown();
+}
+
 /* ---------------- Test 15: handoff binds ship state ---------------- */
 
 TEST(test_handoff_ticket_rejects_tampered_ship_state) {
@@ -3354,7 +3416,9 @@ TEST(test_handoff_ticket_rejects_tampered_cargo_root) {
 
     ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
     ASSERT(rcpts != NULL);
-    rcpts->chains[0].links[0].signature[0] ^= 0x01u;
+    cargo_receipt_chain_t tampered = rcpts->chains[0];
+    tampered.links[0].signature[0] ^= 0x01u;
+    ASSERT(ship_receipts_set_chain(rcpts, 0, &tampered));
     ASSERT(handoff_ticket_verify_for_ship(
         &ticket, 120u,
         w->stations[2].station_pubkey,
@@ -3731,6 +3795,7 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_present_receipt_chain_rejects_wrong_recipient);
     RUN(test_present_receipt_chain_rejects_existing_mismatch);
     RUN(test_handoff_ticket_roundtrip_verifies_ship_and_cargo);
+    RUN(test_handoff_ticket_issue_key_mismatch_fails_closed);
     RUN(test_handoff_ticket_rejects_tampered_ship_state);
     RUN(test_handoff_ticket_rejects_tampered_cargo_root);
     RUN(test_handoff_ticket_rejects_expired_wrong_dest_and_forgery);

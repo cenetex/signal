@@ -9,6 +9,7 @@
 #include "test_harness.h"
 
 #include "chain_log.h"
+#include "cargo_legacy_inventory.h"
 #include "cargo_receipt_trust.h"
 #include "station_authority.h"
 #include "sim_asteroid.h"
@@ -965,6 +966,66 @@ TEST(test_world_load_blocks_chain_appends_after_missing_tail) {
     chain_test_teardown();
 }
 
+TEST(test_world_load_blocks_chain_appends_when_verified_tail_is_ahead) {
+    chain_test_setup("load_ahead_blocks");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9019u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    uint8_t committed_payload[] = "committed";
+    ASSERT(chain_log_emit(
+               w, station, CHAIN_EVT_LEDGER,
+               committed_payload, sizeof(committed_payload)) == 1);
+    uint64_t saved_count = station->chain_event_count;
+    uint8_t saved_last[32];
+    memcpy(saved_last, station->chain_last_hash, sizeof(saved_last));
+    ASSERT(world_save(w, TMP("clog_ahead_tail.sav")));
+
+    /*
+     * Model a process death after a second event became durable but before
+     * its gameplay mutation and the next world generation were published.
+     * The selected snapshot therefore knows only event 1 while the intact
+     * on-disk chain verifies through event 2.
+     */
+    uint8_t unapplied_payload[] = "durable-but-unapplied";
+    ASSERT(chain_log_emit(
+               w, station, CHAIN_EVT_LEDGER,
+               unapplied_payload, sizeof(unapplied_payload)) == 2);
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, TMP("clog_ahead_tail.sav")));
+    station_t *recovered = &loaded->stations[0];
+    ASSERT(recovered->chain_event_count == saved_count);
+    ASSERT(memcmp(recovered->chain_last_hash,
+                  saved_last, sizeof(saved_last)) == 0);
+    ASSERT_EQ_INT((int)recovered->chain_health_status,
+                  (int)CHAIN_HEALTH_MISMATCH);
+    ASSERT(recovered->chain_append_blocked);
+    ASSERT(recovered->chain_verified_event_count == 2);
+    ASSERT(strstr(recovered->chain_health_message,
+                  "verified tail ahead of snapshot") != NULL);
+    ASSERT(strstr(recovered->chain_health_message,
+                  "mutation not replayed") != NULL);
+
+    uint64_t rejected = chain_log_emit(
+        loaded, recovered, CHAIN_EVT_LEDGER,
+        unapplied_payload, sizeof(unapplied_payload));
+    ASSERT(rejected == 0);
+    ASSERT(recovered->chain_event_count == saved_count);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(recovered, &walked, NULL));
+    ASSERT(walked == 2);
+    remove(TMP("clog_ahead_tail.sav"));
+    chain_test_teardown();
+}
+
 TEST(test_chain_log_cross_station_independent) {
     chain_test_setup("cross");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1575,6 +1636,101 @@ TEST(test_chain_log_cargo_transform_reader) {
     chain_test_teardown();
 }
 
+typedef struct {
+    int count;
+    chain_cargo_transform_t transform;
+} chain_snapshot_visit_capture_t;
+
+static bool chain_snapshot_capture_transform(
+    const chain_cargo_transform_t *transform,
+    void *user) {
+    chain_snapshot_visit_capture_t *capture =
+        (chain_snapshot_visit_capture_t *)user;
+    if (!transform || !capture) return false;
+    capture->count++;
+    capture->transform = *transform;
+    return true;
+}
+
+TEST(test_chain_log_evidence_snapshot_freezes_verified_visit_bytes) {
+    chain_test_setup("evidence_snapshot_exact");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9095u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    station_t *station = &w->stations[0];
+    station->chain_event_count = 0;
+    memset(station->chain_last_hash, 0, 32);
+
+    uint8_t fragment[32];
+    for (int i = 0; i < 32; i++)
+        fragment[i] = (uint8_t)(0x35 + i);
+    cargo_unit_t ingot = {0};
+    ASSERT(hash_ingot(
+        COMMODITY_FERRITE_INGOT,
+        MINING_GRADE_FINE,
+        fragment, 4u, &ingot));
+    ingot.mined_block = 9095u;
+    chain_payload_smelt_t payload = {0};
+    ASSERT(chain_payload_smelt_bind_output(
+        &payload, fragment, 4u, &ingot));
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, station, CHAIN_EVT_SMELT,
+            &payload, (uint16_t)sizeof(payload)),
+        1);
+
+    char path[256];
+    ASSERT(chain_log_path_for(
+        station->station_pubkey, path, sizeof(path)));
+    FILE *source = fopen(path, "r+b");
+    ASSERT(source != NULL);
+    FILE *snapshot = NULL;
+    ASSERT(chain_log_snapshot_evidence_file(
+        source, &snapshot));
+    ASSERT(snapshot != NULL);
+
+    chain_log_verify_report_t report = {0};
+    ASSERT(chain_log_verify_with_pubkey(
+        snapshot, station->station_pubkey, &report));
+    ASSERT_EQ_INT(report.valid_events, 1);
+
+    /*
+     * Corrupt the still-open path-backed descriptor after the snapshot was
+     * taken. The verified anonymous snapshot must continue to expose the
+     * exact original transform bytes on its interpretation pass.
+     */
+    long ingot_byte =
+        (long)CHAIN_EVENT_HEADER_SIZE + 2L + 32L;
+    ASSERT(fseek(source, ingot_byte, SEEK_SET) == 0);
+    ASSERT(fputc((int)(payload.ingot_pub[0] ^ 0x80u),
+                 source) != EOF);
+    ASSERT(fflush(source) == 0);
+
+    chain_snapshot_visit_capture_t capture = {0};
+    size_t transform_count = 0;
+    uint8_t visited_last_hash[32] = {0};
+    ASSERT(chain_log_visit_cargo_transforms_from_verified_file(
+        snapshot, report.valid_events,
+        chain_snapshot_capture_transform, &capture,
+        &transform_count, visited_last_hash));
+    ASSERT_EQ_INT(transform_count, 1);
+    ASSERT_EQ_INT(capture.count, 1);
+    ASSERT_EQ_INT(
+        capture.transform.output_semantics_version,
+        CHAIN_CARGO_SEMANTICS_V1);
+    ASSERT(memcmp(
+        capture.transform.output_cargo.pub,
+        ingot.pub, 32) == 0);
+    ASSERT(memcmp(
+        visited_last_hash,
+        station->chain_last_hash, 32) == 0);
+    ASSERT(fclose(snapshot) == 0);
+    ASSERT(fclose(source) == 0);
+    chain_test_teardown();
+}
+
 static void assert_origin_metadata_rejected(
     const world_t *w,
     int station_idx,
@@ -1701,6 +1857,9 @@ TEST(test_cargo_origin_semantics_bind_every_manifest_trait) {
         cargo_receipt_evaluate_at_station(w, 0, &ingot, NULL);
     ASSERT(evaluated.accepted);
     ASSERT(evaluated.local_origin_without_receipt);
+    ASSERT_EQ_INT(
+        evaluated.craft_provenance,
+        CARGO_CRAFT_PROVENANCE_NOT_CRAFT);
     assert_each_cargo_metadata_tamper_rejected(
         w, 0, &ingot);
 
@@ -1744,6 +1903,11 @@ TEST(test_cargo_origin_semantics_bind_every_manifest_trait) {
         cargo_receipt_evaluate_at_station(w, 0, &frame, NULL);
     ASSERT(evaluated.accepted);
     ASSERT(evaluated.local_origin_without_receipt);
+    ASSERT_EQ_INT(
+        evaluated.craft_provenance,
+        CARGO_CRAFT_PROVENANCE_STATION_ATTESTED_V1);
+    ASSERT(!evaluated.craft_input_lineage_proven);
+    ASSERT(!evaluated.craft_conservation_proven);
     assert_each_cargo_metadata_tamper_rejected(
         w, 0, &frame);
 
@@ -2046,6 +2210,15 @@ TEST(test_fresh_genesis_anchors_legacy_station_cargo_before_motd) {
      * bootstrap boundary is responsible for stamping the real author. */
     ASSERT_EQ_INT(unit->origin_station, 0);
 
+    cargo_unit_t before_inventory = *unit;
+    cargo_legacy_inventory_report_t inventory = {0};
+    ASSERT(cargo_legacy_inventory_scan_world(w, &inventory));
+    ASSERT(inventory.legacy_candidates >= 1u);
+    ASSERT(inventory.holder_candidate_count[
+               CARGO_LEGACY_HOLDER_STATION_MANIFEST] >= 1u);
+    ASSERT(memcmp(unit, &before_inventory, sizeof(*unit)) == 0);
+
+    /* Fresh genesis remains the one explicit server-authored bootstrap. */
     world_seed_station_chain_genesis(w);
 
     ASSERT(!kepler->chain_append_blocked);
@@ -2261,6 +2434,12 @@ TEST(test_chain_log_fragment_lifecycle_e2e) {
     w->players[0].docked = false;
     w->players[0].session_ready = true;
     memset(w->players[0].session_token, 0x77, 8);
+    w->players[0].pubkey_set = true;
+    w->players[0].pubkey_proof_ok = true;
+    w->players[0].pubkey_challenge_consumed = true;
+    w->players[0].pubkey_identity_finalized = true;
+    memset(w->players[0].pubkey, 0x88,
+           sizeof(w->players[0].pubkey));
 
     /* Place a fragment near Prospect (station 0) so the witness picker
      * picks it up. ~200 units offset is well inside Prospect's signal
@@ -2323,6 +2502,51 @@ TEST(test_chain_log_fragment_lifecycle_e2e) {
     ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
     ASSERT(walked == w->stations[0].chain_event_count);
 
+    /*
+     * Byte-level credential exclusion: production tow/release emitters retain
+     * the verified public identity but the retired token slots stay zero.
+     */
+    uint8_t raw[4096];
+    size_t raw_len = 0;
+    ASSERT(chain_test_read_log(
+        &w->stations[0], raw, sizeof(raw), &raw_len));
+    size_t offset = 0;
+    int tow_records = 0;
+    int release_records = 0;
+    static const uint8_t zero_token[8] = {0};
+    while (offset + CHAIN_EVENT_HEADER_SIZE + 2u <= raw_len) {
+        uint8_t type = raw[offset + 16u];
+        size_t length_offset = offset + CHAIN_EVENT_HEADER_SIZE;
+        uint16_t payload_len =
+            (uint16_t)raw[length_offset] |
+            (uint16_t)((uint16_t)raw[length_offset + 1u] << 8u);
+        size_t payload_offset = length_offset + 2u;
+        ASSERT(payload_offset + payload_len <= raw_len);
+        if (type == CHAIN_EVT_FRAGMENT_TOW) {
+            chain_payload_fragment_tow_t payload;
+            ASSERT_EQ_INT(payload_len, (int)sizeof(payload));
+            memcpy(&payload, &raw[payload_offset], sizeof(payload));
+            ASSERT(memcmp(payload.tower_player_pub,
+                          w->players[0].pubkey, 32) == 0);
+            ASSERT(memcmp(payload.tower_session_token,
+                          zero_token, sizeof(zero_token)) == 0);
+            tow_records++;
+        } else if (type == CHAIN_EVT_FRAGMENT_RELEASE) {
+            chain_payload_fragment_release_t payload;
+            ASSERT_EQ_INT(payload_len, (int)sizeof(payload));
+            memcpy(&payload, &raw[payload_offset], sizeof(payload));
+            ASSERT(memcmp(payload.tower_player_pub,
+                          w->players[0].pubkey, 32) == 0);
+            ASSERT(memcmp(payload.tower_session_token,
+                          zero_token, sizeof(zero_token)) == 0);
+            release_records++;
+        }
+        offset = payload_offset + payload_len;
+    }
+    ASSERT(offset == raw_len);
+    ASSERT_EQ_INT(tow_records, 1);
+    ASSERT_EQ_INT(release_records, 1);
+
     chain_test_teardown();
 }
 
@@ -2350,6 +2574,7 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_health_repair_hints_are_operator_facing);
     RUN(test_world_load_blocks_chain_appends_after_failed_verify);
     RUN(test_world_load_blocks_chain_appends_after_missing_tail);
+    RUN(test_world_load_blocks_chain_appends_when_verified_tail_is_ahead);
     RUN(test_chain_log_cross_station_independent);
     RUN(test_chain_log_hopper_smelt_path_retired);
     RUN(test_chain_log_smelt_emits_event_fragment_path);
@@ -2361,6 +2586,7 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_operator_post_text_tamper);
     RUN(test_chain_log_route_history_tail_reader);
     RUN(test_chain_log_cargo_transform_reader);
+    RUN(test_chain_log_evidence_snapshot_freezes_verified_visit_bytes);
     RUN(test_cargo_origin_semantics_bind_every_manifest_trait);
     RUN(test_chain_log_seed_rarity_tiers_have_real_content);
     RUN(test_fresh_genesis_anchors_legacy_station_cargo_before_motd);

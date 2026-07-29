@@ -44,8 +44,16 @@
 #include "sim_nav.h"
 #include "sim_physics.h"
 #include "station_util.h"
+#include "state_digest.h"
 
 #define SR_SCHEMA "signal.replay_counterfactual.v1"
+#define SR_PUBLIC_STATE_HASH_SCHEMA "signal.replay.public_state_hash"
+#define SR_PUBLIC_STATE_HASH_VERSION 7u
+#define SR_PUBLIC_STATE_HASH_DOMAIN "signal-replay-state-v7-public"
+#define SR_PUBLIC_EVENT_HASH_SCHEMA "signal.replay.public_event_hash"
+#define SR_PUBLIC_EVENT_HASH_VERSION 3u
+#define SR_PUBLIC_EVENT_HASH_DOMAIN \
+    "signal-replay-events-v3-public-actor"
 #define SR_ACTION_COUNT 9
 #define SR_MAX_PREFIX 4096
 #define SR_MAX_HORIZON_TICKS 120000
@@ -234,6 +242,7 @@ typedef struct {
     cargo_receipt_trust_status_t missing_origin;
     cargo_receipt_trust_status_t wrong_event_type;
     cargo_receipt_trust_status_t wrong_cargo;
+    cargo_receipt_trust_status_t origin_metadata;
     cargo_receipt_trust_status_t wrong_origin_pin;
     cargo_receipt_trust_status_t wrong_origin_authority;
     cargo_receipt_trust_status_t wrong_origin_authority_lifecycle;
@@ -273,6 +282,8 @@ typedef struct {
     sr_receipt_trust_eval_t receipt_trust;
     uint8_t prefix_state_hash[32];
     uint8_t state_hash[32];
+    uint8_t prefix_state_root[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    uint8_t state_root[SIGNAL_AUTH_STATE_DIGEST_SIZE];
     uint8_t event_hash[32];
 } sr_result_t;
 
@@ -369,6 +380,12 @@ static bool sr_receipt_trust_known_vector(
         &receipt, 1, cargo_pub, &variant,
         CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
     variant = valid;
+    variant.output_semantics_version =
+        CARGO_RECEIPT_ORIGIN_SEMANTICS_UNBOUND;
+    out->origin_metadata = cargo_receipt_trust_verify(
+        &receipt, 1, cargo_pub, &variant,
+        CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT).status;
+    variant = valid;
     variant.event_hash[1] ^= 0x40u;
     out->wrong_origin_pin = cargo_receipt_trust_verify(
         &receipt, 1, cargo_pub, &variant,
@@ -406,6 +423,8 @@ static bool sr_receipt_trust_known_vector(
            out->wrong_event_type ==
                CARGO_RECEIPT_TRUST_REJECT_ORIGIN_EVENT_TYPE &&
            out->wrong_cargo == CARGO_RECEIPT_TRUST_REJECT_ORIGIN_CARGO &&
+           out->origin_metadata ==
+               CARGO_RECEIPT_TRUST_REJECT_ORIGIN_METADATA &&
            out->wrong_origin_pin == CARGO_RECEIPT_TRUST_REJECT_ORIGIN_PIN &&
            out->wrong_origin_authority ==
                CARGO_RECEIPT_TRUST_REJECT_ORIGIN_AUTHORITY &&
@@ -440,6 +459,7 @@ static void sr_usage(FILE *fp)
             "  --provenance-script NAME  run a deterministic setup/action script\n"
             "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn,worker-delivery-proof-hnn,worker-gossip-courier,dense-asteroids\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
+            "  --self-test-public-hash  verify public hashes exclude bearer-only state\n"
             "  --help               show this help\n"
             "\n"
             "Actions: NONE,W,A,D,S,WA,WD,SA,SD or numeric ids 0..8.\n");
@@ -1812,8 +1832,21 @@ static void sr_hash_station_ledger(sha256_ctx_t *ctx, const station_t *st)
     if (count > STATION_LEDGER_MAX) count = STATION_LEDGER_MAX;
     sr_hash_i32(ctx, count);
     for (int i = 0; i < count; i++) {
-        sha256_update(ctx, st->ledger[i].player_pubkey,
-                      sizeof(st->ledger[i].player_pubkey));
+        /*
+         * Token-era rows are token[8] || zero[24]. Publishing their digest
+         * would retain a cheap bearer oracle, so collapse every such key to
+         * one explicit legacy marker. Full pubkeys remain public identity.
+         */
+        uint8_t legacy_suffix = 0;
+        for (size_t b = 8;
+             b < sizeof(st->ledger[i].player_pubkey); b++) {
+            legacy_suffix |= st->ledger[i].player_pubkey[b];
+        }
+        sr_hash_u8(ctx, legacy_suffix == 0 ? 1u : 0u);
+        if (legacy_suffix != 0) {
+            sha256_update(ctx, st->ledger[i].player_pubkey,
+                          sizeof(st->ledger[i].player_pubkey));
+        }
         sr_hash_float_bits(ctx, st->ledger[i].balance);
         sr_hash_float_bits(ctx, st->ledger[i].lifetime_supply);
         sr_hash_u64(ctx, st->ledger[i].first_dock_tick);
@@ -1989,7 +2022,6 @@ static void sr_hash_tractor_binding(sha256_ctx_t *ctx,
 static void sr_hash_player_state(sha256_ctx_t *ctx, const server_player_t *player)
 {
     sr_hash_i32(ctx, player->id);
-    sha256_update(ctx, player->session_token, sizeof(player->session_token));
     sha256_update(ctx, player->pubkey, sizeof(player->pubkey));
     sr_hash_u8(ctx, player->session_ready ? 1u : 0u);
     sr_hash_u8(ctx, player->pubkey_set ? 1u : 0u);
@@ -2166,11 +2198,9 @@ static void sr_hash_fracture_claims(sha256_ctx_t *ctx, const world_t *w)
         sr_hash_u8(ctx, state->best_grade);
         sha256_update(ctx, state->best_player_pub,
                       sizeof(state->best_player_pub));
+        /* Claimant bearer bytes are private; only public aggregate state is
+         * part of the exported replay verifier. */
         sr_hash_u8(ctx, state->seen_claimant_count);
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            sha256_update(ctx, state->seen_claimant_tokens[p],
-                          sizeof(state->seen_claimant_tokens[p]));
-        }
         sr_hash_u32(ctx, state->challenge_last_ms);
     }
 }
@@ -2181,7 +2211,8 @@ static void sr_state_hash(const world_t *w,
 {
     sha256_ctx_t ctx;
     sha256_init(&ctx);
-    sha256_update(&ctx, "signal-replay-state-v6-authority", 32);
+    sha256_update(&ctx, SR_PUBLIC_STATE_HASH_DOMAIN,
+                  sizeof(SR_PUBLIC_STATE_HASH_DOMAIN) - 1u);
     sr_hash_u64(&ctx, w->tick);
     sr_hash_float_bits(&ctx, w->time);
     sr_hash_u32(&ctx, w->belt_seed);
@@ -2229,7 +2260,6 @@ static void sr_state_hash(const world_t *w,
                 &ctx, station_inventory_amount(st, (commodity_t)c));
         }
         sr_hash_station_ledger(&ctx, st);
-        sr_hash_float_bits(&ctx, ledger_balance(st, sp->session_token));
         sr_hash_float_bits(&ctx, ledger_balance_by_pubkey(st, sp->pubkey));
         sr_hash_u64(&ctx, st->chain_event_count);
         sha256_update(&ctx, st->chain_last_hash, sizeof(st->chain_last_hash));
@@ -2278,10 +2308,6 @@ static void sr_state_hash(const world_t *w,
         sr_hash_i32(&ctx, a->last_fractured_by);
         sr_hash_u8(&ctx, a->thrown_timer_q);
         sr_hash_u8(&ctx, a->grade);
-        sha256_update(&ctx, a->last_towed_token, sizeof(a->last_towed_token));
-        sha256_update(&ctx, a->thrown_by_token, sizeof(a->thrown_by_token));
-        sha256_update(&ctx, a->last_fractured_token,
-                      sizeof(a->last_fractured_token));
         sha256_update(&ctx, a->fracture_seed, sizeof(a->fracture_seed));
         sha256_update(&ctx, a->fragment_pub, sizeof(a->fragment_pub));
         sha256_update(&ctx, a->rock_pub, sizeof(a->rock_pub));
@@ -2307,7 +2333,6 @@ static void sr_state_hash(const world_t *w,
         sr_hash_float_bits(&ctx, npc->state_timer);
         sr_hash_u8(&ctx, npc->thrusting ? 1u : 0u);
         sr_hash_i32(&ctx, npc_towed_fragment_index(npc));
-        sha256_update(&ctx, npc->session_token, sizeof(npc->session_token));
         sr_hash_known_contract_view(&ctx, &npc->ship->knowledge,
                                     SHIP_KNOWN_CONTRACT_CAP);
         sr_hash_knowledge_view(&ctx, &npc->ship->knowledge);
@@ -2402,10 +2427,29 @@ static void sr_state_hash(const world_t *w,
     sha256_final(&ctx, out);
 }
 
+static void sr_hash_public_actor(sha256_ctx_t *ctx,
+                                 const public_actor_id_t *actor)
+{
+    public_actor_id_t value = public_actor_id_unattributed();
+    if (public_actor_id_is_canonical(actor) &&
+        actor->kind != (uint8_t)PUBLIC_ACTOR_ID_NONE) {
+        value = *actor;
+    }
+    sr_hash_u8(ctx, value.kind);
+    sha256_update(ctx, value.id, sizeof(value.id));
+}
+
 static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
 {
     sr_hash_u8(ctx, (uint8_t)ev->type);
     sr_hash_i32(ctx, ev->player_id);
+    /*
+     * Public replay output follows the v6 event trust boundary. Never hash a
+     * reconnect bearer into an exported verifier; typed public IDs retain
+     * stable attribution where proof exists and explicit unknown otherwise.
+     */
+    sr_hash_public_actor(ctx, &ev->subject_actor);
+    sr_hash_public_actor(ctx, &ev->source_actor);
     switch (ev->type) {
     case SIM_EVENT_DAMAGE:
         sr_hash_float_bits(ctx, ev->damage.amount);
@@ -2414,7 +2458,6 @@ static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
         break;
     case SIM_EVENT_DEATH:
         sr_hash_u8(ctx, ev->death.cause);
-        sha256_update(ctx, ev->death.killer_token, sizeof(ev->death.killer_token));
         sr_hash_i32(ctx, ev->death.respawn_station);
         sr_hash_i32(ctx, (int32_t)ev->death.respawn_fee);
         break;
@@ -2458,6 +2501,175 @@ static void sr_hash_event(sha256_ctx_t *ctx, const sim_event_t *ev)
     default:
         break;
     }
+}
+
+static void sr_hash_event_sequence(const sim_event_t *events,
+                                   size_t count,
+                                   uint8_t out[32])
+{
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, SR_PUBLIC_EVENT_HASH_DOMAIN,
+                  sizeof(SR_PUBLIC_EVENT_HASH_DOMAIN) - 1u);
+    for (size_t i = 0; i < count; i++) {
+        sr_hash_event(&ctx, &events[i]);
+    }
+    sha256_final(&ctx, out);
+}
+
+/*
+ * Executable regression for the exported public hash contracts. Keep the
+ * fixture deliberately small but representative: every token-bearing surface
+ * intentionally excluded by v7/v3 is populated, mutated, and hashed again.
+ * A public state field and a public event field are then changed to prove the
+ * test is not merely comparing two constant digests.
+ */
+static bool sr_self_test_public_hash(void)
+{
+    world_t *w = calloc(1, sizeof(*w));
+    if (!w) {
+        fprintf(stderr, "signal_replay: public hash self-test allocation failed\n");
+        return false;
+    }
+
+    ship_t player_ship = {0};
+    ship_t npc_ship = {0};
+    server_player_t *player = &w->players[0];
+    npc_ship_t *npc = &w->npc_ships[0];
+    station_t *station = &w->stations[0];
+    asteroid_t *asteroid = &w->asteroids[0];
+    fracture_claim_state_t *claim = &w->fracture_claims[0];
+
+    w->tick = 77u;
+    w->time = 1.25f;
+    w->belt_seed = 0x12345678u;
+    w->station_count = 1;
+
+    player->connected = true;
+    player->id = 0;
+    player->ship = &player_ship;
+    player->session_ready = true;
+    player->pubkey_set = true;
+    player->pubkey_proof_ok = true;
+    player_ship.hull = 100.0f;
+    for (size_t i = 0; i < sizeof(player->pubkey); i++) {
+        player->pubkey[i] = (uint8_t)(0x40u + i);
+    }
+    memset(player->session_token, 0x11, sizeof(player->session_token));
+
+    station->id = 9u;
+    station->ledger_count = 1;
+    memset(station->ledger[0].player_pubkey, 0,
+           sizeof(station->ledger[0].player_pubkey));
+    memset(station->ledger[0].player_pubkey, 0x22, 8);
+    station->ledger[0].balance = 42.0f;
+
+    asteroid->active = true;
+    asteroid->tier = ASTEROID_TIER_M;
+    asteroid->commodity = COMMODITY_FERRITE_ORE;
+    asteroid->pos = v2(5.0f, 6.0f);
+    asteroid->hp = 12.0f;
+    asteroid->ore = 3.0f;
+    memset(asteroid->last_towed_token, 0x33,
+           sizeof(asteroid->last_towed_token));
+    memset(asteroid->thrown_by_token, 0x44,
+           sizeof(asteroid->thrown_by_token));
+    memset(asteroid->last_fractured_token, 0x55,
+           sizeof(asteroid->last_fractured_token));
+
+    claim->active = true;
+    claim->fracture_id = 123u;
+    claim->seen_claimant_count = 2;
+    memset(claim->seen_claimant_tokens[0], 0x66,
+           sizeof(claim->seen_claimant_tokens[0]));
+    memset(claim->seen_claimant_tokens[1], 0x77,
+           sizeof(claim->seen_claimant_tokens[1]));
+
+    npc->active = true;
+    npc->role = NPC_ROLE_HAULER;
+    npc->state = NPC_STATE_DOCKED;
+    npc->ship = &npc_ship;
+    npc_ship.hull = 80.0f;
+    memset(npc->session_token, 0x88, sizeof(npc->session_token));
+
+    public_actor_id_t player_actor = {
+        .kind = PUBLIC_ACTOR_ID_DERIVED,
+        .id = {0x91},
+    };
+    sim_event_t events[2] = {0};
+    events[0].type = SIM_EVENT_DEATH;
+    events[0].player_id = 0;
+    events[0].subject_actor = player_actor;
+    events[0].source_actor = public_actor_id_unattributed();
+    events[0].death.cause = DEATH_CAUSE_ASTEROID;
+    events[0].death.respawn_station = 0;
+    memset(events[0].death.killer_token, 0x99,
+           sizeof(events[0].death.killer_token));
+    events[1].type = SIM_EVENT_NPC_KILL;
+    events[1].player_id = 0;
+    events[1].subject_actor = public_actor_id_unattributed();
+    events[1].source_actor = player_actor;
+    events[1].npc_kill.cause = DEATH_CAUSE_RAM;
+    events[1].npc_kill.npc_role = NPC_ROLE_HAULER;
+    memset(events[1].npc_kill.killer_token, 0xaa,
+           sizeof(events[1].npc_kill.killer_token));
+
+    uint8_t state_before[32];
+    uint8_t state_after_bearers[32];
+    uint8_t state_after_public[32];
+    uint8_t events_before[32];
+    uint8_t events_after_bearers[32];
+    uint8_t events_after_public[32];
+    sr_state_hash(w, player, state_before);
+    sr_hash_event_sequence(events, 2, events_before);
+
+    memset(player->session_token, 0xb1, sizeof(player->session_token));
+    memset(npc->session_token, 0xb2, sizeof(npc->session_token));
+    memset(asteroid->last_towed_token, 0xb3,
+           sizeof(asteroid->last_towed_token));
+    memset(asteroid->thrown_by_token, 0xb4,
+           sizeof(asteroid->thrown_by_token));
+    memset(asteroid->last_fractured_token, 0xb5,
+           sizeof(asteroid->last_fractured_token));
+    memset(claim->seen_claimant_tokens[0], 0xb6,
+           sizeof(claim->seen_claimant_tokens[0]));
+    memset(claim->seen_claimant_tokens[1], 0xb7,
+           sizeof(claim->seen_claimant_tokens[1]));
+    memset(station->ledger[0].player_pubkey, 0xb8, 8);
+    memset(events[0].death.killer_token, 0xb9,
+           sizeof(events[0].death.killer_token));
+    memset(events[1].npc_kill.killer_token, 0xba,
+           sizeof(events[1].npc_kill.killer_token));
+
+    sr_state_hash(w, player, state_after_bearers);
+    sr_hash_event_sequence(events, 2, events_after_bearers);
+    if (memcmp(state_before, state_after_bearers,
+               sizeof(state_before)) != 0 ||
+        memcmp(events_before, events_after_bearers,
+               sizeof(events_before)) != 0) {
+        fprintf(stderr,
+                "signal_replay: bearer-only state changed a public hash\n");
+        free(w);
+        return false;
+    }
+
+    asteroid->pos.x += 1.0f;
+    sr_state_hash(w, player, state_after_public);
+    events[0].death.cause = DEATH_CAUSE_STATION;
+    sr_hash_event_sequence(events, 2, events_after_public);
+    if (memcmp(state_before, state_after_public,
+               sizeof(state_before)) == 0 ||
+        memcmp(events_before, events_after_public,
+               sizeof(events_before)) == 0) {
+        fprintf(stderr,
+                "signal_replay: public state failed to change a public hash\n");
+        free(w);
+        return false;
+    }
+
+    free(w);
+    printf("signal_replay public hash invariance: ok\n");
+    return true;
 }
 
 static void sr_accumulate_events(const world_t *w,
@@ -3768,9 +3980,11 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->start_cargo = ship_total_cargo(sp->ship);
     out->start_balance = sr_player_station_balance(w, sp);
     sr_state_hash(w, sp, out->prefix_state_hash);
+    signal_authoritative_state_digest(w, out->prefix_state_root);
 
     sha256_init(&event_hash);
-    sha256_update(&event_hash, "signal-replay-events-v2-float-bits", 34);
+    sha256_update(&event_hash, SR_PUBLIC_EVENT_HASH_DOMAIN,
+                  sizeof(SR_PUBLIC_EVENT_HASH_DOMAIN) - 1u);
     if (!sr_run_provenance_script(config, w, sp, &out->events, &event_hash)) {
         goto cleanup;
     }
@@ -3825,6 +4039,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
         out->ai.branch = branch;
     }
     sr_state_hash(w, sp, out->state_hash);
+    signal_authoritative_state_digest(w, out->state_root);
     out->ok = true;
     ok = true;
 
@@ -4101,7 +4316,13 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             "\"prefix_ticks\":%d,"
             "\"horizon_ticks\":%d,"
             "\"candidate\":%d,"
-            "\"candidate_name\":\"%s\",",
+            "\"candidate_name\":\"%s\","
+            "\"state_digest_schema\":\"%s\","
+            "\"state_digest_version\":%" PRIu32 ","
+            "\"public_state_hash_schema\":\"%s\","
+            "\"public_state_hash_version\":%" PRIu32 ","
+            "\"public_event_hash_schema\":\"%s\","
+            "\"public_event_hash_version\":%" PRIu32 ",",
             SR_SCHEMA,
             config->seed,
             config->station,
@@ -4109,10 +4330,20 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             r->prefix_ticks,
             r->horizon_ticks,
             r->candidate,
-            SR_ACTIONS[r->candidate].name);
+            SR_ACTIONS[r->candidate].name,
+            signal_authoritative_state_digest_schema(),
+            signal_authoritative_state_digest_version(),
+            SR_PUBLIC_STATE_HASH_SCHEMA,
+            (uint32_t)SR_PUBLIC_STATE_HASH_VERSION,
+            SR_PUBLIC_EVENT_HASH_SCHEMA,
+            (uint32_t)SR_PUBLIC_EVENT_HASH_VERSION);
     sr_json_hash(out, "prefix_state_hash", r->prefix_state_hash);
     fprintf(out, ",");
     sr_json_hash(out, "state_hash", r->state_hash);
+    fprintf(out, ",");
+    sr_json_hash(out, "prefix_state_root", r->prefix_state_root);
+    fprintf(out, ",");
+    sr_json_hash(out, "state_root", r->state_root);
     fprintf(out, ",");
     sr_json_hash(out, "event_hash", r->event_hash);
     fprintf(out,
@@ -4210,6 +4441,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             "\"missing_origin\":%d,"
             "\"wrong_event_type\":%d,"
             "\"wrong_cargo\":%d,"
+            "\"origin_metadata\":%d,"
             "\"wrong_origin_pin\":%d,"
             "\"wrong_origin_authority\":%d,"
             "\"wrong_origin_authority_lifecycle\":%d,"
@@ -4224,6 +4456,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
             (int)r->receipt_trust.missing_origin,
             (int)r->receipt_trust.wrong_event_type,
             (int)r->receipt_trust.wrong_cargo,
+            (int)r->receipt_trust.origin_metadata,
             (int)r->receipt_trust.wrong_origin_pin,
             (int)r->receipt_trust.wrong_origin_authority,
             (int)r->receipt_trust.wrong_origin_authority_lifecycle,
@@ -4238,6 +4471,10 @@ int main(int argc, char **argv)
     sr_config_t config;
     FILE *out = stdout;
     int emitted = 0;
+
+    if (argc == 2 && strcmp(argv[1], "--self-test-public-hash") == 0) {
+        return sr_self_test_public_hash() ? 0 : 1;
+    }
 
     if (!sr_parse_args(argc, argv, &config)) {
         sr_usage(stderr);

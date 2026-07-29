@@ -5,6 +5,7 @@
 #include "base64.h"
 #include "pubkey_proof.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 
 typedef struct {
     uint8_t fill;
@@ -19,6 +20,23 @@ static bool crypto_entropy_fail_after_partial_write(
     if (buf && write_len > 0)
         memset(buf, fault ? fault->fill : 0xA5, write_len);
     return false;
+}
+
+TEST(test_signal_memzero_explicit_runtime_contract) {
+    uint8_t secret[96];
+    memset(secret, 0xA5, sizeof(secret));
+
+    signal_memzero_explicit(&secret[8], sizeof(secret) - 16);
+
+    for (size_t i = 0; i < 8; i++)
+        ASSERT_EQ_INT(secret[i], 0xA5);
+    for (size_t i = 8; i < sizeof(secret) - 8; i++)
+        ASSERT_EQ_INT(secret[i], 0);
+    for (size_t i = sizeof(secret) - 8; i < sizeof(secret); i++)
+        ASSERT_EQ_INT(secret[i], 0xA5);
+    ASSERT(signal_memzero_backend() != NULL);
+    ASSERT(signal_memzero_backend()[0] != '\0');
+    signal_memzero_explicit(NULL, 0);
 }
 
 TEST(test_crypto_keypair_distinct) {
@@ -106,6 +124,23 @@ TEST(test_crypto_sign_verify_roundtrip) {
     ASSERT(signal_crypto_verify(sig, msg, sizeof(msg), pub));
 }
 
+TEST(test_crypto_heap_scratch_roundtrip_and_tamper) {
+    uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES];
+    uint8_t sec[SIGNAL_CRYPTO_SECRET_BYTES];
+    ASSERT(signal_crypto_keypair(pub, sec));
+
+    uint8_t msg[2048];
+    for (size_t i = 0; i < sizeof(msg); i++)
+        msg[i] = (uint8_t)(i * 29u + 7u);
+
+    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
+    signal_crypto_sign(sig, msg, sizeof(msg), sec);
+    ASSERT(signal_crypto_verify(sig, msg, sizeof(msg), pub));
+
+    msg[sizeof(msg) - 1] ^= 0x80;
+    ASSERT(!signal_crypto_verify(sig, msg, sizeof(msg), pub));
+}
+
 TEST(test_crypto_verify_rejects_msg_tamper) {
     uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES];
     uint8_t sec[SIGNAL_CRYPTO_SECRET_BYTES];
@@ -146,6 +181,34 @@ TEST(test_crypto_verify_rejects_pub_tamper) {
 
     pub[0] ^= 0x80;
     ASSERT(!signal_crypto_verify(sig, msg, sizeof(msg), pub));
+}
+
+TEST(test_crypto_rejects_overflowing_message_length) {
+    uint8_t byte = 0;
+    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
+    uint8_t sec[SIGNAL_CRYPTO_SECRET_BYTES] = {0};
+    uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES] = {0};
+    uint8_t zero_sig[sizeof(sig)] = {0};
+    memset(sig, 0xA5, sizeof(sig));
+
+    signal_crypto_sign(sig, &byte, SIZE_MAX, sec);
+
+    ASSERT(memcmp(sig, zero_sig, sizeof(sig)) == 0);
+    ASSERT(!signal_crypto_verify(sig, &byte, SIZE_MAX, pub));
+}
+
+TEST(test_crypto_invalid_seed_clears_keypair_outputs) {
+    uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES];
+    uint8_t sec[SIGNAL_CRYPTO_SECRET_BYTES];
+    uint8_t zero_pub[sizeof(pub)] = {0};
+    uint8_t zero_sec[sizeof(sec)] = {0};
+    memset(pub, 0xA5, sizeof(pub));
+    memset(sec, 0x5A, sizeof(sec));
+
+    signal_crypto_keypair_from_seed(NULL, pub, sec);
+
+    ASSERT(memcmp(pub, zero_pub, sizeof(pub)) == 0);
+    ASSERT(memcmp(sec, zero_sec, sizeof(sec)) == 0);
 }
 
 TEST(test_pubkey_proof_legacy_v1_is_domain_separated_from_v3) {
@@ -251,10 +314,14 @@ TEST(test_pubkey_proof_client_negotiation_and_send_admission) {
         pubkey_proof_client_next_scheme(&state),
         PUBKEY_PROOF_SCHEME_NONE);
 
-    /* Local loopback order is challenge first, PROTOCOL_INFO second. */
+    /* Exact protocol discovery now precedes challenge/proof in loopback. */
     pubkey_proof_client_state_reset(&state);
+    pubkey_proof_client_note_protocol(
+        &state, SIGNAL_PROTOCOL_VERSION);
+    ASSERT_EQ_INT(
+        pubkey_proof_client_next_scheme(&state),
+        PUBKEY_PROOF_SCHEME_NONE);
     pubkey_proof_client_note_challenge(&state);
-    pubkey_proof_client_note_protocol(&state, 2);
     ASSERT_EQ_INT(
         pubkey_proof_client_next_scheme(&state),
         PUBKEY_PROOF_SCHEME_CHALLENGE_V2);
@@ -276,14 +343,18 @@ TEST(test_base64_decode_rejects_short_output_buffer) {
 void register_crypto_tests(void);
 void register_crypto_tests(void) {
     TEST_SECTION("\nCrypto (Ed25519) tests:\n");
+    RUN(test_signal_memzero_explicit_runtime_contract);
     RUN(test_crypto_keypair_distinct);
     RUN(test_crypto_random_bytes_distinct_and_nonzero);
     RUN(test_crypto_entropy_failure_clears_random_output);
     RUN(test_crypto_entropy_failure_clears_keypair_outputs);
     RUN(test_crypto_sign_verify_roundtrip);
+    RUN(test_crypto_heap_scratch_roundtrip_and_tamper);
     RUN(test_crypto_verify_rejects_msg_tamper);
     RUN(test_crypto_verify_rejects_sig_tamper);
     RUN(test_crypto_verify_rejects_pub_tamper);
+    RUN(test_crypto_rejects_overflowing_message_length);
+    RUN(test_crypto_invalid_seed_clears_keypair_outputs);
     RUN(test_pubkey_proof_legacy_v1_is_domain_separated_from_v3);
     RUN(test_pubkey_proof_client_negotiation_and_send_admission);
     RUN(test_base64_decode_rejects_short_output_buffer);

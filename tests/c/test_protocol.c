@@ -3,8 +3,101 @@
 #include "station_authority.h"
 #include "cargo_receipt_issue.h"
 #include "faction.h"
+#include "remote_receipt_cache.h"
+#include "contract_ownership.h"
+#include "public_actor_resolver.h"
 #include "station_policy.h"
+#include "net_message_gate.h"
 #include "wire_codec.h"
+
+TEST(test_client_pre_gameplay_gate_only_admits_exact_issued_recovery) {
+    enum {
+        RECOVERY_WIRE_SIZE =
+            SIGNED_ACTION_HEADER_SIZE +
+            LEGACY_RECOVERY_OFFER_ID_SIZE +
+            SIGNED_ACTION_SIG_SIZE,
+    };
+    uint8_t offer_id[LEGACY_RECOVERY_OFFER_ID_SIZE];
+    for (size_t i = 0; i < sizeof(offer_id); i++)
+        offer_id[i] = (uint8_t)(0x40u + i);
+
+    uint8_t message[RECOVERY_WIRE_SIZE];
+    memset(message, 0xA5, sizeof(message));
+    message[0] = NET_MSG_SIGNED_ACTION;
+    message[9] = SIGNED_ACTION_RECOVER_LEGACY_SAVE;
+    message[10] = LEGACY_RECOVERY_OFFER_ID_SIZE;
+    message[11] = 0;
+    memcpy(&message[SIGNED_ACTION_HEADER_SIZE],
+           offer_id, sizeof(offer_id));
+
+    net_client_message_gate_state_t state = {
+        .protocol_ready = true,
+        .gameplay_ready = false,
+        .proof_admitted = true,
+        .proof_scheme = PUBKEY_PROOF_SCHEME_CHALLENGE_V2,
+        .legacy_recovery_offer_ready = true,
+    };
+    memcpy(state.legacy_recovery_offer_id,
+           offer_id, sizeof(offer_id));
+    ASSERT(net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+
+    state.protocol_ready = false;
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+    state.protocol_ready = true;
+    state.proof_admitted = false;
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+    state.proof_admitted = true;
+    state.proof_scheme = PUBKEY_PROOF_SCHEME_LEGACY_V1;
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+    state.proof_scheme = PUBKEY_PROOF_SCHEME_CHALLENGE_V2;
+    state.legacy_recovery_offer_ready = false;
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+    state.legacy_recovery_offer_ready = true;
+
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, (int)sizeof(message) - 1));
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, (int)sizeof(message) + 1));
+
+    message[10] = LEGACY_RECOVERY_OFFER_ID_SIZE - 1;
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+    message[10] = LEGACY_RECOVERY_OFFER_ID_SIZE;
+    message[11] = 1;
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+    message[11] = 0;
+
+    message[SIGNED_ACTION_HEADER_SIZE] ^= 0x01u;
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+    message[SIGNED_ACTION_HEADER_SIZE] ^= 0x01u;
+
+    for (int action = 0; action < SIGNED_ACTION_COUNT; action++) {
+        if (action == SIGNED_ACTION_RECOVER_LEGACY_SAVE)
+            continue;
+        message[9] = (uint8_t)action;
+        ASSERT(!net_client_message_gate_allows(
+            &state, message, sizeof(message)));
+    }
+    message[9] = SIGNED_ACTION_RECOVER_LEGACY_SAVE;
+    message[0] = NET_MSG_INPUT;
+    ASSERT(!net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+    message[0] = NET_MSG_SIGNED_ACTION;
+
+    /* Once authoritative gameplay is ready, the ordinary signed-action
+     * policy resumes; the exception above is only the pre-gameplay gate. */
+    state.gameplay_ready = true;
+    message[9] = SIGNED_ACTION_BUY_PRODUCT;
+    ASSERT(net_client_message_gate_allows(
+        &state, message, sizeof(message)));
+}
 
 TEST(test_wire_codec_roundtrips_and_fails_closed_on_bounds) {
     uint8_t buf[18] = {0};
@@ -2782,6 +2875,9 @@ TEST(test_roundtrip_cargo_pods) {
     pods[3].rotation = 0.75f;
     cargo_pod_set_player_tractor(&pods[3], 2);
     cargo_pod_set_tow_hardpoint(&pods[3], 4);
+    pods[3].custody_station = 2;
+    memset(pods[3].selection_token, 0xA5,
+           sizeof(pods[3].selection_token));
     pods[4].active = true;
     pods[4].kind = CARGO_POD_CARGO;
     pods[4].commodity = COMMODITY_FRAME;
@@ -2817,6 +2913,8 @@ TEST(test_roundtrip_cargo_pods) {
     ASSERT(!(p[34] & CARGO_POD_SUMMARY_SHIPMENT_BOUND));
     ASSERT_EQ_INT(p[35], MINING_GRADE_RARE);
     ASSERT_EQ_INT(p[38], 5);
+    ASSERT_EQ_INT(p[39], 2);
+    for (int i = 0; i < 32; i++) ASSERT_EQ_INT(p[40 + i], 0xA5);
 
     p = &buf[2 + CARGO_POD_RECORD_SIZE];
     ASSERT_EQ_INT(p[0], 4);
@@ -2849,6 +2947,9 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     pods[3].rotation = 0.75f;
     cargo_pod_set_player_tractor(&pods[3], 2);
     cargo_pod_set_tow_hardpoint(&pods[3], 4);
+    pods[3].custody_station = 2;
+    memset(pods[3].selection_token, 0x5A,
+           sizeof(pods[3].selection_token));
     pods[4].active = true;
     pods[4].kind = CARGO_POD_CARGO;
     pods[4].commodity = COMMODITY_FRAME;
@@ -2887,6 +2988,8 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     ASSERT(!(p[24] & CARGO_POD_SUMMARY_SHIPMENT_BOUND));
     ASSERT_EQ_INT(p[25], MINING_GRADE_RARE);
     ASSERT_EQ_INT(p[28], 5);
+    ASSERT_EQ_INT(p[29], 2);
+    for (int i = 0; i < 32; i++) ASSERT_EQ_INT(p[30 + i], 0x5A);
 
     p = &buf[2 + CARGO_POD_Q_RECORD_SIZE];
     ASSERT_EQ_INT(p[0], 4);
@@ -2900,6 +3003,612 @@ TEST(test_roundtrip_cargo_pods_q_quantizes_visual_pose) {
     ASSERT_EQ_INT(p[26], 3);
     ASSERT_EQ_INT(p[27], 6);
     ASSERT_EQ_INT(p[28], 3);
+}
+
+TEST(test_cargo_pod_world_summary_issues_generation_bound_selection_token) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
+
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"PODTOKN1", COMMODITY_FRAME, 0, &unit));
+    cargo_pod_t template = {0};
+    template.active = true;
+    template.kind = CARGO_POD_CARGO;
+    template.commodity = COMMODITY_FRAME;
+    template.quantity = 1;
+    template.manifest_count = 1;
+    template.manifest_units[0] = unit;
+    template.custody_station = 2;
+    template.pos = v2(10.0f, 20.0f);
+    template.radius = 18.0f;
+    w->cargo_pods[5] = template;
+
+    uint8_t expected[32] = {0};
+    ASSERT(server_cargo_pod_selection_token(w, 5, expected));
+    bool sent[MAX_CARGO_PODS] = {false};
+    uint64_t sent_sig[MAX_CARGO_PODS] = {0};
+    uint8_t buf[2 + MAX_CARGO_PODS * CARGO_POD_Q_RECORD_SIZE];
+    uint8_t remove[CARGO_POD_REMOVE_MSG_HEADER +
+                   MAX_CARGO_PODS * CARGO_POD_REMOVE_RECORD_SIZE];
+    int remove_len = 0;
+    int len = serialize_cargo_pods_q_for_player_delta_world(
+        buf, remove, &remove_len, w, v2(0.0f, 0.0f),
+        sent, sent_sig, false);
+    ASSERT_EQ_INT(len, 2 + CARGO_POD_Q_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[2], 5);
+    ASSERT_EQ_INT(buf[2 + 29], 2);
+    ASSERT(memcmp(&buf[2 + 30], expected, sizeof(expected)) == 0);
+
+    uint8_t first_generation_token[32];
+    memcpy(first_generation_token, expected, sizeof(expected));
+    w->cargo_pods[5].active = false;
+    ASSERT(entity_ref_is_none(world_entity_ref_for_slot(
+        w, ENTITY_KIND_CARGO_POD, 5, -1)));
+    w->cargo_pods[5] = template;
+    ASSERT(server_cargo_pod_selection_token(w, 5, expected));
+    ASSERT(memcmp(first_generation_token, expected,
+                  sizeof(expected)) != 0);
+}
+
+TEST(test_remote_receipts_survive_large_manifest_replacement) {
+    enum { UNIT_COUNT = 128 };
+    remote_receipt_cache_t *cache =
+        calloc(1, sizeof(*cache));
+    ASSERT(cache != NULL);
+    cargo_unit_t units[UNIT_COUNT];
+    memset(units, 0, sizeof(units));
+
+    /* Model receipt packets arriving before the authoritative manifest
+     * replacement that introduces their concrete identities. */
+    for (int i = 0; i < UNIT_COUNT; i++) {
+        uint8_t origin[8] = {
+            'R', 'C', 'P', 'T',
+            (uint8_t)i, (uint8_t)(i >> 8), 0, 0,
+        };
+        ASSERT(hash_legacy_migrate_unit(
+            origin, COMMODITY_FRAME, 0, &units[i]));
+        cargo_receipt_chain_t chain = {0};
+        chain.len = 1;
+        memcpy(chain.links[0].cargo_pub, units[i].pub, 32);
+        ASSERT(remote_receipt_cache_store(cache, &chain));
+    }
+    ASSERT_EQ_INT(cache->count, UNIT_COUNT);
+    ASSERT_EQ_INT(REMOTE_RECEIPT_CACHE_CAP, MANIFEST_DETAIL_MAX);
+
+    ship_t ship = {0};
+    ASSERT(ship_manifest_bootstrap(&ship));
+    for (int i = 0; i < UNIT_COUNT; i++) {
+        ASSERT(ship_manifest_push_with_chain(
+            &ship, &units[i], NULL));
+        ASSERT(remote_receipt_cache_attach(
+            cache, &ship, units[i].pub));
+    }
+
+    const ship_receipts_t *receipts =
+        ship_get_receipts_const(&ship);
+    ASSERT(receipts != NULL);
+    ASSERT_EQ_INT(receipts->count, UNIT_COUNT);
+    for (int i = 0; i < UNIT_COUNT; i++) {
+        ASSERT_EQ_INT(receipts->chains[i].len, 1);
+        ASSERT(memcmp(
+            receipts->chains[i].links[0].cargo_pub,
+            units[i].pub, 32) == 0);
+    }
+    ship_cleanup(&ship);
+    free(cache);
+}
+
+TEST(test_remote_receipt_cache_churn_preserves_live_sidecar) {
+    remote_receipt_cache_t *cache =
+        calloc(1, sizeof(*cache));
+    ASSERT(cache != NULL);
+    ship_t current = {0};
+    ASSERT(ship_manifest_bootstrap(&current));
+
+    cargo_unit_t retained = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"RCPKEEP0",
+        COMMODITY_FRAME, 0, &retained));
+    ASSERT(ship_manifest_push_with_chain(
+        &current, &retained, NULL));
+    cargo_receipt_chain_t retained_chain = {0};
+    retained_chain.len = 1;
+    memcpy(
+        retained_chain.links[0].cargo_pub,
+        retained.pub, 32);
+    ASSERT(remote_receipt_cache_store_unmatched(
+        cache, &current, &retained_chain));
+    ASSERT_EQ_INT(cache->count, 0);
+    ASSERT_EQ_INT(
+        ship_get_receipts(&current)->chains[0].len, 1);
+
+    /* More than one cache lifetime of unrelated arrivals may evict only
+     * unmatched future identities, never a chain already owned by live A. */
+    for (int i = 0; i < REMOTE_RECEIPT_CACHE_CAP + 17; i++) {
+        uint8_t origin[8] = {
+            'C', 'H', 'U', 'R',
+            (uint8_t)i, (uint8_t)(i >> 8), 0, 0,
+        };
+        cargo_unit_t churn = {0};
+        ASSERT(hash_legacy_migrate_unit(
+            origin, COMMODITY_FRAME, 0, &churn));
+        cargo_receipt_chain_t chain = {0};
+        chain.len = 1;
+        memcpy(chain.links[0].cargo_pub, churn.pub, 32);
+        ASSERT(remote_receipt_cache_store_unmatched(
+            cache, &current, &chain));
+    }
+    ASSERT_EQ_INT(cache->count, REMOTE_RECEIPT_CACHE_CAP);
+    ASSERT_EQ_INT(
+        remote_receipt_cache_find(cache, retained.pub), -1);
+
+    const cargo_receipt_chain_t *preserved =
+        remote_receipt_chain_for_snapshot(
+            cache, &current, retained.pub);
+    ASSERT(preserved != NULL);
+    ASSERT_EQ_INT(preserved->len, 1);
+    ASSERT(memcmp(
+        preserved->links[0].cargo_pub,
+        retained.pub, 32) == 0);
+
+    cargo_store_t staged = {0};
+    ASSERT(cargo_store_bootstrap(
+        &staged, SHIP_MANIFEST_DEFAULT_CAP));
+    ASSERT(cargo_store_push_with_chain(
+        &staged, &retained, NULL));
+    ASSERT(ship_receipts_set_chain(
+        cargo_store_receipts(&staged), 0, preserved));
+    ASSERT_EQ_INT(
+        cargo_store_receipts(&staged)->chains[0].len, 1);
+    cargo_store_cleanup(&staged);
+    ship_cleanup(&current);
+    free(cache);
+}
+
+TEST(test_remote_receipt_session_reset_drops_live_sidecar) {
+    remote_receipt_cache_t *cache =
+        calloc(1, sizeof(*cache));
+    ASSERT(cache != NULL);
+    ship_t current = {0};
+    ASSERT(ship_manifest_bootstrap(&current));
+
+    cargo_unit_t retained = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"RCPEPOCH",
+        COMMODITY_FRAME, 0, &retained));
+    ASSERT(ship_manifest_push_with_chain(
+        &current, &retained, NULL));
+    cargo_receipt_chain_t old_chain = {0};
+    old_chain.len = 1;
+    memcpy(old_chain.links[0].cargo_pub, retained.pub, 32);
+    ASSERT(remote_receipt_cache_store_unmatched(
+        cache, &current, &old_chain));
+
+    cargo_unit_t pending_unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"RCPPEND0",
+        COMMODITY_FRAME, 0, &pending_unit));
+    cargo_receipt_chain_t pending_chain = {0};
+    pending_chain.len = 1;
+    memcpy(
+        pending_chain.links[0].cargo_pub,
+        pending_unit.pub, 32);
+    ASSERT(remote_receipt_cache_store(
+        cache, &pending_chain));
+    ASSERT_EQ_INT(cache->count, 1);
+    ASSERT(remote_receipt_chain_for_snapshot(
+        cache, &current, retained.pub) != NULL);
+
+    uint16_t manifest_count = current.manifest.count;
+    remote_receipt_cache_reset_session(cache, &current);
+
+    const ship_receipts_t *receipts =
+        ship_get_receipts_const(&current);
+    ASSERT(receipts != NULL);
+    ASSERT_EQ_INT(cache->count, 0);
+    ASSERT_EQ_INT(receipts->count, manifest_count);
+    ASSERT_EQ_INT(receipts->chains[0].len, 0);
+    ASSERT(remote_receipt_chain_for_snapshot(
+        cache, &current, retained.pub) == NULL);
+
+    /* A fresh snapshot may reuse the same cargo identity, but it must wait
+     * for a receipt delivered in the new session instead of inheriting the
+     * old authority's sidecar. */
+    cargo_store_t staged = {0};
+    ASSERT(cargo_store_bootstrap(
+        &staged, SHIP_MANIFEST_DEFAULT_CAP));
+    const cargo_receipt_chain_t *replacement =
+        remote_receipt_chain_for_snapshot(
+            cache, &current, retained.pub);
+    ASSERT(replacement == NULL);
+    ASSERT(cargo_store_push_with_chain(
+        &staged, &retained, replacement));
+    ASSERT_EQ_INT(
+        cargo_store_receipts(&staged)->chains[0].len, 0);
+
+    cargo_store_cleanup(&staged);
+    ship_cleanup(&current);
+    free(cache);
+}
+
+TEST(test_ship_receipts_semantic_generation_is_unique_and_poison_isolated) {
+    ship_receipts_t receipts = {0};
+    ASSERT(ship_receipts_init(&receipts, 2));
+    uint64_t initial_generation = receipts.semantic_generation;
+    ASSERT(initial_generation != 0);
+    ASSERT(initial_generation != UINT64_MAX);
+
+    ASSERT(ship_receipts_push_empty(&receipts));
+    ASSERT(receipts.semantic_generation > initial_generation);
+
+    cargo_receipt_chain_t chain = {0};
+    chain.len = 1;
+    chain.links[0].event_id = 11;
+    uint64_t before_set = receipts.semantic_generation;
+    ASSERT(ship_receipts_set_chain(&receipts, 0, &chain));
+    ASSERT(receipts.semantic_generation > before_set);
+    uint64_t after_set = receipts.semantic_generation;
+    ASSERT(ship_receipts_set_chain(&receipts, 0, &chain));
+    ASSERT(receipts.semantic_generation == after_set);
+
+    cargo_receipt_chain_t invalid = chain;
+    invalid.len = CARGO_RECEIPT_CHAIN_MAX_LEN + 1u;
+    uint64_t before_failure = receipts.semantic_generation;
+    ASSERT(!ship_receipts_set_chain(&receipts, 0, &invalid));
+    ASSERT(receipts.semantic_generation == before_failure);
+
+    ship_receipts_t cloned = {0};
+    ASSERT(ship_receipts_clone(&cloned, &receipts));
+    ASSERT(cloned.semantic_generation == receipts.semantic_generation);
+    chain.links[0].event_id = 12;
+    ASSERT(ship_receipts_set_chain(&cloned, 0, &chain));
+    ASSERT(cloned.semantic_generation > receipts.semantic_generation);
+
+    uint64_t retired_generation = receipts.semantic_generation;
+    ship_receipts_free(&receipts);
+    ASSERT(ship_receipts_init(&receipts, 2));
+    ASSERT(receipts.semantic_generation != retired_generation);
+
+    ASSERT(ship_receipts_push_empty(&receipts));
+    receipts.semantic_generation = UINT64_MAX;
+    chain.links[0].event_id = 13;
+    ASSERT(ship_receipts_set_chain(&receipts, 0, &chain));
+    ASSERT(receipts.semantic_generation == UINT64_MAX);
+
+    ship_receipts_t after_poison = {0};
+    ASSERT(ship_receipts_init(&after_poison, 1));
+    ASSERT(after_poison.semantic_generation != 0);
+    ASSERT(after_poison.semantic_generation != UINT64_MAX);
+    after_poison.semantic_generation = UINT64_MAX - 1u;
+    ASSERT(ship_receipts_push_empty(&after_poison));
+    ASSERT(after_poison.semantic_generation != UINT64_MAX);
+
+    ship_receipts_free(&after_poison);
+    ship_receipts_free(&cloned);
+    ship_receipts_free(&receipts);
+}
+
+typedef struct {
+    int calls;
+    int accepted;
+    int reject_call;
+    uint8_t cargo_pubs[16][32];
+} receipt_resend_capture_t;
+
+static bool capture_receipt_resend(
+    void *user,
+    const cargo_receipt_chain_t *chain) {
+    receipt_resend_capture_t *capture =
+        (receipt_resend_capture_t *)user;
+    if (!capture || !chain || chain->len == 0) return false;
+    capture->calls++;
+    if (capture->reject_call == capture->calls)
+        return false;
+    if (capture->accepted <
+        (int)(sizeof(capture->cargo_pubs) /
+              sizeof(capture->cargo_pubs[0]))) {
+        memcpy(
+            capture->cargo_pubs[capture->accepted],
+            chain->links[0].cargo_pub, 32);
+    }
+    capture->accepted++;
+    return true;
+}
+
+static cargo_receipt_chain_t receipt_resend_test_chain(
+    const cargo_unit_t *unit,
+    uint64_t event_id) {
+    cargo_receipt_chain_t chain = {0};
+    chain.len = 1;
+    if (unit) memcpy(chain.links[0].cargo_pub, unit->pub, 32);
+    chain.links[0].event_id = event_id;
+    return chain;
+}
+
+TEST(test_receipt_resend_completed_cursor_skips_revision_rescan) {
+    ship_t ship = {0};
+    ASSERT(ship_manifest_bootstrap(&ship));
+    cargo_unit_t unit = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"RSNDC001",
+        COMMODITY_FRAME, 0, &unit));
+    ASSERT(ship_manifest_push_with_chain(&ship, &unit, NULL));
+    cargo_receipt_chain_t chain =
+        receipt_resend_test_chain(&unit, 41);
+    ASSERT(ship_receipts_set_chain(
+        ship_get_receipts(&ship), 0, &chain));
+
+    server_receipt_resend_state_t state = {0};
+    receipt_resend_capture_t capture = {0};
+    server_receipt_resend_note_manifest_admitted(&state, &ship);
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT(state.receipt_revision_scans == 1);
+    ASSERT(state.receipt_links_packed == 1);
+    ASSERT_EQ_INT(state.cursor, 1);
+
+    uint64_t scans = state.receipt_revision_scans;
+    uint64_t links_packed = state.receipt_links_packed;
+    uint64_t completed_hits = state.receipt_completed_fast_hits;
+    for (int i = 0; i < 8; i++) {
+        ASSERT_EQ_INT(
+            server_receipt_resend_drain(
+                &state, &ship, 1,
+                capture_receipt_resend, &capture),
+            0);
+    }
+    ASSERT(state.receipt_revision_scans == scans);
+    ASSERT(state.receipt_links_packed == links_packed);
+    ASSERT(state.receipt_completed_fast_hits == completed_hits + 8u);
+
+    chain.links[0].event_id = 42;
+    ASSERT(ship_receipts_set_chain(
+        ship_get_receipts(&ship), 0, &chain));
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT(state.receipt_revision_scans == scans + 1u);
+    ASSERT(state.receipt_links_packed == links_packed + 1u);
+    ASSERT_EQ_INT(state.cursor, 1);
+
+    ship_receipts_t *receipts = ship_get_receipts(&ship);
+    ASSERT(receipts != NULL);
+    receipts->semantic_generation = UINT64_MAX;
+    uint64_t saturated_scans = state.receipt_revision_scans;
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        0);
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        0);
+    ASSERT(state.receipt_revision_scans == saturated_scans + 2u);
+
+    chain.links[0].event_id = 43;
+    ASSERT(ship_receipts_set_chain(receipts, 0, &chain));
+    ASSERT(receipts->semantic_generation == UINT64_MAX);
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT(state.receipt_revision_scans == saturated_scans + 3u);
+    ASSERT_EQ_INT(state.cursor, 1);
+
+    ship_cleanup(&ship);
+}
+
+TEST(test_receipt_resend_is_manifest_gated_paced_and_retryable) {
+    ship_t ship = {0};
+    ASSERT(ship_manifest_bootstrap(&ship));
+    cargo_unit_t units[5] = {0};
+    for (int i = 0; i < 4; i++) {
+        uint8_t origin[8] = {
+            'R', 'S', 'N', 'D',
+            (uint8_t)i, 0, 0, 0,
+        };
+        ASSERT(hash_legacy_migrate_unit(
+            origin, COMMODITY_FRAME, 0, &units[i]));
+        ASSERT(ship_manifest_push_with_chain(
+            &ship, &units[i], NULL));
+        ship_receipts_t *receipts =
+            ship_get_receipts(&ship);
+        ASSERT(receipts != NULL);
+        cargo_receipt_chain_t chain =
+            receipt_resend_test_chain(
+                &units[i], (uint64_t)(i + 1));
+        ASSERT(ship_receipts_set_chain(
+            receipts, (uint16_t)i, &chain));
+    }
+
+    server_receipt_resend_state_t state = {0};
+    receipt_resend_capture_t capture = {
+        .reject_call = 1,
+    };
+    server_receipt_resend_note_manifest_admitted(
+        &state, &ship);
+
+    /* A dropped best-effort/action-time bundle does not advance the cursor. */
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 2,
+            capture_receipt_resend, &capture),
+        0);
+    ASSERT_EQ_INT(state.cursor, 0);
+
+    /* A later sink failure commits only the accepted prefix. Retrying starts
+     * at the first unaccepted chain rather than replaying that prefix. */
+    capture.reject_call = 2;
+    capture.calls = 0;
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 2,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT_EQ_INT(state.cursor, 1);
+
+    capture.reject_call = 0;
+    capture.calls = 0;
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 2,
+            capture_receipt_resend, &capture),
+        2);
+    ASSERT_EQ_INT(state.cursor, 3);
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 2,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT_EQ_INT(state.cursor, 4);
+    ASSERT_EQ_INT(capture.accepted, 4);
+    for (int i = 0; i < 4; i++) {
+        ASSERT(memcmp(
+            capture.cargo_pubs[i],
+            units[i].pub, 32) == 0);
+    }
+
+    /* A sidecar-only extension resets the paced view even though the
+     * manifest identities did not change. */
+    ship_receipts_t *receipts =
+        ship_get_receipts(&ship);
+    cargo_receipt_chain_t extended = receipts->chains[0];
+    extended.links[1] = extended.links[0];
+    extended.links[1].event_id = 99;
+    extended.len = 2;
+    ASSERT(ship_receipts_set_chain(
+        receipts, 0, &extended));
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT_EQ_INT(state.cursor, 1);
+
+    /* New identities cannot receive sidecars until their manifest revision
+     * has itself been admitted. */
+    uint8_t origin[8] = {
+        'R', 'S', 'N', 'D', 4, 0, 0, 0,
+    };
+    ASSERT(hash_legacy_migrate_unit(
+        origin, COMMODITY_FRAME, 0, &units[4]));
+    ASSERT(ship_manifest_push_with_chain(
+        &ship, &units[4], NULL));
+    receipts = ship_get_receipts(&ship);
+    cargo_receipt_chain_t fifth =
+        receipt_resend_test_chain(&units[4], 5);
+    ASSERT(ship_receipts_set_chain(
+        receipts, 4, &fifth));
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 2,
+            capture_receipt_resend, &capture),
+        0);
+    ASSERT_EQ_INT(state.cursor, 1);
+
+    server_receipt_resend_note_manifest_admitted(
+        &state, &ship);
+    ASSERT_EQ_INT(state.cursor, 0);
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        1);
+
+    /* Reconnect state is empty, so the same admitted manifest replays from
+     * its first non-empty chain. */
+    memset(&state, 0, sizeof(state));
+    server_receipt_resend_note_manifest_admitted(
+        &state, &ship);
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT_EQ_INT(state.cursor, 1);
+    ship_cleanup(&ship);
+}
+
+TEST(test_receipt_resend_cursor_survives_aggregate_row_churn) {
+    ship_t ship = {0};
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    cargo_unit_t aggregate = {
+        .kind = CARGO_KIND_FRAME,
+        .commodity = COMMODITY_FRAME,
+        .grade = MINING_GRADE_COMMON,
+        .quantity = 1,
+    };
+    cargo_unit_t detailed[2] = {0};
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"RSNDA001",
+        COMMODITY_FRAME, 0, &detailed[0]));
+    ASSERT(hash_legacy_migrate_unit(
+        (const uint8_t *)"RSNDB001",
+        COMMODITY_FRAME, 0, &detailed[1]));
+    ASSERT(ship_manifest_push_with_chain(
+        &ship, &aggregate, NULL));
+    for (int i = 0; i < 2; i++) {
+        ASSERT(ship_manifest_push_with_chain(
+            &ship, &detailed[i], NULL));
+        ship_receipts_t *receipts =
+            ship_get_receipts(&ship);
+        ASSERT(receipts != NULL);
+        cargo_receipt_chain_t chain =
+            receipt_resend_test_chain(
+                &detailed[i], (uint64_t)(i + 1));
+        ASSERT(ship_receipts_set_chain(
+            receipts, (uint16_t)(i + 1), &chain));
+    }
+
+    server_receipt_resend_state_t state = {0};
+    receipt_resend_capture_t capture = {0};
+    server_receipt_resend_note_manifest_admitted(
+        &state, &ship);
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT_EQ_INT(state.cursor, 1);
+    ASSERT_EQ_INT(capture.accepted, 1);
+    ASSERT(state.receipt_revision_scans == 1);
+    ASSERT(memcmp(capture.cargo_pubs[0],
+                  detailed[0].pub, 32) == 0);
+
+    /*
+     * Aggregate rows are absent from the advertised detail revision. Removing
+     * one must not reinterpret the cursor as a physical manifest index and
+     * permanently skip the next detailed sidecar.
+     */
+    ASSERT(ship_manifest_remove_with_chain(
+        &ship, 0, NULL, NULL));
+    server_receipt_resend_note_manifest_admitted(
+        &state, &ship);
+    ASSERT_EQ_INT(state.cursor, 1);
+    ASSERT_EQ_INT(
+        server_receipt_resend_drain(
+            &state, &ship, 1,
+            capture_receipt_resend, &capture),
+        1);
+    ASSERT_EQ_INT(state.cursor, 2);
+    ASSERT_EQ_INT(capture.accepted, 2);
+    ASSERT(state.receipt_revision_scans == 2);
+    ASSERT(memcmp(capture.cargo_pubs[1],
+                  detailed[1].pub, 32) == 0);
+
+    ship_cleanup(&ship);
 }
 
 TEST(test_world_cargo_pods_semantic_hash_ignores_pose_drift) {
@@ -3824,8 +4533,13 @@ TEST(test_roundtrip_npcs) {
     ASSERT_EQ_INT(read_u16_le(&p[22]), 512);       /* target_asteroid */
     ASSERT_EQ_INT(read_u16_le(&p[24]), 1024);      /* towed_fragment */
     ASSERT_EQ_INT(p[26], (int)(0.55f * 255.0f));
-    ASSERT(memcmp(&p[29], npcs[0].session_token, 8) == 0);
-    ASSERT_EQ_INT(p[37], 2);
+    const uint8_t zero_identity[NPC_RECORD_RESERVED_IDENTITY_SIZE] = {0};
+    ASSERT(memcmp(&p[NPC_RECORD_RESERVED_IDENTITY_OFFSET],
+                  zero_identity, sizeof(zero_identity)) == 0);
+    ASSERT(memcmp(&p[NPC_RECORD_RESERVED_IDENTITY_OFFSET],
+                  npcs[0].session_token,
+                  sizeof(npcs[0].session_token)) != 0);
+    ASSERT_EQ_INT(p[NPC_RECORD_HOME_STATION_OFFSET], 2);
 }
 
 TEST(test_npc_snapshot_serializes_embedded_ship_tow_slot) {
@@ -3845,7 +4559,7 @@ TEST(test_npc_snapshot_serializes_embedded_ship_tow_slot) {
     ASSERT_EQ_INT(read_u16_le(&buf[2 + 24]), 77);
 }
 
-TEST(test_world_npcs_semantic_hash_ignores_pose_drift) {
+TEST(test_world_npcs_semantic_hash_ignores_pose_and_bearer_drift) {
     NPC_SHIP_ARRAY(npcs, MAX_NPC_SHIPS);
 
     npcs[2].active = true;
@@ -3916,7 +4630,7 @@ TEST(test_world_npcs_semantic_hash_ignores_pose_drift) {
     memcpy(npcs[2].session_token, "NPCPOSE2", 8);
     blen = serialize_npcs(b, npcs);
     bhash = net_world_npcs_semantic_hash(b, blen);
-    ASSERT(ahash != bhash);
+    ASSERT(ahash == bhash);
 }
 
 TEST(test_world_npcs_metadata_refresh_uses_sparse_safety_heartbeat) {
@@ -4858,18 +5572,20 @@ TEST(test_world_snapshot_emitter_sequence_shared) {
                                           packet_capture_sink, &cap,
                                           &scratch);
 
-    ASSERT_EQ_INT(cap.count, 5);
+    ASSERT_EQ_INT(cap.count, 6);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS8_Q);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_WORLD_PLAYERS);
     ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_NPCS);
     ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_INTERACTIONS_Q);
-    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(cap.type[5], NET_MSG_WORLD_TIME);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID8_Q_MSG_HEADER + ASTEROID8_Q_RECORD_SIZE);
     ASSERT_EQ_INT(cap.len[1], 2);
     ASSERT_EQ_INT(cap.len[2], 2);
     ASSERT_EQ_INT(cap.len[3], 2);
-    ASSERT_EQ_INT(cap.len[4], 5);
+    ASSERT_EQ_INT(cap.len[4], TOW_LINKS_MSG_HEADER_SIZE);
+    ASSERT_EQ_INT(cap.len[5], 5);
 
     ASSERT(w.asteroids[2].net_dirty);
     server_clear_asteroid_net_dirty(&w);
@@ -4904,14 +5620,15 @@ TEST(test_world_snapshot_emits_compact_asteroid_motion_stream) {
                                           packet_capture_sink, &cap,
                                           &scratch);
 
-    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.count, 5);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROID_POSD8_Q);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID_POSD8_Q_MSG_HEADER + ASTEROID_POSD8_Q_RECORD_SIZE);
     ASSERT_EQ_INT((int)w.players[0].replication->asteroid_motion_sent_tick[2],
                   100 + ASTEROID_NET_MOVING_REPEAT_TICKS);
     ASSERT_EQ_INT(cap.type[1], NET_MSG_WORLD_NPCS);
-    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(cap.type[4], NET_MSG_WORLD_TIME);
 }
 
 TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
@@ -4945,7 +5662,7 @@ TEST(test_world_snapshot_prioritizes_local_towed_asteroid_identity) {
                                           packet_capture_sink, &cap,
                                           &scratch);
 
-    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.count, 5);
     ASSERT_EQ_INT(cap.type[0], NET_MSG_WORLD_ASTEROIDS8_Q);
     ASSERT_EQ_INT(cap.len[0],
                   ASTEROID8_Q_MSG_HEADER + ASTEROID8_Q_RECORD_SIZE);
@@ -5114,8 +5831,9 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
     server_emit_world_snapshot_for_player(&w, 0, false,
                                           packet_capture_sink, &cap,
                                           &scratch);
-    ASSERT_EQ_INT(cap.count, 3);
-    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TIME);
     ASSERT(w.players[0].replication->world_time_sent);
     ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick, 100);
 
@@ -5125,7 +5843,7 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
     server_emit_world_snapshot_for_player(&w, 0, false,
                                           packet_capture_sink, &cap,
                                           &scratch);
-    ASSERT_EQ_INT(cap.count, 2);
+    ASSERT_EQ_INT(cap.count, 3);
     for (int i = 0; i < cap.count; i++)
         ASSERT(cap.type[i] != NET_MSG_WORLD_TIME);
     ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick, 100);
@@ -5136,8 +5854,9 @@ TEST(test_world_time_snapshot_reconciles_at_low_cadence) {
     server_emit_world_snapshot_for_player(&w, 0, false,
                                           packet_capture_sink, &cap,
                                           &scratch);
-    ASSERT_EQ_INT(cap.count, 3);
-    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TIME);
+    ASSERT_EQ_INT(cap.count, 4);
+    ASSERT_EQ_INT(cap.type[2], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(cap.type[3], NET_MSG_WORLD_TIME);
     ASSERT_EQ_INT((int)w.players[0].replication->world_time_last_sent_tick,
                   100 + WORLD_TIME_REPEAT_TICKS);
 }
@@ -5667,7 +6386,8 @@ TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
     chain.links[0].event_id = 7001;
     chain.links[1].event_id = 7002;
     ASSERT(ship_manifest_push_with_chain(&ship, &unit, NULL));
-    ship_get_receipts(&ship)->chains[0] = chain;
+    ASSERT(ship_receipts_set_chain(
+        ship_get_receipts(&ship), 0, &chain));
 
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
     int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
@@ -5926,7 +6646,8 @@ TEST(test_roundtrip_inspect_snapshot_player_manifest_chain) {
     memset(chain.links[0].authoring_station, 0xC3, 32);
     chain.links[0].event_id = 8001;
     ASSERT(ship_manifest_push_with_chain(player.ship, &unit, NULL));
-    ship_get_receipts(player.ship)->chains[0] = chain;
+    ASSERT(ship_receipts_set_chain(
+        ship_get_receipts(player.ship), 0, &chain));
 
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
     int len = serialize_inspect_snapshot_player(buf, 5, &player);
@@ -6495,8 +7216,7 @@ TEST(test_inspect_snapshot_keeps_named_ingots_individual) {
 }
 
 TEST(test_roundtrip_stations) {
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
+    STATION_ARRAY(stations, MAX_STATIONS);
 
     /* Mark station 0 as active so it gets serialized */
     stations[0].signal_range = 2200.0f;
@@ -6527,8 +7247,7 @@ TEST(test_roundtrip_stations) {
 }
 
 TEST(test_payload_cache_suppresses_unchanged_world_stations_per_connection) {
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
+    STATION_ARRAY(stations, MAX_STATIONS);
     stations[0].signal_range = 2200.0f;
     stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 45.5f;
     ASSERT(station_manifest_bootstrap(&stations[0]));
@@ -6558,8 +7277,7 @@ TEST(test_payload_cache_suppresses_unchanged_world_stations_per_connection) {
 }
 
 TEST(test_world_stations_q_omits_zero_inventory_slots) {
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
+    STATION_ARRAY(stations, MAX_STATIONS);
     stations[0].signal_range = 2200.0f;
     stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 45.5f;
     ASSERT(station_manifest_bootstrap(&stations[0]));
@@ -7038,8 +7756,7 @@ TEST(test_bug92_station_record_size_matches_buffer) {
      * STATION_RECORD_SIZE is validated at compile time via _Static_assert,
      * but verify at runtime that serialize_stations writes exactly the
      * expected number of bytes. */
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
+    STATION_ARRAY(stations, MAX_STATIONS);
     /* Empty stations should produce 0 records */
     uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int len = serialize_stations(buf, stations);
@@ -7369,6 +8086,18 @@ TEST(test_contracts_semantic_hash_ignores_age_only) {
 TEST(test_delivery_ledger_serializes_player_shipments) {
     WORLD_DECL;
     world_reset(&w);
+    for (int player_id = 0; player_id <= 1; player_id++) {
+        server_player_t *player = &w.players[player_id];
+        player->id = (uint8_t)player_id;
+        player->connected = true;
+        player->session_ready = true;
+        player->pubkey_set = true;
+        player->pubkey_proof_ok = true;
+        player->pubkey_challenge_consumed = true;
+        player->pubkey_identity_finalized = true;
+        memset(player->pubkey, 0x40 + player_id,
+               sizeof(player->pubkey));
+    }
     uint8_t bound_pub[32];
     uint8_t other_bound_pub[32];
     memset(bound_pub, 0xa1, sizeof(bound_pub));
@@ -7404,6 +8133,12 @@ TEST(test_delivery_ledger_serializes_player_shipments) {
         .debtor_player = 0,
         .status = DELIVERY_SHIPMENT_PICKED_UP,
     };
+    ASSERT(delivery_ownership_assign_player(
+        &w.delivery_shipments[0], &w, 1));
+    ASSERT(delivery_ownership_assign_player(
+        &w.delivery_shipments[1], &w, 1));
+    ASSERT(delivery_ownership_assign_player(
+        &w.delivery_shipments[2], &w, 0));
 
     w.players[1].ship->towed_pods[0] = 5;
     w.players[1].ship->towed_pod_count = 1;
@@ -7443,7 +8178,7 @@ TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {
     WORLD_DECL;
     world_reset(&w);
     memset(w.asteroids, 0, sizeof(w.asteroids));
-    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+    test_world_clear_npcs(&w);
 
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -7512,8 +8247,7 @@ TEST(test_roundtrip_player_ship) {
 }
 
 TEST(test_manifest_detail_serializes_full_cargo_identity) {
-    station_t st;
-    memset(&st, 0, sizeof(st));
+    STATION_DECL(st);
     ASSERT(station_manifest_bootstrap(&st));
 
     cargo_unit_t unit = {0};
@@ -7998,6 +8732,125 @@ TEST(test_latency_pong_roundtrip) {
     ASSERT_EQ_INT((int)read_u32_le(&buf[17]), (int)0x01020304u);
 }
 
+TEST(test_atomic_tow_link_snapshot_roundtrip) {
+    WORLD_DECL;
+    memset(&w, 0, sizeof(w));
+    w.tow_revision = 0x55667788u;
+    w.tow_revision_tick = 0x11223344u;
+    w.tow_links[3] = (tow_link_t){
+        .active = true,
+        .source = {
+            .kind = ENTITY_KIND_SHIP,
+            .index = 2,
+            .part = -1,
+            .generation = 9,
+        },
+        .target = {
+            .kind = ENTITY_KIND_CARGO_POD,
+            .index = 17,
+            .part = -1,
+            .generation = 12,
+        },
+        .profile = TOW_PROFILE_SHIP_POD,
+        .slot = 4,
+        .state = TOW_LINK_HELD,
+        .attached_tick = 0x01020304u,
+        .revision = 0x05060708u,
+    };
+    w.tow_links[4] = (tow_link_t){
+        .active = true,
+        .source = {
+            .kind = ENTITY_KIND_STATION_MODULE,
+            .index = 1,
+            .part = 3,
+            .generation = 5,
+        },
+        .target = {
+            .kind = ENTITY_KIND_CARGO_POD,
+            .index = 18,
+            .part = -1,
+            .generation = 13,
+        },
+        .profile = TOW_PROFILE_MODULE_POD,
+        .slot = 0,
+        .state = TOW_LINK_HELD,
+        .attached_tick = 0x11121314u,
+        .revision = 0x15161718u,
+    };
+    w.tow_links[5] = w.tow_links[4];
+    w.tow_links[5].target.index = 19;
+    w.tow_links[5].target.generation = 14;
+
+    uint8_t buf[TOW_LINKS_MAX_SIZE];
+    int len = serialize_tow_links(buf, &w);
+    ASSERT_EQ_INT(
+        len, TOW_LINKS_MSG_HEADER_SIZE + 3 * TOW_LINK_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(read_u16_le(&buf[1]), 3);
+    ASSERT(read_u32_le(&buf[3]) == w.tow_revision);
+    ASSERT(read_u32_le(&buf[7]) == w.tow_revision_tick);
+
+    const uint8_t *p = &buf[TOW_LINKS_MSG_HEADER_SIZE];
+    ASSERT_EQ_INT(p[0], ENTITY_KIND_SHIP);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[1]), 2);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[3]), -1);
+    ASSERT_EQ_INT(read_u16_le(&p[5]), 9);
+    ASSERT_EQ_INT(p[7], ENTITY_KIND_CARGO_POD);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[8]), 17);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[10]), -1);
+    ASSERT_EQ_INT(read_u16_le(&p[12]), 12);
+    ASSERT_EQ_INT(p[14], TOW_PROFILE_SHIP_POD);
+    ASSERT_EQ_INT(p[15], 4);
+    ASSERT_EQ_INT(p[16], TOW_LINK_HELD);
+    ASSERT_EQ_INT(p[17], 0);
+    ASSERT(read_u32_le(&p[18]) == 0x01020304u);
+    ASSERT(read_u32_le(&p[22]) == 0x05060708u);
+
+    p += TOW_LINK_RECORD_SIZE;
+    ASSERT_EQ_INT(p[0], ENTITY_KIND_STATION_MODULE);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[1]), 1);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[3]), 3);
+    ASSERT_EQ_INT(read_u16_le(&p[5]), 5);
+    ASSERT_EQ_INT(p[7], ENTITY_KIND_CARGO_POD);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[8]), 18);
+    ASSERT_EQ_INT(read_u16_le(&p[12]), 13);
+    ASSERT_EQ_INT(p[14], TOW_PROFILE_MODULE_POD);
+    ASSERT_EQ_INT(p[15], 0);
+
+    p += TOW_LINK_RECORD_SIZE;
+    ASSERT_EQ_INT(p[0], ENTITY_KIND_STATION_MODULE);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[1]), 1);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[3]), 3);
+    ASSERT_EQ_INT(read_u16_le(&p[5]), 5);
+    ASSERT_EQ_INT(p[7], ENTITY_KIND_CARGO_POD);
+    ASSERT_EQ_INT((int16_t)read_u16_le(&p[8]), 19);
+    ASSERT_EQ_INT(read_u16_le(&p[12]), 14);
+    ASSERT_EQ_INT(p[14], TOW_PROFILE_MODULE_POD);
+    ASSERT_EQ_INT(p[15], 0);
+
+    uint8_t canonical[TOW_LINKS_MAX_SIZE];
+    memcpy(canonical, buf, (size_t)len);
+    tow_link_t ship_link = w.tow_links[3];
+    tow_link_t first_module_link = w.tow_links[4];
+    tow_link_t second_module_link = w.tow_links[5];
+    memset(w.tow_links, 0, sizeof(w.tow_links));
+    w.tow_links[1] = second_module_link;
+    w.tow_links[200] = first_module_link;
+    w.tow_links[MAX_TOW_LINKS - 1] = ship_link;
+    int permuted_len = serialize_tow_links(buf, &w);
+    ASSERT_EQ_INT(permuted_len, len);
+    ASSERT(memcmp(canonical, buf, (size_t)len) == 0);
+
+    memset(w.tow_links, 0, sizeof(w.tow_links));
+    w.tow_revision++;
+    w.tow_revision_tick++;
+    len = serialize_tow_links(buf, &w);
+    ASSERT_EQ_INT(len, TOW_LINKS_MSG_HEADER_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&buf[1]), 0);
+    ASSERT(read_u32_le(&buf[3]) == w.tow_revision);
+    ASSERT(read_u32_le(&buf[7]) == w.tow_revision_tick);
+}
+
 static const uint8_t *find_protocol_stream(const uint8_t *buf, uint8_t msg) {
     int count = buf[7];
     for (int i = 0; i < count; i++) {
@@ -8012,7 +8865,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     uint8_t buf[PROTOCOL_INFO_SIZE];
     int len = serialize_protocol_info(buf, 8, 50, 100, 250, 300, 2000);
 
-    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 3);
+    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 6);
     ASSERT_EQ_INT(SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION, 3);
     ASSERT(len >= PROTOCOL_INFO_HEADER_SIZE);
     ASSERT(len <= PROTOCOL_INFO_SIZE);
@@ -8059,6 +8912,17 @@ TEST(test_protocol_info_serializes_stream_map) {
     ASSERT_EQ_INT(read_u16_le(&diag[6]), 1);
     ASSERT_EQ_INT(read_u16_le(&diag[8]), MAX_MODULES_PER_STATION);
     ASSERT_EQ_INT(read_u16_le(&diag[10]), 300);
+
+    const uint8_t *tow_links = find_protocol_stream(
+        buf, NET_MSG_WORLD_TOW_LINKS);
+    ASSERT(tow_links != NULL);
+    ASSERT_EQ_INT(tow_links[1], PROTOCOL_STREAM_CLASS_AUTH);
+    ASSERT(read_u16_le(&tow_links[2]) &
+           PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT_EQ_INT(read_u16_le(&tow_links[4]), TOW_LINKS_MSG_HEADER_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&tow_links[6]), TOW_LINK_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&tow_links[8]), MAX_TOW_LINKS);
+    ASSERT_EQ_INT(read_u16_le(&tow_links[10]), 100);
 
     const uint8_t *latency_pong = find_protocol_stream(
         buf, NET_MSG_LATENCY_PONG);
@@ -8673,6 +9537,46 @@ TEST(test_protocol_info_serializes_stream_map) {
                   CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE);
     ASSERT_EQ_INT(read_u16_le(&handoff_present[8]),
                   HANDOFF_SHIP_SNAPSHOT_MAX_CARGO);
+
+    const uint8_t *recovery_offer = find_protocol_stream(
+        buf, NET_MSG_LEGACY_RECOVERY_OFFER);
+    ASSERT(recovery_offer != NULL);
+    ASSERT_EQ_INT(recovery_offer[1], PROTOCOL_STREAM_CLASS_AUTH);
+    ASSERT(read_u16_le(&recovery_offer[2]) &
+           PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT(read_u16_le(&recovery_offer[2]) &
+           PROTOCOL_STREAM_FLAG_PER_PLAYER);
+    ASSERT(read_u16_le(&recovery_offer[2]) &
+           PROTOCOL_STREAM_FLAG_FIXED_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&recovery_offer[4]),
+                  NET_LEGACY_RECOVERY_OFFER_SIZE);
+
+    const uint8_t *recovery_result = find_protocol_stream(
+        buf, NET_MSG_LEGACY_RECOVERY_RESULT);
+    ASSERT(recovery_result != NULL);
+    ASSERT_EQ_INT(recovery_result[1], PROTOCOL_STREAM_CLASS_AUTH);
+    ASSERT(read_u16_le(&recovery_result[2]) &
+           PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT(read_u16_le(&recovery_result[2]) &
+           PROTOCOL_STREAM_FLAG_PER_PLAYER);
+    ASSERT(read_u16_le(&recovery_result[2]) &
+           PROTOCOL_STREAM_FLAG_FIXED_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&recovery_result[4]),
+                  NET_LEGACY_RECOVERY_RESULT_SIZE);
+
+    const uint8_t *events_v2 = find_protocol_stream(
+        buf, NET_MSG_EVENTS_V2);
+    ASSERT(events_v2 != NULL);
+    ASSERT_EQ_INT(events_v2[1], PROTOCOL_STREAM_CLASS_EVENT);
+    ASSERT(read_u16_le(&events_v2[2]) &
+           PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT);
+    ASSERT(read_u16_le(&events_v2[2]) &
+           PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER);
+    ASSERT_EQ_INT(read_u16_le(&events_v2[4]),
+                  NET_EVENT_V2_HEADER_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&events_v2[6]),
+                  NET_EVENT_V2_RECORD_SIZE);
+    ASSERT_EQ_INT(read_u16_le(&events_v2[8]), SIM_MAX_EVENTS);
 }
 
 TEST(test_buy_event_serializes_cost_and_quantity) {
@@ -8762,6 +9666,201 @@ TEST(test_events_for_recipient_filters_local_only_damage) {
     ASSERT_EQ_INT(buf[2 + NET_EVENT_RECORD_SIZE], SIM_EVENT_DEATH);
 }
 
+TEST(test_public_event_records_exclude_session_bearers) {
+    sim_events_t events;
+    memset(&events, 0, sizeof(events));
+    events.count = 2;
+    events.events[0] = (sim_event_t){
+        .type = SIM_EVENT_NPC_KILL,
+        .player_id = 4,
+        .npc_kill = {
+            .killer_token = {0x91, 0x82, 0x73, 0x64,
+                             0x55, 0x46, 0x37, 0x28},
+            .cause = DEATH_CAUSE_RAM,
+            .npc_role = NPC_ROLE_HAULER,
+        },
+    };
+    events.events[1] = (sim_event_t){
+        .type = SIM_EVENT_DEATH,
+        .player_id = 7,
+        .death = {
+            .killer_token = {0x19, 0x2a, 0x3b, 0x4c,
+                             0x5d, 0x6e, 0x7f, 0x80},
+            .cause = DEATH_CAUSE_THROWN_ROCK,
+        },
+    };
+
+    uint8_t buf[2 + 2 * NET_EVENT_RECORD_SIZE];
+    memset(buf, 0xa5, sizeof(buf));
+    int len = serialize_events(buf, &events);
+
+    ASSERT_EQ_INT(len, (int)sizeof(buf));
+    ASSERT_EQ_INT(buf[0], NET_MSG_EVENTS);
+    ASSERT_EQ_INT(buf[1], 2);
+    const uint8_t *npc = &buf[2];
+    ASSERT_EQ_INT(npc[0], SIM_EVENT_NPC_KILL);
+    ASSERT_EQ_INT(npc[2], DEATH_CAUSE_RAM);
+    ASSERT_EQ_INT(npc[3], NPC_ROLE_HAULER);
+    for (int i = 4; i < 12; i++) ASSERT_EQ_INT(npc[i], 0);
+
+    const uint8_t *death = npc + NET_EVENT_RECORD_SIZE;
+    ASSERT_EQ_INT(death[0], SIM_EVENT_DEATH);
+    ASSERT_EQ_INT(death[2], DEATH_CAUSE_THROWN_ROCK);
+    for (int i = 3; i < 11; i++) ASSERT_EQ_INT(death[i], 0);
+
+    const uint8_t forbidden[][8] = {
+        {0x91, 0x82, 0x73, 0x64, 0x55, 0x46, 0x37, 0x28},
+        {0x19, 0x2a, 0x3b, 0x4c, 0x5d, 0x6e, 0x7f, 0x80},
+    };
+    for (size_t token = 0;
+         token < sizeof(forbidden) / sizeof(forbidden[0]);
+         token++) {
+        for (size_t offset = 0;
+             offset + sizeof(forbidden[token]) <= sizeof(buf);
+             offset++) {
+            ASSERT(memcmp(&buf[offset], forbidden[token],
+                          sizeof(forbidden[token])) != 0);
+        }
+    }
+}
+
+static bool protocol_buffer_contains(const uint8_t *buf, size_t len,
+                                     const uint8_t *needle,
+                                     size_t needle_len) {
+    if (!buf || !needle || needle_len == 0 || needle_len > len)
+        return false;
+    for (size_t i = 0; i + needle_len <= len; i++) {
+        if (memcmp(&buf[i], needle, needle_len) == 0)
+            return true;
+    }
+    return false;
+}
+
+TEST(test_public_event_v2_uses_actor_ids_not_bearers_or_callsigns) {
+    const uint8_t token_a[8] =
+        {0x91, 0x82, 0x73, 0x64, 0x55, 0x46, 0x37, 0x28};
+    const uint8_t token_b[8] =
+        {0x19, 0x2a, 0x3b, 0x4c, 0x5d, 0x6e, 0x7f, 0x80};
+    const char same_callsign_a[8] = "TWIN";
+    const char same_callsign_b[8] = "TWIN";
+    uint8_t pubkey_a[ACTOR_PRINCIPAL_ID_SIZE];
+    uint8_t pubkey_b[ACTOR_PRINCIPAL_ID_SIZE];
+    memset(pubkey_a, 0x31, sizeof(pubkey_a));
+    memset(pubkey_b, 0x72, sizeof(pubkey_b));
+
+    actor_principal_t principal_a = actor_principal_none();
+    actor_principal_t principal_b = actor_principal_none();
+    public_actor_id_t actor_a = public_actor_id_none();
+    public_actor_id_t actor_b = public_actor_id_none();
+    ASSERT(actor_principal_from_stable_id(
+        ACTOR_PRINCIPAL_PLAYER, pubkey_a, &principal_a));
+    ASSERT(actor_principal_from_stable_id(
+        ACTOR_PRINCIPAL_PLAYER, pubkey_b, &principal_b));
+    ASSERT(public_actor_id_from_principal(&principal_a, &actor_a));
+    ASSERT(public_actor_id_from_principal(&principal_b, &actor_b));
+    ASSERT(memcmp(same_callsign_a, same_callsign_b,
+                  sizeof(same_callsign_a)) == 0);
+    ASSERT(!public_actor_id_equal(&actor_a, &actor_b));
+
+    sim_events_t events = {0};
+    events.count = 2;
+    events.events[0] = (sim_event_t){
+        .type = SIM_EVENT_NPC_KILL,
+        .player_id = 3,
+        .subject_actor = {
+            .kind = PUBLIC_ACTOR_ID_UNATTRIBUTED,
+        },
+        .source_actor = actor_a,
+        .npc_kill = {
+            .killer_token = {
+                0x91, 0x82, 0x73, 0x64,
+                0x55, 0x46, 0x37, 0x28,
+            },
+            .cause = DEATH_CAUSE_RAM,
+            .npc_role = NPC_ROLE_HAULER,
+        },
+    };
+    events.events[1] = (sim_event_t){
+        .type = SIM_EVENT_DEATH,
+        .player_id = 7,
+        .subject_actor = actor_b,
+        .source_actor = actor_a,
+        .death = {
+            .killer_token = {
+                0x19, 0x2a, 0x3b, 0x4c,
+                0x5d, 0x6e, 0x7f, 0x80,
+            },
+            .cause = DEATH_CAUSE_THROWN_ROCK,
+        },
+    };
+
+    uint8_t buf[
+        NET_EVENT_V2_HEADER_SIZE +
+        2 * NET_EVENT_V2_RECORD_SIZE];
+    memset(buf, 0xa5, sizeof(buf));
+    int len = serialize_events_v2(buf, &events);
+    ASSERT_EQ_INT(len, (int)sizeof(buf));
+    ASSERT_EQ_INT(buf[0], NET_MSG_EVENTS_V2);
+    ASSERT_EQ_INT(buf[1], 2);
+    ASSERT(!protocol_buffer_contains(
+        buf, sizeof(buf), token_a, sizeof(token_a)));
+    ASSERT(!protocol_buffer_contains(
+        buf, sizeof(buf), token_b, sizeof(token_b)));
+    ASSERT(!protocol_buffer_contains(
+        buf, sizeof(buf),
+        (const uint8_t *)same_callsign_a, 4));
+
+    sim_event_t decoded = {
+        .type = SIM_EVENT_NPC_KILL,
+    };
+    const uint8_t *npc = &buf[NET_EVENT_V2_HEADER_SIZE];
+    ASSERT(net_event_v2_decode_actor_fields(npc, &decoded));
+    ASSERT_EQ_INT(
+        decoded.subject_actor.kind,
+        PUBLIC_ACTOR_ID_UNATTRIBUTED);
+    ASSERT(public_actor_id_equal(&decoded.source_actor, &actor_a));
+    ASSERT_EQ_INT(
+        npc[NET_EVENT_V2_PAYLOAD_OFFSET], DEATH_CAUSE_RAM);
+    ASSERT_EQ_INT(
+        npc[NET_EVENT_V2_PAYLOAD_OFFSET + 1], NPC_ROLE_HAULER);
+
+    const uint8_t *death = npc + NET_EVENT_V2_RECORD_SIZE;
+    decoded = (sim_event_t){.type = SIM_EVENT_DEATH};
+    ASSERT(net_event_v2_decode_actor_fields(death, &decoded));
+    ASSERT(public_actor_id_equal(&decoded.subject_actor, &actor_b));
+    ASSERT(public_actor_id_equal(&decoded.source_actor, &actor_a));
+}
+
+TEST(test_legacy_event_decoder_ignores_bearer_shaped_reserved_bytes) {
+    uint8_t record[NET_EVENT_RECORD_SIZE];
+    memset(record, 0, sizeof(record));
+    record[0] = SIM_EVENT_DEATH;
+    record[1] = 4;
+    record[2] = DEATH_CAUSE_RAM;
+    memcpy(&record[3], "SECRETS!", 8);
+
+    sim_event_t event = {
+        .type = SIM_EVENT_DEATH,
+        .subject_actor = {
+            .kind = PUBLIC_ACTOR_ID_DERIVED,
+            .id = {1},
+        },
+        .source_actor = {
+            .kind = PUBLIC_ACTOR_ID_DERIVED,
+            .id = {2},
+        },
+    };
+    net_event_decode_legacy_actor_fields(record, &event);
+    ASSERT_EQ_INT(event.subject_actor.kind,
+                  PUBLIC_ACTOR_ID_LEGACY_UNATTRIBUTED);
+    ASSERT_EQ_INT(event.source_actor.kind,
+                  PUBLIC_ACTOR_ID_LEGACY_UNATTRIBUTED);
+    for (size_t i = 0; i < PUBLIC_ACTOR_ID_SIZE; i++) {
+        ASSERT_EQ_INT(event.subject_actor.id[i], 0);
+        ASSERT_EQ_INT(event.source_actor.id[i], 0);
+    }
+}
+
 TEST(test_parse_input_action_accumulates) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -8795,6 +9894,7 @@ TEST(test_parse_input_launch_keeps_semantic_action) {
 
 void register_protocol_main_tests(void) {
     TEST_SECTION("\nProtocol roundtrip tests:\n");
+    RUN(test_client_pre_gameplay_gate_only_admits_exact_issued_recovery);
     RUN(test_wire_codec_roundtrips_and_fails_closed_on_bounds);
     RUN(test_pre_session_message_policy_excludes_client_telemetry);
     RUN(test_roundtrip_player_state);
@@ -8847,6 +9947,14 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
     RUN(test_roundtrip_cargo_pods);
     RUN(test_roundtrip_cargo_pods_q_quantizes_visual_pose);
+    RUN(test_cargo_pod_world_summary_issues_generation_bound_selection_token);
+    RUN(test_remote_receipts_survive_large_manifest_replacement);
+    RUN(test_remote_receipt_cache_churn_preserves_live_sidecar);
+    RUN(test_remote_receipt_session_reset_drops_live_sidecar);
+    RUN(test_ship_receipts_semantic_generation_is_unique_and_poison_isolated);
+    RUN(test_receipt_resend_completed_cursor_skips_revision_rescan);
+    RUN(test_receipt_resend_is_manifest_gated_paced_and_retryable);
+    RUN(test_receipt_resend_cursor_survives_aggregate_row_churn);
     RUN(test_world_cargo_pods_semantic_hash_ignores_pose_drift);
     RUN(test_world_cargo_pods_q_semantic_hash_ignores_pose_drift);
     RUN(test_world_cargo_pods_metadata_refresh_uses_sparse_safety_heartbeat);
@@ -8869,7 +9977,7 @@ void register_protocol_main_tests(void) {
     RUN(test_interaction_streams_use_relevance_filter);
     RUN(test_roundtrip_npcs);
     RUN(test_npc_snapshot_serializes_embedded_ship_tow_slot);
-    RUN(test_world_npcs_semantic_hash_ignores_pose_drift);
+    RUN(test_world_npcs_semantic_hash_ignores_pose_and_bearer_drift);
     RUN(test_world_npcs_metadata_refresh_uses_sparse_safety_heartbeat);
     RUN(test_world_npc_status_semantic_hash_ignores_thrust_only);
     RUN(test_world_npc_status8_semantic_hash_ignores_thrust_only);
@@ -8959,9 +10067,13 @@ void register_protocol_main_tests(void) {
     RUN(test_input_applied_roundtrip);
     RUN(test_cargo_receipt_bundle_roundtrip);
     RUN(test_latency_pong_roundtrip);
+    RUN(test_atomic_tow_link_snapshot_roundtrip);
     RUN(test_protocol_info_serializes_stream_map);
     RUN(test_buy_event_serializes_cost_and_quantity);
     RUN(test_events_for_recipient_filters_local_only_damage);
+    RUN(test_public_event_records_exclude_session_bearers);
+    RUN(test_public_event_v2_uses_actor_ids_not_bearers_or_callsigns);
+    RUN(test_legacy_event_decoder_ignores_bearer_shaped_reserved_bytes);
     RUN(test_parse_input_action_accumulates);
     RUN(test_parse_input_launch_keeps_semantic_action);
 }

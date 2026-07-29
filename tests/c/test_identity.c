@@ -110,6 +110,17 @@ TEST(test_identity_corrupt_file_renamed_to_bad) {
     identity_remove_lock_file(path);
 }
 
+TEST(test_identity_clear_wipes_private_material) {
+    player_identity_t identity = {0};
+    const player_identity_t zero = {0};
+    ASSERT(signal_crypto_keypair(identity.pubkey, identity.secret));
+    ASSERT(memcmp(&identity, &zero, sizeof(identity)) != 0);
+
+    identity_clear(&identity);
+
+    ASSERT(memcmp(&identity, &zero, sizeof(identity)) == 0);
+}
+
 TEST(test_identity_entropy_failure_does_not_create_file) {
     const char *path = TMP("identity_entropy_failure.key");
     char bad_path[1024];
@@ -474,6 +485,7 @@ void register_identity_tests(void) {
     TEST_SECTION("\nIdentity (player keypair) tests:\n");
     RUN(test_identity_save_then_load);
     RUN(test_identity_corrupt_file_renamed_to_bad);
+    RUN(test_identity_clear_wipes_private_material);
     RUN(test_identity_entropy_failure_does_not_create_file);
     RUN(test_identity_entropy_failure_preserves_corrupt_file);
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)

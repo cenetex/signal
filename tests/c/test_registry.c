@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "actor_principal_resolver.h"
+#include "contract_ownership.h"
 #include "protocol.h"
 #include "pubkey_proof.h"
 #include "signal_crypto.h"
@@ -60,6 +61,18 @@ static void setup_registered_player(world_t *w, int slot,
     ASSERT(server_finalize_pubkey_identity(w, slot));
 }
 
+static void setup_generated_bot_session(world_t *w, int slot,
+                                        uint8_t token_seed) {
+    ASSERT(w != NULL);
+    ASSERT(slot >= 0 && slot < MAX_PLAYERS);
+    server_player_t *bot = &w->players[slot];
+    bot->connected = true;
+    bot->grace_period = false;
+    bot->id = (uint8_t)slot;
+    bot->session_ready = true;
+    fill_token(bot->session_token, token_seed);
+}
+
 TEST(test_registry_fresh_registration) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -97,6 +110,102 @@ TEST(test_registry_idempotent_reregistration) {
     }
     ASSERT_EQ_INT(seen, 1);
     ASSERT_EQ_INT(registry_lookup_by_pubkey(w, pk), 1);
+}
+
+TEST(test_generated_bot_identity_survives_restart_and_slot_permutation) {
+    const char *path =
+        TMP("test_generated_bot_identity.sav");
+    WORLD_HEAP first = calloc(1, sizeof(world_t));
+    ASSERT(first != NULL);
+    world_reset(first);
+
+    setup_generated_bot_session(first, 7, 0x31);
+    ASSERT(server_finalize_generated_bot_identity(
+        first, 7, 3));
+    actor_principal_t original =
+        actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(
+        &first->players[7], &original));
+    uint8_t original_pubkey[32];
+    memcpy(original_pubkey,
+           first->players[7].pubkey,
+           sizeof(original_pubkey));
+    ASSERT_EQ_INT(registry_lookup_by_pubkey(
+                      first, original_pubkey), 7);
+
+    /* The same logical bot cannot exist twice in one live world. */
+    setup_generated_bot_session(first, 2, 0x32);
+    ASSERT(!server_finalize_generated_bot_identity(
+        first, 2, 3));
+    ASSERT(!first->players[2].pubkey_set);
+
+    /* A different logical ordinal has a distinct durable identity. */
+    ASSERT(server_finalize_generated_bot_identity(
+        first, 2, 4));
+    ASSERT(memcmp(first->players[2].pubkey,
+                  original_pubkey, 32) != 0);
+    first->contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FRAME,
+        .quantity_needed = 1.0f,
+        .base_price = 10.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    ASSERT(contract_ownership_try_claim_player(
+        &first->contracts[0], first, 7));
+    ASSERT(world_save(first, path));
+
+    WORLD_HEAP restarted =
+        calloc(1, sizeof(world_t));
+    ASSERT(restarted != NULL);
+    world_reset(restarted);
+    ASSERT(world_load(restarted, path));
+    ASSERT_EQ_INT(registry_lookup_by_pubkey(
+                      restarted, original_pubkey), -1);
+    ASSERT(!contract_ownership_matches_player(
+        &restarted->contracts[0], restarted, 11));
+
+    /* A fresh token and a different runtime player slot rebind the same
+     * logical bot principal after restart. */
+    setup_generated_bot_session(
+        restarted, 11, 0x71);
+    uint8_t fresh_token[8];
+    memcpy(fresh_token,
+           restarted->players[11].session_token,
+           sizeof(fresh_token));
+    ASSERT(server_finalize_generated_bot_identity(
+        restarted, 11, 3));
+    ASSERT(memcmp(restarted->players[11].pubkey,
+                  original_pubkey, 32) == 0);
+    actor_principal_t rebound =
+        actor_principal_none();
+    ASSERT(actor_principal_from_verified_player(
+        &restarted->players[11], &rebound));
+    ASSERT(actor_principal_equal(
+        &original, &rebound));
+    ASSERT_EQ_INT(registry_lookup_by_pubkey(
+                      restarted, original_pubkey), 11);
+    ASSERT(contract_ownership_matches_player(
+        &restarted->contracts[0], restarted, 11));
+
+    int matching_rows = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!restarted->pubkey_registry[i].in_use ||
+            memcmp(restarted->pubkey_registry[i].pubkey,
+                   original_pubkey, 32) != 0) {
+            continue;
+        }
+        matching_rows++;
+        ASSERT(memcmp(
+                      restarted->pubkey_registry[i].session_token,
+                      fresh_token, 8) == 0);
+    }
+    ASSERT_EQ_INT(matching_rows, 1);
+
+    remove(path);
 }
 
 TEST(test_registry_reconnect_with_new_token) {
@@ -269,9 +378,11 @@ TEST(test_player_transfer_rebinds_slot_obligations_and_character) {
     old->id = 0;
     uint8_t token[8];
     fill_token(token, 53);
-    memcpy(old->session_token, token, sizeof(token));
-    old->session_ready = true;
     player_init_ship(old, w);
+    uint8_t owner_pubkey[32];
+    fill_pubkey(owner_pubkey, 53);
+    setup_registered_player(
+        w, 0, owner_pubkey, token);
     old->last_signed_nonce = 777;
     old->autopilot_mode = 1;
     old->autopilot_target = 123;
@@ -303,13 +414,20 @@ TEST(test_player_transfer_rebinds_slot_obligations_and_character) {
     memcpy(incoming->session_token, token, sizeof(token));
     incoming->session_ready = true;
 
-    w->contracts[0].active = true;
-    w->contracts[0].claimed_by = 0;
-    w->delivery_shipments[0].active = true;
-    w->delivery_shipments[0].debtor_player = 0;
-    w->delivery_shipments[1].active = true;
-    w->delivery_shipments[1].debtor_player =
-        (uint8_t)MAX_PLAYERS; /* NPC-coded ID must not move. */
+    w->contracts[0] = (contract_t){
+        .active = true,
+        .claimed_by = -1,
+    };
+    ASSERT(contract_ownership_try_claim_player(
+        &w->contracts[0], w, 0));
+    w->delivery_shipments[0] =
+        (delivery_shipment_t){.active = true};
+    ASSERT(delivery_ownership_assign_player(
+        &w->delivery_shipments[0], w, 0));
+    w->delivery_shipments[1] =
+        (delivery_shipment_t){.active = true};
+    ASSERT(delivery_ownership_assign_npc(
+        &w->delivery_shipments[1], w, 0));
 
     station_t *st = &w->stations[0];
     st->planned_owner = 0;
@@ -992,15 +1110,64 @@ TEST(test_identity_dispatch_session_register_and_proof) {
 
     uint8_t tok[8];
     fill_token(tok, 31);
-    uint8_t session_msg[16] = { NET_MSG_SESSION };
+    uint8_t session_msg[SESSION_MSG_SIZE] = { NET_MSG_SESSION };
     memcpy(&session_msg[1], tok, 8);
     memcpy(&session_msg[9], "PILOT01", 7);
+    write_u16_le(
+        &session_msg[SESSION_MSG_PROTOCOL_OFFSET],
+        SIGNAL_PROTOCOL_VERSION);
 
     server_session_message_t session;
     ASSERT(server_parse_session_message(session_msg, sizeof(session_msg),
                                         &session));
     ASSERT(server_apply_session_message(w, 0, &session));
     ASSERT(sp->session_ready);
+    ASSERT(session.has_protocol_version);
+    ASSERT_EQ_INT(
+        session.protocol_version, SIGNAL_PROTOCOL_VERSION);
+    ASSERT(server_session_protocol_compatible(&session));
+
+    uint8_t session_token_before[8];
+    char callsign_before[8];
+    memcpy(session_token_before, sp->session_token, 8);
+    memcpy(callsign_before, sp->callsign, 8);
+    const uint16_t incompatible_versions[] = {
+        0u,
+        SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION,
+        SIGNAL_PROTOCOL_VERSION + 1u,
+    };
+    for (size_t i = 0;
+         i < sizeof(incompatible_versions) /
+             sizeof(incompatible_versions[0]);
+         i++) {
+        server_session_message_t incompatible = {0};
+        write_u16_le(
+            &session_msg[SESSION_MSG_PROTOCOL_OFFSET],
+            incompatible_versions[i]);
+        ASSERT(server_parse_session_message(
+            session_msg, sizeof(session_msg), &incompatible));
+        ASSERT(!server_session_protocol_compatible(&incompatible));
+        ASSERT_EQ_INT(
+            memcmp(sp->session_token, session_token_before, 8), 0);
+        ASSERT_EQ_INT(
+            memcmp(sp->callsign, callsign_before, 8), 0);
+    }
+
+    server_session_message_t incompatible = {0};
+    ASSERT(server_parse_session_message(
+        session_msg, 9, &incompatible));
+    ASSERT(!incompatible.has_protocol_version);
+    ASSERT(!server_session_protocol_compatible(&incompatible));
+    ASSERT(server_parse_session_message(
+        session_msg, SESSION_MSG_PROTOCOL_OFFSET, &incompatible));
+    ASSERT(!incompatible.has_protocol_version);
+    ASSERT(!server_session_protocol_compatible(&incompatible));
+    ASSERT(!server_parse_session_message(
+        session_msg, SESSION_MSG_PROTOCOL_OFFSET + 1, &incompatible));
+    uint8_t session_with_tail[SESSION_MSG_SIZE + 1] = {0};
+    memcpy(session_with_tail, session_msg, sizeof(session_msg));
+    ASSERT(!server_parse_session_message(
+        session_with_tail, sizeof(session_with_tail), &incompatible));
     ASSERT_EQ_INT(memcmp(sp->session_token, tok, 8), 0);
     ASSERT(strcmp(sp->callsign, "PILOT01") == 0);
 
@@ -1519,7 +1686,7 @@ TEST(test_protocol_v3_classifies_legacy_pubkey_proof_without_accepting_it) {
     server_pubkey_proof_result_t proof;
     ASSERT(server_dispatch_pubkey_proof_message(
         w, 0, proof_msg, sizeof(proof_msg), &proof));
-    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 3);
+    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 6);
     ASSERT_EQ_INT(
         proof.status, SERVER_PUBKEY_PROOF_LEGACY_VERSION);
     ASSERT(strcmp(server_pubkey_proof_status_name(proof.status),
@@ -1641,6 +1808,7 @@ void register_registry_tests(void) {
     TEST_SECTION("\nPubkey registry (#479 A.2):\n");
     RUN(test_registry_fresh_registration);
     RUN(test_registry_idempotent_reregistration);
+    RUN(test_generated_bot_identity_survives_restart_and_slot_permutation);
     RUN(test_registry_reconnect_with_new_token);
     RUN(test_registry_lookup_rejects_token_only_impostor);
     RUN(test_registry_same_token_takeover_moves_live_ship);

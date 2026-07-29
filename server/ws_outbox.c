@@ -109,7 +109,6 @@ ws_outbox_policy_t ws_outbox_classify(const uint8_t *payload,
     case NET_MSG_HAIL_RESPONSE:
     case NET_MSG_FRACTURE_CHALLENGE:
     case NET_MSG_FRACTURE_RESOLVED:
-    case NET_MSG_LEGACY_SAVES_AVAILABLE:
     case NET_MSG_CARGO_RECEIPT_BUNDLE:
     case NET_MSG_ACTION_ACK:
     case NET_MSG_ACTION_RESULT:
@@ -118,6 +117,8 @@ ws_outbox_policy_t ws_outbox_classify(const uint8_t *payload,
     case NET_MSG_HANDOFF_TICKET:
     case NET_MSG_HANDOFF_RESULT:
     case NET_MSG_INPUT_APPLIED:
+    case NET_MSG_LEGACY_RECOVERY_OFFER:
+    case NET_MSG_LEGACY_RECOVERY_RESULT:
         return ws_outbox_policy_make(
             WS_OUTBOX_LANE_CONTROL, WS_OUTBOX_FAMILY_NONE, 0u, type);
 
@@ -164,6 +165,10 @@ ws_outbox_policy_t ws_outbox_classify(const uint8_t *payload,
         return ws_outbox_policy_make(
             WS_OUTBOX_LANE_REPLACEABLE,
             WS_OUTBOX_FAMILY_WORLD_TIME, 0u, type);
+    case NET_MSG_WORLD_TOW_LINKS:
+        return ws_outbox_policy_make(
+            WS_OUTBOX_LANE_REPLACEABLE,
+            WS_OUTBOX_FAMILY_WORLD_TOW_LINKS, 0u, type);
     case NET_MSG_HIGHSCORES:
         return ws_outbox_policy_make(
             WS_OUTBOX_LANE_REPLACEABLE,
@@ -375,6 +380,37 @@ static bool ws_outbox_admission_fits(const ws_outbox_t *outbox,
     return projected <= limit;
 }
 
+bool ws_outbox_can_admit_control_frame(
+    const ws_outbox_t *outbox,
+    const uint8_t *payload,
+    size_t payload_len,
+    size_t transport_bytes) {
+    if (!outbox || !payload || payload_len == 0u ||
+        payload_len > WS_OUTBOX_MAX_FRAME_BYTES ||
+        outbox->close_reason != WS_OUTBOX_CLOSE_NONE ||
+        ws_outbox_classify(payload, payload_len).lane !=
+            WS_OUTBOX_LANE_CONTROL) {
+        return false;
+    }
+
+    size_t wire_bytes = ws_frame_wire_size(payload_len);
+    if (wire_bytes == SIZE_MAX ||
+        !ws_outbox_admission_fits(
+            outbox, WS_OUTBOX_LANE_CONTROL, 0u,
+            wire_bytes, transport_bytes)) {
+        return false;
+    }
+
+    size_t needed_pages =
+        (payload_len + WS_OUTBOX_PAGE_BYTES - 1u) /
+        WS_OUTBOX_PAGE_BYTES;
+    if (needed_pages == 0u) needed_pages = 1u;
+    return ws_outbox_count_free_pages(
+               outbox, WS_OUTBOX_LANE_CONTROL) >= needed_pages &&
+           ws_outbox_find_free_frame(
+               outbox, WS_OUTBOX_LANE_CONTROL) >= 0;
+}
+
 bool ws_outbox_can_admit_reliable_batch(
     const ws_outbox_t *outbox,
     const uint8_t *const *payloads,
@@ -454,6 +490,14 @@ ws_outbox_result_t ws_outbox_enqueue(ws_outbox_t *outbox,
                        policy.lane);
         return WS_OUTBOX_FATAL;
     }
+    /*
+     * Defense in depth for #672 containment: this retired message disclosed
+     * prefixes from unrelated legacy save basenames. Even if a future caller
+     * accidentally reconstructs a producer, it cannot enter the dedicated
+     * server's only binary-message outbox.
+     */
+    if (payload[0] == NET_MSG_LEGACY_SAVES_AVAILABLE)
+        return WS_OUTBOX_SUPPRESSED;
     size_t wire_bytes = ws_frame_wire_size(payload_len);
     if (wire_bytes == SIZE_MAX) {
         ws_outbox_fail(outbox, WS_OUTBOX_CLOSE_FRAME_TOO_LARGE,

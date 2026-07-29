@@ -13,6 +13,7 @@
 #include "actor_principal_resolver.h"
 #include "station_authority.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 #include "net_protocol.h"
 
 TEST(test_station_authority_seeded_determinism) {
@@ -83,8 +84,7 @@ TEST(test_station_authority_outpost_derivation) {
     /* Place an outpost (manually constructed to avoid driving the full
      * scaffold-tow flow) and assert the pubkey matches an independent
      * recomputation from the same (founder, name, tick) triple. */
-    station_t st;
-    memset(&st, 0, sizeof(st));
+    STATION_DECL(st);
     snprintf(st.name, sizeof(st.name), "Outpost Alpha");
     uint8_t founder[32];
     for (int i = 0; i < 32; i++) founder[i] = (uint8_t)(0x10 + i);
@@ -103,6 +103,33 @@ TEST(test_station_authority_outpost_derivation) {
     /* Provenance fields stamped for save/load rederivation. */
     ASSERT(memcmp(st.outpost_founder_pubkey, founder, 32) == 0);
     ASSERT_EQ_INT((int)st.outpost_planted_tick, (int)tick);
+    signal_memzero_explicit(expected_seed, sizeof(expected_seed));
+    signal_memzero_explicit(expected_secret, sizeof(expected_secret));
+}
+
+TEST(test_station_authority_cleanup_wipes_private_material) {
+    station_t station = {0};
+    const uint8_t zero_secret[sizeof(station.station_secret)] = {0};
+    uint8_t after_clear[32] = {0};
+    uint8_t explicit_dev[32] = {0};
+
+    station_authority_init_seeded(&station, 4242u, 0u);
+    ASSERT(memcmp(station.station_secret, zero_secret,
+                  sizeof(zero_secret)) != 0);
+    station_cleanup(&station);
+    ASSERT(memcmp(station.station_secret, zero_secret,
+                  sizeof(zero_secret)) == 0);
+
+    ASSERT(station_authority_configure_secret(
+        "temporary-operator-secret"));
+    station_authority_clear_secret();
+    station_authority_seeded_seed(4242u, 0u, after_clear);
+    station_authority_use_dev_secret();
+    station_authority_seeded_seed(4242u, 0u, explicit_dev);
+    ASSERT(memcmp(after_clear, explicit_dev,
+                  sizeof(after_clear)) == 0);
+    signal_memzero_explicit(after_clear, sizeof(after_clear));
+    signal_memzero_explicit(explicit_dev, sizeof(explicit_dev));
 }
 
 TEST(test_station_authority_sign_verify_roundtrip) {
@@ -683,18 +710,29 @@ TEST(test_station_authority_historical_origin_composes_trust_verdicts) {
     ASSERT(chain_log_emit(w, st, CHAIN_EVT_SMELT,
                           &smelt, (uint16_t)sizeof(smelt)) != 0);
 
-    cargo_receipt_chain_t chain = {0};
-    ASSERT(cargo_receipt_emit_transfer(
-               w, st, st->station_pubkey, recipient, &unit, &chain,
-               &chain.links[0]) != 0);
-    chain.len = 1;
-
     cargo_receipt_origin_proof_t proof;
     ASSERT_EQ_INT(cargo_receipt_resolve_local_origin(
                       st, cargo_pub, &proof),
                   CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
     ASSERT_EQ_INT(proof.authority_lifecycle,
                   CARGO_RECEIPT_AUTHORITY_LIFECYCLE_CURRENT);
+
+    cargo_receipt_chain_t chain = {0};
+    ASSERT(cargo_receipt_emit_transfer(
+               w, st, st->station_pubkey, recipient, &unit, &chain,
+               &chain.links[0]) != 0);
+    chain.len = 1;
+
+    ASSERT_EQ_INT(cargo_receipt_resolve_local_origin(
+                      st, cargo_pub, &proof),
+                  CARGO_RECEIPT_ORIGIN_RESOLVE_ALREADY_TRANSFERRED);
+    ASSERT(memcmp(&proof, &(cargo_receipt_origin_proof_t){0},
+                  sizeof(proof)) == 0);
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_origin_for_authority_pinned(
+            st, chain.links[0].authoring_station, cargo_pub,
+            chain.links[0].prev_receipt_hash, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
     cargo_receipt_authority_trust_t trust =
         station_authority_trust_for_pubkey(st, proof.authority);
     ASSERT_EQ_INT(trust, CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
@@ -730,7 +768,12 @@ TEST(test_station_authority_historical_origin_composes_trust_verdicts) {
 
     ASSERT_EQ_INT(cargo_receipt_resolve_local_origin(
                       rotated_st, cargo_pub, &proof),
-                  CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
+                  CARGO_RECEIPT_ORIGIN_RESOLVE_ALREADY_TRANSFERRED);
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_origin_for_authority_pinned(
+            rotated_st, chain.links[0].authoring_station, cargo_pub,
+            chain.links[0].prev_receipt_hash, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
     ASSERT(memcmp(proof.authority, old_pub, sizeof(old_pub)) == 0);
     ASSERT_EQ_INT(proof.authority_lifecycle,
                   CARGO_RECEIPT_AUTHORITY_LIFECYCLE_ROTATED);
@@ -747,13 +790,9 @@ TEST(test_station_authority_historical_origin_composes_trust_verdicts) {
             rotated_st, rotated_st->station_pubkey,
             cargo_pub, &empty);
     ASSERT_EQ_INT(first_hop.status,
-                  CARGO_RECEIPT_TRANSFER_LINK_REJECT_ORIGIN_AUTHORITY);
+                  CARGO_RECEIPT_TRANSFER_LINK_REJECT_ORIGIN);
     ASSERT_EQ_INT(first_hop.origin_status,
-                  CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
-    ASSERT_EQ_INT(first_hop.origin_lifecycle,
-                  CARGO_RECEIPT_AUTHORITY_LIFECYCLE_ROTATED);
-    ASSERT_EQ_INT(first_hop.origin_trust,
-                  CARGO_RECEIPT_AUTHORITY_TRUSTED_ROTATED);
+                  CARGO_RECEIPT_ORIGIN_RESOLVE_ALREADY_TRANSFERRED);
 
     cargo_receipt_transfer_link_t continuation =
         cargo_receipt_prepare_transfer_link(
@@ -808,9 +847,11 @@ TEST(test_station_authority_historical_origin_composes_trust_verdicts) {
 
     ASSERT(station_authority_registry_set_trust(
         rotated_st, old_pub, CARGO_RECEIPT_AUTHORITY_UNTRUSTED));
-    ASSERT_EQ_INT(cargo_receipt_resolve_local_origin(
-                      rotated_st, cargo_pub, &proof),
-                  CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_origin_for_authority_pinned(
+            rotated_st, chain.links[0].authoring_station, cargo_pub,
+            chain.links[0].prev_receipt_hash, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
     ASSERT_EQ_INT(proof.authority_lifecycle,
                   CARGO_RECEIPT_AUTHORITY_LIFECYCLE_ROTATED);
     trust = station_authority_trust_for_pubkey(
@@ -822,9 +863,11 @@ TEST(test_station_authority_historical_origin_composes_trust_verdicts) {
 
     ASSERT(station_authority_registry_set_trust(
         rotated_st, old_pub, CARGO_RECEIPT_AUTHORITY_REVOKED));
-    ASSERT_EQ_INT(cargo_receipt_resolve_local_origin(
-                      rotated_st, cargo_pub, &proof),
-                  CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
+    ASSERT_EQ_INT(
+        cargo_receipt_resolve_origin_for_authority_pinned(
+            rotated_st, chain.links[0].authoring_station, cargo_pub,
+            chain.links[0].prev_receipt_hash, &proof),
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
     ASSERT_EQ_INT(proof.authority_lifecycle,
                   CARGO_RECEIPT_AUTHORITY_LIFECYCLE_REVOKED);
     trust = station_authority_trust_for_pubkey(
@@ -845,6 +888,7 @@ void register_station_authority_tests(void) {
     RUN(test_station_authority_seeded_distinct_seeds);
     RUN(test_station_authority_operator_secret_affects_pubkey);
     RUN(test_station_authority_outpost_derivation);
+    RUN(test_station_authority_cleanup_wipes_private_material);
     RUN(test_station_authority_sign_verify_roundtrip);
     RUN(test_station_authority_save_load_rederives_secret);
     RUN(test_station_authority_wire_omits_secret);

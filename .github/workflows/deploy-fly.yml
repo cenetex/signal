@@ -76,6 +76,7 @@ jobs:
             -e GIT_HASH="${GITHUB_SHA::7}" \
             emscripten/emsdk:4.0.15 \
             bash -lc 'emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH="$GIT_HASH" && emmake cmake --build build-web --parallel'
+          python3 scripts/check_client_memory_budget.py build-web/signal.wasm
       - name: Run browser smoke
         run: |
           npm ci

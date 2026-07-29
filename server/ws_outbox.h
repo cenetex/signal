@@ -34,6 +34,7 @@ enum {
     WS_OUTBOX_WARNING_SUSTAIN_MS = 2000,
     WS_OUTBOX_NO_PROGRESS_MS = 15000,
     WS_OUTBOX_PRESSURE_DISCONNECT_MS = 30000,
+    WS_OUTBOX_CLOSE_DRAIN_MS = 1000,
     WS_OUTBOX_PAGE_BYTES = 256,
     WS_OUTBOX_PAGE_COUNT = WS_OUTBOX_HARD_BYTES / WS_OUTBOX_PAGE_BYTES,
     WS_OUTBOX_NORMAL_PAGE_COUNT =
@@ -95,6 +96,7 @@ typedef enum {
     WS_OUTBOX_FAMILY_WORLD_PLAYERS,
     WS_OUTBOX_FAMILY_WORLD_PLAYER_DOCK,
     WS_OUTBOX_FAMILY_WORLD_TIME,
+    WS_OUTBOX_FAMILY_WORLD_TOW_LINKS,
     WS_OUTBOX_FAMILY_HIGHSCORES,
     WS_OUTBOX_FAMILY_SIGNAL_CHANNEL,
     WS_OUTBOX_FAMILY_KNOWN_CONTRACTS,
@@ -214,6 +216,11 @@ ws_outbox_result_t ws_outbox_enqueue(ws_outbox_t *outbox,
                                      size_t transport_bytes,
                                      uint64_t now_ms);
 size_t ws_outbox_wire_bytes(size_t payload_len);
+bool ws_outbox_can_admit_control_frame(
+    const ws_outbox_t *outbox,
+    const uint8_t *payload,
+    size_t payload_len,
+    size_t transport_bytes);
 bool ws_outbox_can_admit_reliable_batch(
     const ws_outbox_t *outbox,
     const uint8_t *const *payloads,

@@ -53,6 +53,8 @@ void net_observe_transport_latency_sample(float rtt_ms,
 void net_adopt_local_tow_prediction(float dt);
 void net_advance_asteroid_interpolation(float dt);
 void net_advance_cargo_pod_interpolation(float dt);
+bool net_remote_cargo_pod_presentation(
+    int index, vec2 *out_pos, vec2 *out_vel);
 
 /* Apply server-authoritative world state. */
 void reset_remote_dynamic_sync(void);
@@ -92,6 +94,8 @@ void apply_remote_cargo_pod_linear(const NetCargoPodLinearState* pods,
 void apply_remote_interactions(const sim_interaction_t *items, int count);
 void apply_remote_interaction_drift(const NetInteractionDriftState *items,
                                     int count);
+void apply_remote_tow_links(const tow_link_t *links, int count,
+                            uint32_t revision, uint32_t server_tick);
 void apply_remote_hail_response(uint8_t station,
                                 float credits,
                                 int contract_index,

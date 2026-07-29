@@ -18,6 +18,10 @@
  *   cmake --build build-fuzz
  *   ./build-fuzz/fuzz_cargo_receipt -max_total_time=300 corpus_dir
  *
+ * SIGNAL_FUZZ_MODE=receipt-chain|receipt-store|handoff forces one decoder
+ * mode for bounded per-mode exploration. Mode-specific crash artifacts use
+ * the same names as prefixes so standalone replay can infer the mode.
+ *
  * A standalone replay mode (-DSIGNAL_FUZZ_STANDALONE) compiles a main()
  * that runs the harness over files given on argv, so crash artifacts can
  * be reproduced under plain ASan/UBSan without libFuzzer. Any crash fixed
@@ -32,6 +36,36 @@
 #include "cargo_receipt.h"
 #include "handoff_ticket.h"
 #include "manifest.h" /* ship_cleanup */
+
+enum {
+    FUZZ_MODE_RECEIPT_CHAIN = 0,
+    FUZZ_MODE_RECEIPT_STORE = 1,
+    FUZZ_MODE_HANDOFF = 2,
+    FUZZ_MODE_DISPATCH = -1,
+    FUZZ_MODE_UNINITIALIZED = -2,
+};
+
+static int fuzz_parse_mode(const char *value) {
+    if (!value || value[0] == '\0') return FUZZ_MODE_DISPATCH;
+    if (strcmp(value, "receipt-chain") == 0 || strcmp(value, "0") == 0)
+        return FUZZ_MODE_RECEIPT_CHAIN;
+    if (strcmp(value, "receipt-store") == 0 || strcmp(value, "1") == 0)
+        return FUZZ_MODE_RECEIPT_STORE;
+    if (strcmp(value, "handoff") == 0 || strcmp(value, "2") == 0)
+        return FUZZ_MODE_HANDOFF;
+    fprintf(stderr,
+            "invalid SIGNAL_FUZZ_MODE=%s "
+            "(use receipt-chain, receipt-store, or handoff)\n",
+            value);
+    exit(2);
+}
+
+static int fuzz_environment_mode(void) {
+    static int mode = FUZZ_MODE_UNINITIALIZED;
+    if (mode == FUZZ_MODE_UNINITIALIZED)
+        mode = fuzz_parse_mode(getenv("SIGNAL_FUZZ_MODE"));
+    return mode;
+}
 
 static void fuzz_receipt_chain(const uint8_t *data, size_t size) {
     cargo_receipt_t chain[CARGO_RECEIPT_CHAIN_MAX_LEN];
@@ -126,36 +160,106 @@ static void fuzz_handoff(const uint8_t *data, size_t size) {
         ship_cleanup(&ship);
 }
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    if (size < 1) return 0;
-    uint8_t mode = (uint8_t)(data[0] % 3u);
-    data++;
-    size--;
+static int fuzz_one_input(const uint8_t *data, size_t size,
+                          int forced_mode) {
+    int mode = forced_mode;
+    if (mode == FUZZ_MODE_DISPATCH) {
+        if (size < 1) return FUZZ_MODE_DISPATCH;
+        mode = (int)(data[0] % 3u);
+        data++;
+        size--;
+    }
     switch (mode) {
-    case 0: fuzz_receipt_chain(data, size); break;
-    case 1: fuzz_receipt_store(data, size); break;
+    case FUZZ_MODE_RECEIPT_CHAIN:
+        fuzz_receipt_chain(data, size);
+        break;
+    case FUZZ_MODE_RECEIPT_STORE:
+        fuzz_receipt_store(data, size);
+        break;
     default: fuzz_handoff(data, size); break;
     }
+    return mode;
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    (void)fuzz_one_input(data, size, fuzz_environment_mode());
     return 0;
 }
 
 #ifdef SIGNAL_FUZZ_STANDALONE
+static int fuzz_artifact_mode(const char *path) {
+    if (!path) return FUZZ_MODE_DISPATCH;
+    const char *base = strrchr(path, '/');
+#ifdef _WIN32
+    const char *backslash = strrchr(path, '\\');
+    if (!base || (backslash && backslash > base)) base = backslash;
+#endif
+    base = base ? base + 1 : path;
+    static const char *names[] = {
+        "receipt-chain-",
+        "receipt-store-",
+        "handoff-",
+    };
+    for (int mode = 0; mode < 3; mode++) {
+        size_t prefix_len = strlen(names[mode]);
+        if (strncmp(base, names[mode], prefix_len) == 0)
+            return mode;
+    }
+    return FUZZ_MODE_DISPATCH;
+}
+
 /* Replay files from argv through the harness (crash-triage mode). */
 int main(int argc, char **argv) {
+    size_t replayed[3] = {0, 0, 0};
+    size_t skipped = 0;
+    int environment_mode = fuzz_environment_mode();
     for (int i = 1; i < argc; i++) {
         FILE *f = fopen(argv[i], "rb");
-        if (!f) { perror(argv[i]); continue; }
-        if (fseek(f, 0, SEEK_END) != 0) { fclose(f); continue; }
+        if (!f) {
+            perror(argv[i]);
+            skipped++;
+            continue;
+        }
+        if (fseek(f, 0, SEEK_END) != 0) {
+            fclose(f);
+            skipped++;
+            continue;
+        }
         long n = ftell(f);
-        if (n < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); continue; }
+        if (n < 0 || fseek(f, 0, SEEK_SET) != 0) {
+            fclose(f);
+            skipped++;
+            continue;
+        }
         uint8_t *buf = (uint8_t *)malloc((size_t)(n > 0 ? n : 1));
-        if (!buf) { fclose(f); continue; }
+        if (!buf) {
+            fclose(f);
+            skipped++;
+            continue;
+        }
         size_t got = fread(buf, 1, (size_t)n, f);
         fclose(f);
-        if (got == (size_t)n)
-            LLVMFuzzerTestOneInput(buf, (size_t)n);
+        if (got == (size_t)n) {
+            int mode = environment_mode;
+            if (mode == FUZZ_MODE_DISPATCH)
+                mode = fuzz_artifact_mode(argv[i]);
+            mode = fuzz_one_input(buf, (size_t)n, mode);
+            if (mode >= 0 && mode < 3)
+                replayed[mode]++;
+            else
+                skipped++;
+        } else {
+            skipped++;
+        }
         free(buf);
     }
-    return 0;
+    fprintf(stderr,
+            "replayed receipt-chain=%zu receipt-store=%zu "
+            "handoff=%zu skipped=%zu\n",
+            replayed[FUZZ_MODE_RECEIPT_CHAIN],
+            replayed[FUZZ_MODE_RECEIPT_STORE],
+            replayed[FUZZ_MODE_HANDOFF],
+            skipped);
+    return skipped == 0 ? 0 : 1;
 }
 #endif

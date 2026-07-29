@@ -133,19 +133,6 @@ bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgra
     return true;
 }
 
-bool upgrade_uses_starter_refit_subsidy(const station_t* station,
-                                        const ship_t* ship,
-                                        ship_upgrade_t upgrade,
-                                        int station_units) {
-    if (!station || !ship || station_units <= 0) return false;
-    if (upgrade != SHIP_UPGRADE_MINING || ship->mining_level != 0)
-        return false;
-    if (strcmp(station->station_slug, "kepler") != 0)
-        return false;
-    return station_finished_count(station, COMMODITY_LASER_MODULE) >=
-           station_units;
-}
-
 float upgrade_station_credit_cost(const station_t* station,
                                   const ship_t* ship,
                                   ship_upgrade_t upgrade,
@@ -153,9 +140,59 @@ float upgrade_station_credit_cost(const station_t* station,
     if (!station || !ship || station_units <= 0) return 0.0f;
     commodity_t comm =
         (commodity_t)(COMMODITY_FRAME + upgrade_required_product(upgrade));
-    if (upgrade_uses_starter_refit_subsidy(station, ship, upgrade,
-                                           station_units)) {
-        return 0.0f;
-    }
     return (float)station_units * station_sell_price(station, comm);
+}
+
+/*
+ * target_pub is otherwise unused for quota TRACTOR work
+ * (target_index == -1), so a domain-separated marker gives the finite
+ * onboarding order a durable identity without adding a save/wire field.
+ */
+static const uint8_t STARTER_REFIT_WORK_ORDER_MARKER[32] =
+    "signal/starter-refit-work/v1";
+
+bool starter_refit_work_order_init(contract_t *out, int quantity,
+                                   float unit_price) {
+    if (!out || quantity <= 0 ||
+        !isfinite(unit_price) || unit_price <= 0.0f)
+        return false;
+    *out = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .proof_flags = (uint8_t)(
+            CONTRACT_PROOF_REQUIRE_PROOF |
+            CONTRACT_PROOF_REQUIRE_RECIPE),
+        .required_recipe_id = RECIPE_SMELT,
+        .quantity_needed = (float)quantity,
+        .base_price = unit_price,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    memcpy(out->target_pub, STARTER_REFIT_WORK_ORDER_MARKER,
+           sizeof(out->target_pub));
+    return true;
+}
+
+bool starter_refit_work_order_matches(const contract_t *contract) {
+    return contract &&
+           contract->action == CONTRACT_TRACTOR &&
+           contract->station_index == 1 &&
+           contract->commodity == COMMODITY_FERRITE_INGOT &&
+           (contract->proof_flags &
+            (CONTRACT_PROOF_REQUIRE_PROOF |
+             CONTRACT_PROOF_REQUIRE_RECIPE)) ==
+               (CONTRACT_PROOF_REQUIRE_PROOF |
+                CONTRACT_PROOF_REQUIRE_RECIPE) &&
+           contract->required_recipe_id == RECIPE_SMELT &&
+           contract->target_index == -1 &&
+           memcmp(contract->target_pub,
+                  STARTER_REFIT_WORK_ORDER_MARKER,
+                  sizeof(contract->target_pub)) == 0;
+}
+
+bool contract_slot_available_for_post(const contract_t *contract) {
+    return contract && !contract->active &&
+           !starter_refit_work_order_matches(contract);
 }

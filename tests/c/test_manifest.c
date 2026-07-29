@@ -221,6 +221,26 @@ TEST(test_station_copy_clones_manifest_storage) {
     station_cleanup(&src);
 }
 
+TEST(test_manifest_reset_helpers_release_storage_and_wipe_secret) {
+    ship_t ship = {0};
+    station_t station = {0};
+    const ship_t zero_ship = {0};
+    const station_t zero_station = {0};
+
+    ASSERT(ship_manifest_bootstrap(&ship));
+    ASSERT(station_manifest_bootstrap(&station));
+    memset(station.station_secret, 0xA5,
+           sizeof(station.station_secret));
+    ASSERT(ship.cargo_store.receipts_opaque != NULL);
+    ASSERT(station.cargo_store.receipts_opaque != NULL);
+
+    ship_reset(&ship);
+    station_reset(&station);
+
+    ASSERT(memcmp(&ship, &zero_ship, sizeof(ship)) == 0);
+    ASSERT(memcmp(&station, &zero_station, sizeof(station)) == 0);
+}
+
 TEST(test_manifest_rarity_tint_blends_grade_average) {
     manifest_t manifest = {0};
     cargo_unit_t fine = {0};
@@ -1258,6 +1278,7 @@ void register_manifest_tests(void) {
     RUN(test_manifest_migrate_quantity_rewrites_zero_to_one);
     RUN(test_ship_copy_clones_manifest_storage);
     RUN(test_station_copy_clones_manifest_storage);
+    RUN(test_manifest_reset_helpers_release_storage_and_wipe_secret);
     RUN(test_manifest_rarity_tint_blends_grade_average);
     RUN(test_station_manifest_receipts_track_push_remove);
     RUN(test_station_manifest_rejects_unverified_receipt_chain);

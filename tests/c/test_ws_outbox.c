@@ -42,6 +42,7 @@ TEST(test_ws_outbox_policy_is_semantic_and_fail_safe) {
     uint8_t manifest[] = {NET_MSG_STATION_MANIFEST, 9u};
     uint8_t contracts[] = {NET_MSG_CONTRACTS, 0u};
     uint8_t contracts_q[] = {NET_MSG_CONTRACTS_Q, 0u};
+    uint8_t tow_links[] = {NET_MSG_WORLD_TOW_LINKS, 0u};
     uint8_t ack[] = {NET_MSG_ACTION_ACK};
     uint8_t future[] = {0xFEu};
 
@@ -55,6 +56,8 @@ TEST(test_ws_outbox_policy_is_semantic_and_fail_safe) {
         ws_outbox_classify(contracts, sizeof(contracts));
     ws_outbox_policy_t cq =
         ws_outbox_classify(contracts_q, sizeof(contracts_q));
+    ws_outbox_policy_t tow =
+        ws_outbox_classify(tow_links, sizeof(tow_links));
     ws_outbox_policy_t control = ws_outbox_classify(ack, sizeof(ack));
     ws_outbox_policy_t unknown =
         ws_outbox_classify(future, sizeof(future));
@@ -66,6 +69,10 @@ TEST(test_ws_outbox_policy_is_semantic_and_fail_safe) {
     ASSERT_EQ_INT(m.key.family, WS_OUTBOX_FAMILY_STATION_MANIFEST);
     ASSERT_EQ_INT(m.key.object_id, 9);
     ASSERT_EQ_INT(c.key.family, cq.key.family);
+    ASSERT_EQ_INT(tow.lane, WS_OUTBOX_LANE_REPLACEABLE);
+    ASSERT_EQ_INT(tow.key.family,
+                  WS_OUTBOX_FAMILY_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT(tow.key.object_id, 0);
     ASSERT_EQ_INT(control.lane, WS_OUTBOX_LANE_CONTROL);
     ASSERT_EQ_INT(unknown.lane, WS_OUTBOX_LANE_RELIABLE);
 }
@@ -83,7 +90,6 @@ TEST(test_ws_outbox_one_shot_receipts_use_control_reserve) {
         NET_MSG_HAIL_RESPONSE,
         NET_MSG_FRACTURE_CHALLENGE,
         NET_MSG_FRACTURE_RESOLVED,
-        NET_MSG_LEGACY_SAVES_AVAILABLE,
         NET_MSG_CARGO_RECEIPT_BUNDLE,
         NET_MSG_ACTION_ACK,
         NET_MSG_ACTION_RESULT,
@@ -91,7 +97,9 @@ TEST(test_ws_outbox_one_shot_receipts_use_control_reserve) {
         NET_MSG_PROTOCOL_INFO,
         NET_MSG_HANDOFF_TICKET,
         NET_MSG_HANDOFF_RESULT,
-        NET_MSG_INPUT_APPLIED
+        NET_MSG_INPUT_APPLIED,
+        NET_MSG_LEGACY_RECOVERY_OFFER,
+        NET_MSG_LEGACY_RECOVERY_RESULT
     };
     for (size_t i = 0u; i < sizeof(control_types); i++) {
         uint8_t payload[] = {control_types[i], 0u};
@@ -104,6 +112,7 @@ TEST(test_ws_outbox_one_shot_receipts_use_control_reserve) {
      * mutate their recipient baseline. They remain reliable and fail closed. */
     static const uint8_t reliable_types[] = {
         NET_MSG_EVENTS,
+        NET_MSG_EVENTS_V2,
         NET_MSG_WORLD_ASTEROIDS,
         NET_MSG_WORLD_ASTEROID_REMOVE,
         NET_MSG_WORLD_SCAFFOLDS,
@@ -119,6 +128,23 @@ TEST(test_ws_outbox_one_shot_receipts_use_control_reserve) {
             ws_outbox_classify(payload, sizeof(payload));
         ASSERT_EQ_INT(policy.lane, WS_OUTBOX_LANE_RELIABLE);
     }
+}
+
+TEST(test_ws_outbox_never_queues_retired_legacy_save_disclosure) {
+    ws_outbox_t *outbox = test_outbox_new();
+    ASSERT(outbox != NULL);
+    const uint8_t retired[] = {
+        NET_MSG_LEGACY_SAVES_AVAILABLE,
+        2u,
+        'd', 'e', 'a', 'd', 'b', 'e', 'e', 'f',
+        'c', 'a', 'f', 'e', 'b', 'a', 'b', 'e',
+    };
+    ASSERT_EQ_INT(
+        ws_outbox_enqueue(outbox, retired, sizeof(retired), 0u, 1u),
+        WS_OUTBOX_SUPPRESSED);
+    ASSERT(outbox->stats.queue_wire_bytes == 0u);
+    ASSERT(outbox->frame_count == 0u);
+    ASSERT_EQ_INT(outbox->close_reason, WS_OUTBOX_CLOSE_NONE);
 }
 
 TEST(test_ws_outbox_coalesces_latest_semantic_state) {
@@ -149,6 +175,49 @@ TEST(test_ws_outbox_coalesces_latest_semantic_state) {
     free(outbox);
 }
 
+TEST(test_ws_outbox_coalesces_tow_snapshot_without_displacing_control) {
+    ws_outbox_t *outbox = test_outbox_new();
+    ASSERT(outbox != NULL);
+    uint8_t first[] = {
+        NET_MSG_WORLD_TOW_LINKS, 1u, 0u, 0x11u
+    };
+    uint8_t latest[] = {
+        NET_MSG_WORLD_TOW_LINKS, 2u, 0u, 0x22u, 0xA5u
+    };
+    uint8_t recovery[] = {
+        NET_MSG_LEGACY_RECOVERY_RESULT,
+        LEGACY_RECOVERY_RESULT_STALE_OFFER
+    };
+
+    ASSERT_EQ_INT(ws_outbox_enqueue(
+                      outbox, first, sizeof(first), 0u, 1u),
+                  WS_OUTBOX_ADMITTED);
+    ASSERT_EQ_INT(ws_outbox_enqueue(
+                      outbox, recovery, sizeof(recovery), 0u, 2u),
+                  WS_OUTBOX_ADMITTED);
+    ASSERT_EQ_INT(ws_outbox_enqueue(
+                      outbox, latest, sizeof(latest), 0u, 3u),
+                  WS_OUTBOX_COALESCED);
+    ASSERT_EQ_INT((int)outbox->frame_count, 2);
+    ASSERT_EQ_INT((int)outbox->stats.coalesced_packets, 1);
+
+    uint8_t scratch[WS_OUTBOX_MAX_FRAME_BYTES];
+    outbox_capture_t capture = {0};
+    ASSERT_EQ_INT((int)ws_outbox_pump(
+                      outbox, 0u, WS_OUTBOX_TRANSPORT_LIMIT_BYTES, 4u,
+                      scratch, sizeof(scratch), capture_send, &capture),
+                  2);
+    ASSERT_EQ_INT((int)capture.count, 2);
+    ASSERT_EQ_INT(capture.types[0],
+                  NET_MSG_LEGACY_RECOVERY_RESULT);
+    ASSERT_EQ_INT(capture.types[1], NET_MSG_WORLD_TOW_LINKS);
+    ASSERT_EQ_INT((int)capture.last_len, (int)sizeof(latest));
+    ASSERT(memcmp(capture.last_payload, latest,
+                  sizeof(latest)) == 0);
+    ASSERT_EQ_INT((int)outbox->frame_count, 0);
+    free(outbox);
+}
+
 TEST(test_ws_outbox_normal_limit_preserves_control_reserve) {
     ws_outbox_t *outbox = test_outbox_new();
     ASSERT(outbox != NULL);
@@ -171,20 +240,113 @@ TEST(test_ws_outbox_normal_limit_preserves_control_reserve) {
                                     1000u),
                   WS_OUTBOX_SUPPRESSED);
     ASSERT(ws_outbox_needs_resync(outbox));
+    ASSERT(ws_outbox_should_suppress(outbox, 0u));
+
+    /* The action-time receipt fast path uses this exact pressure gate. It
+     * skips the CONTROL enqueue, leaving the durable transaction/connection
+     * intact for the paced post-manifest replay. */
+    uint8_t receipt_bundle[] = {
+        NET_MSG_CARGO_RECEIPT_BUNDLE, 1u, 0u,
+    };
+    size_t frames_before_receipt = outbox->frame_count;
+    if (!ws_outbox_should_suppress(outbox, 0u)) {
+        (void)ws_outbox_enqueue(
+            outbox, receipt_bundle, sizeof(receipt_bundle),
+            0u, 1001u);
+    }
+    ASSERT_EQ_INT(
+        (int)outbox->frame_count,
+        (int)frames_before_receipt);
+    ASSERT_EQ_INT(outbox->close_reason, WS_OUTBOX_CLOSE_NONE);
 
     uint8_t challenge[PUBKEY_CHALLENGE_MSG_SIZE] = {
         NET_MSG_PUBKEY_CHALLENGE
     };
     ASSERT_EQ_INT(ws_outbox_enqueue(outbox, challenge, sizeof(challenge), 0u,
-                                    1001u),
+                                    1002u),
                   WS_OUTBOX_ADMITTED);
 
     uint8_t ack[8000] = {NET_MSG_ACTION_ACK};
-    ASSERT_EQ_INT(ws_outbox_enqueue(outbox, ack, sizeof(ack), 0u, 1002u),
+    ASSERT_EQ_INT(ws_outbox_enqueue(outbox, ack, sizeof(ack), 0u, 1003u),
                   WS_OUTBOX_ADMITTED);
     ASSERT(ws_outbox_total_bytes(outbox, 0u) <=
            WS_OUTBOX_APP_HARD_BYTES);
     ASSERT_EQ_INT(outbox->close_reason, WS_OUTBOX_CLOSE_NONE);
+
+    uint8_t *scratch = malloc(WS_OUTBOX_MAX_FRAME_BYTES);
+    ASSERT(scratch != NULL);
+    outbox_capture_t capture = {0};
+    while (ws_outbox_pump(
+               outbox, 0u, WS_OUTBOX_TRANSPORT_LIMIT_BYTES,
+               1010u, scratch, WS_OUTBOX_MAX_FRAME_BYTES,
+               capture_send, &capture) > 0u) {
+    }
+    ASSERT(!ws_outbox_should_suppress(outbox, 0u));
+    ASSERT_EQ_INT(
+        ws_outbox_enqueue(
+            outbox, receipt_bundle, sizeof(receipt_bundle),
+            0u, 1011u),
+        WS_OUTBOX_ADMITTED);
+    ASSERT_EQ_INT(outbox->close_reason, WS_OUTBOX_CLOSE_NONE);
+    free(scratch);
+    free(outbox);
+}
+
+TEST(test_ws_outbox_control_probe_handles_descriptor_saturation) {
+    ws_outbox_t *outbox = test_outbox_new();
+    ASSERT(outbox != NULL);
+
+    uint8_t tiny_control[] = {NET_MSG_ACTION_ACK};
+    for (int i = 0; i < WS_OUTBOX_MAX_FRAMES; i++) {
+        ASSERT_EQ_INT(
+            ws_outbox_enqueue(
+                outbox, tiny_control, sizeof(tiny_control),
+                0u, (uint64_t)i),
+            WS_OUTBOX_ADMITTED);
+    }
+    ASSERT_EQ_INT(
+        (int)outbox->frame_count, WS_OUTBOX_MAX_FRAMES);
+    ASSERT(!ws_outbox_should_suppress(outbox, 0u));
+    ASSERT_EQ_INT(outbox->close_reason, WS_OUTBOX_CLOSE_NONE);
+
+    uint8_t receipt_bundle[] = {
+        NET_MSG_CARGO_RECEIPT_BUNDLE, 1u, 0u,
+    };
+    ASSERT(!ws_outbox_can_admit_control_frame(
+        outbox, receipt_bundle, sizeof(receipt_bundle), 0u));
+
+    /* The receipt path treats a failed probe as a best-effort skip. */
+    size_t frames_before_receipt = outbox->frame_count;
+    if (ws_outbox_can_admit_control_frame(
+            outbox, receipt_bundle, sizeof(receipt_bundle), 0u)) {
+        (void)ws_outbox_enqueue(
+            outbox, receipt_bundle, sizeof(receipt_bundle),
+            0u, 1000u);
+    }
+    ASSERT_EQ_INT(
+        (int)outbox->frame_count, (int)frames_before_receipt);
+    ASSERT_EQ_INT(outbox->close_reason, WS_OUTBOX_CLOSE_NONE);
+
+    uint8_t *scratch = malloc(WS_OUTBOX_MAX_FRAME_BYTES);
+    ASSERT(scratch != NULL);
+    outbox_capture_t capture = {0};
+    ASSERT_EQ_INT(
+        (int)ws_outbox_pump(
+            outbox, 0u, WS_OUTBOX_TRANSPORT_LIMIT_BYTES,
+            1001u, scratch, WS_OUTBOX_MAX_FRAME_BYTES,
+            capture_send, &capture),
+        WS_OUTBOX_MAX_FRAMES);
+    ASSERT_EQ_INT((int)outbox->frame_count, 0);
+    ASSERT(ws_outbox_can_admit_control_frame(
+        outbox, receipt_bundle, sizeof(receipt_bundle), 0u));
+    ASSERT_EQ_INT(
+        ws_outbox_enqueue(
+            outbox, receipt_bundle, sizeof(receipt_bundle),
+            0u, 1002u),
+        WS_OUTBOX_ADMITTED);
+    ASSERT_EQ_INT(outbox->close_reason, WS_OUTBOX_CLOSE_NONE);
+
+    free(scratch);
     free(outbox);
 }
 
@@ -977,8 +1139,11 @@ void register_ws_outbox_tests(void) {
     TEST_SECTION("\nWebSocket bounded outbox (#663):\n");
     RUN(test_ws_outbox_policy_is_semantic_and_fail_safe);
     RUN(test_ws_outbox_one_shot_receipts_use_control_reserve);
+    RUN(test_ws_outbox_never_queues_retired_legacy_save_disclosure);
     RUN(test_ws_outbox_coalesces_latest_semantic_state);
+    RUN(test_ws_outbox_coalesces_tow_snapshot_without_displacing_control);
     RUN(test_ws_outbox_normal_limit_preserves_control_reserve);
+    RUN(test_ws_outbox_control_probe_handles_descriptor_saturation);
     RUN(test_ws_outbox_control_headroom_exhaustion_is_explicit);
     RUN(test_ws_outbox_control_overtakes_normal_without_displacement);
     RUN(test_ws_outbox_large_frame_and_reliable_overflow_fail_closed);

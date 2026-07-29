@@ -4,12 +4,10 @@
  * Layer A.1 of the off-chain decentralization roadmap (#479).
  * The keypair is purely local in this slice: it is generated on first
  * launch, persisted to disk under a platform-appropriate path, and
- * surfaced in the HUD as an 8-char base58 prefix. The wire protocol
- * is unchanged — session_token still drives identity over the network.
- *
- * Layer A.2 will start sending the pubkey on connect; Layer A.3 will
- * sign inputs; Layer A.4 will migrate save files. None of those land
- * here.
+ * surfaced in the HUD as an 8-char base58 prefix. The current protocol
+ * challenge-verifies the pubkey for durable identity and signed actions.
+ * session_token remains a private reconnect/transport locator, not a
+ * public or presentation identity.
  */
 #ifndef SIGNAL_IDENTITY_H
 #define SIGNAL_IDENTITY_H
@@ -59,6 +57,9 @@ bool identity_load_or_generate(player_identity_t *out);
  * success. */
 bool identity_load_or_generate_at(player_identity_t *out, const char *path);
 bool identity_save_to(const player_identity_t *id, const char *path);
+
+/* Wipe the in-memory keypair at application/test lifecycle boundaries. */
+void identity_clear(player_identity_t *id);
 
 #ifdef __cplusplus
 }

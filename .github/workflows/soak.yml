@@ -35,3 +35,36 @@ jobs:
           name: sanitizer-soak-failure-logs
           path: test-results/soak-san/
           if-no-files-found: warn
+
+  memory-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install MemorySanitizer toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build
+      - name: Check instrumented secret lifecycle paths
+        run: make memzero-codegen test-msan
+
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install ThreadSanitizer toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build
+      - name: Check bounded concurrent HNN and simulation path
+        run: |
+          make test-tsan \
+            TEST_FAILURE_LOG_DIR=test-results/tsan
+      - name: Upload ThreadSanitizer failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thread-sanitizer-failure-logs
+          path: test-results/tsan/
+          if-no-files-found: warn

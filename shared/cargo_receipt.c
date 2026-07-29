@@ -287,13 +287,39 @@ const char *cargo_receipt_trust_status_name(
 
 /* ---------------- ship_receipts_t storage --------------------------- */
 
+/*
+ * Receipt stores mutate on the process's single simulation/network loop. A
+ * process-wide token prevents ABA when a live store is replaced by a freshly
+ * allocated store whose local mutation count would otherwise repeat an old
+ * value.
+ * Saturation is sticky: consumers treat UINT64_MAX as un-cacheable.
+ */
+static uint64_t g_ship_receipts_last_generation;
+
+static uint64_t ship_receipts_next_generation(uint64_t current) {
+    if (current == UINT64_MAX) return UINT64_MAX;
+    if (g_ship_receipts_last_generation == UINT64_MAX)
+        return UINT64_MAX;
+    g_ship_receipts_last_generation++;
+    return g_ship_receipts_last_generation;
+}
+
+static void ship_receipts_note_semantic_change(ship_receipts_t *r) {
+    if (!r) return;
+    r->semantic_generation =
+        ship_receipts_next_generation(r->semantic_generation);
+}
+
 bool ship_receipts_init(ship_receipts_t *r, uint16_t cap) {
     if (!r) return false;
     memset(r, 0, sizeof(*r));
-    if (cap == 0) return true;
-    r->chains = (cargo_receipt_chain_t *)calloc(cap, sizeof(*r->chains));
-    if (!r->chains) return false;
-    r->cap = cap;
+    if (cap > 0) {
+        r->chains =
+            (cargo_receipt_chain_t *)calloc(cap, sizeof(*r->chains));
+        if (!r->chains) return false;
+        r->cap = cap;
+    }
+    ship_receipts_note_semantic_change(r);
     return true;
 }
 
@@ -303,13 +329,16 @@ void ship_receipts_free(ship_receipts_t *r) {
     r->chains = NULL;
     r->count = 0;
     r->cap = 0;
+    r->semantic_generation = 0;
 }
 
 void ship_receipts_clear(ship_receipts_t *r) {
     if (!r) return;
+    bool changed = r->count > 0;
     if (r->chains && r->cap > 0)
         memset(r->chains, 0, r->cap * sizeof(*r->chains));
     r->count = 0;
+    if (changed) ship_receipts_note_semantic_change(r);
 }
 
 bool ship_receipts_reserve(ship_receipts_t *r, uint16_t cap) {
@@ -338,8 +367,54 @@ bool ship_receipts_clone(ship_receipts_t *dst, const ship_receipts_t *src) {
         memcpy(tmp.chains, src->chains,
                (size_t)src->count * sizeof(*src->chains));
     tmp.count = src->count;
+    if (src->semantic_generation != 0)
+        tmp.semantic_generation = src->semantic_generation;
     ship_receipts_free(dst);
     *dst = tmp;
+    return true;
+}
+
+bool ship_receipts_set_chain(ship_receipts_t *r, uint16_t index,
+                             const cargo_receipt_chain_t *chain) {
+    if (!r || index >= r->count || !r->chains) return false;
+    if (chain && chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN) return false;
+
+    cargo_receipt_chain_t normalized = {0};
+    if (chain && chain->len > 0) {
+        normalized.len = chain->len;
+        memcpy(normalized.links, chain->links,
+               (size_t)chain->len * sizeof(chain->links[0]));
+    }
+    if (memcmp(&r->chains[index], &normalized, sizeof(normalized)) == 0)
+        return true;
+    r->chains[index] = normalized;
+    ship_receipts_note_semantic_change(r);
+    return true;
+}
+
+bool ship_receipts_clear_chains(ship_receipts_t *r) {
+    if (!r || (r->count > 0 && !r->chains)) return false;
+    cargo_receipt_chain_t empty = {0};
+    bool changed = false;
+    for (uint16_t i = 0; i < r->count; i++) {
+        if (memcmp(&r->chains[i], &empty, sizeof(empty)) != 0) {
+            changed = true;
+            break;
+        }
+    }
+    if (r->chains && r->cap > 0)
+        memset(r->chains, 0, (size_t)r->cap * sizeof(*r->chains));
+    if (changed) ship_receipts_note_semantic_change(r);
+    return true;
+}
+
+bool ship_receipts_swap(ship_receipts_t *r, uint16_t a, uint16_t b) {
+    if (!r || !r->chains || a >= r->count || b >= r->count) return false;
+    if (a == b) return true;
+    cargo_receipt_chain_t tmp = r->chains[a];
+    r->chains[a] = r->chains[b];
+    r->chains[b] = tmp;
+    ship_receipts_note_semantic_change(r);
     return true;
 }
 
@@ -358,6 +433,7 @@ bool ship_receipts_push_chain(ship_receipts_t *r,
     memcpy(slot->links, chain, (size_t)len * sizeof(*chain));
     slot->len = len;
     r->count++;
+    ship_receipts_note_semantic_change(r);
     return true;
 }
 
@@ -370,6 +446,7 @@ bool ship_receipts_push_empty(ship_receipts_t *r) {
     }
     memset(&r->chains[r->count], 0, sizeof(r->chains[r->count]));
     r->count++;
+    ship_receipts_note_semantic_change(r);
     return true;
 }
 
@@ -385,6 +462,7 @@ bool ship_receipts_remove(ship_receipts_t *r, uint16_t index,
     /* Zero the now-unused tail so stale data doesn't surface in a
      * later push that doesn't fully overwrite the slot. */
     memset(&r->chains[r->count], 0, sizeof(*r->chains));
+    ship_receipts_note_semantic_change(r);
     return true;
 }
 
@@ -394,5 +472,6 @@ bool ship_receipts_extend(ship_receipts_t *r, uint16_t index,
     cargo_receipt_chain_t *slot = &r->chains[index];
     if (slot->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) return false;
     slot->links[slot->len++] = *next;
+    ship_receipts_note_semantic_change(r);
     return true;
 }

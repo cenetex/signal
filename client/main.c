@@ -25,6 +25,7 @@
 #include "net_input_lead.h"
 #include "net_clock.h"
 #include "client_log.h"
+#include "legacy_recovery_ui.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -198,6 +199,22 @@ static void on_remote_handoff_result(uint8_t status, uint8_t reason,
 static void on_remote_latency_sample(uint32_t seq, float rtt_ms,
                                      float server_turnaround_ms,
                                      uint32_t server_tick);
+static void on_remote_protocol_info(const NetProtocolInfo *info);
+static void on_remote_legacy_recovery_offer(
+    const uint8_t offer_id[LEGACY_RECOVERY_OFFER_ID_SIZE],
+    uint16_t expires_in_seconds);
+static void on_remote_legacy_recovery_result(
+    legacy_recovery_result_status_t status);
+
+static legacy_recovery_ui_t legacy_recovery_ui;
+static char legacy_recovery_disconnect_notice[192];
+#ifdef __EMSCRIPTEN__
+static bool legacy_recovery_smoke_active;
+static bool legacy_recovery_smoke_send_admitted = true;
+static uint32_t legacy_recovery_smoke_confirm_count;
+static uint32_t legacy_recovery_smoke_cancel_count;
+static uint32_t legacy_recovery_smoke_expire_count;
+#endif
 
 static void configure_net_callbacks(NetCallbacks *cbs) {
     if (!cbs) return;
@@ -228,6 +245,7 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_cargo_pod_linear = apply_remote_cargo_pod_linear;
     cbs->on_interactions = apply_remote_interactions;
     cbs->on_interaction_drift = apply_remote_interaction_drift;
+    cbs->on_tow_links = apply_remote_tow_links;
     cbs->on_hail_response = apply_remote_hail_response;
     cbs->on_player_ship = apply_remote_player_ship;
     cbs->on_contracts = apply_remote_contracts;
@@ -247,8 +265,123 @@ static void configure_net_callbacks(NetCallbacks *cbs) {
     cbs->on_action_ack = on_remote_action_ack;
     cbs->on_action_result = on_remote_action_result;
     cbs->on_latency_sample = on_remote_latency_sample;
+    cbs->on_protocol_info = on_remote_protocol_info;
     cbs->on_handoff_ticket = on_remote_handoff_ticket;
     cbs->on_handoff_result = on_remote_handoff_result;
+    cbs->on_legacy_recovery_offer =
+        on_remote_legacy_recovery_offer;
+    cbs->on_legacy_recovery_result =
+        on_remote_legacy_recovery_result;
+}
+
+static void on_remote_protocol_info(const NetProtocolInfo *info) {
+    if (!info) return;
+    g.net_server_protocol_version = info->version;
+    if (!info->compatible ||
+        info->version != SIGNAL_PROTOCOL_VERSION) {
+        g.net_protocol_incompatible = true;
+    }
+}
+
+static void on_remote_legacy_recovery_offer(
+    const uint8_t offer_id[LEGACY_RECOVERY_OFFER_ID_SIZE],
+    uint16_t expires_in_seconds) {
+    /*
+     * net.c retains the exact opaque offer. Presentation state receives only
+     * its bounded lifetime, so no offer/token/path bytes can reach UI text or
+     * browser exports.
+     */
+    (void)offer_id;
+    if (!offer_id || expires_in_seconds == 0) return;
+    if (!legacy_recovery_ui_begin_offer(
+            &legacy_recovery_ui, net_now_ms32(),
+            expires_in_seconds)) {
+        return;
+    }
+    g.input.key_pressed[SAPP_KEYCODE_ENTER] = false;
+    g.input.key_pressed[SAPP_KEYCODE_KP_ENTER] = false;
+    g.input.key_pressed[SAPP_KEYCODE_ESCAPE] = false;
+    snprintf(
+        legacy_recovery_disconnect_notice,
+        sizeof(legacy_recovery_disconnect_notice),
+        "%s",
+        "Legacy recovery was not completed; the remote save is untouched.");
+    set_notice(
+        "Legacy save available for this verified session. "
+        "[ENTER] recover, [ESC] leave untouched (%us).",
+        (unsigned)expires_in_seconds);
+}
+
+static const char *legacy_recovery_result_notice(
+    legacy_recovery_result_status_t status) {
+    switch (status) {
+    case LEGACY_RECOVERY_RESULT_NO_MATCH:
+        return "No matching legacy save remained; nothing was changed.";
+    case LEGACY_RECOVERY_RESULT_STALE_OFFER:
+        return "Legacy recovery offer expired; reconnect to retry.";
+    case LEGACY_RECOVERY_RESULT_REPLAY:
+        return "Legacy recovery confirmation was already used.";
+    case LEGACY_RECOVERY_RESULT_INVALID_SOURCE:
+        return "Legacy save is invalid or corrupt; nothing was changed.";
+    case LEGACY_RECOVERY_RESULT_DESTINATION_CONFLICT:
+        return "An existing identity save won; it was not overwritten.";
+    case LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE:
+        return "Legacy recovery could not commit; nothing was changed.";
+    case LEGACY_RECOVERY_RESULT_SUCCESS:
+        return "Legacy save recovered. Authoritative state refreshed.";
+    default:
+        return "Legacy recovery returned an unknown result.";
+    }
+}
+
+static void on_remote_legacy_recovery_result(
+    legacy_recovery_result_status_t status) {
+    if (!legacy_recovery_ui_apply_result(
+            &legacy_recovery_ui, status, net_now_ms32())) {
+        return;
+    }
+    const char *notice = legacy_recovery_result_notice(status);
+    if (status == LEGACY_RECOVERY_RESULT_SUCCESS) {
+        memset(legacy_recovery_disconnect_notice, 0,
+               sizeof(legacy_recovery_disconnect_notice));
+    } else {
+        snprintf(
+            legacy_recovery_disconnect_notice,
+            sizeof(legacy_recovery_disconnect_notice),
+            "%s", notice);
+    }
+    set_notice("%s", notice);
+}
+
+static void handle_net_protocol_mismatch(void) {
+    if (!g.net_protocol_incompatible ||
+        g.net_protocol_mismatch_handled) {
+        return;
+    }
+    g.net_protocol_mismatch_handled = true;
+    net_shutdown();
+    set_notice(
+        "Protocol mismatch (client v%u, server v%u). Update/reload required.",
+        (unsigned)SIGNAL_PROTOCOL_VERSION,
+        (unsigned)g.net_server_protocol_version);
+#ifdef __EMSCRIPTEN__
+    int already_reloaded = emscripten_run_script_int(
+        "new URLSearchParams(location.search).has('pv') ? 1 : 0");
+    if (!already_reloaded) {
+        char reload_script[512];
+        snprintf(
+            reload_script, sizeof(reload_script),
+            "(() => {"
+            "  const u = new URL(location.href);"
+            "  u.searchParams.set('pv', '%u');"
+            "  u.searchParams.set('v', Date.now().toString());"
+            "  location.replace(u.pathname + '?' + "
+            "u.searchParams.toString() + u.hash);"
+            "})()",
+            (unsigned)SIGNAL_PROTOCOL_VERSION);
+        emscripten_run_script(reload_script);
+    }
+#endif
 }
 
 /* Keep singleplayer on the dedicated server's bounded cadences by default.
@@ -267,9 +400,13 @@ static bool local_throttled_snapshots_requested(void) {
 }
 
 static bool start_local_loopback_authority(const NetCallbacks *cbs) {
+    if (!local_server_has_world(&g.local_server) ||
+        !g.local_server.active) {
+        return false;
+    }
     /* Set before the initial snapshot: the advertised protocol cadences
      * depend on the mode. Every loopback session passes through here, so
-     * the flag survives local_server_init()'s memset on any reset path. */
+     * the flag survives local_server_init() on any reset path. */
     g.local_server.throttled_snapshots = local_throttled_snapshots_requested();
     local_server_attach_loopback(&g.local_server);
     if (!net_init_loopback(cbs, 0))
@@ -288,10 +425,15 @@ static bool start_fresh_local_fallback_authority(const NetCallbacks *cbs) {
     net_shutdown();
     g.net_authority_enabled = false;
     g.local_player_slot = 0;
-    world_cleanup(&g.local_server.world);
-    local_server_init(&g.local_server, 0);
+    local_server_shutdown(&g.local_server);
+    if (!local_server_init(&g.local_server, 0)) return false;
     neural_singleplayer_init();
-    return start_local_loopback_authority(cbs);
+    if (start_local_loopback_authority(cbs)) {
+        g.net_authority_enabled = true;
+        return true;
+    }
+    local_server_shutdown(&g.local_server);
+    return false;
 }
 
 static bool net_tick_after_u32(uint32_t a, uint32_t b) {
@@ -384,18 +526,12 @@ static void init_starfield(void) {
 
 static void reset_world(void) {
     g.local_player_slot = 0;
-    world_cleanup(&g.world);
-    memset(&g.world, 0, sizeof(g.world));
-
-    if (!g.net_authority_enabled) {
-        /* Singleplayer boots an in-process server, then connects through
-         * net.c loopback so the client still consumes serialized snapshots. */
-        world_cleanup(&g.local_server.world);
-        local_server_init(&g.local_server, 0);
-    }
 
     /* Server-managed world: the client predicts until authoritative snapshots
-     * arrive over either remote WebSocket or local loopback. */
+     * arrive over either remote WebSocket or local loopback.  world_reset()
+     * already releases every owned subobject and clears the full world while
+     * preserving its reusable signal-cache allocation; an outer cleanup plus
+     * memset duplicated a 16 MiB sweep and defeated that reuse. */
     world_reset(&g.world);
     player_init_ship(&LOCAL_PLAYER, &g.world);
     LOCAL_PLAYER.connected = true;
@@ -774,44 +910,34 @@ static void sim_on_damage(const sim_event_t *ev) {
     }
 }
 
-/* Find or create a scoreboard row for the given attribution token. */
-static int scoreboard_row_for_token(const uint8_t token[8], const char *label, bool is_npc) {
-    for (int i = 0; i < g.scoreboard.row_count; i++) {
-        if (memcmp(g.scoreboard.rows[i].token, token, 8) == 0) return i;
-    }
-    int cap = (int)(sizeof(g.scoreboard.rows) / sizeof(g.scoreboard.rows[0]));
-    if (g.scoreboard.row_count >= cap) return -1;
-    int idx = g.scoreboard.row_count++;
-    memset(&g.scoreboard.rows[idx], 0, sizeof(g.scoreboard.rows[idx]));
-    memcpy(g.scoreboard.rows[idx].token, token, 8);
-    if (label && label[0])
-        snprintf(g.scoreboard.rows[idx].label, sizeof(g.scoreboard.rows[idx].label), "%s", label);
-    g.scoreboard.rows[idx].is_npc = is_npc;
-    return idx;
-}
-
-static bool token_matches_local(const uint8_t token[8]) {
-    /* Zero token = unattributed; never counts as the local player. */
-    bool nonzero = false;
-    for (int i = 0; i < 8; i++) { if (token[i]) { nonzero = true; break; } }
-    if (!nonzero) return false;
-    return memcmp(token, g.world.players[g.local_player_slot].session_token, 8) == 0;
+bool client_local_public_actor_id(public_actor_id_t *out) {
+    actor_principal_t principal = actor_principal_none();
+    if (out) *out = public_actor_id_none();
+    return out && g.identity_ready &&
+        actor_principal_from_stable_id(
+            ACTOR_PRINCIPAL_PLAYER, g.identity.pubkey, &principal) &&
+        public_actor_id_from_principal(&principal, out);
 }
 
 static void sim_on_npc_kill(const sim_event_t *ev) {
-    /* Kill-feed line. Prefer the local player's perspective: if I'm
-     * the killer, prepend "You killed"; otherwise show the killer's
-     * callsign if we know it. For now we don't have a token-to-callsign
-     * cache, so the bare role + cause cover anonymous killer tokens. */
+    /* Callsigns/slots are presentation hints; source_actor is identity. */
     const char *role = (ev->npc_kill.npc_role == NPC_ROLE_MINER) ? "Miner"
                      : (ev->npc_kill.npc_role == NPC_ROLE_HAULER) ? "Hauler"
                      : "Worker";
     const char *weapon = (ev->npc_kill.cause == DEATH_CAUSE_THROWN_ROCK) ? "thrown rock"
                        : (ev->npc_kill.cause == DEATH_CAUSE_RAM) ? "ramming"
                        : "collision";
-    bool you_killed = !g.net_authority_enabled ||
-        (memcmp(ev->npc_kill.killer_token,
-                g.world.players[g.local_player_slot].session_token, 8) == 0);
+    public_actor_id_t local_actor = public_actor_id_none();
+    (void)client_local_public_actor_id(&local_actor);
+    const char *local_label =
+        LOCAL_PLAYER.callsign[0] ? LOCAL_PLAYER.callsign : "YOU";
+    client_scoreboard_event_result_t scoreboard_result =
+        client_scoreboard_record_npc_kill(
+            &g.scoreboard,
+            &local_actor,
+            local_label,
+            &ev->source_actor);
+    bool you_killed = scoreboard_result.source_is_local;
     if (you_killed) {
         snprintf(g.kill_feed_text, sizeof(g.kill_feed_text),
                  "You killed %s with %s", role, weapon);
@@ -821,25 +947,14 @@ static void sim_on_npc_kill(const sim_event_t *ev) {
     }
     g.kill_feed_timer = 3.0f;
 
-    /* Killer-side feedback: counter, banner, SFX. NPC kills don't have
-     * a victim token to attribute against on the scoreboard, but the
-     * killer entry still gets credited. */
+    /* NPC victims remain explicitly unattributed until they have a
+     * persisted non-secret birth ID. Only the verified killer gets a row. */
     if (you_killed) {
         g.kill_count_session++;
         snprintf(g.kill_confirm_text, sizeof(g.kill_confirm_text),
                  "KILL: %s", role);
         g.kill_confirm_timer = 3.0f;
         audio_play_kill_confirm(&g.audio);
-        const uint8_t *me = g.world.players[g.local_player_slot].session_token;
-        const char *cs = LOCAL_PLAYER.callsign[0] ? LOCAL_PLAYER.callsign : "YOU";
-        int row = scoreboard_row_for_token(me, cs, false);
-        if (row >= 0) g.scoreboard.rows[row].kills++;
-    } else {
-        /* Some other player killed the NPC. Credit them on the
-         * scoreboard — label is the role since we have no
-         * token→callsign map for kills attributed to remotes. */
-        int row = scoreboard_row_for_token(ev->npc_kill.killer_token, "Player", false);
-        if (row >= 0) g.scoreboard.rows[row].kills++;
     }
 }
 
@@ -881,7 +996,10 @@ static void death_cinematic_spawn(const sim_event_t *ev) {
     float severity = clampf(impact_speed / 260.0f, 0.8f, 2.4f);
     uint32_t spin_seed = ((uint32_t)ev->death.respawn_station << 24) ^
                          ((uint32_t)ev->death.cause << 16) ^
-                         ((uint32_t)ev->death.killer_token[0] << 8) ^
+                         ((ev->source_actor.kind ==
+                           (uint8_t)PUBLIC_ACTOR_ID_DERIVED)
+                              ? ((uint32_t)ev->source_actor.id[0] << 8)
+                              : 0u) ^
                          client_death_spin_float_bits(impact_speed);
     float spin_dir = client_death_spin_dir(spin_seed);
     g.death_cinematic.active = true;
@@ -914,42 +1032,29 @@ static void sim_on_death(const sim_event_t *ev) {
     /* Scoreboard + kill confirm fire for ANY death we see, not just
      * the local player's. A remote death observed via the broadcast
      * SIM_EVENT_DEATH stream is still useful telemetry for the killer. */
-    int vid = ev->player_id;
-    const uint8_t *vtoken = NULL;
-    const char *vlabel = "Pilot";
-    if (vid >= 0 && vid < MAX_PLAYERS) {
-        vtoken = g.world.players[vid].session_token;
-        if (g.world.players[vid].callsign[0])
-            vlabel = g.world.players[vid].callsign;
-    }
+    public_actor_id_t local_actor = public_actor_id_none();
+    (void)client_local_public_actor_id(&local_actor);
+    const char *local_label =
+        LOCAL_PLAYER.callsign[0] ? LOCAL_PLAYER.callsign : "YOU";
+    client_scoreboard_event_result_t scoreboard_result =
+        client_scoreboard_record_death(
+            &g.scoreboard,
+            &local_actor,
+            local_label,
+            &ev->source_actor,
+            &ev->subject_actor);
+    bool victim_is_local = scoreboard_result.subject_is_local;
     bool i_killed_them =
-        !ev_is_local(ev) && token_matches_local(ev->death.killer_token);
+        scoreboard_result.source_is_local && !victim_is_local;
     if (i_killed_them) {
         g.kill_count_session++;
         snprintf(g.kill_confirm_text, sizeof(g.kill_confirm_text),
-                 "KILL: %s", vlabel);
+                 "%s", "KILL: Pilot");
         g.kill_confirm_timer = 3.0f;
         audio_play_kill_confirm(&g.audio);
-        const uint8_t *me = g.world.players[g.local_player_slot].session_token;
-        const char *cs = LOCAL_PLAYER.callsign[0] ? LOCAL_PLAYER.callsign : "YOU";
-        int row = scoreboard_row_for_token(me, cs, false);
-        if (row >= 0) g.scoreboard.rows[row].kills++;
-    } else if (!ev_is_local(ev)) {
-        /* Someone else got the kill — credit them on the scoreboard. */
-        bool nonzero = false;
-        for (int i = 0; i < 8; i++)
-            if (ev->death.killer_token[i]) { nonzero = true; break; }
-        if (nonzero) {
-            int row = scoreboard_row_for_token(ev->death.killer_token, "Player", false);
-            if (row >= 0) g.scoreboard.rows[row].kills++;
-        }
-    }
-    if (vtoken) {
-        int vrow = scoreboard_row_for_token(vtoken, vlabel, false);
-        if (vrow >= 0) g.scoreboard.rows[vrow].deaths++;
     }
 
-    if (!ev_is_local(ev)) return;
+    if (!victim_is_local) return;
     g.death_count_session++;
     /* Under network authority the cinematic + payload come via
      * NET_MSG_DEATH (only the victim receives that). The broadcast
@@ -972,8 +1077,8 @@ static void sim_on_death(const sim_event_t *ev) {
     g.death_screen_max = 0.0f;
     /* Force-stop any playing episode, reset state, then trigger death
      * episode so it plays during the cinematic. */
-    if (episode_is_active(&g.episode)) episode_skip(&g.episode);
-    memset(g.episode.watched, 0, sizeof(g.episode.watched));
+    episode_reset(&g.episode);
+    episode_clear_watched(&g.episode);
     g.episode.stations_visited = 0;
     episode_trigger(&g.episode, 9); /* Ep 9: Death */
     episode_save(&g.episode);
@@ -1202,26 +1307,28 @@ static void sim_on_module_activated(const sim_event_t *ev) {
 
 static void sim_on_outpost_activated(const sim_event_t *ev) {
     (void)ev;
-    if (!g.episode.watched[4]) episode_trigger(&g.episode, 4); /* Ep 4: Naming */
+    if (!episode_was_watched(&g.episode, 4))
+        episode_trigger(&g.episode, 4); /* Ep 4: Naming */
     audio_play_commission(&g.audio);
     set_notice("Outpost online: local signal expanded. Add modules to make the stop useful.");
 }
 
 static void sim_on_npc_spawned(const sim_event_t *ev) {
     /* Ep 5: Drones — first miner at a player outpost */
-    if (!g.episode.watched[5] &&
+    if (!episode_was_watched(&g.episode, 5) &&
         ev->npc_spawned.role == NPC_ROLE_MINER &&
         ev->npc_spawned.home_station >= SIGNAL_FIRST_OUTPOST_INDEX)
         episode_trigger(&g.episode, 5);
 }
 
 static void sim_on_signal_lost(const sim_event_t *ev) {
-    if (ev_is_local(ev) && !g.episode.watched[7])
+    if (ev_is_local(ev) && !episode_was_watched(&g.episode, 7))
         episode_trigger(&g.episode, 7); /* Ep 7: Dark Sector */
 }
 
 static void sim_on_station_connected(const sim_event_t *ev) {
-    if (!g.episode.watched[8] && ev->station_connected.connected_count >= 5)
+    if (!episode_was_watched(&g.episode, 8) &&
+        ev->station_connected.connected_count >= 5)
         episode_trigger(&g.episode, 8); /* Ep 8: Every AI Dreams */
     if (ev->station_connected.connected_count > 0) {
         set_notice("Signal chain connected: %d stations now share route memory.",
@@ -1248,11 +1355,27 @@ static const char *order_reject_message(uint8_t reason) {
     case ORDER_REJECT_SELL_NOT_ACCEPTED:    return "This station has no consumer for that commodity -- try another dock.";
     case ORDER_REJECT_SELL_STATION_BROKE:   return "This station ran out of credit -- sale partial or refused. Try again later.";
     case ORDER_REJECT_SELL_INVENTORY_FULL:  return "This station's hopper is full -- wait for it to consume stock, or try another dock.";
+    case ORDER_REJECT_POD_PRESENT_STALE:     return "That pod changed after selection -- inspect it and try again.";
+    case ORDER_REJECT_POD_PRESENT_NOT_CARRIED:
+        return "Tow the selected pod to this dock before unpacking it.";
+    case ORDER_REJECT_POD_PRESENT_WRONG_ORIGIN:
+        return "This dock cannot originate receipts for cargo made at another station.";
+    case ORDER_REJECT_POD_PRESENT_UNTRUSTED:
+        return "Pod cargo does not match this station's verified production history.";
+    case ORDER_REJECT_POD_PRESENT_STORAGE:
+        return "Your ship could not stage the pod manifest -- try again after freeing cargo.";
+    case ORDER_REJECT_POD_PRESENT_LOG:
+        return "This station's receipt log is unavailable -- pod cargo was left untouched.";
+    case ORDER_REJECT_POD_PRESENT_CUSTODY:
+        return "This pod's shipment or station custody must be resolved before unpacking.";
+    case ORDER_REJECT_POD_PRESENT_IDENTITY:
+        return "A verified player identity is required to receive cargo receipts.";
     default:                                return "Order rejected.";
     }
 }
 
 static void sim_on_order_rejected(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
     set_notice("%s", order_reject_message(ev->order_rejected.reason));
 }
 
@@ -1326,7 +1449,8 @@ static void episode_per_frame(float dt) {
     if (episode_is_active(&g.episode)) return;
 
     /* Ep 3: Scaffold — currently towing a scaffold */
-    if (!g.episode.watched[3] && LOCAL_PLAYER.ship->towed_scaffold >= 0)
+    if (!episode_was_watched(&g.episode, 3) &&
+        LOCAL_PLAYER.ship->towed_scaffold >= 0)
         episode_trigger(&g.episode, 3);
 
     /* Ep 4, 5, 7, 8 are now event-driven (see process_events) */
@@ -1487,7 +1611,10 @@ static void sim_step(float dt) {
         return;
     }
 
-    input_intent_t intent = sample_input_intent();
+    input_intent_t intent =
+        legacy_recovery_ui_blocks_gameplay(&legacy_recovery_ui)
+        ? (input_intent_t){0}
+        : sample_input_intent();
 
     /* Reset the docked view to the first visible station panel. */
     if (LOCAL_PLAYER.docked && !g.was_docked) {
@@ -1513,12 +1640,15 @@ static void sim_step(float dt) {
     if (neural_singleplayer_ready()) {
         const world_t *shadow_world = &g.world;
         const server_player_t *shadow_player = &LOCAL_PLAYER;
+        const world_t *authority =
+            local_server_world_const(&g.local_server);
         if (g.local_server.active &&
+            authority &&
             net_is_loopback() &&
             g.local_player_slot >= 0 &&
             g.local_player_slot < MAX_PLAYERS) {
-            shadow_world = &g.local_server.world;
-            shadow_player = &g.local_server.world.players[g.local_player_slot];
+            shadow_world = authority;
+            shadow_player = &authority->players[g.local_player_slot];
         }
         neural_singleplayer_shadow_flight(
             shadow_world, shadow_player, &intent, NULL);
@@ -1705,7 +1835,12 @@ static void sim_step(float dt) {
 /* on_player_join ... sync_local_player_slot_from_network: see net_sync.h/c */
 
 static void init(void) {
-    memset(&g, 0, sizeof(g));
+    /*
+     * `g` has static storage and enters the sole application init callback
+     * zero-initialized.  Avoid eagerly touching the entire multi-megabyte
+     * client state before mode selection; reset_world() initializes the
+     * replicated world below and each subsystem owns its remaining setup.
+     */
     g.world.rng = 0xC0FFEE12u;
 
     sg_setup(&(sg_desc){
@@ -1771,18 +1906,12 @@ static void init(void) {
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
             "  const server = p.get('server') || window.SIGNAL_SERVER || '';"
-            "  if (!server || p.has('neural')) { Module._neural_singleplayer_init(); }"
             "  if (p.has('singleplayer')) return '';"
             "  return server;"
             "})()");
 #else
         /* Native: check SIGNAL_SERVER environment variable or command line */
         server_url = getenv("SIGNAL_SERVER");
-        /* Load neural brain for local loopback if no remote server is set. */
-        extern bool neural_singleplayer_init(void);
-        if (!server_url || server_url[0] == '\0') {
-            neural_singleplayer_init();
-        }
 #endif
         signal_intelligence_holographic_init();
         {
@@ -1795,19 +1924,21 @@ static void init(void) {
             if (server_url && server_url[0] != '\0') {
                 g.net_authority_enabled = net_init(server_url, &cbs);
                 if (g.net_authority_enabled) {
-                    /* Deactivate the local server — the remote server is authoritative.
-                     * The local server was started by reset_world() before we knew
-                     * a remote server was available. Clear dynamic state seeded by that
-                     * bootstrap world so active-only remote snapshots cannot leave
-                     * local-only asteroid/NPC ghosts behind. */
-                    g.local_server.active = false;
+                    /* Remote mode never constructs a local authority world.
+                     * Clear the replicated dynamic view before sparse remote
+                     * snapshots begin arriving. */
                     reset_remote_dynamic_sync();
                 } else {
                     set_notice("Remote unavailable; using local server.");
                 }
             }
             if (!g.net_authority_enabled) {
-                g.net_authority_enabled = start_local_loopback_authority(&cbs);
+                g.net_authority_enabled =
+                    start_fresh_local_fallback_authority(&cbs);
+                if (!g.net_authority_enabled) {
+                    set_notice(
+                        "Local authority unavailable (out of memory).");
+                }
             }
         }
     }
@@ -2207,6 +2338,17 @@ static void render_ui(void) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
     render_set_screen_space(screen_w, screen_h);
+
+    /*
+     * Recovery is a provisional authenticated dock console, not gameplay
+     * station state. Draw it alone so underlying HUD text and controls cannot
+     * bleed through the scrim before the atomic decision completes.
+     */
+    if (legacy_recovery_ui_visible(&legacy_recovery_ui)) {
+        draw_legacy_recovery_ui(
+            &legacy_recovery_ui, net_now_ms32());
+        return;
+    }
 
     draw_hud_panels();
     draw_hud();
@@ -2697,6 +2839,7 @@ EMSCRIPTEN_KEEPALIVE
 #endif
 int reset_net_motion_telemetry(void) {
     memset(&g.net_motion, 0, sizeof(g.net_motion));
+    net_reconcile_diagnostics_reset(&g.net_reconcile);
     g.net_motion.input_lead_margin_ticks =
         NET_INPUT_LEAD_DEFAULT_MARGIN_TICKS;
     net_latency_stats_reset(&g.net_ack_latency);
@@ -3178,7 +3321,8 @@ int signal_smoke_prepare_known_ledger_sync(void) {
     int player_idx = g.local_player_slot;
     if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
 
-    world_t *authority = &g.local_server.world;
+    world_t *authority = local_server_world(&g.local_server);
+    if (!authority) return 0;
     server_player_t *server_player = &authority->players[player_idx];
     server_player_t *client_player = &g.world.players[player_idx];
     const int earned_station = 0;
@@ -3275,7 +3419,8 @@ int signal_smoke_prepare_tow_lifecycle(void) {
     int player_idx = g.local_player_slot;
     if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
 
-    world_t *authority = &g.local_server.world;
+    world_t *authority = local_server_world(&g.local_server);
+    if (!authority) return 0;
     server_player_t *server_player = &authority->players[player_idx];
     server_player_t *client_player = &g.world.players[player_idx];
     if (!server_player->connected || !server_player->ship ||
@@ -3377,7 +3522,8 @@ int signal_smoke_tow_lifecycle_state(void) {
     if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
     const int target_idx = MAX_ASTEROIDS - 1;
     const int pod_idx = MAX_CARGO_PODS - 1;
-    const world_t *authority = &g.local_server.world;
+    const world_t *authority = local_server_world_const(&g.local_server);
+    if (!authority) return 0;
     const server_player_t *server_player = &authority->players[player_idx];
     const server_player_t *client_player = &g.world.players[player_idx];
     int state = 0;
@@ -3438,15 +3584,29 @@ int signal_smoke_tow_lifecycle_state(void) {
         player_idx) {
         state |= 1 << 14;
     }
+    if (g.tow_snapshot_received) state |= 1 << 15;
+    if (g.tow_snapshot_received &&
+        g.tow_snapshot_revision == authority->tow_revision &&
+        g.tow_snapshot_server_tick == authority->tow_revision_tick) {
+        state |= 1 << 16;
+    }
     if (g.input.tractor_release_tap_pending) state |= 1 << 17;
     return state;
 }
 
 EMSCRIPTEN_KEEPALIVE
 int signal_smoke_remote_towable_interp_check(void) {
+    world_t *local_authority = local_server_world(&g.local_server);
+    if (!local_authority) return 0;
     bool saved_local_server_active = g.local_server.active;
     bool saved_net_authority_enabled = g.net_authority_enabled;
     bool saved_net_input_tick_protocol = g.net_input_tick_protocol;
+    bool saved_tow_snapshot_received = g.tow_snapshot_received;
+    uint32_t saved_tow_snapshot_revision = g.tow_snapshot_revision;
+    uint32_t saved_tow_snapshot_server_tick = g.tow_snapshot_server_tick;
+    uint32_t saved_world_tow_revision = g.world.tow_revision;
+    uint32_t saved_world_tow_revision_tick = g.world.tow_revision_tick;
+    tow_link_t saved_world_tow_links[MAX_TOW_LINKS];
     int saved_local_player_slot = g.local_player_slot;
     bool saved_player0_connected = g.world.players[0].connected;
     bool saved_player0_docked = g.world.players[0].docked;
@@ -3477,8 +3637,10 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(saved_player0_towed_pods,
            g.world.players[0].ship->towed_pods,
            sizeof(saved_player0_towed_pods));
+    memcpy(saved_world_tow_links, g.world.tow_links,
+           sizeof(saved_world_tow_links));
     memcpy(saved_world_asteroids, g.world.asteroids, sizeof(saved_world_asteroids));
-    memcpy(saved_local_server_asteroids, g.local_server.world.asteroids,
+    memcpy(saved_local_server_asteroids, local_authority->asteroids,
            sizeof(saved_local_server_asteroids));
     memcpy(saved_asteroid_prev, g.asteroid_interp.prev, sizeof(saved_asteroid_prev));
     memcpy(saved_asteroid_curr, g.asteroid_interp.curr, sizeof(saved_asteroid_curr));
@@ -3494,6 +3656,14 @@ int signal_smoke_remote_towable_interp_check(void) {
            sizeof(saved_cargo_pod_elapsed));
 
     g.local_server.active = false;
+    /* Exercise legacy compatibility packets first. Once an atomic snapshot
+     * arrives below, those split fields must stop mutating tow authority. */
+    g.tow_snapshot_received = false;
+    g.tow_snapshot_revision = 0;
+    g.tow_snapshot_server_tick = 0;
+    memset(g.world.tow_links, 0, sizeof(g.world.tow_links));
+    g.world.tow_revision = 0;
+    g.world.tow_revision_tick = 0;
     g.world.players[0].ship->towed_count = 0;
     g.world.players[0].ship->towed_pod_count = 0;
     for (int i = 0; i < 10; i++) {
@@ -3626,6 +3796,172 @@ int signal_smoke_remote_towable_interp_check(void) {
     net_advance_cargo_pod_interpolation(0.05f);
     interpolate_world_for_render();
     float local_towed_pod_predicted_x = g.world.cargo_pods[11].pos.x;
+
+    tow_link_t atomic_link = {
+        .active = true,
+        .source = g.world.players[0].ship_ref,
+        .target = {
+            .kind = ENTITY_KIND_CARGO_POD,
+            .index = 11,
+            .part = -1,
+            .generation = 1,
+        },
+        .profile = TOW_PROFILE_SHIP_POD,
+        .slot = 0,
+        .state = TOW_LINK_HELD,
+        .attached_tick = 400,
+        .revision = 40,
+    };
+    apply_remote_tow_links(&atomic_link, 1, 40, 400);
+    bool atomic_attach_ok =
+        g.tow_snapshot_received &&
+        g.tow_snapshot_revision == 40 &&
+        g.tow_snapshot_server_tick == 400 &&
+        g.world.tow_links[0].active &&
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[11]) == 0;
+    apply_remote_tow_links(NULL, 0, 39, 401);
+    bool stale_release_rejected =
+        g.world.tow_links[0].active &&
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[11]) == 0;
+    apply_remote_tow_links(NULL, 0, 40, 402);
+    bool conflicting_duplicate_idempotent =
+        g.world.tow_links[0].active &&
+        g.tow_snapshot_server_tick == 400 &&
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[11]) == 0;
+    tow_link_t conflicting_links[2] = { atomic_link, atomic_link };
+    conflicting_links[0].revision = 41;
+    conflicting_links[1].revision = 41;
+    conflicting_links[1].target.index = 12;
+    apply_remote_tow_links(conflicting_links, 2, 41, 403);
+    bool malformed_replacement_rejected =
+        g.tow_snapshot_revision == 40 &&
+        g.world.tow_links[0].active &&
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[11]) == 0;
+    apply_remote_tow_links(NULL, 0, 41, 404);
+    bool newer_release_applied =
+        !g.world.tow_links[0].active &&
+        g.tow_snapshot_revision == 41 &&
+        g.tow_snapshot_server_tick == 404 &&
+        !cargo_pod_has_player_tractor(&g.cargo_pod_interp.curr[11]);
+
+    /*
+     * A dock/furnace module may hold multiple physical pods. MODULE_POD
+     * compatibility slots are all zero, so distinct targets sharing the
+     * same source/profile/slot must survive atomic validation together.
+     */
+    for (int pod_idx = 12; pod_idx <= 13; pod_idx++) {
+        g.world.cargo_pods[pod_idx].active = true;
+        g.cargo_pod_interp.prev[pod_idx].active = true;
+        g.cargo_pod_interp.curr[pod_idx].active = true;
+    }
+    tow_link_t module_links[2] = {
+        {
+            .active = true,
+            .source = {
+                .kind = ENTITY_KIND_STATION_MODULE,
+                .index = 0,
+                .part = 0,
+                .generation = 1,
+            },
+            .target = {
+                .kind = ENTITY_KIND_CARGO_POD,
+                .index = 12,
+                .part = -1,
+                .generation = 1,
+            },
+            .profile = TOW_PROFILE_MODULE_POD,
+            .slot = 0,
+            .state = TOW_LINK_HELD,
+            .attached_tick = 405,
+            .revision = 42,
+        },
+        {
+            .active = true,
+            .source = {
+                .kind = ENTITY_KIND_STATION_MODULE,
+                .index = 0,
+                .part = 0,
+                .generation = 1,
+            },
+            .target = {
+                .kind = ENTITY_KIND_CARGO_POD,
+                .index = 13,
+                .part = -1,
+                .generation = 2,
+            },
+            .profile = TOW_PROFILE_MODULE_POD,
+            .slot = 0,
+            .state = TOW_LINK_HELD,
+            .attached_tick = 405,
+            .revision = 42,
+        },
+    };
+    apply_remote_tow_links(module_links, 2, 42, 405);
+    bool multi_pod_module_snapshot_ok =
+        g.tow_snapshot_revision == 42 &&
+        g.world.tow_links[0].active &&
+        g.world.tow_links[1].active &&
+        cargo_pod_is_tractored_by_module(
+            &g.cargo_pod_interp.curr[12], 0, 0) &&
+        cargo_pod_is_tractored_by_module(
+            &g.cargo_pod_interp.curr[13], 0, 0);
+
+    /* A stale relation from a recycled ship slot remains stored for possible
+     * relevance recovery, but must not project onto the live replacement. */
+    tow_link_t stale_ship_source = atomic_link;
+    stale_ship_source.revision = 43;
+    stale_ship_source.source.generation++;
+    if (stale_ship_source.source.generation == 0)
+        stale_ship_source.source.generation = 1;
+    apply_remote_tow_links(&stale_ship_source, 1, 43, 406);
+    bool stale_ship_generation_not_projected =
+        g.tow_snapshot_revision == 43 &&
+        !cargo_pod_has_player_tractor(
+            &g.cargo_pod_interp.curr[stale_ship_source.target.index]);
+
+    tow_link_t relevance_link = atomic_link;
+    relevance_link.target.index = 12;
+    relevance_link.target.generation = 3;
+    relevance_link.revision = 44;
+    apply_remote_tow_links(&relevance_link, 1, 44, 407);
+    bool relevant_target_projected =
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[12]) == 0;
+    g.cargo_pod_interp.curr[12].active = false;
+    apply_remote_tow_links(&relevance_link, 1, 44, 408);
+    bool irrelevant_target_not_projected =
+        !cargo_pod_has_player_tractor(&g.cargo_pod_interp.curr[12]) &&
+        g.tow_snapshot_server_tick == 407;
+    g.cargo_pod_interp.curr[12].active = true;
+    apply_remote_tow_links(&relevance_link, 1, 44, 409);
+    bool relevance_reentry_reprojected =
+        cargo_pod_player_tractor(&g.cargo_pod_interp.curr[12]) == 0 &&
+        g.tow_snapshot_server_tick == 407;
+
+    apply_remote_tow_links(NULL, 0, 45, 410);
+    apply_remote_tow_links(&relevance_link, 1, 44, 411);
+    bool recycled_target_rejects_stale_relation =
+        g.tow_snapshot_revision == 45 &&
+        !cargo_pod_has_player_tractor(&g.cargo_pod_interp.curr[12]);
+    bool atomic_tow_snapshot_ok =
+        atomic_attach_ok && stale_release_rejected &&
+        conflicting_duplicate_idempotent &&
+        malformed_replacement_rejected && newer_release_applied &&
+        multi_pod_module_snapshot_ok &&
+        stale_ship_generation_not_projected &&
+        relevant_target_projected &&
+        irrelevant_target_not_projected &&
+        relevance_reentry_reprojected &&
+        recycled_target_rejects_stale_relation;
+
+    /*
+     * The remaining fixture cases exercise the legacy split tow projection
+     * path directly. End the atomic-snapshot subcase so roster relevance
+     * transitions do not correctly rebuild from its final empty relation
+     * set and erase those intentionally hand-seeded compatibility fields.
+     */
+    g.tow_snapshot_received = false;
+    g.tow_snapshot_revision = 0;
+    g.tow_snapshot_server_tick = 0;
 
     NetAsteroidState asteroid = {
         .index = 7,
@@ -3856,8 +4192,8 @@ int signal_smoke_remote_towable_interp_check(void) {
         g.local_server.active = true;
         g.net_input_tick_protocol = true;
         memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
-        memset(g.local_server.world.asteroids, 0,
-               sizeof(g.local_server.world.asteroids));
+        memset(local_authority->asteroids, 0,
+               sizeof(local_authority->asteroids));
         memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
 
         asteroid_t prev = {0};
@@ -3874,7 +4210,7 @@ int signal_smoke_remote_towable_interp_check(void) {
         curr.pos.y = 25.0f;
         g.asteroid_interp.prev[7] = prev;
         g.asteroid_interp.curr[7] = prev;
-        g.local_server.world.asteroids[7] = curr;
+        local_authority->asteroids[7] = curr;
         g.asteroid_interp.elapsed[7] = 0.05f;
 
         interpolate_world_for_render();
@@ -3904,6 +4240,7 @@ int signal_smoke_remote_towable_interp_check(void) {
              local_towed_pod_binding_preserved &&
              local_towed_pod_predicted_x > 299.9f &&
              local_towed_pod_predicted_x < 300.1f &&
+             atomic_tow_snapshot_ok &&
              asteroid_first_x > 9.0f && asteroid_first_x < 11.5f &&
              asteroid_blended_x > asteroid_first_x &&
              asteroid_blended_x < 95.0f &&
@@ -3935,7 +4272,7 @@ int signal_smoke_remote_towable_interp_check(void) {
              loopback_prediction_ok;
 
     memcpy(g.world.asteroids, saved_world_asteroids, sizeof(saved_world_asteroids));
-    memcpy(g.local_server.world.asteroids, saved_local_server_asteroids,
+    memcpy(local_authority->asteroids, saved_local_server_asteroids,
            sizeof(saved_local_server_asteroids));
     memcpy(g.asteroid_interp.prev, saved_asteroid_prev, sizeof(saved_asteroid_prev));
     memcpy(g.asteroid_interp.curr, saved_asteroid_curr, sizeof(saved_asteroid_curr));
@@ -3955,6 +4292,13 @@ int signal_smoke_remote_towable_interp_check(void) {
     g.local_server.active = saved_local_server_active;
     g.net_authority_enabled = saved_net_authority_enabled;
     g.net_input_tick_protocol = saved_net_input_tick_protocol;
+    g.tow_snapshot_received = saved_tow_snapshot_received;
+    g.tow_snapshot_revision = saved_tow_snapshot_revision;
+    g.tow_snapshot_server_tick = saved_tow_snapshot_server_tick;
+    g.world.tow_revision = saved_world_tow_revision;
+    g.world.tow_revision_tick = saved_world_tow_revision_tick;
+    memcpy(g.world.tow_links, saved_world_tow_links,
+           sizeof(saved_world_tow_links));
     g.local_player_slot = saved_local_player_slot;
     g.world.players[0].connected = saved_player0_connected;
     g.world.players[0].docked = saved_player0_docked;
@@ -4076,6 +4420,11 @@ static void on_remote_action_result(uint16_t action_id, uint16_t input_seq,
         if (!g.net_prediction_tick_valid) {
             net_anchor_prediction_tick(server_tick, false);
         }
+    }
+    if (action == NET_ACTION_PRESENT_POD &&
+        status == NET_ACTION_RESULT_OK) {
+        set_notice(
+            "Pod cargo unpacked with station-issued receipt continuity.");
     }
     g.action_predict_timer = 0.0f;
 }
@@ -4273,12 +4622,18 @@ static void net_queue_pending_action_if_any(void) {
     int8_t place_station = g.pending_net_place_station;
     int8_t place_ring = g.pending_net_place_ring;
     int8_t place_slot = g.pending_net_place_slot;
+    uint8_t pod_index = g.pending_net_pod_index;
+    uint8_t pod_token[32];
+    memcpy(pod_token, g.pending_net_pod_token, sizeof(pod_token));
 
     g.pending_net_action = NET_ACTION_NONE;
     g.pending_net_buy_grade = MINING_GRADE_COUNT;
     g.pending_net_place_station = -1;
     g.pending_net_place_ring = -1;
     g.pending_net_place_slot = -1;
+    g.pending_net_pod_index = 0;
+    memset(g.pending_net_pod_token, 0,
+           sizeof(g.pending_net_pod_token));
 
     if (net_has_identity_pubkey()) {
         if (!net_has_identity_secret()) {
@@ -4290,6 +4645,23 @@ static void net_queue_pending_action_if_any(void) {
         }
 
         uint16_t action_id = net_next_action_id_alloc();
+        if (action == NET_ACTION_PRESENT_POD) {
+            uint8_t payload[35] = {0};
+            payload[0] = pod_index;
+            memcpy(&payload[1], pod_token, sizeof(pod_token));
+            payload[33] = (uint8_t)(action_id & 0xFFu);
+            payload[34] = (uint8_t)(action_id >> 8);
+            if (net_send_signed_action(
+                    SIGNED_ACTION_PRESENT_POD,
+                    payload, sizeof(payload))) {
+                return;
+            }
+            fprintf(stderr,
+                    "[net-action] blocked pod presentation: signed action path rejected for id=%u\n",
+                    (unsigned)action_id);
+            set_notice("Unable to submit pod presentation.");
+            return;
+        }
         uint8_t payload[7] = {
             action,
             buy_grade,
@@ -4313,6 +4685,10 @@ static void net_queue_pending_action_if_any(void) {
         return;
     }
 
+    if (action == NET_ACTION_PRESENT_POD) {
+        set_notice("Verified identity required to unpack pod cargo.");
+        return;
+    }
     net_action_queue_push(action, buy_grade, place_station, place_ring,
                           place_slot);
 }
@@ -4362,6 +4738,75 @@ static void net_track_input_send(uint16_t seq, uint32_t target_tick,
         : 0.0f;
 }
 
+static void legacy_recovery_ui_update_adapter(void) {
+    legacy_recovery_ui_input_t input = {
+        .confirm_down =
+            is_key_down(SAPP_KEYCODE_ENTER) ||
+            is_key_down(SAPP_KEYCODE_KP_ENTER),
+        .cancel_down = is_key_down(SAPP_KEYCODE_ESCAPE),
+        .confirm_pressed =
+            is_key_pressed(SAPP_KEYCODE_ENTER) ||
+            is_key_pressed(SAPP_KEYCODE_KP_ENTER),
+        .cancel_pressed = is_key_pressed(SAPP_KEYCODE_ESCAPE),
+    };
+    legacy_recovery_ui_action_t action =
+        legacy_recovery_ui_update(
+            &legacy_recovery_ui, net_now_ms32(), input);
+
+    if (action == LEGACY_RECOVERY_UI_ACTION_CONFIRM) {
+        g.input.key_pressed[SAPP_KEYCODE_ENTER] = false;
+        g.input.key_pressed[SAPP_KEYCODE_KP_ENTER] = false;
+        bool admitted;
+#ifdef __EMSCRIPTEN__
+        if (legacy_recovery_smoke_active) {
+            legacy_recovery_smoke_confirm_count++;
+            admitted = legacy_recovery_smoke_send_admitted;
+        } else
+#endif
+        {
+            admitted = net_send_latched_legacy_recovery();
+        }
+        legacy_recovery_ui_note_send(
+            &legacy_recovery_ui, admitted);
+        set_notice(
+            "%s",
+            admitted
+                ? "Legacy recovery confirmation sent once; "
+                  "verifying atomic commit."
+                : "Recovery confirmation was not sent. "
+                  "Release and press [ENTER] to retry.");
+        return;
+    }
+
+    if (action == LEGACY_RECOVERY_UI_ACTION_CANCEL ||
+        action == LEGACY_RECOVERY_UI_ACTION_EXPIRE) {
+        g.input.key_pressed[SAPP_KEYCODE_ESCAPE] = false;
+#ifdef __EMSCRIPTEN__
+        if (legacy_recovery_smoke_active) {
+            if (action == LEGACY_RECOVERY_UI_ACTION_CANCEL)
+                legacy_recovery_smoke_cancel_count++;
+            else
+                legacy_recovery_smoke_expire_count++;
+        }
+#endif
+        snprintf(
+            legacy_recovery_disconnect_notice,
+            sizeof(legacy_recovery_disconnect_notice),
+            "%s",
+            action == LEGACY_RECOVERY_UI_ACTION_CANCEL
+                ? "Legacy recovery cancelled locally; "
+                  "the remote save is untouched."
+                : "Legacy recovery offer expired; "
+                  "the remote save is untouched.");
+        set_notice("%s", legacy_recovery_disconnect_notice);
+#ifdef __EMSCRIPTEN__
+        if (legacy_recovery_smoke_active)
+            return;
+#endif
+        net_shutdown();
+    }
+}
+
 static void frame(void) {
     float max_frame_dt = SIM_DT * (float)MAX_SIM_STEPS_PER_FRAME;
     float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
@@ -4371,7 +4816,14 @@ static void frame(void) {
     if (g.net_authority_enabled) {
         bool was_connected = net_is_connected();
         net_poll();
-        if (net_is_connected()) {
+        handle_net_protocol_mismatch();
+        legacy_recovery_ui_update_adapter();
+        bool gameplay_ready =
+            !g.net_protocol_incompatible &&
+            net_is_gameplay_ready() &&
+            !legacy_recovery_ui_blocks_gameplay(
+                &legacy_recovery_ui);
+        if (gameplay_ready) {
             net_update_latency_miss_counters();
             g.net_ping_timer -= frame_dt;
             float ping_interval = net_latency_ping_interval_sec();
@@ -4403,17 +4855,51 @@ static void frame(void) {
             }
         }
         sync_local_player_slot_from_network();
-        net_action_queue_update(frame_dt);
-        net_queue_pending_action_if_any();
-        if (was_connected && !net_is_connected() && !net_is_loopback()) {
+        if (gameplay_ready) {
+            net_action_queue_update(frame_dt);
+            net_queue_pending_action_if_any();
+        }
+        if (!g.net_protocol_incompatible &&
+            was_connected && !net_is_connected() &&
+            !net_is_loopback()) {
+            bool preserve_recovery_result =
+                legacy_recovery_ui.phase ==
+                    LEGACY_RECOVERY_UI_RESULT &&
+                legacy_recovery_ui.semantic !=
+                    LEGACY_RECOVERY_UI_SEMANTIC_SUCCESS;
+            char recovery_notice[
+                sizeof(legacy_recovery_disconnect_notice)];
+            snprintf(
+                recovery_notice, sizeof(recovery_notice), "%s",
+                legacy_recovery_disconnect_notice);
+            bool recovery_interrupted = recovery_notice[0] != '\0';
             NetCallbacks fallback_cbs;
             configure_net_callbacks(&fallback_cbs);
             if (start_fresh_local_fallback_authority(&fallback_cbs)) {
-                set_notice("Network lost; continuing locally.");
+                set_notice(
+                    "%s",
+                    recovery_interrupted
+                        ? recovery_notice
+                        : "Network lost; continuing locally.");
             } else {
-                set_notice("Connection lost. Reload to reconnect.");
+                set_notice(
+                    "%s",
+                    recovery_interrupted
+                        ? recovery_notice
+                        : "Connection lost. Reload to reconnect.");
                 g.local_server.active = false;
             }
+            /*
+             * Cancellation, expiry, and rejected migrations deliberately
+             * close the remote session. Keep their bounded result console
+             * alive across local fallback; otherwise the same frame that
+             * receives the semantic result would erase it before rendering.
+             * A success stays tied to its authoritative remote session.
+             */
+            if (!preserve_recovery_result)
+                legacy_recovery_ui_reset(&legacy_recovery_ui);
+            memset(legacy_recovery_disconnect_notice, 0,
+                   sizeof(legacy_recovery_disconnect_notice));
         }
         /* P key (offline): hard-reload the page. The HUD prompt is
          * "offline [P] reconnect" but a graceful net_reconnect()
@@ -4421,11 +4907,16 @@ static void frame(void) {
          * state, and the existing world snapshot all need a clean
          * boot to come back fully consistent. Just refresh. Native
          * builds keep the in-process reconnect path. */
-        if (!net_is_connected() && is_key_pressed(SAPP_KEYCODE_P)) {
+        if (!g.net_protocol_incompatible &&
+            !net_is_connected() &&
+            is_key_pressed(SAPP_KEYCODE_P)) {
 #ifdef __EMSCRIPTEN__
             emscripten_run_script("window.location.reload()");
 #else
             if (net_reconnect()) {
+                legacy_recovery_ui_reset(&legacy_recovery_ui);
+                memset(legacy_recovery_disconnect_notice, 0,
+                       sizeof(legacy_recovery_disconnect_notice));
                 set_notice("Reconnecting...");
                 reset_remote_dynamic_sync();
             }
@@ -4434,7 +4925,7 @@ static void frame(void) {
         /* Send input immediately when controls change; otherwise keep a
          * low-rate heartbeat. The server persists the last input intent, so
          * unchanged movement does not need a fresh command every frame. */
-        {
+        if (gameplay_ready) {
             uint8_t action = NET_ACTION_NONE;
             uint8_t buy_grade_byte = MINING_GRADE_COUNT;
             int8_t place_station = -1;
@@ -4542,6 +5033,11 @@ static void cleanup(void) {
     if (g.net_authority_enabled) {
         net_shutdown();
     }
+    local_server_shutdown(&g.local_server);
+    net_clear_identity();
+    identity_clear(&g.identity);
+    g.identity_ready = false;
+    world_cleanup(&g.world);
     saudio_shutdown();
     sdtx_shutdown();
     hull_fog_shutdown();
@@ -4566,6 +5062,7 @@ static void event(const sapp_event* event) {
                 }
             }
             if (event->key_code == SAPP_KEYCODE_ESCAPE &&
+                !legacy_recovery_ui_visible(&legacy_recovery_ui) &&
                 !g.plan_mode_active &&
                 !episode_is_active(&g.episode) &&
                 !LOCAL_PLAYER.docked &&
@@ -4608,6 +5105,117 @@ static void event(const sapp_event* event) {
 }
 
 #ifdef __EMSCRIPTEN__
+enum {
+    LEGACY_RECOVERY_CTRL_VISIBLE     = 1u << 0,
+    LEGACY_RECOVERY_CTRL_CAN_CONFIRM = 1u << 1,
+    LEGACY_RECOVERY_CTRL_CAN_CANCEL  = 1u << 2,
+    LEGACY_RECOVERY_CTRL_CONFIRMING  = 1u << 3,
+    LEGACY_RECOVERY_CTRL_RESULT      = 1u << 4,
+    LEGACY_RECOVERY_CTRL_SUCCESS     = 1u << 5,
+};
+
+EMSCRIPTEN_KEEPALIVE
+int signal_legacy_recovery_ui_flags(void) {
+    uint32_t flags = 0;
+    if (legacy_recovery_ui_visible(&legacy_recovery_ui))
+        flags |= LEGACY_RECOVERY_CTRL_VISIBLE;
+    if (legacy_recovery_ui_can_confirm(&legacy_recovery_ui))
+        flags |= LEGACY_RECOVERY_CTRL_CAN_CONFIRM;
+    if (legacy_recovery_ui_can_cancel(&legacy_recovery_ui))
+        flags |= LEGACY_RECOVERY_CTRL_CAN_CANCEL;
+    if (legacy_recovery_ui.phase == LEGACY_RECOVERY_UI_CONFIRMING)
+        flags |= LEGACY_RECOVERY_CTRL_CONFIRMING;
+    if (legacy_recovery_ui.phase == LEGACY_RECOVERY_UI_RESULT)
+        flags |= LEGACY_RECOVERY_CTRL_RESULT;
+    if (legacy_recovery_ui.semantic ==
+        LEGACY_RECOVERY_UI_SEMANTIC_SUCCESS) {
+        flags |= LEGACY_RECOVERY_CTRL_SUCCESS;
+    }
+    return (int)flags;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_legacy_recovery_ui_semantic(void) {
+    return legacy_recovery_ui_semantic_name(
+        legacy_recovery_ui.semantic);
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_legacy_recovery_ui_copy(void) {
+    static char copy[768];
+    snprintf(
+        copy, sizeof(copy), "%s\n%s\n%s\n%s",
+        legacy_recovery_ui_title(&legacy_recovery_ui),
+        legacy_recovery_ui_status(&legacy_recovery_ui),
+        legacy_recovery_ui_body(&legacy_recovery_ui),
+        legacy_recovery_ui_detail(&legacy_recovery_ui));
+    return copy;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_legacy_recovery_offer(int expires_in_seconds) {
+    if (expires_in_seconds <= 0 ||
+        expires_in_seconds > UINT16_MAX) {
+        return 0;
+    }
+    legacy_recovery_ui_reset(&legacy_recovery_ui);
+    memset(legacy_recovery_disconnect_notice, 0,
+           sizeof(legacy_recovery_disconnect_notice));
+    legacy_recovery_smoke_active = true;
+    legacy_recovery_smoke_send_admitted = true;
+    legacy_recovery_smoke_confirm_count = 0;
+    legacy_recovery_smoke_cancel_count = 0;
+    legacy_recovery_smoke_expire_count = 0;
+    g.input.key_pressed[SAPP_KEYCODE_ENTER] = false;
+    g.input.key_pressed[SAPP_KEYCODE_KP_ENTER] = false;
+    g.input.key_pressed[SAPP_KEYCODE_ESCAPE] = false;
+    return legacy_recovery_ui_begin_offer(
+        &legacy_recovery_ui, net_now_ms32(),
+        (uint16_t)expires_in_seconds) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_legacy_recovery_result(int status) {
+    legacy_recovery_ui_phase_t before =
+        legacy_recovery_ui.phase;
+    on_remote_legacy_recovery_result(
+        (legacy_recovery_result_status_t)status);
+    return before != legacy_recovery_ui.phase &&
+        legacy_recovery_ui.phase == LEGACY_RECOVERY_UI_RESULT;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void signal_smoke_legacy_recovery_set_send_admitted(int admitted) {
+    legacy_recovery_smoke_send_admitted = admitted != 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t signal_smoke_legacy_recovery_confirm_count(void) {
+    return legacy_recovery_smoke_confirm_count;
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t signal_smoke_legacy_recovery_cancel_count(void) {
+    return legacy_recovery_smoke_cancel_count;
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t signal_smoke_legacy_recovery_expire_count(void) {
+    return legacy_recovery_smoke_expire_count;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void signal_smoke_legacy_recovery_reset(void) {
+    legacy_recovery_ui_reset(&legacy_recovery_ui);
+    memset(legacy_recovery_disconnect_notice, 0,
+           sizeof(legacy_recovery_disconnect_notice));
+    legacy_recovery_smoke_active = false;
+    legacy_recovery_smoke_send_admitted = true;
+    legacy_recovery_smoke_confirm_count = 0;
+    legacy_recovery_smoke_cancel_count = 0;
+    legacy_recovery_smoke_expire_count = 0;
+}
+
 enum {
     MOBILE_CTRL_DOCKED            = 1u << 0,
     MOBILE_CTRL_IN_DOCK_RANGE     = 1u << 1,
@@ -4969,6 +5577,7 @@ static sapp_keycode mobile_action_key(int action) {
     case 24: return SAPP_KEYCODE_5;
     case 30: return SAPP_KEYCODE_O;          /* autopilot */
     case 31: return SAPP_KEYCODE_ESCAPE;     /* back / close */
+    case 32: return SAPP_KEYCODE_ENTER;      /* confirm recovery */
     default: return SAPP_KEYCODE_INVALID;
     }
 }
@@ -5024,6 +5633,28 @@ int signal_debug_identity_available(void) {
 
 int signal_debug_auth_available(void) {
     return (g.identity_ready && g.net_authority_enabled) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_debug_local_authority_state(void) {
+    int state = 0;
+    if (local_server_has_world(&g.local_server)) state |= 1 << 0;
+    if (g.local_server.active) state |= 1 << 1;
+    if (net_is_loopback()) state |= 1 << 2;
+    if (g.net_authority_enabled) state |= 1 << 3;
+    return state;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_debug_local_authority_generation(void) {
+    return (int)g.local_server.generation;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_debug_restart_local_authority(void) {
+    NetCallbacks cbs;
+    configure_net_callbacks(&cbs);
+    return start_fresh_local_fallback_authority(&cbs) ? 1 : 0;
 }
 #endif
 

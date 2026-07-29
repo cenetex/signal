@@ -43,6 +43,10 @@ extern "C" {
  * NULL/empty input and leaves the previous secret unchanged. */
 bool station_authority_configure_secret(const char *secret);
 
+/* Wipe the process-level operator-secret root. The next derivation falls
+ * back to the development secret unless a new secret is configured first. */
+void station_authority_clear_secret(void);
+
 /* Reset to the deterministic development secret used by local tests and
  * non-production local runs. Production servers should configure a real
  * secret before world_reset/world_load. */

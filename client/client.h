@@ -26,6 +26,8 @@
 #include "identity.h"
 #include "trade_paging.h"
 #include "npc_radio.h"
+#include "public_actor_presentation.h"
+#include "reconciliation_diagnostics.h"
 
 static inline void client_session_pseudo_pubkey(const uint8_t token[8], uint8_t out[32]) {
     memset(out, 0, 32);
@@ -154,7 +156,7 @@ typedef npc_radio_hail_entry_t hail_conversation_entry_t;
  * the SAME row list so a [1] keypress can never hit a different row
  * than the one drawn on screen. See build_trade_rows() below. */
 typedef struct {
-    uint8_t        kind;       /* 0 = BUY (station sells), 1 = SELL (station buys) */
+    uint8_t        kind;       /* 0 = BUY, 1 = SELL/DELIVER, 2 = PRESENT/UNPACK */
     commodity_t    commodity;
     mining_grade_t grade;
     int            stock;      /* units available on the active side */
@@ -172,6 +174,7 @@ typedef struct {
     bool           is_station_pod;  /* BUY row represents a dock-held pod */
     uint16_t       station_pod_index;
     uint16_t       shipment_id;     /* nonzero when the pod wraps credit cargo */
+    uint8_t        pod_selection_token[32]; /* opaque PRESENT selection binding */
     uint8_t        block_reason;    /* see TRADE_BLOCK_* below; 0 if actionable */
     uint8_t        prefix_class;    /* ingot_prefix_t for the row's representative
                                       * unit; INGOT_PREFIX_ANONYMOUS = bulk row. Drives
@@ -215,6 +218,7 @@ enum {
     TRADE_BLOCK_NO_FUNDS      = 6, /* buy:  ledger short for unit price */
     TRADE_BLOCK_NO_CARGO      = 7, /* sell: player carries none of this */
     TRADE_BLOCK_NO_POD_FRAME  = 8, /* buy:  station lacks a frame pod shell */
+    TRADE_BLOCK_NO_RECEIPT_SOURCE = 9, /* present: no authoritative source token */
 };
 
 /* Build the unified row list for `st` against the player's `ship`.
@@ -309,7 +313,6 @@ typedef struct {
     float tint_r;
     float tint_g;
     float tint_b;
-    uint8_t session_token[8];
     int home_station;
 } client_npc_render_state_t;
 
@@ -365,7 +368,7 @@ typedef struct {
     float kill_feed_timer;
     /* Killer-side confirm banner: shown to the local player for ~3 s
      * when a SIM_EVENT_DEATH or SIM_EVENT_NPC_KILL credits the kill
-     * to their session token. Distinct from kill_feed_text so the
+     * to their public actor ID. Distinct from kill_feed_text so the
      * victim copy doesn't overwrite the killer's confirm. */
     char  kill_confirm_text[64];
     float kill_confirm_timer;
@@ -378,21 +381,9 @@ typedef struct {
     int   death_count_session;
     /* PvP scoreboard — aggregated client-side from observed
      * SIM_EVENT_DEATH and SIM_EVENT_NPC_KILL events this session.
-     * Toggled with [Tab] while undocked. Keyed by attribution token
-     * (8 bytes from killer_token / session_token). NPC entries also
-     * land here for completeness; the local player's row shows the
-     * session callsign. */
-    struct {
-        bool show;
-        struct {
-            uint8_t token[8];
-            char    label[16];   /* callsign or "Hauler" / "Miner" */
-            uint16_t kills;
-            uint16_t deaths;
-            bool     is_npc;
-        } rows[16];
-        int row_count;
-    } scoreboard;
+     * Toggled with [Tab] while undocked. Keyed only by stable public actor
+     * ID. Callsigns are mutable presentation labels and never merge rows. */
+    client_scoreboard_t scoreboard;
     /* Per-station manifest summary — [commodity][grade] unit counts.
      * Unified read path for the TRADE UI. Network-authoritative sessions
      * populate it from server manifest-summary broadcasts; the offline
@@ -442,14 +433,21 @@ typedef struct {
     /* Persistent Ed25519 keypair owned by the player. Loaded from disk
      * (or generated on first run) before WebSocket connect; surfaced
      * faintly in the HUD so the player can see their own pubkey prefix.
-     * The wire protocol is unchanged for now — session_token still drives
-     * identity over the network. Later layers wire the pubkey into the
-     * HELLO frame, sign inputs, and migrate save files. */
+     * The server challenge-verifies this pubkey before using it as durable
+     * identity or deriving public event attribution. session_token remains
+     * a private reconnect/transport locator and is never presentation
+     * identity. */
     player_identity_t identity;
     bool identity_ready;       /* false when secure bootstrap failed closed */
     char identity_pub_b58[48];   /* base58 of pubkey, null-terminated */
     /* --- Network authority (remote WebSocket or local loopback) --- */
     bool net_authority_enabled;
+    bool tow_snapshot_received;
+    uint32_t tow_snapshot_revision;
+    uint32_t tow_snapshot_server_tick;
+    bool net_protocol_incompatible;
+    bool net_protocol_mismatch_handled;
+    uint16_t net_server_protocol_version;
     float net_send_timer;
     bool scanned_players[NET_MAX_PLAYERS];
     uint8_t pending_net_action;
@@ -457,6 +455,8 @@ typedef struct {
      * pick for a BUY_PRODUCT action? Default = MINING_GRADE_COUNT ("any"
      * → server does FIFO). Set by the grade-picker in TRADE. */
     uint8_t pending_net_buy_grade;
+    uint8_t pending_net_pod_index;
+    uint8_t pending_net_pod_token[32];
     /* Rides alongside pending_net_action when the action is
      * NET_ACTION_PLACE_OUTPOST: which (station, ring, slot) did the
      * client's reticle pick? -1 means "let the server auto-snap" (the
@@ -753,6 +753,7 @@ typedef struct {
         uint32_t total_lerp_samples;
         uint32_t total_input_acks;
     } net_motion;
+    net_reconcile_diagnostics_t net_reconcile;
     struct {
         asteroid_t prev[MAX_ASTEROIDS];
         asteroid_t curr[MAX_ASTEROIDS];
@@ -789,8 +790,18 @@ typedef struct {
     } player_interp;
 } game_t;
 
+#include "client_memory_budget.h"
+
+_Static_assert(sizeof(world_t) <= SIGNAL_WORLD_SIZE_BUDGET_BYTES,
+               "world_t exceeds the measured client memory budget");
+_Static_assert(sizeof(game_t) <= SIGNAL_GAME_SIZE_BUDGET_BYTES,
+               "game_t exceeds the measured client memory budget");
+
 extern game_t g;
 #define LOCAL_PLAYER (g.world.players[g.local_player_slot])
+
+/* Derive the local pubkey-backed public actor for presentation matching. */
+bool client_local_public_actor_id(public_actor_id_t *out);
 
 /* ------------------------------------------------------------------ */
 /* HUD layout constants                                               */

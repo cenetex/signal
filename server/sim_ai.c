@@ -27,6 +27,8 @@
 #include "sha256.h"
 #include "station_authority.h"
 #include "actor_principal_resolver.h"
+#include "public_actor_resolver.h"
+#include "contract_ownership.h"
 #include "cargo_receipt_trust.h"
 #include <math.h>
 #include <stdio.h>
@@ -670,11 +672,58 @@ static const cargo_receipt_chain_t *npc_cargo_store_chain_at(
     return &receipts->chains[index];
 }
 
+typedef struct {
+    int64_t ledger_delta_signed;
+    uint8_t ledger_pubkey[32];
+    ship_t *debit_ship;
+} npc_cargo_trade_t;
+
+static bool npc_trade_delta_from_amount(float amount, bool debit,
+                                        int64_t *out_delta) {
+    if (!out_delta || !isfinite(amount) || amount <= 0.0f ||
+        amount > LEDGER_FLOAT_LIMIT) {
+        return false;
+    }
+    int64_t rounded = (int64_t)llroundf(amount);
+    if (rounded <= 0) return false;
+    *out_delta = debit ? -rounded : rounded;
+    return true;
+}
+
+static bool npc_delivery_payout_delta(
+    const delivery_shipment_t *shipment,
+    int64_t *out_delta) {
+    if (!shipment || !out_delta ||
+        shipment->quantity_total == 0 ||
+        shipment->quantity_delivered >= shipment->quantity_total ||
+        !isfinite(shipment->destination_payout) ||
+        shipment->destination_payout <= 0.0f ||
+        shipment->destination_payout > LEDGER_FLOAT_LIMIT) {
+        return false;
+    }
+
+    int64_t rounded_total =
+        (int64_t)llroundf(shipment->destination_payout);
+    if (rounded_total <= 0) return false;
+
+    int64_t quantity = (int64_t)shipment->quantity_total;
+    int64_t ordinal = (int64_t)shipment->quantity_delivered;
+    int64_t delta = rounded_total / quantity;
+    int64_t remainder = rounded_total % quantity;
+    if (ordinal < remainder) delta++;
+    if (delta <= 0) return false;
+
+    *out_delta = delta;
+    return true;
+}
+
 /*
  * One-unit NPC custody move. Both allocation-backed cargo stores are cloned
  * and fully staged around the pre-signed receipt before the station log is
- * touched. A rejected/failed append therefore leaves both holders unchanged;
- * success only swaps already-complete stores.
+ * touched. Paid moves also stage the authoring station's ledger and the
+ * spending ship's credit statistic. A rejected/failed TRANSFER or TRADE
+ * append therefore leaves every gameplay domain unchanged; success only swaps
+ * already-complete stores and ledger state.
  */
 static bool npc_transfer_cargo_between_stores(
     world_t *w,
@@ -684,16 +733,23 @@ static bool npc_transfer_cargo_between_stores(
     cargo_store_t *source,
     uint16_t source_index,
     cargo_store_t *destination,
+    const npc_cargo_trade_t *trade,
     cargo_unit_t *out_unit,
     cargo_receipt_chain_t *out_chain) {
+    static const uint8_t zero32[32] = {0};
     if (!w || !source || !destination || source == destination ||
         author_station < 0 ||
         author_station >= w->station_count ||
         author_station >= MAX_STATIONS ||
         !source->manifest.units ||
-        source_index >= source->manifest.count) {
+        source_index >= source->manifest.count ||
+        (trade &&
+         (trade->ledger_delta_signed == 0 ||
+          memcmp(trade->ledger_pubkey, zero32, sizeof(zero32)) == 0))) {
         return false;
     }
+    bool include_trade = trade != NULL;
+    station_t *station = &w->stations[author_station];
     cargo_unit_t unit = source->manifest.units[source_index];
     cargo_receipt_chain_t incoming = {0};
     const cargo_receipt_chain_t *attached =
@@ -703,7 +759,9 @@ static bool npc_transfer_cargo_between_stores(
     cargo_receipt_prepared_transfer_t prepared =
         cargo_receipt_prepare_transfer(
             w, author_station, from_pubkey, to_pubkey,
-            &unit, &incoming, false, 0, NULL);
+            &unit, &incoming, include_trade,
+            include_trade ? trade->ledger_delta_signed : 0,
+            include_trade ? trade->ledger_pubkey : NULL);
     if (prepared.link_status != CARGO_RECEIPT_TRANSFER_LINK_READY ||
         prepared.preflight_status != CHAIN_LOG_APPEND_OK ||
         incoming.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
@@ -714,6 +772,8 @@ static bool npc_transfer_cargo_between_stores(
 
     cargo_store_t staged_source = {0};
     cargo_store_t staged_destination = {0};
+    station_t staged_ledger = {0};
+    ship_t staged_debit_stats = {0};
     if (!cargo_store_clone(&staged_source, source) ||
         !cargo_store_clone(&staged_destination, destination)) {
         cargo_store_cleanup(&staged_source);
@@ -734,6 +794,34 @@ static bool npc_transfer_cargo_between_stores(
         return false;
     }
 
+    if (include_trade) {
+        staged_ledger.ledger_count = station->ledger_count;
+        memcpy(staged_ledger.ledger, station->ledger,
+               sizeof(staged_ledger.ledger));
+        float before = ledger_balance_by_pubkey(
+            &staged_ledger, trade->ledger_pubkey);
+        float delta = (float)trade->ledger_delta_signed;
+        if (delta > 0.0f) {
+            ledger_earn_by_pubkey(
+                &staged_ledger, trade->ledger_pubkey, delta);
+        } else {
+            if (trade->debit_ship) {
+                staged_debit_stats.stat_credits_spent =
+                    trade->debit_ship->stat_credits_spent;
+            }
+            ledger_force_debit_by_pubkey(
+                &staged_ledger, trade->ledger_pubkey, -delta,
+                trade->debit_ship ? &staged_debit_stats : NULL);
+        }
+        float after = ledger_balance_by_pubkey(
+            &staged_ledger, trade->ledger_pubkey);
+        if (fabsf((after - before) - delta) > 0.001f) {
+            cargo_store_cleanup(&staged_source);
+            cargo_store_cleanup(&staged_destination);
+            return false;
+        }
+    }
+
     chain_log_append_result_t appended =
         cargo_receipt_commit_prepared_transfer(w, &prepared);
     if (appended.status != CHAIN_LOG_APPEND_OK) {
@@ -748,6 +836,15 @@ static bool npc_transfer_cargo_between_stores(
     cargo_store_cleanup(destination);
     *destination = staged_destination;
     memset(&staged_destination, 0, sizeof(staged_destination));
+    if (include_trade) {
+        station->ledger_count = staged_ledger.ledger_count;
+        memcpy(station->ledger, staged_ledger.ledger,
+               sizeof(station->ledger));
+        if (trade->debit_ship) {
+            trade->debit_ship->stat_credits_spent =
+                staged_debit_stats.stat_credits_spent;
+        }
+    }
     if (out_unit) *out_unit = unit;
     if (out_chain) *out_chain = outgoing;
     return true;
@@ -829,6 +926,43 @@ static int station_finished_room_units_for_hauler(const station_t *st,
     return room > 0 ? room : 0;
 }
 
+static int npc_contract_actor_slot(
+    const world_t *w,
+    const npc_ship_t *npc) {
+    if (!w || !npc) return -1;
+    for (int slot = 0; slot < MAX_NPC_SHIPS; slot++) {
+        if (&w->npc_ships[slot] == npc)
+            return slot;
+    }
+    return -1;
+}
+
+static bool npc_contract_stage_claim(
+    const world_t *w,
+    const npc_ship_t *npc,
+    const contract_t *contract,
+    contract_t *out_staged_claim) {
+    if (!w || !npc || !contract ||
+        !out_staged_claim ||
+        starter_refit_work_order_matches(contract)) {
+        return false;
+    }
+    int npc_slot = npc_contract_actor_slot(w, npc);
+    if (npc_slot < 0) return false;
+    *out_staged_claim = *contract;
+    return contract_ownership_try_claim_npc(
+        out_staged_claim, w, npc_slot);
+}
+
+static bool npc_contract_can_claim(
+    const world_t *w,
+    const npc_ship_t *npc,
+    const contract_t *contract) {
+    contract_t staged_claim = {0};
+    return npc_contract_stage_claim(
+        w, npc, contract, &staged_claim);
+}
+
 static void forget_known_delivery_contracts(world_t *w, int station_idx,
                                             commodity_t c) {
     if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return;
@@ -857,6 +991,7 @@ static void expire_incompatible_delivery_contracts(world_t *w, int station_idx,
         contract_t *ct = &w->contracts[k];
         if (!ct->active) continue;
         if (ct->action != CONTRACT_TRACTOR) continue;
+        if (starter_refit_work_order_matches(ct)) continue;
         if (ct->station_index != station_idx) continue;
         if (ct->commodity != c) continue;
         ct->active = false;
@@ -864,10 +999,13 @@ static void expire_incompatible_delivery_contracts(world_t *w, int station_idx,
     forget_known_delivery_contracts(w, station_idx, c);
 }
 
-static contract_t *hauler_delivery_contract(world_t *w, int station_idx,
+static contract_t *hauler_delivery_contract(world_t *w,
+                                            const npc_ship_t *npc,
+                                            int station_idx,
                                             commodity_t c,
                                             const manifest_t *manifest) {
-    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return NULL;
+    if (!w || !npc || station_idx < 0 ||
+        station_idx >= MAX_STATIONS) return NULL;
     station_t *dest = &w->stations[station_idx];
     if (!station_accepts_hauler_commodity(dest, c)) {
         expire_incompatible_delivery_contracts(w, station_idx, c);
@@ -884,6 +1022,7 @@ static contract_t *hauler_delivery_contract(world_t *w, int station_idx,
         if (ct->station_index != station_idx) continue;
         if (ct->commodity != c) continue;
         if (ct->quantity_needed <= 0.01f) continue;
+        if (!npc_contract_can_claim(w, npc, ct)) continue;
         saw_active_contract = true;
         if (manifest) {
             if (contract_fit_manifest_count(ct, manifest) <= 0) continue;
@@ -921,8 +1060,9 @@ static bool hauler_contract_matches_summary(const contract_t *ct,
 }
 
 static contract_t *hauler_pickup_contract_from_summary(
-    world_t *w, const contract_summary_t *cs, const manifest_t *manifest) {
-    if (!w || !cs || !manifest || !cs->active) return NULL;
+    world_t *w, const npc_ship_t *npc,
+    const contract_summary_t *cs, const manifest_t *manifest) {
+    if (!w || !npc || !cs || !manifest || !cs->active) return NULL;
     if (cs->action != (uint8_t)CONTRACT_TRACTOR) return NULL;
     if (cs->station_index >= MAX_STATIONS) return NULL;
     if (cs->commodity < COMMODITY_RAW_ORE_COUNT ||
@@ -935,6 +1075,7 @@ static contract_t *hauler_pickup_contract_from_summary(
         if (!hauler_contract_matches_summary(ct, cs)) continue;
         if (ct->quantity_needed <= 0.01f) continue;
         if (contract_fit_manifest_count(ct, manifest) <= 0) continue;
+        if (!npc_contract_can_claim(w, npc, ct)) continue;
         float price = contract_price(ct);
         if (price > best_price) {
             best_price = price;
@@ -1009,7 +1150,7 @@ static int hauler_load_station_units_for_contract(world_t *w, int npc_slot,
         if (!npc_transfer_cargo_between_stores(
                 w, source_station, src->station_pubkey,
                 npc_pubkey, &src->cargo_store, (uint16_t)idx,
-                &dst->cargo_store, &unit, NULL)) {
+                &dst->cargo_store, NULL, &unit, NULL)) {
             break;
         }
         src->manifest_dirty = true;
@@ -1021,8 +1162,10 @@ static int hauler_load_station_units_for_contract(world_t *w, int npc_slot,
 static int hauler_unload_ship_units_for_contract(world_t *w, int npc_slot,
                                                  ship_t *src, int dest_station,
                                                  station_t *dst,
-                                                 const contract_t *contract,
-                                                 int n) {
+                                                 contract_t *contract,
+                                                 int n,
+                                                 float *out_payout) {
+    if (out_payout) *out_payout = 0.0f;
     if (!w || !src || !dst || !contract || n <= 0) return 0;
     if (contract->commodity < COMMODITY_RAW_ORE_COUNT ||
         contract->commodity >= COMMODITY_COUNT) return 0;
@@ -1037,10 +1180,28 @@ static int hauler_unload_ship_units_for_contract(world_t *w, int npc_slot,
     if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return 0;
 
     npc_ship_t *npc = &w->npc_ships[npc_slot];
+    contract_t staged_claim = {0};
+    if (!npc_contract_stage_claim(
+            w, npc, contract, &staged_claim)) {
+        return 0;
+    }
     uint8_t npc_pubkey[32];
+    uint8_t ledger_pubkey[32];
     npc_custody_pubkey(npc, npc_slot, npc_pubkey);
+    ledger_pubkey_from_token(npc->session_token, ledger_pubkey);
+    int64_t ledger_delta = 0;
+    if (!npc_trade_delta_from_amount(
+            contract_price(contract), false, &ledger_delta)) {
+        return 0;
+    }
+    npc_cargo_trade_t trade = {
+        .ledger_delta_signed = ledger_delta,
+    };
+    memcpy(trade.ledger_pubkey, ledger_pubkey,
+           sizeof(trade.ledger_pubkey));
 
     int moved = 0;
+    float payout = 0.0f;
     while (moved < n) {
         if (dst->manifest.count >= dst->manifest.cap) break;
         int idx = -1;
@@ -1064,12 +1225,18 @@ static int hauler_unload_ship_units_for_contract(world_t *w, int npc_slot,
                 w, dest_station, npc_pubkey,
                 dst->station_pubkey, &src->cargo_store,
                 (uint16_t)idx, &dst->cargo_store,
-                &unit, NULL)) {
+                &trade, &unit, NULL)) {
             break;
         }
+        if (moved == 0) {
+            contract_ownership_commit_staged_claim(
+                contract, &staged_claim);
+        }
         dst->manifest_dirty = true;
+        payout += (float)ledger_delta;
         moved++;
     }
+    if (out_payout) *out_payout = payout;
     return moved;
 }
 
@@ -1320,11 +1487,33 @@ void apply_npc_ship_damage_attributed(world_t *w, int npc_slot, float dmg,
             if (nonzero) {
                 sim_event_t kill_ev = {
                     .type = SIM_EVENT_NPC_KILL,
+                    .player_id = -1,
+                    /*
+                     * NPC token-derived principals are not public identity.
+                     * Keep the victim explicitly unattributed until NPCs
+                     * receive a persisted, non-secret birth identifier.
+                     */
+                    .subject_actor = {
+                        .kind = PUBLIC_ACTOR_ID_UNATTRIBUTED,
+                    },
+                    .source_actor = {
+                        .kind = PUBLIC_ACTOR_ID_UNATTRIBUTED,
+                    },
                     .npc_kill = {
                         .cause = cause,
                         .npc_role = (uint8_t)npc->role,
                     },
                 };
+                public_actor_id_t killer_actor =
+                    public_actor_id_none();
+                int killer_slot = -1;
+                if (public_actor_id_from_verified_player_token(
+                        w, killer_token, &killer_actor,
+                        &killer_slot)) {
+                    kill_ev.source_actor = killer_actor;
+                    /* Presentation hint only; never used as identity. */
+                    kill_ev.player_id = killer_slot;
+                }
                 memcpy(kill_ev.npc_kill.killer_token, killer_token, 8);
                 emit_event(w, kill_ev);
             }
@@ -1372,6 +1561,7 @@ static bool station_has_finished_delivery_work(const world_t *w, int station_idx
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         const contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+        if (starter_refit_work_order_matches(ct)) continue;
         if (ct->station_index == station_idx) continue;
         if (!npc_finished_good(ct->commodity)) continue;
         if (ct->quantity_needed <= 0.01f) continue;
@@ -1836,8 +2026,11 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
      * radius at which a miner would notice trouble in its own sector. */
     const float MAX_DISTRESS_DIST_SQ = 2500.0f * 2500.0f;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_FRACTURE) continue;
-        int idx = w->contracts[k].target_index;
+        const contract_t *contract = &w->contracts[k];
+        if (!contract->active ||
+            contract->action != CONTRACT_FRACTURE) continue;
+        if (!npc_contract_can_claim(w, npc, contract)) continue;
+        int idx = contract->target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
         if (!mining_level_can_fracture_asteroid(npc->ship->mining_level, &w->asteroids[idx])) continue;
         if (v2_dist_sq(npc->ship->pos, w->asteroids[idx].pos) > MAX_DISTRESS_DIST_SQ) continue;
@@ -1873,6 +2066,43 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         }
     }
     return best;
+}
+
+static bool npc_claim_fracture_contracts_for_target(
+    world_t *w,
+    const npc_ship_t *npc,
+    int asteroid_index) {
+    if (!w || !npc || asteroid_index < 0 ||
+        asteroid_index >= MAX_ASTEROIDS ||
+        !w->asteroids[asteroid_index].active) {
+        return false;
+    }
+    int indices[MAX_CONTRACTS];
+    contract_t staged_claims[MAX_CONTRACTS];
+    int count = 0;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *contract = &w->contracts[k];
+        if (!contract->active ||
+            contract->action != CONTRACT_FRACTURE) {
+            continue;
+        }
+        if (contract->target_index != asteroid_index &&
+            (!contract_target_pub_is_set(contract) ||
+             !contract_asteroid_target_matches(
+                 contract, &w->asteroids[asteroid_index]))) {
+            continue;
+        }
+        if (!npc_contract_stage_claim(
+                w, npc, contract, &staged_claims[count])) {
+            return false;
+        }
+        indices[count++] = k;
+    }
+    for (int i = 0; i < count; i++) {
+        contract_ownership_commit_staged_claim(
+            &w->contracts[indices[i]], &staged_claims[i]);
+    }
+    return true;
 }
 
 static float npc_finished_cargo_total(const npc_ship_t *npc) {
@@ -2774,7 +3004,7 @@ static int npc_append_hauler_contract_candidates(
         if (!npc_finished_good(c)) continue;
         bool home_demand = (cs->station_index == npc->home_station);
         contract_t *ct = hauler_pickup_contract_from_summary(
-            (world_t *)w, cs, &home->manifest);
+            (world_t *)w, npc, cs, &home->manifest);
         if (ct) {
             if (!home_demand) {
                 count = npc_append_hauler_offer_for_source(
@@ -2983,6 +3213,7 @@ static int npc_append_hauler_offer_for_source(const world_t *w,
                                               const knowledge_item_t *source_item,
                                               const market_memory_t *source_memory) {
     if (!w || !npc || !offers || !ct || count >= cap) return count;
+    if (!npc_contract_can_claim(w, npc, ct)) return count;
     if (source_station < 0 || source_station >= MAX_STATIONS) return count;
     if (ct->station_index >= MAX_STATIONS) return count;
     if (source_station == ct->station_index) return count;
@@ -3007,6 +3238,7 @@ static int npc_append_hauler_remote_supply_offers(const world_t *w,
                                                   const knowledge_item_t *demand_item,
                                                   const market_memory_t *demand_memory) {
     if (!w || !npc || !ct || !offers || count >= cap) return count;
+    if (!npc_contract_can_claim(w, npc, ct)) return count;
     (void)demand_item;
     (void)demand_memory;
     int item_count = npc->ship->knowledge.count;
@@ -3038,8 +3270,9 @@ static int npc_append_hauler_remote_supply_offers(const world_t *w,
 }
 
 static contract_t *hauler_pickup_contract_from_market_memory(
-    world_t *w, const market_memory_t *memory, const manifest_t *manifest) {
-    if (!w || !memory || !manifest || !memory->active) return NULL;
+    world_t *w, const npc_ship_t *npc,
+    const market_memory_t *memory, const manifest_t *manifest) {
+    if (!w || !npc || !memory || !manifest || !memory->active) return NULL;
     if (memory->memory_kind != (uint8_t)MARKET_MEMORY_DEMAND) return NULL;
     if (memory->action != (uint8_t)CONTRACT_TRACTOR) return NULL;
     if (memory->station_a >= MAX_STATIONS) return NULL;
@@ -3056,6 +3289,7 @@ static contract_t *hauler_pickup_contract_from_market_memory(
         if ((uint8_t)ct->commodity != memory->commodity) continue;
         if (ct->quantity_needed <= 0.01f) continue;
         if (contract_fit_manifest_count(ct, manifest) <= 0) continue;
+        if (!npc_contract_can_claim(w, npc, ct)) continue;
         float price = contract_price(ct);
         if (price > best_price) {
             best_price = price;
@@ -3067,10 +3301,11 @@ static contract_t *hauler_pickup_contract_from_market_memory(
 
 static contract_t *hauler_pickup_contract_for_delivery(
     world_t *w,
+    const npc_ship_t *npc,
     int dest_station,
     commodity_t commodity,
     const manifest_t *manifest) {
-    if (!w || !manifest) return NULL;
+    if (!w || !npc || !manifest) return NULL;
     if (dest_station < 0 || dest_station >= MAX_STATIONS) return NULL;
     if (commodity < COMMODITY_RAW_ORE_COUNT || commodity >= COMMODITY_COUNT)
         return NULL;
@@ -3084,6 +3319,7 @@ static contract_t *hauler_pickup_contract_for_delivery(
         if (ct->commodity != commodity) continue;
         if (ct->quantity_needed <= 0.01f) continue;
         if (contract_fit_manifest_count(ct, manifest) <= 0) continue;
+        if (!npc_contract_can_claim(w, npc, ct)) continue;
         float price = contract_price(ct);
         if (price > best_price) {
             best_price = price;
@@ -3130,7 +3366,7 @@ static int npc_append_hauler_market_candidates(
         if (!npc_finished_good(c)) continue;
         bool home_demand = (memory.station_a == npc->home_station);
         contract_t *ct = hauler_pickup_contract_from_market_memory(
-            (world_t *)w, &memory, &home->manifest);
+            (world_t *)w, npc, &memory, &home->manifest);
         float confidence = (float)memory.confidence / 255.0f;
         float salience = (float)memory.salience / 255.0f;
         float memory_weight = fmaxf(0.15f, confidence * salience);
@@ -3337,6 +3573,7 @@ static bool npc_make_scout_job_offer(const world_t *w,
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         const contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->action != CONTRACT_FRACTURE) continue;
+        if (!npc_contract_can_claim(w, npc, ct)) continue;
         int idx = ct->target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         const asteroid_t *a = &w->asteroids[idx];
@@ -3407,6 +3644,7 @@ static bool npc_make_delivery_proof_job_offer(const world_t *w,
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         const contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->action != CONTRACT_DELIVERY) continue;
+        if (!npc_contract_can_claim(w, npc, ct)) continue;
         if (ct->station_index >= MAX_STATIONS) continue;
         if (ct->target_index < 0 || ct->target_index >= MAX_STATIONS) continue;
         const station_t *origin = &w->stations[ct->target_index];
@@ -3588,6 +3826,7 @@ static bool npc_home_has_refit_contract(const world_t *w,
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         const contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+        if (starter_refit_work_order_matches(ct)) continue;
         if (ct->station_index != home_station) continue;
         if (ct->commodity != comm) continue;
         if (ct->quantity_needed <= 0.01f) continue;
@@ -3622,7 +3861,8 @@ static bool npc_post_home_refit_contract(world_t *w,
 
     int free_slot = -1;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (!w->contracts[k].active) {
+        if (contract_slot_available_for_post(
+                &w->contracts[k])) {
             free_slot = k;
             break;
         }
@@ -3864,10 +4104,10 @@ static void npc_worker_write_trace(
     FILE *fp = npc_worker_trace_file();
     if (!fp || !w || !npc || !candidates || !scores || count <= 0) return;
     fprintf(fp,
-            "{\"schema\":\"signal.npc_worker_shadow.v2\","
+            "{\"schema\":\"" SIGNAL_NPC_WORKER_TRACE_SCHEMA "\","
             "\"tick\":%u,\"time\":%.3f,\"npc_slot\":%d,"
             "\"home_station\":%d,\"role\":\"%s\","
-            "\"session_token\":\"%02x%02x%02x%02x%02x%02x%02x%02x\","
+            SIGNAL_NPC_WORKER_TRACE_PUBLIC_IDENTITY_JSON
             "\"heuristic_option\":\"%s\",\"neural_option\":\"%s\","
             "\"selected_index\":%d,\"candidate_count\":%d,"
             "\"mode\":\"%s\",\"margin\":%.9g,\"activated\":%s,"
@@ -3886,10 +4126,6 @@ static void npc_worker_write_trace(
             "\"candidates\":[",
             w->tick, w->time, npc_slot, npc->home_station,
             npc_worker_role_name(npc->role),
-            npc->session_token[0], npc->session_token[1],
-            npc->session_token[2], npc->session_token[3],
-            npc->session_token[4], npc->session_token[5],
-            npc->session_token[6], npc->session_token[7],
             signal_intelligence_npc_worker_option_name(heuristic_option),
             selected >= 0 && selected < count
                 ? signal_intelligence_npc_worker_option_name(candidates[selected].option)
@@ -4345,16 +4581,6 @@ static int npc_hauler_load_from_source(world_t *w,
                                        commodity_t commodity,
                                        contract_t *selected_contract);
 
-static uint8_t npc_delivery_debtor_id(int npc_slot) {
-    if (npc_slot < 0) return 0xffu;
-    int id = MAX_PLAYERS + npc_slot;
-    return id > 255 ? 0xffu : (uint8_t)id;
-}
-
-static bool npc_delivery_debtor_matches(uint8_t debtor, int npc_slot) {
-    return debtor == npc_delivery_debtor_id(npc_slot);
-}
-
 static bool npc_delivery_contract_is_source(const contract_t *ct,
                                             int source_station,
                                             int dest_station,
@@ -4367,12 +4593,13 @@ static bool npc_delivery_contract_is_source(const contract_t *ct,
 }
 
 static int npc_delivery_contract_index_for_route(world_t *w,
+                                                 const npc_ship_t *npc,
                                                  int source_station,
                                                  int dest_station,
                                                  commodity_t commodity,
                                                  contract_t **out_contract) {
     if (out_contract) *out_contract = NULL;
-    if (!w) return -1;
+    if (!w || !npc) return -1;
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         contract_t *ct = &w->contracts[i];
         if (!npc_delivery_contract_is_source(ct, source_station,
@@ -4384,6 +4611,8 @@ static int npc_delivery_contract_index_for_route(world_t *w,
                 &w->stations[source_station].manifest) <= 0) {
             continue;
         }
+        if (!npc_contract_can_claim(w, npc, ct))
+            continue;
         if (out_contract) *out_contract = ct;
         return i;
     }
@@ -4391,14 +4620,17 @@ static int npc_delivery_contract_index_for_route(world_t *w,
 }
 
 static delivery_shipment_t *npc_delivery_active_for_contract(world_t *w,
+                                                             const npc_ship_t *npc,
                                                              int npc_slot,
                                                              int contract_index) {
-    if (!w || contract_index < 0) return NULL;
-    uint8_t debtor = npc_delivery_debtor_id(npc_slot);
+    if (!w || !npc || contract_index < 0) return NULL;
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
         delivery_shipment_t *shipment = &w->delivery_shipments[i];
         if (!shipment->active) continue;
-        if (shipment->debtor_player != debtor) continue;
+        if (!delivery_ownership_matches_npc(
+                shipment, w, npc_slot)) {
+            continue;
+        }
         if (shipment->contract_index != (uint8_t)contract_index) continue;
         if (shipment->status == DELIVERY_SHIPMENT_CLEARED ||
             shipment->status == DELIVERY_SHIPMENT_DEFAULTED) {
@@ -4548,13 +4780,19 @@ static int npc_delivery_pickup_from_origin(world_t *w,
                                            contract_t *ct,
                                            int contract_index) {
     if (!w || !npc || !ship || !ct) return 0;
+    contract_t staged_contract = *ct;
+    if (!contract_ownership_try_claim_npc(
+            &staged_contract, w, npc_slot)) {
+        return 0;
+    }
     if (!npc_delivery_contract_is_source(ct, ct->target_index,
                                          ct->station_index, ct->commodity)) {
         return 0;
     }
     if (ct->target_index < 0 || ct->target_index >= MAX_STATIONS)
         return 0;
-    if (npc_delivery_active_for_contract(w, npc_slot, contract_index))
+    if (npc_delivery_active_for_contract(
+            w, npc, npc_slot, contract_index))
         return 0;
     station_t *origin = &w->stations[ct->target_index];
     if (!station_exists(origin)) return 0;
@@ -4587,13 +4825,19 @@ static int npc_delivery_pickup_from_origin(world_t *w,
     shipment->origin_station = (uint8_t)ct->target_index;
     shipment->destination_station = (uint8_t)ct->station_index;
     shipment->contract_index = (uint8_t)contract_index;
-    shipment->debtor_player = npc_delivery_debtor_id(npc_slot);
+    shipment->debtor_player = UINT8_MAX;
+    if (!delivery_ownership_assign_npc(
+            shipment, w, npc_slot)) {
+        return 0;
+    }
     shipment->commodity = (uint8_t)ct->commodity;
     shipment->status = DELIVERY_SHIPMENT_PICKED_UP;
     shipment->due_tick = w->tick + NPC_DELIVERY_DUE_TICKS;
 
     uint8_t npc_pubkey[32];
+    uint8_t ledger_pubkey[32];
     npc_custody_pubkey(npc, npc_slot, npc_pubkey);
+    ledger_pubkey_from_token(npc->session_token, ledger_pubkey);
     int moved = 0;
     float debt = 0.0f;
     while (moved < take && ship->manifest.count < ship->manifest.cap) {
@@ -4615,13 +4859,30 @@ static int npc_delivery_pickup_from_origin(world_t *w,
             break;
         }
         if (idx < 0) break;
+        float quoted_unit_debt =
+            station_sell_price(origin, ct->commodity);
+        if (quoted_unit_debt <= 0.0f) {
+            quoted_unit_debt =
+                station_buy_price(origin, ct->commodity);
+        }
+        int64_t ledger_delta = 0;
+        if (!npc_trade_delta_from_amount(
+                quoted_unit_debt, true, &ledger_delta)) {
+            break;
+        }
+        npc_cargo_trade_t trade = {
+            .ledger_delta_signed = ledger_delta,
+            .debit_ship = ship,
+        };
+        memcpy(trade.ledger_pubkey, ledger_pubkey,
+               sizeof(trade.ledger_pubkey));
         cargo_unit_t unit = {0};
         cargo_receipt_chain_t outgoing = {0};
         if (!npc_transfer_cargo_between_stores(
                 w, ct->target_index,
                 origin->station_pubkey, npc_pubkey,
                 &origin->cargo_store, (uint16_t)idx,
-                &ship->cargo_store, &unit, &outgoing)) {
+                &ship->cargo_store, &trade, &unit, &outgoing)) {
             break;
         }
         origin->manifest_dirty = true;
@@ -4629,10 +4890,7 @@ static int npc_delivery_pickup_from_origin(world_t *w,
         shipment->cargo_units[moved] = unit;
         shipment->cargo_chains[moved] = outgoing;
         moved++;
-        float unit_debt = station_sell_price(origin, ct->commodity);
-        if (unit_debt <= 0.0f)
-            unit_debt = station_buy_price(origin, ct->commodity);
-        debt += unit_debt;
+        debt += (float)-ledger_delta;
     }
 
     if (moved <= 0) {
@@ -4648,11 +4906,36 @@ static int npc_delivery_pickup_from_origin(world_t *w,
     w->next_delivery_shipment_id = (uint16_t)(shipment_id + 1u);
     if (w->next_delivery_shipment_id == 0)
         w->next_delivery_shipment_id = 1;
-    ledger_force_debit(origin, npc->session_token, debt, ship);
-    ct->claimed_by = -1;
+    contract_ownership_commit_staged_claim(
+        ct, &staged_contract);
     station_finished_sync(origin, ct->commodity);
     ship_finished_sync(ship, ct->commodity);
     return moved;
+}
+
+static contract_t *npc_delivery_stage_contract_use(
+    world_t *w,
+    const npc_ship_t *npc,
+    const delivery_shipment_t *shipment,
+    contract_t *out_staged_claim) {
+    if (!w || !npc || !shipment ||
+        !out_staged_claim) {
+        return NULL;
+    }
+    int contract_index = shipment->contract_index;
+    if (contract_index < 0 ||
+        contract_index >= MAX_CONTRACTS) {
+        return NULL;
+    }
+    contract_t *contract =
+        &w->contracts[contract_index];
+    if (!contract->active ||
+        contract->action != CONTRACT_DELIVERY ||
+        !npc_contract_stage_claim(
+            w, npc, contract, out_staged_claim)) {
+        return NULL;
+    }
+    return contract;
 }
 
 static float npc_delivery_try_deliver_bound_cargo(world_t *w,
@@ -4667,15 +4950,23 @@ static float npc_delivery_try_deliver_bound_cargo(world_t *w,
     if (!station_manifest_bootstrap(dest)) return 0.0f;
 
     uint8_t npc_pubkey[32];
+    uint8_t ledger_pubkey[32];
     npc_custody_pubkey(npc, npc_slot, npc_pubkey);
+    ledger_pubkey_from_token(npc->session_token, ledger_pubkey);
     float payout = 0.0f;
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
         delivery_shipment_t *shipment = &w->delivery_shipments[i];
         if (!shipment->active) continue;
-        if (!npc_delivery_debtor_matches(shipment->debtor_player, npc_slot))
+        if (!delivery_ownership_matches_npc(
+                shipment, w, npc_slot))
             continue;
         if (shipment->destination_station != (uint8_t)station_idx) continue;
         if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
+        contract_t staged_claim = {0};
+        contract_t *contract =
+            npc_delivery_stage_contract_use(
+                w, npc, shipment, &staged_claim);
+        if (!contract) continue;
         commodity_t c = (commodity_t)shipment->commodity;
         uint16_t remaining = shipment->quantity_total > shipment->quantity_delivered
             ? (uint16_t)(shipment->quantity_total - shipment->quantity_delivered)
@@ -4692,15 +4983,27 @@ static float npc_delivery_try_deliver_bound_cargo(world_t *w,
                 cargo_receipt_evaluate_at_station(
                     w, station_idx, candidate, candidate_chain);
             if (!evaluated.accepted) break;
+            int64_t ledger_delta = 0;
+            if (!npc_delivery_payout_delta(
+                    shipment, &ledger_delta)) {
+                break;
+            }
+            npc_cargo_trade_t trade = {
+                .ledger_delta_signed = ledger_delta,
+            };
+            memcpy(trade.ledger_pubkey, ledger_pubkey,
+                   sizeof(trade.ledger_pubkey));
             cargo_unit_t unit = {0};
             cargo_receipt_chain_t incoming = {0};
             if (!npc_transfer_cargo_between_stores(
                     w, station_idx, npc_pubkey,
                     dest->station_pubkey,
                     &ship->cargo_store, (uint16_t)idx,
-                    &dest->cargo_store, &unit, &incoming)) {
+                    &dest->cargo_store, &trade, &unit, &incoming)) {
                 break;
             }
+            contract_ownership_commit_staged_claim(
+                contract, &staged_claim);
             dest->manifest_dirty = true;
             for (uint16_t bound = shipment->quantity_delivered;
                  bound < shipment->quantity_bound &&
@@ -4714,9 +5017,7 @@ static float npc_delivery_try_deliver_bound_cargo(world_t *w,
             }
             shipment->quantity_delivered++;
             remaining--;
-            float unit_pay = shipment->quantity_total > 0
-                ? shipment->destination_payout / (float)shipment->quantity_total
-                : 0.0f;
+            float unit_pay = (float)ledger_delta;
             payout += unit_pay;
             shipment_payout += unit_pay;
             ship_finished_sync(ship, c);
@@ -4724,12 +5025,7 @@ static float npc_delivery_try_deliver_bound_cargo(world_t *w,
         }
         if (shipment->quantity_delivered >= shipment->quantity_total) {
             shipment->status = DELIVERY_SHIPMENT_DELIVERED;
-            int ci = shipment->contract_index;
-            if (ci >= 0 && ci < MAX_CONTRACTS &&
-                w->contracts[ci].active &&
-                w->contracts[ci].action == CONTRACT_DELIVERY) {
-                w->contracts[ci].quantity_needed = 0.0f;
-            }
+            contract->quantity_needed = 0.0f;
             npc_delivery_emit_receipt_memory(w, npc, dest, shipment,
                                              shipment_payout);
             emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
@@ -4737,9 +5033,6 @@ static float npc_delivery_try_deliver_bound_cargo(world_t *w,
                 .contract_complete.action = CONTRACT_DELIVERY});
             npc->dest_station = shipment->origin_station;
         }
-    }
-    if (payout > 0.01f) {
-        ledger_earn_from_pool(dest, npc->session_token, payout);
     }
     return payout;
 }
@@ -4757,20 +5050,23 @@ static int npc_delivery_clear_origin_proofs(world_t *w,
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
         delivery_shipment_t *shipment = &w->delivery_shipments[i];
         if (!shipment->active) continue;
-        if (!npc_delivery_debtor_matches(shipment->debtor_player, npc_slot))
+        if (!delivery_ownership_matches_npc(
+                shipment, w, npc_slot))
             continue;
         if (shipment->origin_station != (uint8_t)station_idx) continue;
         if (shipment->status != DELIVERY_SHIPMENT_DELIVERED) continue;
+        contract_t staged_claim = {0};
+        contract_t *contract =
+            npc_delivery_stage_contract_use(
+                w, npc, shipment, &staged_claim);
+        if (!contract) continue;
+        contract_ownership_commit_staged_claim(
+            contract, &staged_claim);
         float credit = shipment->debt_principal +
                        shipment->origin_completion_credit;
         ledger_earn(origin, npc->session_token, credit);
         shipment->status = DELIVERY_SHIPMENT_CLEARED;
-        int ci = shipment->contract_index;
-        if (ci >= 0 && ci < MAX_CONTRACTS &&
-            w->contracts[ci].active &&
-            w->contracts[ci].action == CONTRACT_DELIVERY) {
-            w->contracts[ci].active = false;
-        }
+        contract->active = false;
         cleared++;
     }
     (void)ship;
@@ -4977,12 +5273,19 @@ static bool npc_begin_scout_offer(world_t *w,
                                   int npc_slot,
                                   npc_ship_t *npc,
                                   const npc_job_offer_t *offer) {
-    if (!w || !npc || !offer) return false;
+    if (!w || !npc || !offer || !offer->contract) return false;
     if (offer->target_index < 0 || offer->target_index >= MAX_ASTEROIDS)
         return false;
     if (!w->asteroids[offer->target_index].active) return false;
+    contract_t staged_claim = {0};
+    if (!npc_contract_stage_claim(
+            w, npc, offer->contract, &staged_claim)) {
+        return false;
+    }
     if (!npc_set_assignment(w, npc_slot, npc, NPC_ROLE_MINER))
         return false;
+    contract_ownership_commit_staged_claim(
+        offer->contract, &staged_claim);
     npc->target_asteroid = offer->target_index;
     npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
     npc->state_timer = 0.0f;
@@ -5649,9 +5952,14 @@ static int npc_hauler_load_from_source(world_t *w,
     station_t *src = &w->stations[source_station];
     contract_t *ct = selected_contract
         ? selected_contract
-        : hauler_pickup_contract_for_delivery(w, dest_station, commodity,
+        : hauler_pickup_contract_for_delivery(w, npc, dest_station, commodity,
                                               &src->manifest);
     if (!ct) return 0;
+    contract_t staged_claim = {0};
+    if (!npc_contract_stage_claim(
+            w, npc, ct, &staged_claim)) {
+        return 0;
+    }
     float carried = npc_finished_cargo_total(npc);
     float space = ship_bulk_capacity(npc->ship) - carried;
     int take_units = npc_hauler_takeable_units_at_source(src, ct);
@@ -5663,6 +5971,8 @@ static int npc_hauler_load_from_source(world_t *w,
         w, npc_slot, source_station, src, hauler_ship,
         ct, take_units);
     if (moved > 0) {
+        contract_ownership_commit_staged_claim(
+            ct, &staged_claim);
         station_finished_sync(src, commodity);
         ship_finished_sync(hauler_ship, commodity);
     }
@@ -5837,7 +6147,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 dock_station == npc->pickup_station) {
                 contract_t *delivery_ct = NULL;
                 int delivery_ci = npc_delivery_contract_index_for_route(
-                    w, npc->pickup_station, npc->dest_station,
+                    w, npc, npc->pickup_station, npc->dest_station,
                     npc->pickup_commodity, &delivery_ct);
                 int moved = 0;
                 if (npc->pickup_action == (uint8_t)CONTRACT_DELIVERY &&
@@ -5882,7 +6192,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
                     commodity_t cargo = (commodity_t)i;
                     contract_t *ct = hauler_delivery_contract(
-                        w, npc->dest_station, cargo, &hauler_ship->manifest);
+                        w, npc, npc->dest_station, cargo,
+                        &hauler_ship->manifest);
                     if (!ct) continue;
                     int held = contract_fit_manifest_count(ct,
                                                            &hauler_ship->manifest);
@@ -5894,20 +6205,15 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     if (space_units <= 0) continue;
                     int request = held < space_units ? held : space_units;
                     if (request > needed) request = needed;
+                    float payout = 0.0f;
                     int moved = hauler_unload_ship_units_for_contract(
                         w, n, hauler_ship, unload_station,
-                        dest, ct, request);
+                        dest, ct, request, &payout);
                     if (moved <= 0) continue;
                     station_finished_sync(dest, cargo);
                     ship_finished_sync(hauler_ship, cargo);
                     ct->quantity_needed -= (float)moved;
                     if (ct->quantity_needed < 0.0f) ct->quantity_needed = 0.0f;
-                    float price = contract_price(ct);
-                    float payout = price * (float)moved;
-                    if (price > 0.0f) {
-                        ledger_earn_from_pool(dest, npc->session_token,
-                                              payout);
-                    }
                     npc_emit_route_success_memory(w, npc, dest, cargo,
                                                   moved, payout);
                     if (ct->quantity_needed <= 0.01f)
@@ -6401,6 +6707,8 @@ void step_npc_ships(world_t *w, float dt) {
                 for (int k = 0; k < MAX_CONTRACTS; k++) {
                     if (!w->contracts[k].active) continue;
                     if (w->contracts[k].action != CONTRACT_FRACTURE) continue;
+                    if (!npc_contract_can_claim(
+                            w, npc, &w->contracts[k])) continue;
                     int idx = w->contracts[k].target_index;
                     if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
                     if (!mining_level_can_fracture_asteroid(npc->ship->mining_level, &w->asteroids[idx])) continue;
@@ -6434,6 +6742,12 @@ void step_npc_ships(world_t *w, float dt) {
                     if (target >= 0) { npc->target_asteroid = target; npc->state = NPC_STATE_TRAVEL_TO_ASTEROID; }
                     else npc->state = NPC_STATE_RETURN_TO_STATION;
                 }
+                break;
+            }
+            if (!npc_claim_fracture_contracts_for_target(
+                    w, npc, npc->target_asteroid)) {
+                npc->target_asteroid = -1;
+                npc->state = NPC_STATE_RETURN_TO_STATION;
                 break;
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
@@ -6714,7 +7028,8 @@ void generate_npc_distress_contracts(world_t *w, float dt) {
         if (exists) continue;
         /* Post distress contract */
         for (int k = 0; k < MAX_CONTRACTS; k++) {
-            if (!w->contracts[k].active) {
+            if (contract_slot_available_for_post(
+                    &w->contracts[k])) {
                 w->contracts[k] = (contract_t){
                     .active = true, .action = CONTRACT_FRACTURE,
                     .station_index = (uint8_t)npc->home_station,

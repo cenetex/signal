@@ -165,10 +165,12 @@ The `stations-don't-talk` rule is enforced structurally: contracts spread only v
 ## 8. Persistence
 
 - **world.sav:** magic "SIGN", **v61**, min v49, CRC32 trailers, written atomically (.tmp → rename, `sim_save.c:1369`). Thirteen documented migration steps v49→v61 with per-field gating; idempotent live migrations (e.g., auto-tagging furnace hoppers at v50 load).
-- **Player saves:** `saves/pubkey/<base58>.sav` ("PLY7" format, carries manifest + receipt chains + last signed nonce); `saves/legacy/<token_hex>.sav` fallback. Legacy claim: sign `"claim-legacy-save-v1" || token_hex`, server renames into pubkey dir, first-claim-wins. Since `2118f9f` and `b2b0da1`, player saves use atomic writes and CRC/staged-load hardening so corrupt files are rejected before live player state is replaced.
+- **Player saves (historical snapshot):** `saves/pubkey/<base58>.sav` ("PLY7" format, carries manifest + receipt chains + last signed nonce); `saves/legacy/<token_hex>.sav` fallback. The first-claim-wins basename flow described by this June report has since been retired and is inert under #672 containment; it must not be treated as current operator guidance. Since `2118f9f` and `b2b0da1`, player saves use atomic writes and CRC/staged-load hardening so corrupt files are rejected before live player state is replaced.
 - **Chain-log/save reconciliation:** the save stores `chain_last_hash`/`chain_event_count`; if the on-disk log verifies and is ahead of the save (crash after append), the verified tail is adopted at load.
 
-**Remaining gaps:** no `fsync` anywhere (rename atomicity only); legacy-save claiming is now audited but still fundamentally proves key possession rather than original ownership. Full historical ownership remains a chain-log/provenance problem, not just a file-rename problem.
+**Historical remaining gaps:** this report predated the #672 containment. The
+unsafe claim path is now disabled; authenticated, crash-recoverable migration
+and complete durable ownership transfer remain open.
 
 ---
 

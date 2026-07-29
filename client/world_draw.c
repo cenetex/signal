@@ -244,13 +244,8 @@ static void world_npc_scan_label(const npc_ship_t *npc, int idx,
         snprintf(out, 32, "NPC --");
         return;
     }
-    if (npc->session_token[0] == 'N' && npc->session_token[1] == 'P' &&
-        npc->session_token[2] == 'C') {
-        snprintf(out, 32, "%s N%02u", world_npc_role_label(npc->role),
-                 (unsigned)npc->session_token[5]);
-    } else {
-        snprintf(out, 32, "%s %02d", world_npc_role_label(npc->role), idx);
-    }
+    /* Runtime slot is presentation only; no bearer-derived name is shown. */
+    snprintf(out, 32, "%s %02d", world_npc_role_label(npc->role), idx);
 }
 
 typedef struct {

@@ -55,8 +55,11 @@
 #include "rng.h"
 #include "sha256.h"   /* signal_chain_hash_block */
 #include "signal_crypto.h" /* Ed25519 verify for signed actions (#479 A.3) */
+#include "signal_memzero.h"
 #include "station_authority.h"
 #include "actor_principal_resolver.h"
+#include "public_actor_resolver.h"
+#include "contract_ownership.h"
 #include "ship_birth_reservation.h"
 #include "net_protocol.h"
 
@@ -115,6 +118,11 @@
 static void token_to_pseudo_pubkey(const uint8_t *token, uint8_t pseudo[32]) {
     memset(pseudo, 0, 32);
     if (token) memcpy(pseudo, token, 8);
+}
+
+void ledger_pubkey_from_token(const uint8_t token[8], uint8_t out[32]) {
+    if (!out) return;
+    token_to_pseudo_pubkey(token, out);
 }
 
 static bool secure_bytes_nonzero(const uint8_t *bytes, size_t len);
@@ -227,8 +235,105 @@ void ledger_earn_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount
     ledger_add_stat_u32(&st->ledger[idx].lifetime_credits_in, amount);
 }
 
+typedef struct {
+    bool ready;
+    int index;
+    int ledger_count;
+    station_ledger_entry_t row;
+} ledger_earn_stage_t;
+
+/*
+ * Prepare one exact ledger credit without mutating the station. Transactional
+ * cargo callers use this before a durable chain append, then apply the bounded
+ * row/count copy only after the append succeeds.
+ */
+static bool ledger_stage_earn_by_pubkey(
+    const station_t *st, const uint8_t pubkey[32],
+    float amount, ledger_earn_stage_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!st || !pubkey || !out ||
+        !isfinite(amount) || amount <= 0.0f ||
+        st->ledger_count < 0 ||
+        st->ledger_count > STATION_LEDGER_MAX) {
+        return false;
+    }
+    bool nonzero = false;
+    for (size_t i = 0; i < 32; i++) {
+        if (pubkey[i] != 0) {
+            nonzero = true;
+            break;
+        }
+    }
+    if (!nonzero) return false;
+
+    int index = -1;
+    int count_after = st->ledger_count;
+    station_ledger_entry_t row = {0};
+    for (int i = 0; i < st->ledger_count; i++) {
+        if (memcmp(st->ledger[i].player_pubkey,
+                   pubkey, 32) == 0) {
+            index = i;
+            row = st->ledger[i];
+            break;
+        }
+    }
+    if (index < 0 && st->ledger_count < STATION_LEDGER_MAX) {
+        index = st->ledger_count;
+        count_after++;
+        memcpy(row.player_pubkey, pubkey,
+               sizeof(row.player_pubkey));
+    } else if (index < 0) {
+        float worst = 0.0f;
+        for (int i = 0; i < STATION_LEDGER_MAX; i++) {
+            if (st->ledger[i].balance > 0.01f)
+                continue;
+            if (index < 0 ||
+                st->ledger[i].lifetime_supply < worst) {
+                index = i;
+                worst = st->ledger[i].lifetime_supply;
+            }
+        }
+        if (index < 0) return false;
+        memcpy(row.player_pubkey, pubkey,
+               sizeof(row.player_pubkey));
+    }
+
+    float before = ledger_sanitize_float(row.balance);
+    float after =
+        ledger_sanitize_float(before + amount);
+    if (!isfinite(after) ||
+        fabsf((after - before) - amount) > 0.001f) {
+        return false;
+    }
+    row.balance = after;
+    ledger_add_stat_u32(
+        &row.lifetime_credits_in, amount);
+    *out = (ledger_earn_stage_t){
+        .ready = true,
+        .index = index,
+        .ledger_count = count_after,
+        .row = row,
+    };
+    return true;
+}
+
 static uint32_t ledger_saturating_u32_sum(uint32_t a, uint32_t b) {
     return UINT32_MAX - a < b ? UINT32_MAX : a + b;
+}
+
+static bool ledger_stage_pod_sale_by_pubkey(
+    const station_t *st, const uint8_t pubkey[32],
+    float amount, uint32_t units, uint8_t commodity,
+    ledger_earn_stage_t *out) {
+    if (!ledger_stage_earn_by_pubkey(
+            st, pubkey, amount, out)) {
+        return false;
+    }
+    out->row.lifetime_ore_units =
+        ledger_saturating_u32_sum(
+            out->row.lifetime_ore_units, units);
+    out->row.top_commodity = commodity;
+    return true;
 }
 
 bool world_migrate_legacy_ledger_to_pubkey(
@@ -1593,8 +1698,9 @@ const tow_link_t *world_tow_link_for_target_const(const world_t *w,
     return world_tow_link_for_target((world_t *)w, target);
 }
 
-static bool tow_link_source_order_before(const tow_link_t *a,
-                                         const tow_link_t *b) {
+bool world_tow_link_canonical_before(const tow_link_t *a,
+                                     const tow_link_t *b) {
+    if (!a || !b) return a != NULL;
     if (a->source.kind != b->source.kind)
         return a->source.kind < b->source.kind;
     if (a->source.index != b->source.index)
@@ -1609,7 +1715,39 @@ static bool tow_link_source_order_before(const tow_link_t *a,
         return a->target.kind < b->target.kind;
     if (a->target.index != b->target.index)
         return a->target.index < b->target.index;
-    return a->target.part < b->target.part;
+    if (a->target.part != b->target.part)
+        return a->target.part < b->target.part;
+    if (a->target.generation != b->target.generation)
+        return a->target.generation < b->target.generation;
+    return a->state < b->state;
+}
+
+int world_tow_collect_links_canonical(
+    const world_t *w, const tow_link_t **out, int cap) {
+    if (!w || cap < 0) return 0;
+    int count = 0;
+    int stored = 0;
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &w->tow_links[i];
+        if (!link->active) continue;
+        if (out && cap > 0) {
+            int insert = stored;
+            while (insert > 0 &&
+                   !world_tow_link_canonical_before(
+                       out[insert - 1], link)) {
+                insert--;
+            }
+            if (insert < cap) {
+                int last = stored < cap ? stored : cap - 1;
+                for (int j = last; j > insert; j--)
+                    out[j] = out[j - 1];
+                out[insert] = link;
+                if (stored < cap) stored++;
+            }
+        }
+        count++;
+    }
+    return count;
 }
 
 int world_tow_collect_targets(const world_t *w, entity_ref_t source,
@@ -1617,24 +1755,16 @@ int world_tow_collect_targets(const world_t *w, entity_ref_t source,
                               int cap) {
     if (!w || entity_ref_is_none(source) || cap < 0) return 0;
     const tow_link_t *ordered[MAX_TOW_LINKS];
+    int ordered_count = world_tow_collect_links_canonical(
+        w, ordered, MAX_TOW_LINKS);
     int count = 0;
-    for (int i = 0; i < MAX_TOW_LINKS; i++) {
-        const tow_link_t *link = &w->tow_links[i];
+    for (int i = 0; i < ordered_count; i++) {
+        const tow_link_t *link = ordered[i];
         if (!link->active || !entity_ref_equal(link->source, source)) continue;
         if (profile != TOW_PROFILE_NONE && link->profile != (uint8_t)profile)
             continue;
-        int insert = count;
-        while (insert > 0 &&
-               !tow_link_source_order_before(ordered[insert - 1], link)) {
-            ordered[insert] = ordered[insert - 1];
-            insert--;
-        }
-        ordered[insert] = link;
+        if (out && count < cap) out[count] = link->target;
         count++;
-    }
-    if (out) {
-        int written = count < cap ? count : cap;
-        for (int i = 0; i < written; i++) out[i] = ordered[i]->target;
     }
     return count;
 }
@@ -1678,6 +1808,27 @@ static bool world_tow_link_capacity_allows(const world_t *w,
     return fragments + pods < ship_tow_body_capacity(ship);
 }
 
+static uint32_t world_tow_next_revision(world_t *w) {
+    if (!w) return 0;
+    w->tow_revision++;
+    if (w->tow_revision == 0) w->tow_revision++;
+    w->tow_revision_tick = w->tick;
+    return w->tow_revision;
+}
+
+static void world_tow_link_retire(world_t *w, tow_link_t *link) {
+    if (!w || !link || !link->active) return;
+    (void)world_tow_next_revision(w);
+    memset(link, 0, sizeof(*link));
+}
+
+static void world_tow_link_set_slot(world_t *w, tow_link_t *link,
+                                    uint8_t slot) {
+    if (!w || !link || link->slot == slot) return;
+    link->slot = slot;
+    link->revision = world_tow_next_revision(w);
+}
+
 static bool world_tow_link_store(world_t *w, entity_ref_t source,
                                  entity_ref_t target, tow_profile_t profile,
                                  int slot, tow_link_state_t state) {
@@ -1698,6 +1849,16 @@ static bool world_tow_link_store(world_t *w, entity_ref_t source,
         }
     }
     if (!link) return false;
+    bool same_attachment = link->active &&
+        entity_ref_equal(link->source, source) &&
+        entity_ref_equal(link->target, target);
+    if (same_attachment && link->profile == (uint8_t)profile &&
+        link->slot == (uint8_t)slot && link->state == (uint8_t)state) {
+        return true;
+    }
+    uint32_t attached_tick =
+        same_attachment ? link->attached_tick : w->tick;
+    uint32_t revision = world_tow_next_revision(w);
     *link = (tow_link_t){
         .active = true,
         .source = source,
@@ -1705,13 +1866,15 @@ static bool world_tow_link_store(world_t *w, entity_ref_t source,
         .profile = (uint8_t)profile,
         .slot = (uint8_t)slot,
         .state = (uint8_t)state,
+        .attached_tick = attached_tick,
+        .revision = revision,
     };
     return true;
 }
 
-bool world_tow_link_set(world_t *w, entity_ref_t source,
-                        entity_ref_t target, tow_profile_t profile,
-                        int slot, tow_link_state_t state) {
+static bool world_tow_link_set_unchecked(
+    world_t *w, entity_ref_t source, entity_ref_t target,
+    tow_profile_t profile, int slot, tow_link_state_t state) {
     if (!world_tow_link_store(w, source, target, profile, slot, state))
         return false;
     world_tow_rebuild_projections(w);
@@ -1720,12 +1883,81 @@ bool world_tow_link_set(world_t *w, entity_ref_t source,
            stored->profile == (uint8_t)profile;
 }
 
+static int world_player_slot_from_ship_ref(entity_ref_t source) {
+    if (source.kind != ENTITY_KIND_SHIP ||
+        source.index < WORLD_PLAYER_SHIP_BASE ||
+        source.index >= WORLD_NPC_SHIP_BASE) {
+        return -1;
+    }
+    return source.index - WORLD_PLAYER_SHIP_BASE;
+}
+
+bool world_tow_link_set(world_t *w, entity_ref_t source,
+                        entity_ref_t target, tow_profile_t profile,
+                        int slot, tow_link_state_t state) {
+    /*
+     * Cargo-pod player and module relations have durable ownership semantics.
+     * Route even generic relationship callers through those boundaries so a
+     * raw link can never become a second ownership authority.
+     */
+    if (target.kind == ENTITY_KIND_CARGO_POD &&
+        profile == TOW_PROFILE_SHIP_POD) {
+        int player_idx = world_player_slot_from_ship_ref(source);
+        if (player_idx < 0) {
+            return false;
+        }
+        if (state == TOW_LINK_HELD) {
+            return world_cargo_pod_set_player_tractor(
+                w, target.index, player_idx);
+        }
+        const tow_link_t *existing =
+            world_tow_link_for_target_const(w, target);
+        if (!existing ||
+            !entity_ref_equal(existing->source, source) ||
+            existing->profile != TOW_PROFILE_SHIP_POD) {
+            return false;
+        }
+        return world_tow_link_set_unchecked(
+            w, source, target, profile, slot, state);
+    }
+    if (target.kind == ENTITY_KIND_CARGO_POD &&
+        profile == TOW_PROFILE_MODULE_POD) {
+        if (source.kind != ENTITY_KIND_STATION_MODULE ||
+            state != TOW_LINK_HELD) {
+            return false;
+        }
+        return world_cargo_pod_set_module_tractor(
+            w, target.index, source.index, source.part);
+    }
+    return world_tow_link_set_unchecked(
+        w, source, target, profile, slot, state);
+}
+
 bool world_tow_link_clear_target(world_t *w, entity_ref_t target) {
     if (!w || entity_ref_is_none(target)) return false;
     tow_link_t *link = world_tow_link_for_target(w, target);
     bool found = link != NULL;
-    if (link) memset(link, 0, sizeof(*link));
+    bool clears_current_cargo_owner = false;
+    if (found &&
+        target.kind == ENTITY_KIND_CARGO_POD &&
+        target.index >= 0 &&
+        target.index < MAX_CARGO_PODS) {
+        entity_ref_t current =
+            world_entity_ref_for_slot(
+                w, ENTITY_KIND_CARGO_POD,
+                target.index, -1);
+        clears_current_cargo_owner =
+            !entity_ref_is_none(current) &&
+            entity_ref_equal(current, target);
+    }
+    world_tow_link_retire(w, link);
     world_tow_rebuild_projections(w);
+    if (clears_current_cargo_owner) {
+        cargo_pod_t *pod = &w->cargo_pods[target.index];
+        if (pod->tow_owner_quarantine_record_id == 0)
+            pod->tow_owner_principal =
+                actor_principal_none();
+    }
     return found;
 }
 
@@ -1735,7 +1967,7 @@ void world_tow_links_clear_source(world_t *w, entity_ref_t source) {
     for (int i = 0; i < MAX_TOW_LINKS; i++) {
         tow_link_t *link = &w->tow_links[i];
         if (link->active && entity_ref_equal(link->source, source)) {
-            memset(link, 0, sizeof(*link));
+            world_tow_link_retire(w, link);
             cleared = true;
         }
     }
@@ -1751,7 +1983,7 @@ static void world_tow_links_clear_target_slot(world_t *w,
         tow_link_t *link = &w->tow_links[i];
         if (link->active && link->target.kind == (uint8_t)kind &&
             link->target.index == index && link->target.part == part) {
-            memset(link, 0, sizeof(*link));
+            world_tow_link_retire(w, link);
         }
     }
     world_tow_rebuild_projections(w);
@@ -1794,42 +2026,150 @@ void world_asteroid_clear_tractor(world_t *w, int asteroid_idx) {
 
 bool world_cargo_pod_set_player_tractor(world_t *w, int pod_idx,
                                         int player_idx) {
-    if (!w || player_idx < 0 || player_idx >= MAX_PLAYERS) return false;
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
+        player_idx < 0 || player_idx >= MAX_PLAYERS) {
+        return false;
+    }
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active ||
+        pod->tow_owner_quarantine_record_id != 0 ||
+        !actor_principal_is_canonical(
+            &pod->tow_owner_principal)) {
+        return false;
+    }
+
+    server_player_t *sp = &w->players[player_idx];
+    actor_principal_t player = actor_principal_none();
+    bool verified =
+        actor_principal_from_verified_player(sp, &player);
+    if (verified) {
+        actor_resolution_result_t resolved =
+            world_resolve_player_principal(w, &player);
+        if ((resolved.state != ACTOR_RESOLUTION_ONLINE &&
+             resolved.state != ACTOR_RESOLUTION_GRACE) ||
+            resolved.slot != player_idx) {
+            return false;
+        }
+    }
+
     entity_ref_t target = world_entity_ref_for_slot(
         w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
-    return world_tow_link_set(
-        w, w->players[player_idx].ship_ref, target,
-        TOW_PROFILE_SHIP_POD, 0, TOW_LINK_HELD);
+    if (entity_ref_is_none(target)) return false;
+    const tow_link_t *existing =
+        world_tow_link_for_target_const(w, target);
+    actor_principal_t owner_before =
+        pod->tow_owner_principal;
+
+    switch ((actor_principal_kind_t)
+                pod->tow_owner_principal.kind) {
+    case ACTOR_PRINCIPAL_NONE:
+        pod->tow_owner_principal = verified
+            ? player : actor_principal_unattributed();
+        break;
+    case ACTOR_PRINCIPAL_UNATTRIBUTED:
+        /*
+         * Anonymous custody is live-session-only. It may be upgraded by the
+         * same live holder after proof finalization, but a loaded or detached
+         * UNATTRIBUTED row is never claimable by a new slot occupant.
+         */
+        if (!existing ||
+            !entity_ref_equal(
+                existing->source, sp->ship_ref) ||
+            existing->profile != TOW_PROFILE_SHIP_POD) {
+            return false;
+        }
+        if (verified) pod->tow_owner_principal = player;
+        break;
+    case ACTOR_PRINCIPAL_PLAYER:
+        if (!verified ||
+            !actor_principal_equal(
+                &pod->tow_owner_principal, &player)) {
+            return false;
+        }
+        break;
+    default:
+        return false;
+    }
+
+    if (!world_tow_link_set_unchecked(
+            w, sp->ship_ref, target,
+            TOW_PROFILE_SHIP_POD, 0, TOW_LINK_HELD)) {
+        pod->tow_owner_principal = owner_before;
+        return false;
+    }
+    return true;
 }
 
 bool world_cargo_pod_set_module_tractor(world_t *w, int pod_idx,
                                         int station_idx, int module_idx) {
-    if (!w) return false;
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return false;
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active ||
+        pod->tow_owner_quarantine_record_id != 0 ||
+        pod->tow_owner_principal.kind != ACTOR_PRINCIPAL_NONE ||
+        !actor_principal_is_canonical(
+            &pod->tow_owner_principal)) {
+        return false;
+    }
     entity_ref_t source = world_entity_ref_for_slot(
         w, ENTITY_KIND_STATION_MODULE, station_idx, module_idx);
     entity_ref_t target = world_entity_ref_for_slot(
         w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
-    return world_tow_link_set(
+    return world_tow_link_set_unchecked(
         w, source, target, TOW_PROFILE_MODULE_POD, 0, TOW_LINK_HELD);
 }
 
 void world_cargo_pod_clear_tractor(world_t *w, int pod_idx) {
     if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) return;
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
     entity_ref_t target = world_entity_ref_for_slot(
         w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
     if (entity_ref_is_none(target)) {
         world_tow_links_clear_target_slot(
             w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
-        cargo_pod_clear_tractor(&w->cargo_pods[pod_idx]);
-        return;
+        cargo_pod_clear_tractor(pod);
+    } else {
+        (void)world_tow_link_clear_target(w, target);
     }
-    (void)world_tow_link_clear_target(w, target);
+    if (pod->tow_owner_quarantine_record_id == 0)
+        pod->tow_owner_principal = actor_principal_none();
 }
 
 void world_cargo_pod_clear_module_tractor(world_t *w, int pod_idx) {
     if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS ||
         !cargo_pod_has_module_tractor(&w->cargo_pods[pod_idx])) return;
     world_cargo_pod_clear_tractor(w, pod_idx);
+}
+
+static bool cargo_pod_player_projection_authorized(
+    const world_t *w, const cargo_pod_t *pod, int player_idx) {
+    if (!w || !pod || player_idx < 0 ||
+        player_idx >= MAX_PLAYERS ||
+        pod->tow_owner_quarantine_record_id != 0 ||
+        !actor_principal_is_canonical(
+            &pod->tow_owner_principal)) {
+        return false;
+    }
+    if (pod->tow_owner_principal.kind ==
+        ACTOR_PRINCIPAL_UNATTRIBUTED) {
+        return true;
+    }
+    if (pod->tow_owner_principal.kind !=
+        ACTOR_PRINCIPAL_PLAYER) {
+        return false;
+    }
+    actor_principal_t player = actor_principal_none();
+    if (!actor_principal_from_verified_player(
+            &w->players[player_idx], &player) ||
+        !actor_principal_equal(
+            &pod->tow_owner_principal, &player)) {
+        return false;
+    }
+    actor_resolution_result_t resolved =
+        world_resolve_player_principal(w, &player);
+    return (resolved.state == ACTOR_RESOLUTION_ONLINE ||
+            resolved.state == ACTOR_RESOLUTION_GRACE) &&
+           resolved.slot == player_idx;
 }
 
 bool world_scaffold_set_player_tractor(world_t *w, int scaffold_idx,
@@ -1870,8 +2210,7 @@ static bool world_ship_slot_activate(world_t *w, int ship_slot) {
     ship_slot_t *slot = &w->ships[ship_slot];
     if (slot->active) return true;
     uint16_t generation = ship_slot_next_generation(slot->generation);
-    ship_cleanup(&slot->component);
-    memset(&slot->component, 0, sizeof(slot->component));
+    ship_reset(&slot->component);
     if (!ship_manifest_bootstrap(&slot->component)) return false;
     slot->generation = generation;
     slot->active = true;
@@ -1883,8 +2222,7 @@ static void world_ship_slot_release(world_t *w, int ship_slot) {
     ship_slot_t *slot = &w->ships[ship_slot];
     if (slot->active)
         world_tow_links_clear_source(w, world_ship_ref_for_slot(w, ship_slot));
-    if (slot->active) ship_cleanup(&slot->component);
-    memset(&slot->component, 0, sizeof(slot->component));
+    ship_reset(&slot->component);
     slot->active = false;
 }
 
@@ -2254,15 +2592,28 @@ bool world_rebind_player_slot_refs(world_t *w,
         dst_slot == src_slot) {
         return false;
     }
+    /*
+     * Only compatibility projections follow a live slot transfer. Durable
+     * contract/shipment principals are pubkey/NPC-identity keyed and are
+     * deliberately untouched.
+     */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
-        if (w->contracts[i].claimed_by == (int8_t)src_slot)
+        if (contract_ownership_matches_player(
+                &w->contracts[i], w, src_slot)) {
             w->contracts[i].claimed_by = (int8_t)dst_slot;
+        } else {
+            contract_ownership_refresh_projection(
+                w, &w->contracts[i]);
+        }
     }
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
-        if (w->delivery_shipments[i].debtor_player ==
-            (uint8_t)src_slot) {
+        if (delivery_ownership_matches_player(
+                &w->delivery_shipments[i], w, src_slot)) {
             w->delivery_shipments[i].debtor_player =
                 (uint8_t)dst_slot;
+        } else {
+            delivery_ownership_refresh_projection(
+                w, &w->delivery_shipments[i]);
         }
     }
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -2413,6 +2764,8 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
     dst->last_damage_cause = src->last_damage_cause;
     if (src->last_signed_nonce > dst->last_signed_nonce)
         dst->last_signed_nonce = src->last_signed_nonce;
+    dst->legacy_recovery_save_pending =
+        src->legacy_recovery_save_pending;
     server_player_clear_transient_input(dst);
     if (dst->docked)
         anchor_ship_in_station(dst, w);
@@ -2424,8 +2777,10 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot) {
 
     for (int i = 0; i < MAX_TOW_LINKS; i++) {
         tow_link_t *link = &w->tow_links[i];
-        if (link->active && entity_ref_equal(link->source, src_ship_ref))
+        if (link->active && entity_ref_equal(link->source, src_ship_ref)) {
             link->source = dst_ship_ref;
+            link->revision = world_tow_next_revision(w);
+        }
     }
 
     (void)world_rebind_player_slot_refs(w, dst_slot, src_slot);
@@ -3042,15 +3397,8 @@ static bool player_attach_cargo_pod(world_t *w, server_player_t *sp,
         !w->cargo_pods[pod_idx].active) {
         return false;
     }
-    int slot = ship_towed_pod_slot(w, sp->ship_ref, pod_idx);
-    if (slot < 0)
-        slot = world_tow_link_count_for_source(
-            w, sp->ship_ref, TOW_PROFILE_SHIP_POD);
-    entity_ref_t target = world_entity_ref_for_slot(
-        w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
-    return world_tow_link_set(
-        w, sp->ship_ref, target, TOW_PROFILE_SHIP_POD,
-        slot, TOW_LINK_HELD);
+    return world_cargo_pod_set_player_tractor(
+        w, pod_idx, player_idx);
 }
 
 static bool player_detach_cargo_pod(world_t *w, server_player_t *sp,
@@ -3062,15 +3410,24 @@ static bool player_detach_cargo_pod(world_t *w, server_player_t *sp,
     if (slot < 0) return false;
     cargo_pod_t *pod = &w->cargo_pods[pod_idx];
     if (cargo_pod_player_tractor(pod) == player_idx) {
-        entity_ref_t target = world_entity_ref_for_slot(
-            w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
-        (void)world_tow_link_clear_target(w, target);
+        world_cargo_pod_clear_tractor(w, pod_idx);
     }
     return true;
 }
 
 static void player_detach_all_tow_targets(world_t *w, server_player_t *sp) {
     if (!w || !sp) return;
+    int16_t pods[10];
+    int pod_count = sp->ship
+        ? ship_towed_pod_count(sp->ship) : 0;
+    if (pod_count > 0) {
+        memcpy(pods, sp->ship->towed_pods,
+               (size_t)pod_count * sizeof(pods[0]));
+    }
+    for (int i = 0; i < pod_count; i++) {
+        if (pods[i] >= 0 && pods[i] < MAX_CARGO_PODS)
+            world_cargo_pod_clear_tractor(w, pods[i]);
+    }
     world_tow_links_clear_source(w, sp->ship_ref);
 }
 
@@ -3203,13 +3560,71 @@ static void world_tow_import_target_projection(world_t *w,
     if (!binding) return;
     tow_link_t *existing = world_tow_link_for_target(w, target);
     if (binding->kind == TRACTOR_SOURCE_NONE) {
-        if (existing) memset(existing, 0, sizeof(*existing));
+        world_tow_link_retire(w, existing);
         return;
+    }
+    if (target_kind == ENTITY_KIND_CARGO_POD) {
+        cargo_pod_t *pod = &w->cargo_pods[target_index];
+        if (binding->kind == TRACTOR_SOURCE_PLAYER) {
+            int player_idx = binding->source_index;
+            actor_principal_t owner_before =
+                pod->tow_owner_principal;
+            bool owner_was_unattributed =
+                owner_before.kind ==
+                ACTOR_PRINCIPAL_UNATTRIBUTED;
+            if (pod->tow_owner_quarantine_record_id == 0 &&
+                pod->tow_owner_principal.kind ==
+                    ACTOR_PRINCIPAL_NONE &&
+                player_idx >= 0 &&
+                player_idx < MAX_PLAYERS) {
+                actor_principal_t player =
+                    actor_principal_none();
+                pod->tow_owner_principal =
+                    actor_principal_from_verified_player(
+                        &w->players[player_idx], &player)
+                    ? player
+                    : actor_principal_unattributed();
+            }
+            /*
+             * UNATTRIBUTED custody is deliberately live-session-only. A raw
+             * projection is allowed to preserve the already-linked holder,
+             * but never to let a later numeric slot occupant claim a loaded
+             * anonymous row.
+             */
+            if (owner_was_unattributed &&
+                (!existing ||
+                 player_idx < 0 ||
+                 player_idx >= MAX_PLAYERS ||
+                 !entity_ref_equal(
+                     existing->source,
+                     w->players[player_idx].ship_ref) ||
+                 existing->profile !=
+                     TOW_PROFILE_SHIP_POD)) {
+                pod->tow_owner_principal = owner_before;
+                world_tow_link_retire(w, existing);
+                tractor_binding_clear(binding);
+                return;
+            }
+            if (!cargo_pod_player_projection_authorized(
+                    w, pod, player_idx)) {
+                pod->tow_owner_principal = owner_before;
+                world_tow_link_retire(w, existing);
+                tractor_binding_clear(binding);
+                return;
+            }
+        } else if (
+            pod->tow_owner_quarantine_record_id != 0 ||
+            pod->tow_owner_principal.kind !=
+                ACTOR_PRINCIPAL_NONE) {
+            world_tow_link_retire(w, existing);
+            tractor_binding_clear(binding);
+            return;
+        }
     }
     entity_ref_t source = world_tow_source_ref_from_binding(w, *binding);
     tow_profile_t profile = world_tow_profile_for(source, target);
     if (entity_ref_is_none(source) || profile == TOW_PROFILE_NONE) {
-        if (existing) memset(existing, 0, sizeof(*existing));
+        world_tow_link_retire(w, existing);
         tractor_binding_clear(binding);
         return;
     }
@@ -3235,33 +3650,42 @@ static bool world_tow_project_link(world_t *w, tow_link_t *link) {
         if (!ship) return false;
         if (link->source.index >= WORLD_NPC_SHIP_BASE) {
             if (ship->towed_count > 0) return false;
-            link->slot = 0;
+            world_tow_link_set_slot(w, link, 0);
         } else {
             int cap = (int)(sizeof(ship->towed_fragments) /
                             sizeof(ship->towed_fragments[0]));
             if (ship->towed_count >= cap || ship_tow_body_space(ship) <= 0)
                 return false;
-            link->slot = ship->towed_count;
+            world_tow_link_set_slot(w, link, ship->towed_count);
         }
         ship->towed_fragments[ship->towed_count++] = link->target.index;
         break;
     case TOW_PROFILE_SHIP_POD: {
         if (!ship || link->source.index >= WORLD_NPC_SHIP_BASE) return false;
+        int player_idx =
+            world_player_slot_from_ship_ref(link->source);
+        if (link->target.index < 0 ||
+            link->target.index >= MAX_CARGO_PODS ||
+            !cargo_pod_player_projection_authorized(
+                w, &w->cargo_pods[link->target.index],
+                player_idx)) {
+            return false;
+        }
         int cap = (int)(sizeof(ship->towed_pods) /
                         sizeof(ship->towed_pods[0]));
         if (ship->towed_pod_count >= cap || ship_tow_body_space(ship) <= 0)
             return false;
-        link->slot = ship->towed_pod_count;
+        world_tow_link_set_slot(w, link, ship->towed_pod_count);
         ship->towed_pods[ship->towed_pod_count++] = link->target.index;
         break;
     }
     case TOW_PROFILE_SHIP_SCAFFOLD:
         if (!ship || ship->towed_scaffold >= 0) return false;
-        link->slot = 0;
+        world_tow_link_set_slot(w, link, 0);
         ship->towed_scaffold = link->target.index;
         break;
     case TOW_PROFILE_MODULE_POD:
-        link->slot = 0;
+        world_tow_link_set_slot(w, link, 0);
         break;
     default:
         return false;
@@ -3296,7 +3720,9 @@ static void world_tow_rebuild_projections(world_t *w) {
         if (!w->tow_links[i].active) continue;
         tow_link_t *link = &w->tow_links[i];
         int j = count;
-        while (j > 0 && !tow_link_source_order_before(ordered[j - 1], link)) {
+        while (j > 0 &&
+               !world_tow_link_canonical_before(
+                   ordered[j - 1], link)) {
             ordered[j] = ordered[j - 1];
             j--;
         }
@@ -3306,8 +3732,73 @@ static void world_tow_rebuild_projections(world_t *w) {
     for (int i = 0; i < count; i++) {
         tow_link_t *link = ordered[i];
         if (!world_tow_project_link(w, link))
-            memset(link, 0, sizeof(*link));
+            world_tow_link_retire(w, link);
     }
+}
+
+void world_cargo_pod_refresh_owner_projections(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        entity_ref_t target = world_entity_ref_for_slot(
+            w, ENTITY_KIND_CARGO_POD, i, -1);
+        if (entity_ref_is_none(target)) continue;
+        tow_link_t *existing =
+            world_tow_link_for_target(w, target);
+
+        if (!actor_principal_is_canonical(
+                &pod->tow_owner_principal) ||
+            pod->tow_owner_quarantine_record_id != 0) {
+            world_tow_link_retire(w, existing);
+            tractor_binding_clear(&pod->tractor);
+            continue;
+        }
+        if (pod->tow_owner_principal.kind ==
+            ACTOR_PRINCIPAL_UNATTRIBUTED) {
+            if (existing &&
+                (existing->profile != TOW_PROFILE_SHIP_POD ||
+                 world_player_slot_from_ship_ref(
+                     existing->source) < 0)) {
+                world_tow_link_retire(w, existing);
+            }
+            continue;
+        }
+        if (pod->tow_owner_principal.kind !=
+            ACTOR_PRINCIPAL_PLAYER) {
+            if (existing &&
+                existing->profile == TOW_PROFILE_SHIP_POD) {
+                world_tow_link_retire(w, existing);
+            }
+            continue;
+        }
+
+        actor_resolution_result_t resolved =
+            world_resolve_player_principal(
+                w, &pod->tow_owner_principal);
+        bool live =
+            (resolved.state == ACTOR_RESOLUTION_ONLINE ||
+             resolved.state == ACTOR_RESOLUTION_GRACE) &&
+            resolved.slot >= 0 &&
+            resolved.slot < MAX_PLAYERS;
+        entity_ref_t expected = live
+            ? w->players[resolved.slot].ship_ref
+            : entity_ref_none();
+        if (existing &&
+            (existing->profile != TOW_PROFILE_SHIP_POD ||
+             !live ||
+             !entity_ref_equal(existing->source, expected))) {
+            world_tow_link_retire(w, existing);
+            existing = NULL;
+        }
+        if (live && !existing) {
+            (void)world_tow_link_store(
+                w, expected, target,
+                TOW_PROFILE_SHIP_POD, 0,
+                TOW_LINK_HELD);
+        }
+    }
+    world_tow_rebuild_projections(w);
 }
 
 void world_tow_links_refresh(world_t *w) {
@@ -3319,7 +3810,7 @@ void world_tow_links_refresh(world_t *w) {
         if (!link->active) continue;
         if (!world_tow_source_is_live(w, link->source) ||
             !world_entity_ref_is_live(w, link->target)) {
-            memset(link, 0, sizeof(*link));
+            world_tow_link_retire(w, link);
         }
     }
 
@@ -3343,6 +3834,7 @@ void world_tow_links_reconcile(world_t *w) {
         if (w->scaffolds[i].active)
             world_tow_import_target_projection(w, ENTITY_KIND_SCAFFOLD, i);
 
+    world_cargo_pod_refresh_owner_projections(w);
     world_tow_links_refresh(w);
 }
 
@@ -3453,6 +3945,10 @@ static bool cargo_pod_set_station_dock_custody(world_t *w,
 void cargo_pod_set_shell_frame(cargo_pod_t *pod, const cargo_unit_t *frame) {
     if (!pod || !frame || (commodity_t)frame->commodity != COMMODITY_FRAME)
         return;
+    if (!cargo_pod_custody_charge_anchor_valid(pod) ||
+        pod->custody_charge_total > 0) {
+        return;
+    }
     pod->shell_frame = *frame;
     pod->shell_frame.quantity = 1;
     pod->has_shell_frame = true;
@@ -3471,7 +3967,13 @@ bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod) {
     float rotation = pod->rotation;
     float spin = pod->spin;
     float age = pod->age;
+    actor_principal_t tow_owner_principal =
+        pod->tow_owner_principal;
+    uint64_t tow_owner_quarantine_record_id =
+        pod->tow_owner_quarantine_record_id;
     tractor_binding_t tractor = pod->tractor;
+    uint8_t tow_hardpoint_tag =
+        pod->tow_hardpoint_tag;
 
     memset(pod, 0, sizeof(*pod));
     pod->active = true;
@@ -3486,7 +3988,13 @@ bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod) {
     pod->rotation = rotation;
     pod->spin = spin;
     pod->age = age;
+    pod->tow_owner_principal =
+        tow_owner_principal;
+    pod->tow_owner_quarantine_record_id =
+        tow_owner_quarantine_record_id;
     pod->tractor = tractor;
+    pod->tow_hardpoint_tag =
+        tow_hardpoint_tag;
     return true;
 }
 
@@ -3514,6 +4022,10 @@ bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,
         if (idx < 0 || idx >= MAX_CARGO_PODS) continue;
         cargo_pod_t *pod = &w->cargo_pods[idx];
         if (!cargo_pod_has_exact_manifest(pod, commodity)) continue;
+        if (!cargo_pod_custody_charge_anchor_valid(pod) ||
+            pod->custody_charge_total > 0) {
+            continue;
+        }
         uint16_t unit_idx = (uint16_t)(pod->manifest_count - 1u);
         *out_unit = pod->manifest_units[unit_idx];
         memset(&pod->manifest_units[unit_idx], 0,
@@ -3540,6 +4052,10 @@ int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (pod->active) continue;
+        /* Retire the previous occupant before making this recyclable slot
+         * active again. Otherwise an object removed and respawned in one
+         * tick can inherit the prior generation and selection token. */
+        world_cargo_pod_clear_tractor(w, i);
         memset(pod, 0, sizeof(*pod));
         pod->active = true;
         pod->kind = kind;
@@ -3551,7 +4067,8 @@ int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
         pod->rotation = rand_range(&w->rng, 0.0f, TWO_PI_F);
         pod->spin = rand_range(&w->rng, -1.4f, 1.4f);
         pod->age = 0.0f;
-        world_cargo_pod_clear_tractor(w, i);
+        (void)world_entity_ref_for_slot(
+            w, ENTITY_KIND_CARGO_POD, i, -1);
         return i;
     }
     return -1;
@@ -3586,6 +4103,7 @@ static int spawn_cargo_pod_with_manifest_internal(world_t *w, vec2 pos,
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (pod->active) continue;
+        world_cargo_pod_clear_tractor(w, i);
         memset(pod, 0, sizeof(*pod));
         pod->active = true;
         pod->kind = kind;
@@ -3600,7 +4118,8 @@ static int spawn_cargo_pod_with_manifest_internal(world_t *w, vec2 pos,
         pod->rotation = rotation;
         pod->spin = spin;
         pod->age = 0.0f;
-        world_cargo_pod_clear_tractor(w, i);
+        (void)world_entity_ref_for_slot(
+            w, ENTITY_KIND_CARGO_POD, i, -1);
         return i;
     }
     return -1;
@@ -3933,6 +4452,75 @@ int world_ensure_starter_laser_module_reserve(world_t *w) {
     return seeded;
 }
 
+/*
+ * The opening Laser Module reserve is real inventory, not a free refit.
+ * Kepler pairs it with a finite, ordinary work order whose eight
+ * recipe-provenanced Ferrite Ingots pay enough Kepler-local credit to buy
+ * the live scarcity-priced reserve.  Players obtain those ingots through
+ * Prospect's normal mine -> smelt -> physical cargo path.
+ */
+static bool kepler_has_complete_starter_laser_module_reserve(
+    const world_t *w) {
+    if (!w || !station_exists(&w->stations[1])) return false;
+    const station_t *kepler = &w->stations[1];
+    const ship_receipts_t *receipts =
+        cargo_store_receipts_const(&kepler->cargo_store);
+    if (!receipts ||
+        receipts->count != kepler->manifest.count ||
+        (receipts->count > 0 && !receipts->chains)) {
+        return false;
+    }
+    int reserve_units = starter_laser_module_reserve_units();
+    for (uint16_t index = 0; index < (uint16_t)reserve_units; index++) {
+        bool found = false;
+        cargo_unit_t expected = {0};
+        if (!starter_laser_module_unit_for_index(index, &expected))
+            return false;
+        for (uint16_t unit = 0; unit < kepler->manifest.count; unit++) {
+            if (memcmp(&kepler->manifest.units[unit], &expected,
+                       sizeof(expected)) == 0 &&
+                receipts->chains[unit].len == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+int world_ensure_starter_mining_refit_work_order(world_t *w) {
+    if (!w) return -1;
+    /* The marker is the durable one-shot fact. Check it before inventory:
+     * an inactive match means "consumed", even while the reserve is empty. */
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (starter_refit_work_order_matches(
+                &w->contracts[i])) {
+            return i;
+        }
+    }
+    if (!kepler_has_complete_starter_laser_module_reserve(w)) return -1;
+
+    int reserve_units = starter_laser_module_reserve_units();
+    ship_t starter = {0};
+    float refit_cost = upgrade_station_credit_cost(
+        &w->stations[1], &starter, SHIP_UPGRADE_MINING, reserve_units);
+    float unit_price = ceilf(refit_cost / (float)reserve_units);
+    if (!isfinite(unit_price) || unit_price <= 0.0f) return -1;
+
+    for (int i = MAX_CONTRACTS - 1; i >= 0; i--) {
+        if (!contract_slot_available_for_post(&w->contracts[i]))
+            continue;
+        if (!starter_refit_work_order_init(
+                &w->contracts[i], reserve_units,
+                unit_price)) {
+            return -1;
+        }
+        return i;
+    }
+    return -1;
+}
+
 static bool cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
                                           const contract_t *ct);
 
@@ -3975,12 +4563,18 @@ static float black_market_pod_quote(const station_t *st,
 }
 
 static float station_intake_pod_quote(world_t *w,
+                                      server_player_t *sp,
                                       station_t *st,
                                       int station_idx,
                                       const cargo_pod_t *pod,
-                                      bool *out_by_contract) {
+                                      bool *out_by_contract,
+                                      int *out_contract_index,
+                                      contract_t *out_staged_claim) {
     if (out_by_contract) *out_by_contract = false;
-    if (!w || !st || !pod || !pod->active ||
+    if (out_contract_index) *out_contract_index = -1;
+    if (out_staged_claim)
+        memset(out_staged_claim, 0, sizeof(*out_staged_claim));
+    if (!w || !sp || !st || !pod || !pod->active ||
         pod->shipment_id != 0 || pod->commodity >= COMMODITY_COUNT ||
         pod->quantity == 0) {
         return 0.0f;
@@ -3991,7 +4585,15 @@ static float station_intake_pod_quote(world_t *w,
         contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->station_index != station_idx) continue;
         if (!cargo_pod_fits_contract_exact(pod, ct)) continue;
+        if (starter_refit_work_order_matches(ct)) continue;
+        contract_t staged_claim = *ct;
+        if (!contract_ownership_try_claim_player(
+                &staged_claim, w, sp->id)) {
+            continue;
+        }
         matched_contract = k;
+        if (out_staged_claim)
+            *out_staged_claim = staged_claim;
         break;
     }
 
@@ -4034,7 +4636,11 @@ static float station_intake_pod_quote(world_t *w,
         value = price * (float)pod->quantity;
     }
     if (value <= FLOAT_EPSILON) return 0.0f;
-    if (out_by_contract && matched_contract >= 0) *out_by_contract = true;
+    if (matched_contract >= 0) {
+        if (out_by_contract) *out_by_contract = true;
+        if (out_contract_index)
+            *out_contract_index = matched_contract;
+    }
     return value;
 }
 
@@ -4045,25 +4651,45 @@ static bool station_intake_pay_for_pod(world_t *w,
                                        cargo_pod_t *pod) {
     if (!w || !sp || !st || !pod) return false;
     bool by_contract = false;
-    float value = station_intake_pod_quote(w, st, station_idx, pod,
-                                           &by_contract);
+    int contract_index = -1;
+    contract_t staged_claim = {0};
+    float value = station_intake_pod_quote(
+        w, sp, st, station_idx, pod, &by_contract,
+        &contract_index, &staged_claim);
     if (value <= FLOAT_EPSILON) return false;
 
     uint16_t units = pod->quantity;
-    if (server_player_can_use_pubkey_persistence(sp)) {
-        ledger_earn_by_pubkey(st, sp->pubkey, value);
-        ledger_record_ore_sold(st, sp->pubkey, units,
-                               (uint8_t)pod->commodity);
-    } else {
-        ledger_earn(st, sp->session_token, value);
+    uint8_t ledger_identity[32];
+    if (!server_player_copy_verified_pubkey(
+            sp, ledger_identity)) {
+        ledger_pubkey_from_token(
+            sp->session_token, ledger_identity);
     }
+    ledger_earn_stage_t ledger_stage = {0};
+    if (!ledger_stage_pod_sale_by_pubkey(
+            st, ledger_identity, value, units,
+            (uint8_t)pod->commodity,
+            &ledger_stage)) {
+        return false;
+    }
+
+    /*
+     * Quote, claimant, and the exact ledger row are now staged. The bounded
+     * assignments below cannot fail, so custody and contract bookkeeping
+     * never consume a pod after a silent full-ledger credit rejection.
+     */
+    st->ledger[ledger_stage.index] =
+        ledger_stage.row;
+    st->ledger_count =
+        ledger_stage.ledger_count;
     sp->ship->stat_credits_earned += value;
     cargo_pod_set_station_custody(pod, station_idx);
 
-    for (int k = 0; k < MAX_CONTRACTS; k++) {
-        contract_t *ct = &w->contracts[k];
-        if (!ct->active || ct->station_index != station_idx) continue;
-        if (!cargo_pod_fits_contract_exact(pod, ct)) continue;
+    if (contract_index >= 0 &&
+        contract_index < MAX_CONTRACTS) {
+        contract_t *ct = &w->contracts[contract_index];
+        contract_ownership_commit_staged_claim(
+            ct, &staged_claim);
         ct->quantity_needed -= (float)units;
         if (ct->quantity_needed <= 0.01f) {
             ct->active = false;
@@ -4071,7 +4697,6 @@ static bool station_intake_pay_for_pod(world_t *w,
                 .type = SIM_EVENT_CONTRACT_COMPLETE,
                 .contract_complete.action = CONTRACT_TRACTOR});
         }
-        break;
     }
 
     SIM_LOG("[intake] player %d sold %s crate (%u units) for %.0f cr at %s\n",
@@ -4085,119 +4710,6 @@ static bool station_intake_pay_for_pod(world_t *w,
                   .bonus_cr = 0,
                   .by_contract = by_contract ? 1u : 0u }});
     return true;
-}
-
-static float SIGNAL_MAYBE_UNUSED
-try_sell_towed_pods(world_t *w, server_player_t *sp,
-                    station_t *st, int station_idx,
-                    commodity_t filter,
-                    mining_grade_t grade_filter) {
-    if (!w || !sp || !st) return 0.0f;
-    float payout = 0.0f;
-    if (grade_filter < MINING_GRADE_COUNT &&
-        grade_filter != MINING_GRADE_COMMON) {
-        return 0.0f;
-    }
-
-    for (int t = sp->ship->towed_pod_count - 1; t >= 0; t--) {
-        int idx = sp->ship->towed_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active)
-            continue;
-        cargo_pod_t *pod = &w->cargo_pods[idx];
-        if (pod->shipment_id != 0) continue;
-        commodity_t c = pod->commodity;
-        if (c >= COMMODITY_COUNT) continue;
-        if (filter != COMMODITY_COUNT && filter != c) continue;
-
-        int units = (int)pod->quantity;
-        if (units <= 0) {
-            world_cargo_pod_clear_tractor(w, idx);
-            memset(pod, 0, sizeof(*pod));
-            continue;
-        }
-        int contract_idx = -1;
-        contract_t *matched_contract = NULL;
-        for (int k = 0; k < MAX_CONTRACTS; k++) {
-            contract_t *ct = &w->contracts[k];
-            if (!ct->active || ct->station_index != station_idx) continue;
-            if (!cargo_pod_fits_contract_exact(pod, ct)) continue;
-            contract_idx = k;
-            matched_contract = ct;
-            break;
-        }
-        float price = station_buy_price(st, c);
-        if (matched_contract) price = contract_price(matched_contract);
-        if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
-            price = st->base_price[c];
-        if (price <= FLOAT_EPSILON) continue;
-
-        int sell_units = units;
-        if (sell_units <= 0) continue;
-
-        float value = 0.0f;
-        if (!matched_contract && station_policy_accepts_contract_bound_cargo(st)) {
-            value = black_market_pod_quote(st, pod);
-        } else if (pod->manifest_count > 0) {
-            if (pod->manifest_count != pod->quantity ||
-                pod->manifest_count > CARGO_POD_MANIFEST_CAP ||
-                !is_finished_good(c)) {
-                continue;
-            }
-            bool ok = true;
-            for (uint16_t u = 0; u < pod->manifest_count; u++) {
-                const cargo_unit_t *unit = &pod->manifest_units[u];
-                if ((commodity_t)unit->commodity != c) {
-                    ok = false;
-                    break;
-                }
-                float unit_value = matched_contract
-                    ? price
-                    : station_buy_price_unit(st, unit);
-                unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
-                value += unit_value;
-            }
-            if (!ok) continue;
-        } else {
-            value = price * (float)sell_units;
-        }
-        if (value <= FLOAT_EPSILON) continue;
-        if (!cargo_pod_set_station_dock_custody(w, idx, station_idx))
-            continue;
-        (void)player_detach_cargo_pod(w, sp, idx);
-
-        if (server_player_can_use_pubkey_persistence(sp)) {
-            ledger_earn_by_pubkey(st, sp->pubkey, value);
-            ledger_record_ore_sold(st, sp->pubkey, (uint32_t)sell_units, (uint8_t)c);
-        } else {
-            ledger_earn(st, sp->session_token, value);
-        }
-        sp->ship->stat_credits_earned += value;
-        payout += value;
-        if (matched_contract) {
-            matched_contract->quantity_needed -= (float)sell_units;
-            if (matched_contract->quantity_needed <= 0.01f) {
-                matched_contract->active = false;
-                emit_event(w, (sim_event_t){
-                    .type = SIM_EVENT_CONTRACT_COMPLETE,
-                    .contract_complete.action = CONTRACT_TRACTOR});
-            }
-            (void)contract_idx;
-        }
-
-        SIM_LOG("[sim] player %d sold towed %s pod (%d units) for %.0f cr at %s\n",
-                sp->id, commodity_short_name(c), sell_units, value, st->name);
-        emit_event(w, (sim_event_t){
-            .type = SIM_EVENT_SELL, .player_id = sp->id,
-            .sell = { .station = station_idx,
-		                      .grade = MINING_GRADE_COMMON,
-		                      .base_cr = (int)lroundf(value),
-		                      .bonus_cr = 0,
-		                      .by_contract = matched_contract ||
-                                      station_policy_accepts_contract_bound_cargo(st)
-                                  ? 1u : 0u }});
-        break;
-    }
-    return payout;
 }
 
 static bool cargo_pod_matches_buy_grade(const cargo_pod_t *pod,
@@ -4243,6 +4755,34 @@ static float station_market_pod_sell_quote(const station_t *st,
         return value;
     }
     return fallback * (float)pod->quantity;
+}
+
+static bool cargo_pod_custody_charge_range(
+    int64_t aggregate_total,
+    uint16_t aggregate_units,
+    uint16_t first_ordinal,
+    uint16_t unit_count,
+    int64_t *out_cost) {
+    if (out_cost) *out_cost = 0;
+    if (!out_cost || aggregate_total <= 0 ||
+        aggregate_units == 0 ||
+        first_ordinal > aggregate_units ||
+        unit_count > aggregate_units - first_ordinal) {
+        return false;
+    }
+
+    int64_t each = aggregate_total / (int64_t)aggregate_units;
+    uint16_t remainder =
+        (uint16_t)(aggregate_total % (int64_t)aggregate_units);
+    uint32_t end =
+        (uint32_t)first_ordinal + (uint32_t)unit_count;
+    uint32_t bonus_begin =
+        first_ordinal < remainder ? first_ordinal : remainder;
+    uint32_t bonus_end = end < remainder ? end : remainder;
+    *out_cost =
+        each * (int64_t)unit_count +
+        (int64_t)(bonus_end - bonus_begin);
+    return true;
 }
 
 static int try_buy_station_market_pod(world_t *w,
@@ -4345,8 +4885,27 @@ static bool charge_station_owned_pod_if_due(world_t *w,
     server_player_t *sp = &w->players[player_idx];
     if (!server_player_is_gameplay_ready(sp)) return false;
     station_t *st = &w->stations[station_idx];
-    float cost = station_market_pod_sell_quote(st, pod);
-    if (cost <= FLOAT_EPSILON) return false;
+    float cost = 0.0f;
+    if (pod->custody_charge_total > 0) {
+        int64_t remaining_cost = 0;
+        if (!cargo_pod_custody_charge_anchor_valid(pod) ||
+            pod->custody_charge_total >
+                (int64_t)LEDGER_FLOAT_LIMIT ||
+            !cargo_pod_custody_charge_range(
+                pod->custody_charge_total,
+                pod->custody_charge_unit_count,
+                pod->custody_charge_units_processed,
+                pod->manifest_count,
+                &remaining_cost)) {
+            return false;
+        }
+        cost = (float)remaining_cost;
+    } else {
+        if (!cargo_pod_custody_charge_anchor_valid(pod))
+            return false;
+        cost = station_market_pod_sell_quote(st, pod);
+        if (cost <= FLOAT_EPSILON) return false;
+    }
 
     if (server_player_can_use_pubkey_persistence(sp)) {
         ledger_force_debit_by_pubkey(st, sp->pubkey, cost, sp->ship);
@@ -4415,6 +4974,8 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
 
     sim_event_t death_ev = {
         .type = SIM_EVENT_DEATH, .player_id = sp->id,
+        .subject_actor = {0},
+        .source_actor = {0},
         .death = {
             .ore_mined = sp->ship->stat_ore_mined,
             .credits_earned = sp->ship->stat_credits_earned,
@@ -4430,6 +4991,15 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
             .respawn_fee = (float)fee,
         }
     };
+    death_ev.subject_actor = public_actor_id_unattributed();
+    death_ev.source_actor = public_actor_id_unattributed();
+    public_actor_id_t actor = public_actor_id_none();
+    if (public_actor_id_from_verified_player(sp, &actor))
+        death_ev.subject_actor = actor;
+    if (public_actor_id_from_verified_player_token(
+            w, sp->last_damage_killer_token, &actor, NULL)) {
+        death_ev.source_actor = actor;
+    }
     memcpy(death_ev.death.killer_token, sp->last_damage_killer_token, 8);
     emit_event(w, death_ev);
     ship_asset_retire_player_asset(w, sp);
@@ -4504,11 +5074,11 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 /* Ship collision                                                     */
 /* ================================================================== */
 
-static int ship_collision_count; /* per-frame overlap counter for crush detection */
-
-static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
+static void resolve_ship_circle(world_t *w, server_player_t *sp,
+                                vec2 center, float radius,
+                                int *collision_count) {
     float impact = resolve_ship_circle_pushback(sp->ship, center, radius);
-    if (impact > 0.0f) ship_collision_count++;
+    if (impact > 0.0f) (*collision_count)++;
     if (impact <= 0.0f || sp->docked || w->player_only_mode) return;
     float dmg = collision_damage_for(impact, 1.0f);
     if (dmg > 0.0f) {
@@ -4528,7 +5098,10 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
  *      on the rebound.
  *   3. Damage scales with rock radius. An XL rock hits ~2.5× harder
  *      than an S-tier fragment. Free signal that bigger rocks matter. */
-static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, asteroid_t *a) {
+static void resolve_ship_asteroid_collision(world_t *w,
+                                            server_player_t *sp,
+                                            asteroid_t *a,
+                                            int *collision_count) {
     /* Geometric push-out + mass-equal bounce live in sim_ship now;
      * player-only attribution / self-damage suppression sits on top. */
     vec2 asteroid_vel_before = a->vel;
@@ -4539,7 +5112,7 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
         a->net_dirty = asteroid_dirty_before;
     }
     if (impact <= 0.0f) return;
-    ship_collision_count++;
+    (*collision_count)++;
     if (w->player_only_mode) return;
 
     /* Self-damage skip: your own ballistic rock can't hurt you. The
@@ -4884,6 +5457,10 @@ static bool delivery_materialize_pod_manifest(cargo_pod_t *pod,
         return true;
     }
 
+    if (!cargo_pod_custody_charge_anchor_valid(pod) ||
+        pod->custody_charge_total > 0) {
+        return false;
+    }
     memset(pod->manifest_units, 0, sizeof(pod->manifest_units));
     for (uint16_t i = 0; i < expected_quantity; i++) {
         const cargo_unit_t *unit = &shipment->cargo_units[cargo_offset + i];
@@ -5086,13 +5663,16 @@ static void delivery_emit_default_memory(world_t *w,
 }
 
 static delivery_shipment_t *delivery_active_for_contract(world_t *w,
-                                                         int player_id,
+                                                         const server_player_t *player,
                                                          int contract_index) {
-    if (!w || player_id < 0 || contract_index < 0) return NULL;
+    if (!w || !player || contract_index < 0) return NULL;
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
         delivery_shipment_t *shipment = &w->delivery_shipments[i];
         if (!shipment->active) continue;
-        if (shipment->debtor_player != (uint8_t)player_id) continue;
+        if (!delivery_ownership_matches_player(
+                shipment, w, player->id)) {
+            continue;
+        }
         if (shipment->contract_index != (uint8_t)contract_index) continue;
         if (shipment->status == DELIVERY_SHIPMENT_CLEARED ||
             shipment->status == DELIVERY_SHIPMENT_BLACK_MARKET_SOLD) {
@@ -5181,9 +5761,14 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
                                        contract_t *ct,
                                        int contract_index) {
     if (!w || !sp || !ct || !delivery_contract_has_source(ct)) return 0;
+    contract_t staged_contract = *ct;
+    if (!contract_ownership_try_claim_player(
+            &staged_contract, w, sp->id)) {
+        return 0;
+    }
     int origin_idx = ct->target_index;
     if (sp->current_station != origin_idx) return 0;
-    if (delivery_active_for_contract(w, sp->id, contract_index)) return 0;
+    if (delivery_active_for_contract(w, sp, contract_index)) return 0;
     station_t *origin = &w->stations[origin_idx];
     if (!station_exists(origin)) return 0;
     if (!station_manifest_bootstrap(origin)) {
@@ -5198,20 +5783,29 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
     if (take > stock) take = stock;
     if (take > MAX_DELIVERY_BOUND_CARGO) take = MAX_DELIVERY_BOUND_CARGO;
     if (take <= 0) return 0;
-    cargo_unit_t shell_frame = {0};
-    cargo_receipt_chain_t shell_chain = {0};
-    if (!station_take_pod_shell_frame(origin, &shell_frame, &shell_chain))
-        return 0;
-
     delivery_shipment_t scratch = {0};
     scratch.active = true;
     scratch.origin_station = (uint8_t)origin_idx;
     scratch.destination_station = ct->station_index;
     scratch.contract_index = (uint8_t)contract_index;
-    scratch.debtor_player = (uint8_t)sp->id;
+    scratch.debtor_player = UINT8_MAX;
+    if (!delivery_ownership_assign_player(
+            &scratch, w, sp->id))
+        return 0;
     scratch.commodity = (uint8_t)ct->commodity;
     scratch.status = DELIVERY_SHIPMENT_PICKED_UP;
     scratch.due_tick = w->tick + DELIVERY_DUE_TICKS;
+
+    /*
+     * Resolve both durable owners before consuming the physical pod shell.
+     * A token-only/unverified actor must leave station inventory byte-inert.
+     */
+    cargo_unit_t shell_frame = {0};
+    cargo_receipt_chain_t shell_chain = {0};
+    if (!station_take_pod_shell_frame(
+            origin, &shell_frame, &shell_chain)) {
+        return 0;
+    }
 
     int moved = 0;
     float debt = 0.0f;
@@ -5278,7 +5872,8 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
         return 0;
     }
     player_ledger_force_debit_at(sp, origin, debt);
-    ct->claimed_by = (int8_t)sp->id;
+    contract_ownership_commit_staged_claim(
+        ct, &staged_contract);
     sync_station_finished_inventory(origin, ct->commodity);
     sync_station_finished_inventory(origin, COMMODITY_FRAME);
     SIM_LOG("[delivery] player %d took shipment %u: %d %s %s -> %s debt %.0f\n",
@@ -5286,6 +5881,32 @@ static int delivery_pickup_from_origin(world_t *w, server_player_t *sp,
             commodity_short_name(ct->commodity),
             origin->name, w->stations[ct->station_index].name, debt);
     return moved;
+}
+
+static contract_t *delivery_stage_contract_use_for_player(
+    world_t *w,
+    const server_player_t *sp,
+    const delivery_shipment_t *shipment,
+    contract_t *out_staged_claim) {
+    if (!w || !sp || !shipment || !out_staged_claim)
+        return NULL;
+    int contract_index = shipment->contract_index;
+    if (contract_index < 0 ||
+        contract_index >= MAX_CONTRACTS) {
+        return NULL;
+    }
+    contract_t *contract =
+        &w->contracts[contract_index];
+    if (!contract->active ||
+        contract->action != CONTRACT_DELIVERY) {
+        return NULL;
+    }
+    *out_staged_claim = *contract;
+    if (!contract_ownership_try_claim_player(
+            out_staged_claim, w, sp->id)) {
+        return NULL;
+    }
+    return contract;
 }
 
 static float delivery_try_deliver_bound_cargo(world_t *w,
@@ -5298,9 +5919,17 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
         delivery_shipment_t *shipment = &w->delivery_shipments[i];
         if (!shipment->active) continue;
-        if (shipment->debtor_player != (uint8_t)sp->id) continue;
+        if (!delivery_ownership_matches_player(
+                shipment, w, sp->id)) {
+            continue;
+        }
         if (shipment->destination_station != (uint8_t)station_idx) continue;
         if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
+        contract_t staged_claim = {0};
+        contract_t *contract =
+            delivery_stage_contract_use_for_player(
+                w, sp, shipment, &staged_claim);
+        if (!contract) continue;
         commodity_t c = (commodity_t)shipment->commodity;
         if (filter < COMMODITY_COUNT && filter != c) continue;
         uint16_t remaining = shipment->quantity_total > shipment->quantity_delivered
@@ -5341,17 +5970,14 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
                 remaining, station_idx)) {
             continue;
         }
+        contract_ownership_commit_staged_claim(
+            contract, &staged_claim);
         shipment->quantity_delivered =
             (uint16_t)(shipment->quantity_delivered + remaining);
         payout += shipment_payout;
         if (shipment->quantity_delivered >= shipment->quantity_total) {
             shipment->status = DELIVERY_SHIPMENT_DELIVERED;
-            int ci = shipment->contract_index;
-            if (ci >= 0 && ci < MAX_CONTRACTS &&
-                w->contracts[ci].active &&
-                w->contracts[ci].action == CONTRACT_DELIVERY) {
-                w->contracts[ci].quantity_needed = 0.0f;
-            }
+            contract->quantity_needed = 0.0f;
             delivery_emit_receipt_memory(w, sp, st, shipment, shipment_payout);
             emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
                 .player_id = sp->id,
@@ -5387,8 +6013,16 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
     for (int si = 0; si < MAX_DELIVERY_SHIPMENTS; si++) {
         delivery_shipment_t *shipment = &w->delivery_shipments[si];
         if (!shipment->active) continue;
-        if (shipment->debtor_player != (uint8_t)sp->id) continue;
+        if (!delivery_ownership_matches_player(
+                shipment, w, sp->id)) {
+            continue;
+        }
         if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
+        contract_t staged_claim = {0};
+        contract_t *contract =
+            delivery_stage_contract_use_for_player(
+                w, sp, shipment, &staged_claim);
+        if (!contract) continue;
         commodity_t c = (commodity_t)shipment->commodity;
         if (filter < COMMODITY_COUNT && filter != c) continue;
         uint16_t remaining =
@@ -5432,6 +6066,8 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
                 sp->current_station)) {
             continue;
         }
+        contract_ownership_commit_staged_claim(
+            contract, &staged_claim);
         payout += shipment_payout;
         shipment->quantity_black_market_sold =
             (uint16_t)(shipment->quantity_black_market_sold + remaining);
@@ -5443,12 +6079,7 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
             delivery_emit_default_memory(w, sp, st, shipment,
                                          shipment->destination_payout);
             shipment->status = DELIVERY_SHIPMENT_BLACK_MARKET_SOLD;
-            int ci = shipment->contract_index;
-            if (ci >= 0 && ci < MAX_CONTRACTS &&
-                w->contracts[ci].active &&
-                w->contracts[ci].action == CONTRACT_DELIVERY) {
-                w->contracts[ci].active = false;
-            }
+            contract->active = false;
         }
         if (single_unit && sold_bound_any) break;
     }
@@ -5477,19 +6108,24 @@ static void delivery_clear_origin_proofs(world_t *w, server_player_t *sp,
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
         delivery_shipment_t *shipment = &w->delivery_shipments[i];
         if (!shipment->active) continue;
-        if (shipment->debtor_player != (uint8_t)sp->id) continue;
+        if (!delivery_ownership_matches_player(
+                shipment, w, sp->id)) {
+            continue;
+        }
         if (shipment->origin_station != (uint8_t)station_idx) continue;
         if (shipment->status != DELIVERY_SHIPMENT_DELIVERED) continue;
+        contract_t staged_claim = {0};
+        contract_t *contract =
+            delivery_stage_contract_use_for_player(
+                w, sp, shipment, &staged_claim);
+        if (!contract) continue;
+        contract_ownership_commit_staged_claim(
+            contract, &staged_claim);
         float credit = shipment->debt_principal +
                        shipment->origin_completion_credit;
         player_ledger_earn_at(sp, origin, credit);
         shipment->status = DELIVERY_SHIPMENT_CLEARED;
-        int ci = shipment->contract_index;
-        if (ci >= 0 && ci < MAX_CONTRACTS &&
-            w->contracts[ci].active &&
-            w->contracts[ci].action == CONTRACT_DELIVERY) {
-            w->contracts[ci].active = false;
-        }
+        contract->active = false;
         SIM_LOG("[delivery] player %d cleared shipment %u at %s for %.0f\n",
                 sp->id, shipment->shipment_id, origin->name, credit);
     }
@@ -5501,12 +6137,23 @@ static void step_delivery_shipments(world_t *w) {
         delivery_shipment_t *shipment = &w->delivery_shipments[i];
         if (!shipment->active) continue;
         if (shipment->status != DELIVERY_SHIPMENT_PICKED_UP) continue;
+        if (!delivery_ownership_is_valid(shipment) ||
+            shipment->debtor_quarantine_record_id != 0) {
+            continue;
+        }
         if (shipment->due_tick != 0 && w->tick > shipment->due_tick) {
-            int pid = shipment->debtor_player;
-            server_player_t *sp =
-                (pid >= 0 && pid < MAX_PLAYERS &&
-                 server_player_is_gameplay_ready(&w->players[pid]))
-                    ? &w->players[pid] : NULL;
+            actor_resolution_result_t debtor =
+                world_resolve_actor_principal(
+                    w, &shipment->debtor_principal);
+            server_player_t *sp = NULL;
+            if (shipment->debtor_principal.kind ==
+                    ACTOR_PRINCIPAL_PLAYER &&
+                debtor.slot >= 0 &&
+                debtor.slot < MAX_PLAYERS &&
+                server_player_is_gameplay_ready(
+                    &w->players[debtor.slot])) {
+                sp = &w->players[debtor.slot];
+            }
             delivery_emit_default_memory(w, sp, NULL, shipment,
                                          shipment->destination_payout);
             shipment->status = DELIVERY_SHIPMENT_DEFAULTED;
@@ -5518,13 +6165,22 @@ static void step_delivery_shipments(world_t *w) {
             }
             continue;
         }
-        int pid = shipment->debtor_player;
-        if (pid < 0 || pid >= MAX_PLAYERS ||
-            !server_player_is_gameplay_ready(&w->players[pid]))
+        if (shipment->debtor_principal.kind !=
+                ACTOR_PRINCIPAL_PLAYER) {
             continue;
+        }
+        actor_resolution_result_t debtor =
+            world_resolve_player_principal(
+                w, &shipment->debtor_principal);
+        if (debtor.slot < 0 || debtor.slot >= MAX_PLAYERS ||
+            !server_player_is_gameplay_ready(
+                &w->players[debtor.slot])) {
+            continue;
+        }
         if (!delivery_shipment_pod_active(w, shipment) &&
             shipment->quantity_delivered == 0) {
-            delivery_emit_default_memory(w, &w->players[pid], NULL, shipment,
+            delivery_emit_default_memory(
+                w, &w->players[debtor.slot], NULL, shipment,
                                          shipment->destination_payout);
             shipment->status = DELIVERY_SHIPMENT_DEFAULTED;
             int ci = shipment->contract_index;
@@ -5557,15 +6213,23 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
 
         int best_contract = -1;
         float best_price = 0.0f;
+        contract_t best_staged_claim = {0};
         for (int k = 0; k < MAX_CONTRACTS; k++) {
             contract_t *ct = &w->contracts[k];
             if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
             if (ct->station_index != sp->current_station) continue;
             if (!contract_fit_is_ok(contract_fit_fragment(ct, a))) continue;
+            if (starter_refit_work_order_matches(ct)) continue;
+            contract_t staged_claim = *ct;
+            if (!contract_ownership_try_claim_player(
+                    &staged_claim, w, sp->id)) {
+                continue;
+            }
             float price = contract_price(ct);
             if (best_contract < 0 || price > best_price) {
                 best_contract = k;
                 best_price = price;
+                best_staged_claim = staged_claim;
             }
         }
         if (best_contract < 0) continue;
@@ -5577,6 +6241,8 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
         float ore_units = a->ore;
         if (ore_units <= 0.0f) continue;
 
+        contract_ownership_commit_staged_claim(
+            ct, &best_staged_claim);
         st->_inventory_cache[a->commodity] += ore_units;
         if (st->_inventory_cache[a->commodity] > REFINERY_HOPPER_CAPACITY)
             st->_inventory_cache[a->commodity] = REFINERY_HOPPER_CAPACITY;
@@ -5622,19 +6288,542 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
     return payout;
 }
 
+/*
+ * PRESENT converts a physical, station-origin pod into exact ship cargo with
+ * a receipt naming the player's durable key. This is the matching destination
+ * leg: receipt-trusted units may satisfy an ordinary TRACTOR contract. The
+ * station-authored TRANSFER+TRADE append is committed before the allocation-
+ * free cargo, contract, and local-ledger swap.
+ */
+enum { STARTER_REFIT_BATCH_MAX_UNITS = 8 };
+
+/*
+ * The onboarding order advertises one eight-unit bulk handoff. Prepare every
+ * receipt, cargo-store mutation, and exact ledger row before issuing one
+ * atomic 16-event TRANSFER+TRADE chain batch. Any preflight, allocation,
+ * signing, ledger-capacity, or durable-append failure therefore leaves all
+ * eight units, the quota, and the local balance untouched.
+ *
+ * Returns true when a complete marked batch was available and therefore
+ * handled (successfully or inertly). A partial manifest returns false so
+ * ordinary non-starter contracts may still be considered by the caller.
+ */
+static bool try_deliver_starter_refit_manifest_batch(
+    world_t *w, server_player_t *sp, station_t *st,
+    commodity_t filter, int max_units,
+    const uint8_t player_identity[32],
+    float *out_payout) {
+    if (out_payout) *out_payout = 0.0f;
+    if (!w || !sp || !sp->ship || !st ||
+        !player_identity || !out_payout ||
+        (filter < COMMODITY_COUNT &&
+         filter != COMMODITY_FERRITE_INGOT)) {
+        return false;
+    }
+
+    int contract_index = -1;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (w->contracts[i].active &&
+            starter_refit_work_order_matches(
+                &w->contracts[i]) &&
+            contract_ownership_is_open(
+                &w->contracts[i])) {
+            contract_index = i;
+            break;
+        }
+    }
+    if (contract_index < 0) return false;
+
+    const contract_t *contract =
+        &w->contracts[contract_index];
+    int needed = (int)ceilf(
+        contract->quantity_needed - FLOAT_EPSILON);
+    if (needed <= 0 ||
+        needed > STARTER_REFIT_BATCH_MAX_UNITS ||
+        max_units < needed ||
+        sp->ship->manifest.count < (uint16_t)needed) {
+        return false;
+    }
+
+    cargo_unit_t units[STARTER_REFIT_BATCH_MAX_UNITS] = {{0}};
+    cargo_receipt_chain_t
+        incoming[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
+    int64_t unit_payouts[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
+    int selected = 0;
+    int64_t total_payout = 0;
+    for (uint16_t unit_idx = 0;
+         unit_idx < sp->ship->manifest.count &&
+             selected < needed;
+         unit_idx++) {
+        const cargo_unit_t *unit =
+            &sp->ship->manifest.units[unit_idx];
+        const cargo_receipt_chain_t *chain =
+            ship_receipt_chain_at(sp->ship, unit_idx);
+        if (!contract_fit_is_ok(
+                contract_fit_cargo_unit(
+                    contract, unit)) ||
+            !chain || chain->len == 0 ||
+            chain->len >=
+                CARGO_RECEIPT_CHAIN_MAX_LEN ||
+            !ship_manifest_unit_trusted_at_station(
+                w, sp->ship, unit_idx,
+                sp->current_station)) {
+            continue;
+        }
+        float value = contract_price(contract) *
+            mining_payout_multiplier(
+                (mining_grade_t)unit->grade);
+        int64_t payout = (int64_t)llroundf(value);
+        if (!isfinite(value) || payout <= 0 ||
+            payout > (int64_t)LEDGER_FLOAT_LIMIT ||
+            total_payout >
+                (int64_t)LEDGER_FLOAT_LIMIT - payout) {
+            return true;
+        }
+        units[selected] = *unit;
+        incoming[selected] = *chain;
+        unit_payouts[selected] = payout;
+        total_payout += payout;
+        selected++;
+    }
+    if (selected != needed) return false;
+
+    ledger_earn_stage_t ledger_stage = {0};
+    if (!ledger_stage_earn_by_pubkey(
+            st, player_identity,
+            (float)total_payout, &ledger_stage)) {
+        return true;
+    }
+
+    chain_payload_transfer_t
+        transfers[STARTER_REFIT_BATCH_MAX_UNITS] = {{0}};
+    chain_payload_trade_t
+        trades[STARTER_REFIT_BATCH_MAX_UNITS] = {{0}};
+    cargo_receipt_t
+        receipts[STARTER_REFIT_BATCH_MAX_UNITS] = {{0}};
+    cargo_receipt_chain_t
+        station_chains[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
+    chain_log_batch_event_t
+        events[STARTER_REFIT_BATCH_MAX_UNITS * 2] = {{0}};
+    size_t event_count = (size_t)needed * 2u;
+    if (event_count > CHAIN_LOG_BATCH_MAX_EVENTS ||
+        st->chain_event_count >
+            UINT64_MAX - (uint64_t)event_count) {
+        return true;
+    }
+    uint64_t first_event_id =
+        st->chain_event_count + 1u;
+    uint64_t epoch_ticks =
+        (uint64_t)(w->time * 120.0);
+    for (int i = 0; i < needed; i++) {
+        cargo_receipt_transfer_link_t link =
+            cargo_receipt_prepare_transfer_link(
+                st, player_identity, units[i].pub,
+                &incoming[i]);
+        if (link.status !=
+                CARGO_RECEIPT_TRANSFER_LINK_READY) {
+            return true;
+        }
+        uint64_t transfer_event_id =
+            first_event_id + (uint64_t)i * 2u;
+        if (!cargo_receipt_issue(
+                st, epoch_ticks, transfer_event_id,
+                units[i].pub, st->station_pubkey,
+                link.prev_receipt_hash,
+                &receipts[i])) {
+            return true;
+        }
+
+        memcpy(transfers[i].from_pubkey,
+               player_identity, 32);
+        memcpy(transfers[i].to_pubkey,
+               st->station_pubkey, 32);
+        memcpy(transfers[i].cargo_pub,
+               units[i].pub, 32);
+        transfers[i].kind = units[i].kind;
+        trades[i].transfer_event_id =
+            transfer_event_id;
+        trades[i].ledger_delta_signed =
+            unit_payouts[i];
+        memcpy(trades[i].ledger_pubkey,
+               player_identity, 32);
+        events[i * 2] = (chain_log_batch_event_t){
+            .type = CHAIN_EVT_TRANSFER,
+            .payload = &transfers[i],
+            .payload_len =
+                (uint16_t)sizeof(transfers[i]),
+        };
+        events[i * 2 + 1] =
+            (chain_log_batch_event_t){
+                .type = CHAIN_EVT_TRADE,
+                .payload = &trades[i],
+                .payload_len =
+                    (uint16_t)sizeof(trades[i]),
+            };
+        station_chains[i] = incoming[i];
+        station_chains[i].links[
+            station_chains[i].len++] =
+                receipts[i];
+    }
+
+    cargo_store_t staged_ship = {0};
+    cargo_store_t staged_station = {0};
+    if (!cargo_store_clone(
+            &staged_ship,
+            &sp->ship->cargo_store) ||
+        !cargo_store_clone(
+            &staged_station,
+            &st->cargo_store)) {
+        cargo_store_cleanup(&staged_ship);
+        cargo_store_cleanup(&staged_station);
+        return true;
+    }
+    for (int i = 0; i < needed; i++) {
+        int staged_index = manifest_find(
+            &staged_ship.manifest, units[i].pub);
+        cargo_unit_t removed = {0};
+        cargo_receipt_chain_t removed_chain = {0};
+        if (staged_index < 0 ||
+            !cargo_store_remove_with_chain(
+                &staged_ship,
+                (uint16_t)staged_index,
+                &removed, &removed_chain) ||
+            memcmp(&removed, &units[i],
+                   sizeof(removed)) != 0 ||
+            memcmp(&removed_chain, &incoming[i],
+                   sizeof(removed_chain)) != 0 ||
+            !cargo_store_push_with_chain(
+                &staged_station, &units[i],
+                &station_chains[i])) {
+            cargo_store_cleanup(&staged_ship);
+            cargo_store_cleanup(&staged_station);
+            return true;
+        }
+    }
+
+    chain_log_append_result_t appended =
+        chain_log_emit_batch(
+            w, st, events, event_count);
+    if (appended.status != CHAIN_LOG_APPEND_OK) {
+        cargo_store_cleanup(&staged_ship);
+        cargo_store_cleanup(&staged_station);
+        return true;
+    }
+    /*
+     * The general receipt-origin cache's fast append token represents one
+     * transferred identity. This atomic batch transfers eight, so invalidate
+     * it and let the next lookup rebuild from the now-durable chain.
+     */
+    cargo_receipt_origin_cache_reset();
+
+    cargo_store_cleanup(&sp->ship->cargo_store);
+    sp->ship->cargo_store = staged_ship;
+    memset(&staged_ship, 0, sizeof(staged_ship));
+    cargo_store_cleanup(&st->cargo_store);
+    st->cargo_store = staged_station;
+    memset(&staged_station, 0,
+           sizeof(staged_station));
+    st->ledger[ledger_stage.index] =
+        ledger_stage.row;
+    st->ledger_count =
+        ledger_stage.ledger_count;
+    sp->ship->stat_credits_earned +=
+        (float)total_payout;
+    st->manifest_dirty = true;
+    ship_finished_sync(
+        sp->ship, COMMODITY_FERRITE_INGOT);
+    sync_station_finished_inventory(
+        st, COMMODITY_FERRITE_INGOT);
+
+    contract_t *committed =
+        &w->contracts[contract_index];
+    committed->quantity_needed -=
+        (float)needed;
+    if (committed->quantity_needed <=
+            FLOAT_EPSILON) {
+        committed->quantity_needed = 0.0f;
+        committed->active = false;
+    }
+    for (int i = 0; i < needed; i++) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_SELL,
+            .player_id = sp->id,
+            .sell = {
+                .station = sp->current_station,
+                .grade = units[i].grade,
+                .base_cr = (int)unit_payouts[i],
+                .bonus_cr = 0,
+                .by_contract = 1u,
+            },
+        });
+    }
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_CONTRACT_COMPLETE,
+        .player_id = sp->id,
+        .contract_complete = {
+            .action = CONTRACT_TRACTOR,
+        },
+    });
+    *out_payout = (float)total_payout;
+    return true;
+}
+
+static float try_deliver_trusted_ship_manifest_to_contracts(
+    world_t *w, server_player_t *sp, station_t *st,
+    commodity_t filter, int max_units) {
+    if (!w || !sp || !st || !sp->ship || max_units <= 0 ||
+        sp->current_station < 0 ||
+        sp->current_station >= MAX_STATIONS) {
+        return 0.0f;
+    }
+
+    uint8_t player_identity[32];
+    if (!server_player_copy_verified_pubkey(sp, player_identity))
+        return 0.0f;
+    if (!station_manifest_bootstrap(st) ||
+        !ship_manifest_bootstrap(sp->ship)) {
+        return 0.0f;
+    }
+
+    float starter_batch_payout = 0.0f;
+    if (try_deliver_starter_refit_manifest_batch(
+            w, sp, st, filter, max_units,
+            player_identity,
+            &starter_batch_payout)) {
+        return starter_batch_payout;
+    }
+
+    float total = 0.0f;
+    for (int delivered = 0; delivered < max_units; delivered++) {
+        int best_unit = -1;
+        int best_contract = -1;
+        float best_value = 0.0f;
+        contract_t best_staged_claim = {0};
+        for (uint16_t unit_idx = 0;
+             unit_idx < sp->ship->manifest.count; unit_idx++) {
+            const cargo_unit_t *unit =
+                &sp->ship->manifest.units[unit_idx];
+            commodity_t commodity =
+                (commodity_t)unit->commodity;
+            if (!is_finished_good(commodity) ||
+                (filter < COMMODITY_COUNT &&
+                 filter != commodity) ||
+                !ship_manifest_unit_trusted_at_station(
+                    w, sp->ship, unit_idx,
+                    sp->current_station)) {
+                continue;
+            }
+            for (int contract_idx = 0;
+                 contract_idx < MAX_CONTRACTS;
+                 contract_idx++) {
+                const contract_t *ct =
+                    &w->contracts[contract_idx];
+                if (!ct->active ||
+                    ct->action != CONTRACT_TRACTOR ||
+                    ct->station_index !=
+                        (uint8_t)sp->current_station ||
+                    ct->quantity_needed + FLOAT_EPSILON < 1.0f ||
+                    !contract_fit_is_ok(
+                        contract_fit_cargo_unit(ct, unit))) {
+                    continue;
+                }
+                contract_t staged_claim = *ct;
+                if (starter_refit_work_order_matches(ct)) {
+                    continue;
+                } else {
+                    if (!contract_ownership_try_claim_player(
+                            &staged_claim, w, sp->id)) {
+                        continue;
+                    }
+                }
+                float value = contract_price(ct) *
+                    mining_payout_multiplier(
+                        (mining_grade_t)unit->grade);
+                if (value > best_value) {
+                    best_value = value;
+                    best_unit = (int)unit_idx;
+                    best_contract = contract_idx;
+                    best_staged_claim = staged_claim;
+                }
+            }
+        }
+        if (best_unit < 0 || best_contract < 0 ||
+            !isfinite(best_value) ||
+            best_value <= FLOAT_EPSILON) {
+            break;
+        }
+
+        cargo_unit_t unit =
+            sp->ship->manifest.units[best_unit];
+        const cargo_receipt_chain_t *incoming_ptr =
+            ship_receipt_chain_at(
+                sp->ship, (uint16_t)best_unit);
+        if (!incoming_ptr ||
+            incoming_ptr->len == 0 ||
+            incoming_ptr->len >=
+                CARGO_RECEIPT_CHAIN_MAX_LEN) {
+            break;
+        }
+        cargo_receipt_chain_t incoming = *incoming_ptr;
+        int64_t payout = (int64_t)llroundf(best_value);
+        if (payout <= 0 ||
+            payout > (int64_t)LEDGER_FLOAT_LIMIT) {
+            break;
+        }
+        ledger_earn_stage_t ledger_stage = {0};
+        if (!ledger_stage_earn_by_pubkey(
+                st, player_identity, (float)payout,
+                &ledger_stage)) {
+            break;
+        }
+
+        cargo_receipt_prepared_transfer_t prepared =
+            cargo_receipt_prepare_transfer(
+                w, sp->current_station,
+                player_identity, st->station_pubkey,
+                &unit, &incoming, true, payout,
+                player_identity);
+        if (prepared.link_status !=
+                CARGO_RECEIPT_TRANSFER_LINK_READY ||
+            prepared.preflight_status !=
+                CHAIN_LOG_APPEND_OK) {
+            break;
+        }
+
+        cargo_receipt_chain_t station_chain = incoming;
+        station_chain.links[station_chain.len++] =
+            prepared.receipt;
+        cargo_store_t staged_ship = {0};
+        cargo_store_t staged_station = {0};
+        if (!cargo_store_clone(
+                &staged_ship,
+                &sp->ship->cargo_store) ||
+            !cargo_store_clone(
+                &staged_station,
+                &st->cargo_store)) {
+            cargo_store_cleanup(&staged_ship);
+            cargo_store_cleanup(&staged_station);
+            break;
+        }
+        cargo_unit_t removed = {0};
+        cargo_receipt_chain_t removed_chain = {0};
+        if (!cargo_store_remove_with_chain(
+                &staged_ship, (uint16_t)best_unit,
+                &removed, &removed_chain) ||
+            memcmp(&removed, &unit, sizeof(unit)) != 0 ||
+            memcmp(&removed_chain, &incoming,
+                   sizeof(incoming)) != 0 ||
+            !cargo_store_push_with_chain(
+                &staged_station, &unit,
+                &station_chain)) {
+            cargo_store_cleanup(&staged_ship);
+            cargo_store_cleanup(&staged_station);
+            break;
+        }
+
+        chain_log_append_result_t appended =
+            cargo_receipt_commit_prepared_transfer(
+                w, &prepared);
+        if (appended.status != CHAIN_LOG_APPEND_OK) {
+            cargo_store_cleanup(&staged_ship);
+            cargo_store_cleanup(&staged_station);
+            break;
+        }
+
+        /*
+         * Every potentially failing operation is complete once the receipt
+         * append succeeds. Claim commit and the prepared state swaps below
+         * are allocation-free, so an open contract cannot gain a receipt
+         * without atomically gaining the same durable claimant.
+         */
+        contract_t *ct = &w->contracts[best_contract];
+        contract_ownership_commit_staged_claim(
+            ct, &best_staged_claim);
+        cargo_store_cleanup(&sp->ship->cargo_store);
+        sp->ship->cargo_store = staged_ship;
+        memset(&staged_ship, 0, sizeof(staged_ship));
+        cargo_store_cleanup(&st->cargo_store);
+        st->cargo_store = staged_station;
+        memset(&staged_station, 0,
+               sizeof(staged_station));
+        /*
+         * ledger_stage was fully range-checked before the durable append.
+         * These two bounded assignments are the infallible commit.
+         */
+        st->ledger[ledger_stage.index] =
+            ledger_stage.row;
+        st->ledger_count =
+            ledger_stage.ledger_count;
+        sp->ship->stat_credits_earned += (float)payout;
+        st->manifest_dirty = true;
+        ship_finished_sync(
+            sp->ship, (commodity_t)unit.commodity);
+        sync_station_finished_inventory(
+            st, (commodity_t)unit.commodity);
+
+        ct->quantity_needed -= 1.0f;
+        bool complete =
+            ct->quantity_needed <= FLOAT_EPSILON;
+        if (complete) ct->active = false;
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_SELL,
+            .player_id = sp->id,
+            .sell = {
+                .station = sp->current_station,
+                .grade = unit.grade,
+                .base_cr = (int)payout,
+                .bonus_cr = 0,
+                .by_contract = 1u,
+            },
+        });
+        if (complete) {
+            emit_event(w, (sim_event_t){
+                .type =
+                    SIM_EVENT_CONTRACT_COMPLETE,
+                .player_id = sp->id,
+                .contract_complete = {
+                    .action = CONTRACT_TRACTOR,
+                },
+            });
+        }
+        total += (float)payout;
+    }
+    return total;
+}
+
+float server_deliver_trusted_manifest_contract_cargo(
+    world_t *w, int player_idx, commodity_t filter,
+    int max_units) {
+    if (!w || player_idx < 0 ||
+        player_idx >= MAX_PLAYERS) {
+        return 0.0f;
+    }
+    server_player_t *sp = &w->players[player_idx];
+    if (!sp->docked || sp->current_station < 0 ||
+        sp->current_station >= MAX_STATIONS) {
+        return 0.0f;
+    }
+    return try_deliver_trusted_ship_manifest_to_contracts(
+        w, sp, &w->stations[sp->current_station],
+        filter, max_units);
+}
+
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
 
-    /* Pod economy: SELL is a physical handoff. This fallback only handles
-     * physical things that are not ordinary market pods: destination-bound
-     * freight pods, black-market freight pods, and towed ore fragments.
-     * Legacy ship.manifest / ship.cargo units are intentionally not
-     * transferred here anymore. */
+    /* Pod economy: SELL is a physical handoff. This fallback handles
+     * destination-bound freight pods, black-market freight pods, towed ore
+     * fragments, and exact receipt-backed cargo previously PRESENTed from a
+     * physical station-origin pod. */
     if (sp->input.service_sell_one) {
         commodity_t commodity = sp->input.service_sell_only;
         mining_grade_t grade  = sp->input.service_sell_grade;
         float delivery_payout =
             delivery_try_deliver_bound_cargo(w, sp, st, commodity);
+        if (delivery_payout <= 0.01f)
+            delivery_payout =
+                try_deliver_trusted_ship_manifest_to_contracts(
+                    w, sp, st, commodity, 1);
         if (delivery_payout <= 0.01f)
             (void)delivery_try_black_market_sell(
                 w, sp, st, commodity, grade, true);
@@ -5650,6 +6839,11 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
      * choose the next accepted target. Ordinary pod cargo is handled
      * before this path and sells one whole pod per press. */
     commodity_t filter = sp->input.service_sell_only;
+
+    float manifest_payout =
+        try_deliver_trusted_ship_manifest_to_contracts(
+            w, sp, st, filter, CARGO_POD_MANIFEST_CAP);
+    (void)manifest_payout;
 
     float fragment_payout = try_deliver_towed_fragments_to_contracts(
         w, sp, st, filter);
@@ -5803,7 +6997,9 @@ static bool ship_near_station_collision_envelope(const server_player_t *sp,
     return v2_dist_sq(sp->ship->pos, st->pos) <= reach * reach;
 }
 
-static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
+static void resolve_module_collisions(world_t *w, server_player_t *sp,
+                                      const station_t *st,
+                                      int *collision_count) {
     station_geom_t geom;
     station_build_geom(st, &geom);
     float ship_r = ship_hull_def(sp->ship)->ship_radius;
@@ -5813,7 +7009,8 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
 
     /* Module circles */
     for (int i = 0; i < geom.circle_count; i++)
-        resolve_ship_circle(w, sp, geom.circles[i].center, geom.circles[i].radius);
+        resolve_ship_circle(w, sp, geom.circles[i].center,
+                            geom.circles[i].radius, collision_count);
 
     /* Near-module suppression: if ship is angularly close to any module
      * on a corridor's ring, skip corridor tests (module circle takes priority,
@@ -5850,13 +7047,14 @@ static bool is_already_towed(world_t *w, const server_player_t *sp,
                              int asteroid_idx);
 
 static void resolve_world_collisions(world_t *w, server_player_t *sp) {
-    ship_collision_count = 0;
+    int collision_count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
         if (!ship_near_station_collision_envelope(sp, &w->stations[i])) continue;
         /* Skip collision with docking target during approach lerp */
         if (sp->docking_approach && i == sp->nearby_station) continue;
-        resolve_module_collisions(w, sp, &w->stations[i]);
+        resolve_module_collisions(w, sp, &w->stations[i],
+                                  &collision_count);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active) continue;
@@ -5868,12 +7066,13 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
          * damage; a tractored fragment dragged INTO a third ship hits
          * normally. The owner's own tow doesn't self-damage thanks to
          * the session-token check in resolve_ship_asteroid_collision. */
-        resolve_ship_asteroid_collision(w, sp, &w->asteroids[i]);
+        resolve_ship_asteroid_collision(w, sp, &w->asteroids[i],
+                                        &collision_count);
     }
     /* Crush: pinched between 3+ bodies simultaneously (2 adjacent modules
      * on the same ring is normal, only crush when truly trapped) */
-    if (!w->player_only_mode && !sp->docked && ship_collision_count >= 3) {
-        float crush = (float)(ship_collision_count - 2) * 2.0f;
+    if (!w->player_only_mode && !sp->docked && collision_count >= 3) {
+        float crush = (float)(collision_count - 2) * 2.0f;
         apply_ship_damage(w, sp, crush);
     }
 }
@@ -6240,8 +7439,6 @@ static void emit_fragment_tow_event(world_t *w, const asteroid_t *a,
     if (sp && sp->session_ready) {
         (void)server_player_copy_verified_pubkey(
             sp, payload.tower_player_pub);
-        memcpy(payload.tower_session_token, sp->session_token,
-               sizeof(payload.tower_session_token));
     }
     payload.epoch_tick = chain_epoch_tick(w);
     (void)chain_log_emit(w, &w->stations[witness], CHAIN_EVT_FRAGMENT_TOW,
@@ -6262,8 +7459,6 @@ static void emit_fragment_release_event(world_t *w, const asteroid_t *a,
     if (sp && sp->session_ready) {
         (void)server_player_copy_verified_pubkey(
             sp, payload.tower_player_pub);
-        memcpy(payload.tower_session_token, sp->session_token,
-               sizeof(payload.tower_session_token));
     }
     payload.epoch_tick = chain_epoch_tick(w);
     payload.reason = (uint8_t)reason;
@@ -8494,7 +9689,8 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             rebuild_station_services(st);
             /* Generate supply contract for activation frames */
             for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (!w->contracts[k].active) {
+                if (contract_slot_available_for_post(
+                        &w->contracts[k])) {
                     w->contracts[k] = (contract_t){
                         .active = true, .action = CONTRACT_TRACTOR,
                         .station_index = (uint8_t)s,
@@ -8613,7 +9809,8 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             rebuild_station_services(st);
             /* Generate supply contract for the outpost activation frames */
             for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (!w->contracts[k].active) {
+                if (contract_slot_available_for_post(
+                        &w->contracts[k])) {
                     w->contracts[k] = (contract_t){
                         .active = true, .action = CONTRACT_TRACTOR,
                         .station_index = (uint8_t)slot,
@@ -8843,6 +10040,44 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     return sp->scan_target_type != INSPECT_TARGET_NONE;
 }
 
+static bool player_claim_fracture_contracts_for_target(
+    world_t *w,
+    const server_player_t *sp,
+    int asteroid_index) {
+    if (!w || !sp || asteroid_index < 0 ||
+        asteroid_index >= MAX_ASTEROIDS ||
+        !w->asteroids[asteroid_index].active) {
+        return false;
+    }
+    int indices[MAX_CONTRACTS];
+    contract_t staged_claims[MAX_CONTRACTS];
+    int count = 0;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *contract = &w->contracts[k];
+        if (!contract->active ||
+            contract->action != CONTRACT_FRACTURE) {
+            continue;
+        }
+        if (contract->target_index != asteroid_index &&
+            (!contract_target_pub_is_set(contract) ||
+             !contract_asteroid_target_matches(
+                 contract, &w->asteroids[asteroid_index]))) {
+            continue;
+        }
+        staged_claims[count] = *contract;
+        if (!contract_ownership_try_claim_player(
+                &staged_claims[count], w, sp->id)) {
+            return false;
+        }
+        indices[count++] = k;
+    }
+    for (int i = 0; i < count; i++) {
+        contract_ownership_commit_staged_claim(
+            &w->contracts[indices[i]], &staged_claims[i]);
+    }
+    return true;
+}
+
 static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool mining, vec2 forward, float cached_signal) {
     /* Beam state is server-authoritative — client prediction must NOT touch it.
      * Server PLAYER_STATE messages set beam_active/start/end/hit fields directly.
@@ -8883,6 +10118,16 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
         if (sp->input.mining_target_hint == sp->hover_asteroid &&
             hinted_target_in_mining_cone(muzzle, forward, a)) {
             aim_slack = 12.0f;
+        }
+        if ((aim_slack > 0.0f ||
+             sim_mining_target_hit(
+                 muzzle, forward, a, NULL, NULL)) &&
+            !player_claim_fracture_contracts_for_target(
+                w, sp, sp->hover_asteroid)) {
+            sp->beam_end =
+                v2_add(muzzle, v2_scale(forward, MINING_RANGE));
+            sp->beam_ineffective = true;
+            return;
         }
         mining_beam_t mb = sim_mining_beam_step_with_aim_slack(w, muzzle, forward,
             sp->hover_asteroid, sp->ship->mining_level,
@@ -8996,7 +10241,9 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
                                            bool allow_delivery_pickup) {
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         contract_t *c = &w->contracts[i];
-        if (c->active && c->claimed_by == (int8_t)sp->id) {
+        if (c->active &&
+            contract_ownership_matches_player(
+                c, w, sp->id)) {
             if (c->action == CONTRACT_DELIVERY &&
                 issuer_station == c->target_index &&
                 allow_delivery_pickup) {
@@ -9017,7 +10264,16 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
         if (c->action == CONTRACT_DELIVERY)
             station_matches = station_matches || c->target_index == issuer_station;
         if (!station_matches) continue;
-        if (c->claimed_by >= 0 && c->claimed_by != (int8_t)sp->id) continue;
+        if (starter_refit_work_order_matches(c)) {
+            if (!contract_ownership_is_open(c))
+                continue;
+        } else {
+            contract_t staged_claim = *c;
+            if (!contract_ownership_try_claim_player(
+                    &staged_claim, w, sp->id)) {
+                continue;
+            }
+        }
 
         float price_hint = isfinite(c->base_price) && c->base_price > 0.0f
             ? c->base_price : 1.0f;
@@ -9046,7 +10302,7 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
         } else if (c->action == CONTRACT_DELIVERY) {
             if (!delivery_contract_has_source(c)) continue;
             delivery_shipment_t *shipment =
-                delivery_active_for_contract(w, sp->id, i);
+                delivery_active_for_contract(w, sp, i);
             int origin = c->target_index;
             int destination = c->station_index;
             if (issuer_station == origin) {
@@ -9080,8 +10336,9 @@ static int hail_find_station_work_contract(world_t *w, server_player_t *sp,
             issuer_station == ct->target_index) {
             if (allow_delivery_pickup)
                 (void)delivery_pickup_from_origin(w, sp, ct, best_contract);
-        } else if (ct->claimed_by < 0) {
-            ct->claimed_by = (int8_t)sp->id;
+        } else if (!starter_refit_work_order_matches(ct)) {
+            (void)contract_ownership_try_claim_player(
+                ct, w, sp->id);
         }
         contract_summary_t summary = contract_summary_make(ct);
         knowledge_view_configure(&sp->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
@@ -9235,7 +10492,8 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 commodity_t mat = module_build_material(kit_type);
                 float needed = module_build_cost(kit_type);
                 for (int k = 0; k < MAX_CONTRACTS; k++) {
-                    if (!w->contracts[k].active) {
+                    if (contract_slot_available_for_post(
+                            &w->contracts[k])) {
                         w->contracts[k] = (contract_t){
                             .active = true, .action = CONTRACT_TRACTOR,
                             .station_index = (uint8_t)sp->current_station,
@@ -10080,7 +11338,8 @@ static void delivery_maybe_post_credit_contracts(world_t *w) {
 
         int free_slot = -1;
         for (int k = 0; k < MAX_CONTRACTS; k++) {
-            if (!w->contracts[k].active) {
+            if (contract_slot_available_for_post(
+                    &w->contracts[k])) {
                 free_slot = k;
                 break;
             }
@@ -10209,6 +11468,9 @@ static void step_contracts(world_t *w, float dt) {
     /* Age existing contracts and check fulfillment */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!w->contracts[i].active) continue;
+        bool starter_refit_order =
+            starter_refit_work_order_matches(
+                &w->contracts[i]);
         /* Defensive sanity sweep. Clamps any contract whose base_price
          * went non-finite or absurd (seen in WORK rows as "+??? cr" /
          * INT_MAX payouts). Also guards quantity_needed so a bad spawn
@@ -10219,13 +11481,20 @@ static void step_contracts(world_t *w, float dt) {
             w->contracts[i].base_price = 1.0f;
         }
         float qn = w->contracts[i].quantity_needed;
-        if (!isfinite(qn) || qn <= 0.0f || qn > 10000.0f) {
+        if (!isfinite(qn) || qn > 10000.0f ||
+            (!starter_refit_order && qn <= 0.0f)) {
             w->contracts[i].quantity_needed = 1.0f;
         }
         w->contracts[i].age += dt;
 
         switch (w->contracts[i].action) {
         case CONTRACT_TRACTOR: {
+            /*
+             * The finite onboarding order is quota-driven. Ambient station
+             * inventory must not satisfy it; only an authorized, trusted
+             * player delivery decrements and closes its quantity.
+             */
+            if (starter_refit_order) break;
             if (w->contracts[i].station_index >= MAX_STATIONS) break;
             station_t *st = &w->stations[w->contracts[i].station_index];
             commodity_t c = w->contracts[i].commodity;
@@ -10254,7 +11523,17 @@ static void step_contracts(world_t *w, float dt) {
                 if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
                     all_supplied = false;
                 if (all_supplied) {
-                    bool was_claimed = (w->contracts[i].claimed_by >= 0);
+                    bool was_claimed =
+                        contract_ownership_is_valid(
+                            &w->contracts[i]) &&
+                        w->contracts[i].
+                            claimed_by_quarantine_record_id == 0 &&
+                        (w->contracts[i].
+                             claimed_by_principal.kind ==
+                             ACTOR_PRINCIPAL_PLAYER ||
+                         w->contracts[i].
+                             claimed_by_principal.kind ==
+                             ACTOR_PRINCIPAL_NPC);
                     w->contracts[i].active = false;
                     if (was_claimed)
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
@@ -10267,7 +11546,17 @@ static void step_contracts(world_t *w, float dt) {
                  * larger dock buffer. */
                 station_supply_need_t supply = station_supply_need_for(st, c);
                 if (supply.should_close) {
-                    bool was_claimed = (w->contracts[i].claimed_by >= 0);
+                    bool was_claimed =
+                        contract_ownership_is_valid(
+                            &w->contracts[i]) &&
+                        w->contracts[i].
+                            claimed_by_quarantine_record_id == 0 &&
+                        (w->contracts[i].
+                             claimed_by_principal.kind ==
+                             ACTOR_PRINCIPAL_PLAYER ||
+                         w->contracts[i].
+                             claimed_by_principal.kind ==
+                             ACTOR_PRINCIPAL_NPC);
                     w->contracts[i].active = false;
                     if (was_claimed)
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
@@ -10280,8 +11569,20 @@ static void step_contracts(world_t *w, float dt) {
             int idx = contract_fracture_target_index(w, &w->contracts[i]);
             bool target_gone = idx < 0;
             if (target_gone) {
+                bool was_claimed =
+                    contract_ownership_is_valid(
+                        &w->contracts[i]) &&
+                    w->contracts[i].
+                        claimed_by_quarantine_record_id == 0 &&
+                    (w->contracts[i].
+                         claimed_by_principal.kind ==
+                         ACTOR_PRINCIPAL_PLAYER ||
+                     w->contracts[i].
+                         claimed_by_principal.kind ==
+                         ACTOR_PRINCIPAL_NPC);
                 w->contracts[i].active = false;
-                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_FRACTURE});
+                if (was_claimed)
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_FRACTURE});
             } else if (idx != w->contracts[i].target_index) {
                 w->contracts[i].target_index = idx;
                 w->contracts[i].target_pos = w->asteroids[idx].pos;
@@ -10291,7 +11592,8 @@ static void step_contracts(world_t *w, float dt) {
             break;
         }
         case CONTRACT_DELIVERY:
-            if (w->contracts[i].claimed_by < 0 && w->contracts[i].age > 600.0f)
+            if (contract_ownership_is_open(&w->contracts[i]) &&
+                w->contracts[i].age > 600.0f)
                 w->contracts[i].active = false;
             break;
         }
@@ -10574,7 +11876,8 @@ static void step_contracts(world_t *w, float dt) {
         for (int p = 0; p < post_count; p++) {
             station_policy_apply_contract_origin_rules(st, to_post[p]);
             for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (!w->contracts[k].active) {
+                if (contract_slot_available_for_post(
+                        &w->contracts[k])) {
                     w->contracts[k] = *to_post[p];
                     break;
                 }
@@ -10657,6 +11960,10 @@ bool cargo_pod_take_manifest_unit(cargo_pod_t *pod,
                                   cargo_unit_t *out_unit) {
     if (!out_unit || !cargo_pod_has_exact_manifest(pod, commodity))
         return false;
+    if (!cargo_pod_custody_charge_anchor_valid(pod) ||
+        pod->custody_charge_total > 0) {
+        return false;
+    }
     uint16_t unit_idx = (uint16_t)(pod->manifest_count - 1u);
     *out_unit = pod->manifest_units[unit_idx];
     memset(&pod->manifest_units[unit_idx], 0,
@@ -12190,7 +13497,8 @@ static bool finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
     float cost = module_build_cost(sc->module_type);
     commodity_t material = module_build_material(sc->module_type);
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (!w->contracts[k].active) {
+        if (contract_slot_available_for_post(
+                &w->contracts[k])) {
             w->contracts[k] = (contract_t){
                 .active = true, .action = CONTRACT_TRACTOR,
                 .station_index = (uint8_t)sc->placed_station,
@@ -13177,6 +14485,456 @@ static void server_dispatch_receipt_chain(
     }
 }
 
+static uint8_t cargo_pod_present_reject_reason(
+    cargo_pod_present_result_t result) {
+    switch (result) {
+    case CARGO_POD_PRESENT_REJECT_IDENTITY:
+        return ORDER_REJECT_POD_PRESENT_IDENTITY;
+    case CARGO_POD_PRESENT_REJECT_NOT_DOCKED:
+    case CARGO_POD_PRESENT_REJECT_NOT_CARRIED:
+        return ORDER_REJECT_POD_PRESENT_NOT_CARRIED;
+    case CARGO_POD_PRESENT_REJECT_STALE:
+    case CARGO_POD_PRESENT_REJECT_BAD_ARGS:
+        return ORDER_REJECT_POD_PRESENT_STALE;
+    case CARGO_POD_PRESENT_REJECT_CUSTODY:
+        return ORDER_REJECT_POD_PRESENT_CUSTODY;
+    case CARGO_POD_PRESENT_REJECT_WRONG_ORIGIN:
+        return ORDER_REJECT_POD_PRESENT_WRONG_ORIGIN;
+    case CARGO_POD_PRESENT_REJECT_TRUST:
+        return ORDER_REJECT_POD_PRESENT_UNTRUSTED;
+    case CARGO_POD_PRESENT_REJECT_STORAGE:
+        return ORDER_REJECT_POD_PRESENT_STORAGE;
+    case CARGO_POD_PRESENT_REJECT_LOG:
+        return ORDER_REJECT_POD_PRESENT_LOG;
+    case CARGO_POD_PRESENT_OK:
+    default:
+        return ORDER_REJECT_GENERIC;
+    }
+}
+
+static cargo_pod_present_result_t cargo_pod_present_reject(
+    world_t *w,
+    server_player_t *sp,
+    cargo_pod_present_result_t result) {
+    if (w && sp && result != CARGO_POD_PRESENT_OK) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_ORDER_REJECTED,
+            .player_id = sp->id,
+            .order_rejected = {
+                .reason = cargo_pod_present_reject_reason(result),
+            },
+        });
+    }
+    return result;
+}
+
+bool server_cargo_pod_selection_token(
+    world_t *w, int pod_idx, uint8_t out[32]) {
+    static const uint8_t domain[] = "signal/pod-present-token/v1";
+    if (!out) return false;
+    memset(out, 0, 32);
+    if (!w || pod_idx < 0 || pod_idx >= MAX_CARGO_PODS)
+        return false;
+
+    uint8_t content_digest[32];
+    if (!cargo_pod_selection_digest(
+            &w->cargo_pods[pod_idx], content_digest)) {
+        return false;
+    }
+    entity_ref_t ref = world_entity_ref_for_slot(
+        w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+    if (entity_ref_is_none(ref)) return false;
+
+    uint8_t ref_wire[7] = {0};
+    ref_wire[0] = ref.kind;
+    write_u16_le(&ref_wire[1], (uint16_t)ref.index);
+    write_u16_le(&ref_wire[3], (uint16_t)ref.part);
+    write_u16_le(&ref_wire[5], ref.generation);
+    sha256_ctx_t hash;
+    sha256_init(&hash);
+    sha256_update(&hash, domain, sizeof(domain) - 1u);
+    sha256_update(&hash, ref_wire, sizeof(ref_wire));
+    sha256_update(&hash, content_digest, sizeof(content_digest));
+    sha256_final(&hash, out);
+    return true;
+}
+
+cargo_pod_present_result_t server_present_towed_pod(
+    world_t *w,
+    int player_idx,
+    uint8_t pod_idx,
+    const uint8_t selection_digest[32],
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user,
+    uint16_t *out_moved) {
+    static const uint8_t zero32[32] = {0};
+    if (out_moved) *out_moved = 0;
+    if (!w || !selection_digest || player_idx < 0 ||
+        player_idx >= MAX_PLAYERS || pod_idx >= MAX_CARGO_PODS) {
+        return CARGO_POD_PRESENT_REJECT_BAD_ARGS;
+    }
+
+    server_player_t *sp = &w->players[player_idx];
+    uint8_t player_pubkey[32];
+    if (!server_player_copy_verified_pubkey(sp, player_pubkey)) {
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_IDENTITY);
+    }
+    if (!sp->ship || !sp->docked || sp->current_station < 0 ||
+        sp->current_station >= w->station_count ||
+        sp->current_station >= MAX_STATIONS ||
+        !station_exists(&w->stations[sp->current_station])) {
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_NOT_DOCKED);
+    }
+
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    uint8_t current_token[32];
+    if (!server_cargo_pod_selection_token(
+            w, pod_idx, current_token) ||
+        memcmp(current_token, selection_digest,
+               sizeof(current_token)) != 0) {
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_STALE);
+    }
+
+    entity_ref_t target = world_entity_ref_for_slot(
+        w, ENTITY_KIND_CARGO_POD, pod_idx, -1);
+    const tow_link_t *tow =
+        world_tow_link_for_target_const(w, target);
+    bool projected_on_ship = false;
+    for (int i = 0; i < sp->ship->towed_pod_count && i < 10; i++) {
+        if (sp->ship->towed_pods[i] == (int16_t)pod_idx) {
+            projected_on_ship = true;
+            break;
+        }
+    }
+    if (!pod->active || !tow || !projected_on_ship ||
+        !entity_ref_equal(tow->source, sp->ship_ref) ||
+        tow->profile != TOW_PROFILE_SHIP_POD ||
+        tow->state != TOW_LINK_HELD ||
+        cargo_pod_player_tractor(pod) != player_idx ||
+        !cargo_pod_player_projection_authorized(
+            w, pod, player_idx)) {
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_NOT_CARRIED);
+    }
+    if (pod->shipment_id != 0 ||
+        (pod->custody_station != 0 &&
+         pod->custody_station !=
+             (uint8_t)(sp->current_station + 1))) {
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_CUSTODY);
+    }
+    if (!cargo_pod_has_exact_manifest(pod, pod->commodity)) {
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_CUSTODY);
+    }
+
+    station_t *station = &w->stations[sp->current_station];
+    bool include_trade =
+        pod->custody_station == (uint8_t)(sp->current_station + 1);
+    if (!cargo_pod_custody_charge_anchor_valid(pod)) {
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_CUSTODY);
+    }
+    uint16_t max_units = include_trade
+        ? (uint16_t)(CHAIN_LOG_BATCH_MAX_EVENTS / 2u)
+        : (uint16_t)CHAIN_LOG_BATCH_MAX_EVENTS;
+    uint16_t moved = pod->manifest_count < max_units
+        ? pod->manifest_count : max_units;
+    size_t event_count = (size_t)moved * (include_trade ? 2u : 1u);
+    if (moved == 0 || event_count == 0 ||
+        station->chain_event_count >
+            UINT64_MAX - (uint64_t)event_count) {
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_LOG);
+    }
+
+    int64_t charge_total = 0;
+    uint16_t charge_unit_count = 0;
+    uint16_t charge_units_processed = 0;
+    int64_t total_cost = 0;
+    if (include_trade) {
+        if (pod->custody_charge_total > 0) {
+            charge_total = pod->custody_charge_total;
+            charge_unit_count = pod->custody_charge_unit_count;
+            charge_units_processed =
+                pod->custody_charge_units_processed;
+        } else {
+            float quoted =
+                station_market_pod_sell_quote(station, pod);
+            if (!isfinite(quoted) ||
+                quoted <= FLOAT_EPSILON ||
+                quoted > LEDGER_FLOAT_LIMIT) {
+                return cargo_pod_present_reject(
+                    w, sp, CARGO_POD_PRESENT_REJECT_CUSTODY);
+            }
+            charge_total = (int64_t)llroundf(quoted);
+            charge_unit_count = pod->manifest_count;
+            if (charge_total <= 0) {
+                return cargo_pod_present_reject(
+                    w, sp, CARGO_POD_PRESENT_REJECT_CUSTODY);
+            }
+        }
+        if (charge_total > (int64_t)LEDGER_FLOAT_LIMIT ||
+            !cargo_pod_custody_charge_range(
+                charge_total, charge_unit_count,
+                charge_units_processed, moved, &total_cost)) {
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_CUSTODY);
+        }
+    }
+
+    /*
+     * Trust is a property of the selected pod, not merely the prefix that
+     * fits in this append batch. Preflight every remaining identity before
+     * staging the bounded prefix so a bad tail can never commit good-looking
+     * rows ahead of it. The same pass also prevents a pod-internal duplicate,
+     * or an identity the ship already carries, from minting a second bearer
+     * record.
+     */
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        const cargo_unit_t *unit = &pod->manifest_units[i];
+        if (unit->origin_station !=
+            (uint8_t)sp->current_station) {
+            return cargo_pod_present_reject(
+                w, sp,
+                CARGO_POD_PRESENT_REJECT_WRONG_ORIGIN);
+        }
+        if (memcmp(unit->pub, zero32, sizeof(zero32)) == 0 ||
+            manifest_find(&sp->ship->manifest, unit->pub) >= 0) {
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_TRUST);
+        }
+        for (uint16_t prior = 0; prior < i; prior++) {
+            if (memcmp(
+                    unit->pub,
+                    pod->manifest_units[prior].pub,
+                    sizeof(unit->pub)) == 0) {
+                return cargo_pod_present_reject(
+                    w, sp,
+                    CARGO_POD_PRESENT_REJECT_TRUST);
+            }
+        }
+
+        cargo_receipt_station_evaluation_t evaluated =
+            cargo_receipt_evaluate_at_station(
+                w, sp->current_station, unit, NULL);
+        if (!evaluated.accepted ||
+            !evaluated.local_origin_without_receipt ||
+            evaluated.origin_station != sp->current_station) {
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_TRUST);
+        }
+        cargo_receipt_transfer_link_t link =
+            cargo_receipt_prepare_transfer_link(
+                station, station->station_pubkey,
+                unit->pub, NULL);
+        if (link.status !=
+            CARGO_RECEIPT_TRANSFER_LINK_READY) {
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_TRUST);
+        }
+    }
+
+    cargo_store_t staged_ship = {0};
+    if (!ship_get_receipts_const(sp->ship) ||
+        !cargo_store_clone(&staged_ship, &sp->ship->cargo_store)) {
+        cargo_store_cleanup(&staged_ship);
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_STORAGE);
+    }
+
+    chain_payload_transfer_t
+        transfers[CHAIN_LOG_BATCH_MAX_EVENTS];
+    chain_payload_trade_t
+        trades[CHAIN_LOG_BATCH_MAX_EVENTS / 2u];
+    chain_log_batch_event_t
+        events[CHAIN_LOG_BATCH_MAX_EVENTS];
+    cargo_receipt_t receipts[CHAIN_LOG_BATCH_MAX_EVENTS];
+    memset(transfers, 0, sizeof(transfers));
+    memset(trades, 0, sizeof(trades));
+    memset(events, 0, sizeof(events));
+    memset(receipts, 0, sizeof(receipts));
+
+    uint64_t first_event_id = station->chain_event_count + 1u;
+    uint64_t epoch = (uint64_t)(w->time * 120.0);
+    for (uint16_t i = 0; i < moved; i++) {
+        const cargo_unit_t *unit = &pod->manifest_units[i];
+        cargo_receipt_transfer_link_t link =
+            cargo_receipt_prepare_transfer_link(
+                station, station->station_pubkey, unit->pub, NULL);
+        if (link.status != CARGO_RECEIPT_TRANSFER_LINK_READY) {
+            cargo_store_cleanup(&staged_ship);
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_TRUST);
+        }
+
+        size_t transfer_offset =
+            (size_t)i * (include_trade ? 2u : 1u);
+        uint64_t transfer_event_id =
+            first_event_id + (uint64_t)transfer_offset;
+        if (!cargo_receipt_issue(
+                station, epoch, transfer_event_id, unit->pub,
+                player_pubkey, link.prev_receipt_hash, &receipts[i])) {
+            cargo_store_cleanup(&staged_ship);
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_LOG);
+        }
+        cargo_receipt_chain_t outgoing = {0};
+        outgoing.len = 1;
+        outgoing.links[0] = receipts[i];
+        if (!cargo_store_push_with_chain(
+                &staged_ship, unit, &outgoing)) {
+            cargo_store_cleanup(&staged_ship);
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_STORAGE);
+        }
+
+        memcpy(transfers[i].from_pubkey,
+               station->station_pubkey, 32);
+        memcpy(transfers[i].to_pubkey, player_pubkey, 32);
+        memcpy(transfers[i].cargo_pub, unit->pub, 32);
+        transfers[i].kind = unit->kind;
+        events[transfer_offset] = (chain_log_batch_event_t){
+            .type = CHAIN_EVT_TRANSFER,
+            .payload = &transfers[i],
+            .payload_len = (uint16_t)sizeof(transfers[i]),
+        };
+        if (include_trade) {
+            uint16_t original_ordinal =
+                (uint16_t)(charge_units_processed + i);
+            int64_t each =
+                charge_total / (int64_t)charge_unit_count;
+            if ((int64_t)original_ordinal <
+                charge_total % (int64_t)charge_unit_count) {
+                each++;
+            }
+            trades[i].transfer_event_id = transfer_event_id;
+            trades[i].ledger_delta_signed = -each;
+            memcpy(trades[i].ledger_pubkey, player_pubkey, 32);
+            events[transfer_offset + 1u] =
+                (chain_log_batch_event_t){
+                    .type = CHAIN_EVT_TRADE,
+                    .payload = &trades[i],
+                    .payload_len =
+                        (uint16_t)sizeof(trades[i]),
+                };
+        }
+    }
+
+    station_t staged_ledger = {0};
+    ship_t staged_ship_stats = {0};
+    if (include_trade) {
+        staged_ledger.ledger_count = station->ledger_count;
+        memcpy(staged_ledger.ledger, station->ledger,
+               sizeof(station->ledger));
+        staged_ship_stats.stat_credits_spent =
+            sp->ship->stat_credits_spent;
+        float before = ledger_balance_by_pubkey(
+            &staged_ledger, player_pubkey);
+        ledger_force_debit_by_pubkey(
+            &staged_ledger, player_pubkey, (float)total_cost,
+            &staged_ship_stats);
+        float after = ledger_balance_by_pubkey(
+            &staged_ledger, player_pubkey);
+        if (fabsf((after - before) + (float)total_cost) > 0.001f) {
+            cargo_store_cleanup(&staged_ship);
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_STORAGE);
+        }
+    }
+
+    cargo_pod_t staged_pod = *pod;
+    uint16_t remaining =
+        (uint16_t)(staged_pod.manifest_count - moved);
+    if (remaining > 0) {
+        memmove(staged_pod.manifest_units,
+                &staged_pod.manifest_units[moved],
+                (size_t)remaining *
+                    sizeof(staged_pod.manifest_units[0]));
+    }
+    memset(&staged_pod.manifest_units[remaining], 0,
+           (size_t)moved * sizeof(staged_pod.manifest_units[0]));
+    staged_pod.manifest_count = remaining;
+    staged_pod.quantity = remaining;
+    if (include_trade && remaining > 0) {
+        staged_pod.custody_charge_total = charge_total;
+        staged_pod.custody_charge_unit_count =
+            charge_unit_count;
+        staged_pod.custody_charge_units_processed =
+            (uint16_t)(charge_units_processed + moved);
+        if (!cargo_pod_ordered_manifest_digest(
+                &staged_pod,
+                staged_pod.custody_charge_manifest_digest)) {
+            cargo_store_cleanup(&staged_ship);
+            return cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_STORAGE);
+        }
+    }
+    if (remaining == 0 &&
+        !cargo_pod_fold_shell_to_frame(&staged_pod)) {
+        memset(&staged_pod, 0, sizeof(staged_pod));
+    }
+
+    chain_log_append_result_t appended =
+        chain_log_emit_batch(w, station, events, event_count);
+    if (appended.status != CHAIN_LOG_APPEND_OK ||
+        appended.event_count != (uint16_t)event_count ||
+        appended.first_event_id != first_event_id ||
+        appended.last_event_id !=
+            first_event_id + (uint64_t)event_count - 1u) {
+        cargo_store_cleanup(&staged_ship);
+        return cargo_pod_present_reject(
+            w, sp, CARGO_POD_PRESENT_REJECT_LOG);
+    }
+
+    commodity_t presented_commodity = pod->commodity;
+    mining_grade_t presented_grade =
+        cargo_pod_manifest_best_grade(pod);
+    cargo_store_cleanup(&sp->ship->cargo_store);
+    sp->ship->cargo_store = staged_ship;
+    memset(&staged_ship, 0, sizeof(staged_ship));
+    if (include_trade) {
+        station->ledger_count = staged_ledger.ledger_count;
+        memcpy(station->ledger, staged_ledger.ledger,
+               sizeof(station->ledger));
+        sp->ship->stat_credits_spent =
+            staged_ship_stats.stat_credits_spent;
+    }
+    if (!staged_pod.active) {
+        world_cargo_pod_clear_tractor(w, pod_idx);
+    }
+    w->cargo_pods[pod_idx] = staged_pod;
+    if (!staged_pod.active)
+        w->cargo_pod_generation_live[pod_idx] = false;
+    ship_finished_sync(sp->ship, presented_commodity);
+
+    if (include_trade) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_BUY,
+            .player_id = sp->id,
+            .buy = {
+                .station = sp->current_station,
+                .commodity = (uint8_t)presented_commodity,
+                .grade = (uint8_t)presented_grade,
+                .cost = (int)total_cost,
+                .quantity = moved,
+            },
+        });
+    }
+    for (uint16_t i = 0; i < moved; i++) {
+        cargo_receipt_chain_t outgoing = {0};
+        outgoing.len = 1;
+        outgoing.links[0] = receipts[i];
+        server_dispatch_receipt_chain(
+            receipt_sink, receipt_user, &outgoing);
+    }
+    if (out_moved) *out_moved = moved;
+    return CARGO_POD_PRESENT_OK;
+}
+
 static void server_dispatch_buy_named_ingot(
     world_t *w,
     server_player_t *sp,
@@ -13585,7 +15343,12 @@ bool server_dispatch_signed_action_payload(
     server_receipt_chain_sink_fn receipt_sink,
     void *receipt_user,
     server_signed_action_dispatch_result_t *out) {
-    if (out) out->station_identity_dirty = -1;
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        out->station_identity_dirty = -1;
+        out->pod_present_result =
+            CARGO_POD_PRESENT_REJECT_BAD_ARGS;
+    }
     if (!w || player_idx < 0 || player_idx >= MAX_PLAYERS)
         return false;
     server_player_t *sp = &w->players[player_idx];
@@ -13704,8 +15467,71 @@ bool server_dispatch_signed_action_payload(
     case SIGNED_ACTION_PLAN:
         (void)server_apply_signed_plan_payload(sp, payload, payload_len);
         return true;
+    case SIGNED_ACTION_PRESENT_POD:
+    {
+        cargo_pod_present_result_t result =
+            CARGO_POD_PRESENT_REJECT_BAD_ARGS;
+        uint16_t moved = 0;
+        uint16_t action_id = 0;
+        int events_before = w->events.count;
+        bool present_event_valid = false;
+        sim_event_t present_event = {0};
+        if (payload &&
+            (payload_len == 33 || payload_len == 35)) {
+            action_id = server_signed_action_payload_id(
+                payload, payload_len, 33);
+            result = server_present_towed_pod(
+                w, player_idx, payload[0], &payload[1],
+                receipt_sink, receipt_user, &moved);
+        } else {
+            result = cargo_pod_present_reject(
+                w, sp, CARGO_POD_PRESENT_REJECT_BAD_ARGS);
+        }
+        for (int i = events_before; i < w->events.count; i++) {
+            const sim_event_t *ev = &w->events.events[i];
+            if (ev->player_id != sp->id ||
+                (ev->type != SIM_EVENT_ORDER_REJECTED &&
+                 ev->type != SIM_EVENT_BUY)) {
+                continue;
+            }
+            present_event_valid = true;
+            present_event = *ev;
+        }
+        if (result != CARGO_POD_PRESENT_OK &&
+            !present_event_valid) {
+            present_event_valid = true;
+            present_event = (sim_event_t){
+                .type = SIM_EVENT_ORDER_REJECTED,
+                .player_id = sp->id,
+                .order_rejected = {
+                    .reason =
+                        cargo_pod_present_reject_reason(result),
+                },
+            };
+        }
+        /*
+         * These ingress events are delivered immediately by the owning
+         * transport together with their action-correlated result. They must
+         * not remain in the per-tick buffer, even when a caller does not ask
+         * for dispatch details, where world_sim_step() would erase or
+         * misassociate them.
+         */
+        w->events.count = events_before;
+        if (out) {
+            out->pod_present_evaluated = true;
+            out->pod_present_result = result;
+            out->pod_present_moved = moved;
+            out->pod_present_action_id = action_id;
+            out->pod_present_event_valid = present_event_valid;
+            if (present_event_valid)
+                out->pod_present_event = present_event;
+        }
+        return true;
+    }
     case SIGNED_ACTION_CLAIM_CONTRACT:
     case SIGNED_ACTION_CANCEL_CONTRACT:
+    case SIGNED_ACTION_RECOVER_LEGACY_SAVE:
+        /* Persistence owners intercept recovery after signature verification. */
         return true;
     case SIGNED_ACTION_COUNT:
     default:
@@ -14361,8 +16187,7 @@ void world_ensure_seeded_freeport(world_t *w) {
     station_t *st = &w->stations[SIGNAL_FREEPORT_STATION_INDEX];
     if (station_exists(st)) return;
 
-    station_cleanup(st);
-    memset(st, 0, sizeof(*st));
+    station_reset(st);
     (void)station_manifest_bootstrap(st);
     station_authority_init_seeded(st, w->belt_seed,
                                   (uint32_t)SIGNAL_FREEPORT_STATION_INDEX);
@@ -14827,9 +16652,18 @@ static void world_seed_genesis_ship_assets(world_t *w) {
         w, HULL_CLASS_DRONE_TRACTOR, &station_owner,
         1, SHIP_ASSET_PROVENANCE_GENESIS, false, 1);
     if (!actor_principal_from_station(w, 2, &station_owner)) return;
-    (void)world_ship_asset_mint(
+    ship_asset_t *helios_miner = world_ship_asset_mint(
         w, HULL_CLASS_NPC_MINER, &station_owner,
         2, SHIP_ASSET_PROVENANCE_GENESIS, false, 2);
+    if (helios_miner) {
+        /*
+         * Helios is the advanced-beamworks endpoint in the starter
+         * economy. Its station-owned industrial miner is the repeatable
+         * physical Crystal source after Kepler's finite reserve is spent.
+         * Player loaners are minted below and intentionally stay at L1.
+         */
+        helios_miner->stored_ship.mining_level = 2;
+    }
     (void)world_ship_asset_mint(
         w, HULL_CLASS_DRONE_TRACTOR, &station_owner,
         2, SHIP_ASSET_PROVENANCE_GENESIS, false, 2);
@@ -14884,7 +16718,7 @@ void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
     for (int i = 0; i < WORLD_SHIP_CAP; i++)
-        if (w->ships[i].active) ship_cleanup(&w->ships[i].component);
+        ship_cleanup(&w->ships[i].component);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++)
         ship_cleanup(&w->ship_assets[i].stored_ship);
     for (int i = 0; i < MAX_STATIONS; i++)
@@ -15195,6 +17029,7 @@ void world_reset(world_t *w) {
 
     (void)world_ensure_starter_frame_pods(w);
     (void)world_ensure_starter_laser_module_reserve(w);
+    (void)world_ensure_starter_mining_refit_work_order(w);
 
     /* Bootstrap each station's per-ring angular velocity to its drift
      * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to
@@ -15428,12 +17263,40 @@ bool server_finalize_pubkey_identity(world_t *w, int player_idx) {
         return false;
     }
     sp->pubkey_identity_finalized = true;
+    actor_principal_t player = actor_principal_none();
+    if (actor_principal_from_verified_player(sp, &player)) {
+        for (int i = 0; i < MAX_CARGO_PODS; i++) {
+            cargo_pod_t *pod = &w->cargo_pods[i];
+            if (!pod->active ||
+                pod->tow_owner_quarantine_record_id != 0 ||
+                pod->tow_owner_principal.kind !=
+                    ACTOR_PRINCIPAL_UNATTRIBUTED) {
+                continue;
+            }
+            entity_ref_t target = world_entity_ref_for_slot(
+                w, ENTITY_KIND_CARGO_POD, i, -1);
+            const tow_link_t *link =
+                world_tow_link_for_target_const(w, target);
+            if (link &&
+                link->profile == TOW_PROFILE_SHIP_POD &&
+                entity_ref_equal(
+                    link->source, sp->ship_ref)) {
+                pod->tow_owner_principal = player;
+            }
+        }
+    }
+    world_cargo_pod_refresh_owner_projections(w);
     return true;
 }
 
 bool server_parse_session_message(const uint8_t *data, int len,
                                   server_session_message_t *out) {
-    if (!data || !out || len < 9) return false;
+    if (!data || !out ||
+        (len != 9 &&
+         len != SESSION_MSG_PROTOCOL_OFFSET &&
+         len != SESSION_MSG_SIZE)) {
+        return false;
+    }
     if (data[0] != NET_MSG_SESSION) return false;
     memset(out, 0, sizeof(*out));
     memcpy(out->token, &data[1], 8);
@@ -15442,7 +17305,18 @@ bool server_parse_session_message(const uint8_t *data, int len,
         out->callsign[7] = '\0';
         out->has_callsign = true;
     }
+    if (len >= SESSION_MSG_SIZE) {
+        out->protocol_version =
+            read_u16_le(&data[SESSION_MSG_PROTOCOL_OFFSET]);
+        out->has_protocol_version = true;
+    }
     return true;
+}
+
+bool server_session_protocol_compatible(
+    const server_session_message_t *msg) {
+    return msg && msg->has_protocol_version &&
+        msg->protocol_version == SIGNAL_PROTOCOL_VERSION;
 }
 
 bool server_apply_session_message(world_t *w, int player_idx,
@@ -15487,6 +17361,122 @@ bool server_player_start_generated_session(server_player_t *sp) {
     sp->session_ready = true;
     sp->connected = true;
     return true;
+}
+
+bool server_finalize_generated_bot_identity(
+    world_t *w, int player_idx,
+    uint32_t logical_bot_ordinal) {
+    static const uint8_t domain[] =
+        "SIGNAL-server-bot-player-v1";
+    if (!w || player_idx < 0 ||
+        player_idx >= MAX_PLAYERS ||
+        logical_bot_ordinal >= MAX_PLAYERS) {
+        return false;
+    }
+    server_player_t *sp =
+        &w->players[player_idx];
+    if (sp->id != (uint8_t)player_idx ||
+        !sp->connected || !sp->session_ready ||
+        sp->pubkey_set ||
+        sp->pubkey_identity_finalized ||
+        !secure_bytes_nonzero(
+            sp->session_token,
+            sizeof(sp->session_token))) {
+        return false;
+    }
+
+    /*
+     * Seeded station zero is the stable server-operator trust root already
+     * rederived on every load. Hashing its private runtime material keeps the
+     * bot key unavailable to clients while the logical ordinal makes it
+     * independent of runtime slot occupancy and station topology.
+     */
+    const station_t *root =
+        &w->stations[0];
+    if (!station_exists(root) ||
+        !secure_bytes_nonzero(
+            root->station_secret,
+            sizeof(root->station_secret))) {
+        return false;
+    }
+    uint8_t ordinal_le[4] = {
+        (uint8_t)(logical_bot_ordinal & 0xffu),
+        (uint8_t)((logical_bot_ordinal >> 8) &
+                  0xffu),
+        (uint8_t)((logical_bot_ordinal >> 16) &
+                  0xffu),
+        (uint8_t)((logical_bot_ordinal >> 24) &
+                  0xffu),
+    };
+    uint8_t seed[32] = {0};
+    uint8_t pubkey[32] = {0};
+    uint8_t secret[64] = {0};
+    sha256_ctx_t hash;
+    sha256_init(&hash);
+    sha256_update(&hash, root->station_secret,
+                  sizeof(root->station_secret));
+    sha256_update(&hash, domain,
+                  sizeof(domain) - 1u);
+    sha256_update(&hash, ordinal_le,
+                  sizeof(ordinal_le));
+    sha256_final(&hash, seed);
+    signal_crypto_keypair_from_seed(
+        seed, pubkey, secret);
+
+    bool duplicate_live = false;
+    for (int other_idx = 0;
+         other_idx < MAX_PLAYERS; other_idx++) {
+        if (other_idx == player_idx) continue;
+        const server_player_t *other =
+            &w->players[other_idx];
+        if (!server_player_has_live_session(other) ||
+            !server_player_can_use_pubkey_persistence(other) ||
+            !other->pubkey_identity_finalized) {
+            continue;
+        }
+        if (memcmp(other->pubkey, pubkey,
+                   sizeof(pubkey)) == 0) {
+            duplicate_live = true;
+            break;
+        }
+    }
+    if (duplicate_live ||
+        !secure_bytes_nonzero(pubkey,
+                              sizeof(pubkey))) {
+        signal_memzero_explicit(
+            secret, sizeof(secret));
+        signal_memzero_explicit(seed, sizeof(seed));
+        signal_memzero_explicit(
+            pubkey, sizeof(pubkey));
+        signal_memzero_explicit(
+            &hash, sizeof(hash));
+        return false;
+    }
+
+    memcpy(sp->pubkey, pubkey,
+           sizeof(sp->pubkey));
+    sp->pubkey_set = true;
+    /*
+     * This path is callable only by the authoritative server after it creates
+     * the bot's private session. It is the internal equivalent of a completed
+     * client challenge, not a bypass reachable from network messages.
+     */
+    sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
+    bool finalized =
+        server_finalize_pubkey_identity(
+            w, player_idx);
+    if (!finalized)
+        (void)server_player_abandon_pending_pubkey_identity(sp);
+
+    signal_memzero_explicit(
+        secret, sizeof(secret));
+    signal_memzero_explicit(seed, sizeof(seed));
+    signal_memzero_explicit(
+        pubkey, sizeof(pubkey));
+    signal_memzero_explicit(
+        &hash, sizeof(hash));
+    return finalized;
 }
 
 static void server_reset_pubkey_challenge(server_player_t *sp);
@@ -15534,6 +17524,8 @@ bool server_dispatch_register_pubkey_message(
 static void server_reset_pubkey_challenge(server_player_t *sp) {
     if (!sp) return;
     memset(sp->pubkey_challenge, 0, sizeof(sp->pubkey_challenge));
+    memset(sp->pubkey_proof_transcript, 0,
+           sizeof(sp->pubkey_proof_transcript));
     sp->pubkey_challenge_issued = false;
     sp->pubkey_challenge_consumed = false;
 }
@@ -15623,6 +17615,24 @@ bool server_dispatch_pubkey_proof_message(
     }
 
     if (status == SERVER_PUBKEY_PROOF_OK) {
+        /*
+         * Preserve a non-secret digest of the exact verified proof before
+         * erasing its one-time challenge.  The recovery offer binds to this
+         * transcript as well as the transport generation and identity.
+         */
+        static const char transcript_domain[] =
+            "SIGNAL-pubkey-proof-transcript-v1";
+        sha256_ctx_t transcript;
+        sha256_init(&transcript);
+        sha256_update(&transcript, transcript_domain,
+                      sizeof(transcript_domain) - 1u);
+        sha256_update(&transcript, sp->pubkey_challenge,
+                      sizeof(sp->pubkey_challenge));
+        sha256_update(&transcript, token, 8u);
+        sha256_update(&transcript, pk, 32u);
+        sha256_update(&transcript, sig, 64u);
+        sha256_final(&transcript, sp->pubkey_proof_transcript);
+        signal_memzero_explicit(&transcript, sizeof(transcript));
         sp->pubkey_proof_ok = true;
         sp->pubkey_challenge_consumed = true;
         memset(sp->pubkey_challenge, 0,
@@ -15633,6 +17643,29 @@ bool server_dispatch_pubkey_proof_message(
         out->verified = status == SERVER_PUBKEY_PROOF_OK;
     }
     return true;
+}
+
+bool server_dispatch_legacy_save_claim_message(
+    const world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_legacy_save_claim_result_t *out) {
+    if (out) out->status = SERVER_LEGACY_SAVE_CLAIM_MALFORMED;
+    if (!w || !data || player_idx < 0 || player_idx >= MAX_PLAYERS ||
+        len < 1 || data[0] != NET_MSG_CLAIM_LEGACY_SAVE) {
+        return false;
+    }
+
+    /*
+     * The retired format lets the claimant choose a filesystem basename.
+     * Do not parse even one payload byte: valid signatures only prove
+     * possession of the claimant's unrelated pubkey. Keeping this function
+     * const and filesystem-free makes the containment boundary shared by the
+     * dedicated and loopback authorities.
+     */
+    if (out) out->status = SERVER_LEGACY_SAVE_CLAIM_DISABLED;
+    return false;
 }
 
 const char *server_pubkey_proof_status_name(
@@ -15775,6 +17808,23 @@ void world_player_runtime_slot_reset(world_t *w, int player_slot) {
     w->players[player_slot].replication = &w->replications[player_slot];
 }
 
+bool world_player_abort_provisional_legacy_recovery(
+    world_t *w, int player_slot) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS)
+        return false;
+    server_player_t *sp = &w->players[player_slot];
+    if (!sp->legacy_recovery_save_pending ||
+        sp->pubkey_identity_finalized ||
+        sp->ship != NULL ||
+        !entity_ref_is_none(sp->ship_ref) ||
+        sp->ship_asset_id != SHIP_ASSET_ID_NONE ||
+        w->characters[player_slot].active) {
+        return false;
+    }
+    world_player_runtime_slot_reset(w, player_slot);
+    return true;
+}
+
 void server_player_clear_live_session_identity(server_player_t *sp) {
     if (!sp) return;
     memset(sp->session_token, 0, sizeof(sp->session_token));
@@ -15784,6 +17834,7 @@ void server_player_clear_live_session_identity(server_player_t *sp) {
     sp->pubkey_proof_ok = false;
     sp->pubkey_identity_finalized = false;
     server_reset_pubkey_challenge(sp);
+    sp->legacy_recovery_save_pending = false;
     sp->preserve_live_state_on_pubkey_finalize = false;
     sp->last_signed_nonce = 0;
 }

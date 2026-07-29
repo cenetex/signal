@@ -287,7 +287,8 @@ const char *cargo_receipt_trust_status_name(
  *   we ship in NET_MSG_PRESENT_RECEIPT_CHAIN with no extra round-trip.
  *
  * Invariant after a consistent op: count == ship->manifest.count, and
- * for every i in [0, count) chains[i].len in [1, CHAIN_MAX_LEN].
+ * for every i in [0, count) chains[i].len in [0, CHAIN_MAX_LEN];
+ * zero means the manifest row has no attached receipt sidecar yet.
  *
  * "Consistent op" means: any code path that pushes a cargo_unit_t into
  * ship.manifest must also push the matching receipt into ship.receipts
@@ -301,6 +302,12 @@ typedef struct {
     cargo_receipt_chain_t *chains; /* heap-allocated, capacity == cap */
     uint16_t count;                /* must mirror manifest.count */
     uint16_t cap;
+    /*
+     * Process-local semantic version for the aligned chain view. Tokens are
+     * unique until saturation, copied by exact snapshot clones, and never
+     * serialized. UINT64_MAX means saturated/un-cacheable.
+     */
+    uint64_t semantic_generation;
 } ship_receipts_t;
 
 /* Lifecycle helpers. ship_receipts_init/_free are pure ship_receipts_t
@@ -312,6 +319,17 @@ void ship_receipts_free(ship_receipts_t *r);
 void ship_receipts_clear(ship_receipts_t *r);
 bool ship_receipts_reserve(ship_receipts_t *r, uint16_t cap);
 bool ship_receipts_clone(ship_receipts_t *dst, const ship_receipts_t *src);
+
+/* Replace one aligned chain, normalizing the unused tail to zero. A NULL
+ * chain clears the slot while preserving manifest/receipt count parity. */
+bool ship_receipts_set_chain(ship_receipts_t *r, uint16_t index,
+                             const cargo_receipt_chain_t *chain);
+
+/* Clear every attached chain while preserving count/index parity. */
+bool ship_receipts_clear_chains(ship_receipts_t *r);
+
+/* Swap two aligned receipt rows and advance the semantic generation. */
+bool ship_receipts_swap(ship_receipts_t *r, uint16_t a, uint16_t b);
 
 /* Append a chain (1..CHAIN_MAX_LEN receipts) to the receipts store.
  * Mirrors manifest_push. Returns false if cap would overflow or `len`

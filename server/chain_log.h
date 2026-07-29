@@ -38,6 +38,8 @@
 
 #include "types.h"
 #include "game_sim.h"  /* world_t (anonymous struct typedef) */
+#include "cargo_craft_provenance.h"
+#include "cargo_smelt_provenance.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -80,8 +82,9 @@ typedef enum {
     CHAIN_EVT_FRAGMENT_TOW     = 8,  /* player tractor grabs a fragment */
     CHAIN_EVT_FRAGMENT_RELEASE = 9,  /* tow ended without smelt */
     /* Player death: highscores are now a view of these events replayed
-     * out of the chain log at server boot. Carries the run summary
-     * (credits/ore/asteroids) plus victim+killer tokens for attribution. */
+     * out of the chain log at server boot. Carries the run summary plus a
+     * verified victim pubkey and presentation labels. Token-shaped fields in
+     * the legacy fixed layout are zero in all newly emitted records. */
     CHAIN_EVT_DEATH            = 10,
     /* Construction contribution: a named manifest unit was consumed into
      * infrastructure. This is the provenance bridge from "cargo existed"
@@ -92,9 +95,9 @@ typedef enum {
      * history. This records reputation only; payouts and cargo movement still
      * resolve through exact contracts, ledgers, manifests, and receipts. */
     CHAIN_EVT_ROUTE_HISTORY    = 12,
-    /* Fracture-claim resolution: persists enough preimage material for
-     * offline verifiers to recompute fragment_pub and the rarity grade
-     * before a later SMELT consumes that fragment into a cargo unit. */
+    /* Fracture-claim observation: persists enough claim-local inputs to
+     * recompute fragment_pub and grade math. It does not bind those inputs
+     * to canonical asteroid/material evidence and is not mining proof. */
     CHAIN_EVT_CLAIM_FRAGMENT   = 13,
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
@@ -217,14 +220,15 @@ typedef enum {
 } operator_post_kind_t;
 
 /* Fragment-tow event: a player has taken possession of a fragment via
- * tractor. tower_player_pub is the tower's identity pubkey; for
- * unregistered (legacy) clients that's all-zero and the
- * tower_session_token holds the legacy 8-byte session ID instead. */
+ * tractor. tower_player_pub is the tower's verified identity pubkey.
+ * tower_session_token is a retired legacy field: new writers MUST leave it
+ * zero because session IDs are reconnect bearer credentials. Historical
+ * non-zero bytes decode only as legacy/unattributed evidence. */
 SIGNAL_PACK_PUSH
 typedef struct {
     uint8_t  fragment_pub[32];        /* the rock that's now under tow */
     uint8_t  tower_player_pub[32];    /* identity pubkey, or 0 for anonymous */
-    uint8_t  tower_session_token[8];  /* legacy session ID (lower 8 bytes) */
+    uint8_t  tower_session_token[8];  /* RETIRED: new writers emit zero */
     uint64_t epoch_tick;              /* sim tick when tow began */
 } SIGNAL_PACKED chain_payload_fragment_tow_t;
 SIGNAL_PACK_POP
@@ -250,29 +254,27 @@ SIGNAL_PACK_PUSH
 typedef struct {
     uint8_t  fragment_pub[32];        /* the rock whose tow just ended */
     uint8_t  tower_player_pub[32];    /* who was towing — same as TOW event */
-    uint8_t  tower_session_token[8];  /* legacy session ID */
+    uint8_t  tower_session_token[8];  /* RETIRED: new writers emit zero */
     uint64_t epoch_tick;              /* sim tick when release happened */
     uint8_t  reason;                   /* fragment_release_reason_t */
     uint8_t  _pad[7];                  /* MUST be zero */
 } SIGNAL_PACKED chain_payload_fragment_release_t;
 SIGNAL_PACK_POP
 
-/* Death event: a single run ended. Replayed out of the chain log at
- * server boot to rebuild the in-memory highscore table — there is no
- * separate highscores.dat anymore. victim_pubkey is zeroed for legacy
- * (un-registered) clients; victim_session_token is always populated.
- * killer_token is the killer's session_token (zero if unattributed /
- * NPC / self). killed_by_callsign is resolved against the connected
- * players list at emit time — leaves the field zero for NPC kills,
- * disconnected players, or self-destructs. The replay walker reads
- * this field directly; the legacy victim-callsign-map fallback only
- * kicks in for events emitted before this field existed. */
+/* Death event: a single run ended. Replayed out of the chain log at server
+ * boot to rebuild the in-memory highscore table. victim_pubkey is zero for
+ * unverified/legacy clients. victim_session_token and killer_token are
+ * retired legacy fields: new writers MUST leave both zero because session
+ * IDs are reconnect bearer credentials. killed_by_callsign is resolved
+ * transiently at emit time for compatibility; it is presentation, not
+ * authority. Historical token fields remain readable only by the legacy
+ * replay fallback and must never be re-emitted as actor identity. */
 SIGNAL_PACK_PUSH
 typedef struct {
     uint8_t  victim_pubkey[32];        /* 0 for legacy clients */
-    uint8_t  victim_session_token[8];
+    uint8_t  victim_session_token[8]; /* RETIRED: new writers emit zero */
     uint8_t  victim_callsign[8];       /* not NUL-terminated if 8 chars */
-    uint8_t  killer_token[8];
+    uint8_t  killer_token[8];         /* RETIRED: new writers emit zero */
     uint8_t  cause;                    /* death_cause_t */
     uint8_t  _pad[7];                  /* MUST be zero */
     uint64_t epoch_tick;
@@ -624,6 +626,13 @@ typedef struct {
      */
     uint8_t output_semantics_version;
     cargo_unit_t output_cargo;
+    /*
+     * Populated for the matching transform after the containing chain event
+     * has been verified. V1 can therefore be station-attested while its
+     * stronger lineage/proof flags remain false.
+     */
+    cargo_smelt_provenance_result_t smelt_provenance;
+    cargo_craft_provenance_result_t craft_provenance;
     chain_payload_smelt_t smelt;
     chain_payload_craft_t craft;
 } chain_cargo_transform_t;
@@ -639,6 +648,26 @@ typedef bool (*chain_cargo_transform_visitor_t)(
     const chain_cargo_transform_t *transform,
     void *user);
 
+typedef bool (*chain_cargo_transfer_visitor_t)(
+    const chain_payload_transfer_t *transfer,
+    void *user);
+
+enum {
+    CHAIN_LOG_EVIDENCE_SNAPSHOT_MAX_BYTES =
+        64 * 1024 * 1024,
+};
+
+/*
+ * Copy one already-open path-backed log into a bounded anonymous file.
+ * Verification and interpretation must both use the returned snapshot to
+ * exclude pathname replacement and in-place mutation between passes.
+ * `source` remains caller-owned; `*out_snapshot` is NULL on failure and
+ * caller-owned on success.
+ */
+bool chain_log_snapshot_evidence_file(
+    FILE *source,
+    FILE **out_snapshot);
+
 /*
  * Visit exactly `verified_event_count` events from an already-open log.
  * The caller must first verify the same FILE* with
@@ -653,6 +682,23 @@ bool chain_log_visit_cargo_transforms_from_verified_file(
     chain_cargo_transform_visitor_t visitor,
     void *user,
     size_t *out_transform_count,
+    uint8_t out_last_hash[32]);
+
+/*
+ * Build origin and prior-transfer evidence from the same already-verified
+ * descriptor. Either visitor may be NULL, but at least one is required.
+ * `verified_event_count` is the exact bound returned by
+ * chain_log_verify_with_pubkey(); trailing or truncated records fail closed.
+ */
+bool chain_log_visit_cargo_evidence_from_verified_file(
+    FILE *log,
+    uint64_t verified_event_count,
+    chain_cargo_transform_visitor_t transform_visitor,
+    void *transform_user,
+    chain_cargo_transfer_visitor_t transfer_visitor,
+    void *transfer_user,
+    size_t *out_transform_count,
+    size_t *out_transfer_count,
     uint8_t out_last_hash[32]);
 
 /* Sequentially visit every SMELT/CRAFT output in one identity log. Call only

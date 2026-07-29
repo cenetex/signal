@@ -43,7 +43,8 @@ bool signal_crypto_keypair(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
  * (founder_pubkey || station_name || planted_tick).
  *
  * secret[64] is laid out as (seed[32] || pub[32]) per the NaCl convention
- * — same shape as signal_crypto_keypair's output. */
+ * — same shape as signal_crypto_keypair's output. Invalid inputs clear every
+ * non-null output. */
 void signal_crypto_keypair_from_seed(const uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYTES],
                                      uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
                                      uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]);
@@ -64,13 +65,16 @@ void signal_crypto_test_set_entropy_provider(
 void signal_crypto_test_reset_entropy_provider(void);
 #endif
 
-/* Detached Ed25519 signature over msg[0..len). sig[64] is the result. */
+/* Detached Ed25519 signature over msg[0..len). sig[64] is the result.
+ * Invalid inputs, allocation failure, or an overflowing attached-message
+ * length clear every non-null signature output. */
 void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
                         const uint8_t *msg, size_t len,
                         const uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]);
 
 /* Returns true iff sig[64] is a valid Ed25519 signature on msg[0..len)
- * by the holder of pub[32]. */
+ * by the holder of pub[32]. Invalid inputs and overflowing lengths fail
+ * closed. */
 bool signal_crypto_verify(const uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
                           const uint8_t *msg, size_t len,
                           const uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES]);

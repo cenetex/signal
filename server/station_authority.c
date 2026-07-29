@@ -6,11 +6,13 @@
 #include "station_authority.h"
 
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "base58.h"
 #include "sha256.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 
 _Static_assert(sizeof(station_authority_record_t) == 36,
                "public authority registry record must remain fixed-width");
@@ -48,6 +50,7 @@ static const char DEV_SECRET[]           = "signal-dev-station-authority-secret"
 
 static uint8_t station_auth_secret_root[32];
 static bool station_auth_secret_ready = false;
+static bool station_auth_cleanup_registered = false;
 
 static bool station_authority_pubkey_is_zero(const uint8_t pubkey[32]) {
     static const uint8_t zero[32] = {0};
@@ -338,18 +341,33 @@ static void station_authority_hash_secret(const char *secret,
     sha256_update(&c, SECRET_SEED_DOMAIN, sizeof(SECRET_SEED_DOMAIN) - 1);
     sha256_update(&c, secret, strlen(secret));
     sha256_final(&c, out_root);
+    signal_memzero_explicit(&c, sizeof(c));
 }
 
 bool station_authority_configure_secret(const char *secret) {
     if (!secret || secret[0] == '\0') return false;
-    station_authority_hash_secret(secret, station_auth_secret_root);
+    if (!station_auth_cleanup_registered) {
+        station_auth_cleanup_registered =
+            atexit(station_authority_clear_secret) == 0;
+    }
+    uint8_t next_root[sizeof(station_auth_secret_root)];
+    station_authority_hash_secret(secret, next_root);
+    signal_memzero_explicit(station_auth_secret_root,
+                            sizeof(station_auth_secret_root));
+    memcpy(station_auth_secret_root, next_root, sizeof(next_root));
+    signal_memzero_explicit(next_root, sizeof(next_root));
     station_auth_secret_ready = true;
     return true;
 }
 
+void station_authority_clear_secret(void) {
+    signal_memzero_explicit(station_auth_secret_root,
+                            sizeof(station_auth_secret_root));
+    station_auth_secret_ready = false;
+}
+
 void station_authority_use_dev_secret(void) {
-    station_authority_hash_secret(DEV_SECRET, station_auth_secret_root);
-    station_auth_secret_ready = true;
+    (void)station_authority_configure_secret(DEV_SECRET);
 }
 
 static const uint8_t *station_authority_secret_root(void) {
@@ -380,6 +398,9 @@ void station_authority_seeded_seed(uint32_t world_seed,
     idx_le[3] = (uint8_t)((station_index >> 24) & 0xFFu);
     sha256_update(&c, idx_le, 4);
     sha256_final(&c, out_seed);
+    signal_memzero_explicit(&c, sizeof(c));
+    signal_memzero_explicit(seed_le, sizeof(seed_le));
+    signal_memzero_explicit(idx_le, sizeof(idx_le));
 }
 
 void station_authority_outpost_seed(const uint8_t founder_pub[32],
@@ -409,6 +430,9 @@ void station_authority_outpost_seed(const uint8_t founder_pub[32],
     sha256_update(&c, name_buf, sizeof(name_buf));
     sha256_update(&c, tick_le, sizeof(tick_le));
     sha256_final(&c, out_seed);
+    signal_memzero_explicit(&c, sizeof(c));
+    signal_memzero_explicit(name_buf, sizeof(name_buf));
+    signal_memzero_explicit(tick_le, sizeof(tick_le));
 }
 
 void station_authority_init_seeded(station_t *s,
@@ -418,6 +442,7 @@ void station_authority_init_seeded(station_t *s,
     uint8_t seed[32];
     station_authority_seeded_seed(world_seed, station_index, seed);
     signal_crypto_keypair_from_seed(seed, s->station_pubkey, s->station_secret);
+    signal_memzero_explicit(seed, sizeof(seed));
     station_authority_registry_init(s);
     /* Seeded stations have no founder / planted_tick provenance. */
     memset(s->outpost_founder_pubkey, 0, sizeof(s->outpost_founder_pubkey));
@@ -437,6 +462,7 @@ void station_authority_init_outpost(station_t *s,
     station_authority_outpost_seed(s->outpost_founder_pubkey, s->name,
                                     planted_tick, seed);
     signal_crypto_keypair_from_seed(seed, s->station_pubkey, s->station_secret);
+    signal_memzero_explicit(seed, sizeof(seed));
     station_authority_registry_init(s);
 }
 
@@ -445,7 +471,9 @@ station_authority_rederive_result_t station_authority_rederive_secret(
     uint32_t world_seed,
     int station_index) {
     if (!s) return STATION_AUTHORITY_REDERIVE_REJECTED;
-    uint8_t seed[32];
+    station_authority_rederive_result_t result =
+        STATION_AUTHORITY_REDERIVE_REJECTED;
+    uint8_t seed[32] = {0};
     if (station_index >= 0 && station_index < SIGNAL_SEEDED_STATION_COUNT) {
         station_authority_seeded_seed(world_seed,
                                        (uint32_t)station_index, seed);
@@ -455,8 +483,8 @@ station_authority_rederive_result_t station_authority_rederive_secret(
                                         s->name,
                                         s->outpost_planted_tick, seed);
     }
-    uint8_t derived_pub[32];
-    uint8_t derived_secret[64];
+    uint8_t derived_pub[32] = {0};
+    uint8_t derived_secret[64] = {0};
     signal_crypto_keypair_from_seed(seed, derived_pub, derived_secret);
     /* If the saved pubkey is zero (pre-v40 save with no station
      * identity field), stamp the rederived pubkey so the station has a
@@ -467,11 +495,12 @@ station_authority_rederive_result_t station_authority_rederive_secret(
     bool saved_zero = station_authority_pubkey_is_zero(s->station_pubkey);
     if (saved_zero) {
         if (!station_authority_registry_validate(s))
-            return STATION_AUTHORITY_REDERIVE_REJECTED;
+            goto station_authority_rederive_done;
         memcpy(s->station_pubkey, derived_pub, 32);
         memcpy(s->station_secret, derived_secret, 64);
         station_authority_registry_init(s);
-        return STATION_AUTHORITY_REDERIVE_UNCHANGED;
+        result = STATION_AUTHORITY_REDERIVE_UNCHANGED;
+        goto station_authority_rederive_done;
     }
 
     /*
@@ -493,16 +522,23 @@ station_authority_rederive_result_t station_authority_rederive_secret(
         }
     }
     if (!station_authority_registry_validate(s))
-        return STATION_AUTHORITY_REDERIVE_REJECTED;
+        goto station_authority_rederive_done;
 
     if (memcmp(s->station_pubkey, derived_pub, 32) == 0) {
         memcpy(s->station_secret, derived_secret, 64);
-        return STATION_AUTHORITY_REDERIVE_UNCHANGED;
+        result = STATION_AUTHORITY_REDERIVE_UNCHANGED;
+        goto station_authority_rederive_done;
     }
     if (!station_authority_registry_rekey(s, derived_pub))
-        return STATION_AUTHORITY_REDERIVE_REJECTED;
+        goto station_authority_rederive_done;
     memcpy(s->station_secret, derived_secret, 64);
-    return STATION_AUTHORITY_REDERIVE_REKEYED;
+    result = STATION_AUTHORITY_REDERIVE_REKEYED;
+
+station_authority_rederive_done:
+    signal_memzero_explicit(seed, sizeof(seed));
+    signal_memzero_explicit(derived_secret, sizeof(derived_secret));
+    signal_memzero_explicit(derived_pub, sizeof(derived_pub));
+    return result;
 }
 
 void station_sign(const station_t *s, const uint8_t *msg, size_t len,

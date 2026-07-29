@@ -33,6 +33,30 @@ bool actor_principal_from_verified_player(
     actor_principal_t *out);
 
 /*
+ * NPC session_token is the persisted economic identity already carried
+ * across world saves. Domain-separate and hash it before placing it in the
+ * public principal namespace; runtime NPC slots, roles, and home stations
+ * are deliberately excluded so reassignment cannot change durable ownership.
+ */
+bool actor_principal_from_npc(
+    const npc_ship_t *npc,
+    actor_principal_t *out);
+
+/*
+ * Slot-aware fast path: prove the active slot's persisted token is non-zero
+ * and unique with bounded raw-token comparisons, then hash it exactly once.
+ * Use this when the caller already knows the candidate NPC slot; keep the
+ * generic resolver below for lookup from an unknown principal.
+ * out_token_conflict is optional and distinguishes a duplicate persisted
+ * token from an inactive/zero/invalid slot for legacy quarantine diagnostics.
+ */
+bool actor_principal_from_unique_npc_slot(
+    const world_t *w,
+    int npc_slot,
+    actor_principal_t *out,
+    bool *out_token_conflict);
+
+/*
  * Construct and resolve immutable station actors. station_actor_id is
  * deliberately independent of the station's rotating signing key.
  */
@@ -64,7 +88,16 @@ actor_resolution_result_t world_resolve_player_principal(
     const world_t *w,
     const actor_principal_t *principal);
 
+actor_resolution_result_t world_resolve_npc_principal(
+    const world_t *w,
+    const actor_principal_t *principal);
+
 actor_resolution_result_t world_resolve_station_principal(
+    const world_t *w,
+    const actor_principal_t *principal);
+
+/* Dispatch PLAYER/NPC/STATION through the matching stable resolver. */
+actor_resolution_result_t world_resolve_actor_principal(
     const world_t *w,
     const actor_principal_t *principal);
 

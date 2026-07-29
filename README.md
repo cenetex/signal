@@ -570,15 +570,15 @@ make ws-backpressure-soak-short  # 30s + 30s CI/development regression mode
 By default the harness launches an isolated relay with the production
 per-client-IP gate still enabled, using trusted proxy addresses only to model
 distinct clients. A dedicated, disabled-by-default backpressure fixture fills
-the canonical bounded manifest and supplies a funded docked legacy identity;
-the harness discovers it through the station API using an ephemeral Bearer
-token, then proves real WebSocket buy/deliver cycles by observing the concrete
-cargo identity disappear from and return to the station manifest. It waits for
-every session and initial sync to settle, then compares equal-duration
-baseline and slow-reader windows. Both modes rely on genuine manifest
-revisions through the production serializer. The fixture cycles four canonical
-240-detail manifests at the normal 10 Hz world cadence, while provenance-valid
-buy/deliver actions run at a lower rate. This
+the canonical bounded manifest and supplies a funded docked identity directly
+to the disposable local harness; the station API never discloses its bearer
+credential. The harness proves real WebSocket buy/deliver cycles by observing
+the concrete cargo identity disappear from and return to the station manifest.
+It waits for every session and initial sync to settle, then compares
+equal-duration baseline and slow-reader windows. Both modes rely on genuine
+manifest revisions through the production serializer. The fixture cycles four
+canonical 240-detail manifests at the normal 10 Hz world cadence, while
+provenance-valid buy/deliver actions run at a lower rate. This
 separates transport pressure from durable chain-log I/O while still proving
 exact cargo removal and restoration during both phases; round-robin selection
 also stays below the 16-link receipt cap. Short mode increases the proof-action
@@ -587,8 +587,8 @@ payload bytes/sec, process RSS, queue high-water and disconnect-reason
 telemetry, raw end-to-end input-ack p95/p99 latency (plus a
 server-time-excluded diagnostic), world-tick cadence, verified manifest
 transfers, and sampled disconnect timing. Pass `--url`, `--server-pid`, and
-`--api-token` to target an existing relay, or `--json-out` to retain the
-machine-readable report.
+`--funded-session-token` to target an existing disposable fixture, or
+`--json-out` to retain the machine-readable report.
 
 Production runs the web client and headless multiplayer relay as one small
 Fly.io app with a persistent volume and auto-start/auto-suspend. See

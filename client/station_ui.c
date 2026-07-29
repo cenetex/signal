@@ -412,6 +412,123 @@ static bool ui_upgrade_input_gate_label(ship_upgrade_t upgrade,
     return true;
 }
 
+static bool ui_first_mining_refit_stock_source_label(
+    ship_upgrade_t upgrade,
+    const ship_t *ship,
+    int station_units,
+    char *out,
+    size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (upgrade != SHIP_UPGRADE_MINING ||
+        !ship || ship->mining_level != 0 || station_units <= 0) {
+        return false;
+    }
+
+    int best_station = -1;
+    int best_stock = 0;
+    float best_distance_sq = 0.0f;
+    int station_count = g.world.station_count;
+    if (station_count > MAX_STATIONS) station_count = MAX_STATIONS;
+    for (int s = 0; s < station_count; s++) {
+        const station_t *candidate = &g.world.stations[s];
+        if (!station_is_active(candidate) ||
+            !station_provides_docking(candidate)) {
+            continue;
+        }
+        int stock = (int)floorf(
+            client_station_stock_amount(
+                candidate, COMMODITY_LASER_MODULE) +
+            FLOAT_EPSILON);
+        if (stock < station_units) continue;
+        float distance_sq = v2_dist_sq(ship->pos, candidate->pos);
+        if (best_station < 0 ||
+            distance_sq < best_distance_sq) {
+            best_station = s;
+            best_stock = stock;
+            best_distance_sq = distance_sq;
+        }
+    }
+    if (best_station < 0) return false;
+
+    char station_name[16];
+    ui_station_name_short(
+        best_station, station_name, sizeof(station_name));
+    const station_t *source = &g.world.stations[best_station];
+    int price = (int)lroundf(
+        upgrade_station_credit_cost(
+            source, ship, upgrade, station_units));
+    const contract_t *work_order = NULL;
+    if (strcmp(source->station_slug, "kepler") == 0) {
+        for (int i = 0; i < MAX_CONTRACTS; i++) {
+            const contract_t *candidate = &g.world.contracts[i];
+            if (!candidate->active ||
+                !starter_refit_work_order_matches(candidate)) {
+                continue;
+            }
+            if (!work_order ||
+                contract_price(candidate) >
+                    contract_price(work_order)) {
+                work_order = candidate;
+            }
+        }
+    }
+    if (work_order && contract_price(work_order) > FLOAT_EPSILON) {
+        /*
+         * The marked order is an atomic bulk handoff. Its price ages like
+         * every visible contract quote, but that must never make the UI
+         * advertise fewer units than the server-side quota still requires.
+         */
+        int haul_units = (int)ceilf(
+            work_order->quantity_needed - FLOAT_EPSILON);
+        if (haul_units > 0) {
+            snprintf(
+                out, cap,
+                "%s has %d; %d local cr; WORK: haul all %d FE Ingots "
+                "from Prospect together; dock + [M]",
+                station_name, best_stock, price, haul_units);
+            return true;
+        }
+    }
+    snprintf(
+        out, cap, "%s has %d; %d cr; dock + [M]",
+        station_name, best_stock, price);
+    return true;
+}
+
+static bool ui_first_mining_refit_production_source_label(
+    ship_upgrade_t upgrade,
+    const ship_t *ship,
+    char *out,
+    size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (upgrade != SHIP_UPGRADE_MINING ||
+        !ship || ship->mining_level != 0) {
+        return false;
+    }
+
+    int station_count = g.world.station_count;
+    if (station_count > MAX_STATIONS) station_count = MAX_STATIONS;
+    for (int s = 0; s < station_count; s++) {
+        const station_t *candidate = &g.world.stations[s];
+        if (!station_is_active(candidate) ||
+            !station_has_module(candidate, MODULE_LASER_FAB)) {
+            continue;
+        }
+        char station_name[16];
+        ui_station_name_short(s, station_name, sizeof(station_name));
+        snprintf(
+            out, cap,
+            "%s production pending; check WORK / haul",
+            station_name);
+        return true;
+    }
+    return false;
+}
+
 static int ui_required_mining_level_for_tier(asteroid_tier_t tier)
 {
     switch (tier) {
@@ -497,6 +614,7 @@ bool station_laser_refit_summary(char *out, size_t out_size)
 
     char source[112];
     char gate[80];
+    char supply[96];
     bool has_source = ui_upgrade_source_label(SHIP_UPGRADE_MINING,
                                               source, sizeof(source));
     bool has_gate = ui_upgrade_input_gate_label(SHIP_UPGRADE_MINING, ship,
@@ -509,18 +627,25 @@ bool station_laser_refit_summary(char *out, size_t out_size)
              ? ui.mining_units_needed
              : ui.mining_units_in_cargo);
     if (from_station < 0) from_station = 0;
-
-    if (upgrade_uses_starter_refit_subsidy(ui.station, ship,
-                                           SHIP_UPGRADE_MINING,
-                                           from_station)) {
-        snprintf(out, out_size,
-                 "Kepler starter reserve ready: %d Laser Modules; %s",
-                 ui.mining_units_at_station,
-                 ui_upgrade_effect_label(SHIP_UPGRADE_MINING, ship));
-        return true;
+    bool has_supply = ui_first_mining_refit_stock_source_label(
+        SHIP_UPGRADE_MINING, ship, from_station,
+        supply, sizeof(supply));
+    if (!has_supply) {
+        has_supply = ui_first_mining_refit_production_source_label(
+            SHIP_UPGRADE_MINING, ship, supply, sizeof(supply));
     }
 
-    if (has_source && has_gate) {
+    if (has_supply && has_source && has_gate) {
+        snprintf(out, out_size,
+                 "need %d Laser Modules; ship %d station %d; %s; %s; %s",
+                 short_by, ui.mining_units_in_cargo,
+                 ui.mining_units_at_station, supply, source, gate);
+    } else if (has_supply && has_source) {
+        snprintf(out, out_size,
+                 "need %d Laser Modules; ship %d station %d; %s; %s",
+                 short_by, ui.mining_units_in_cargo,
+                 ui.mining_units_at_station, supply, source);
+    } else if (has_source && has_gate) {
         snprintf(out, out_size,
                  "need %d Laser Modules; ship %d station %d; %s; %s",
                  short_by, ui.mining_units_in_cargo,
@@ -1611,6 +1736,15 @@ static void trade_lineage_walk(trade_lineage_view_t *view,
     }
 
     if (transform.type != CHAIN_EVT_CRAFT) return;
+    if (transform.craft_provenance.status !=
+        CARGO_CRAFT_PROVENANCE_STATION_ATTESTED_V1) {
+        trade_lineage_gap_add(
+            view,
+            "Gap: CRAFT event rejected (%s).",
+            cargo_craft_provenance_status_name(
+                transform.craft_provenance.status));
+        return;
+    }
     const recipe_def_t *recipe = recipe_get((recipe_id_t)transform.craft.recipe_id);
     int input_count = transform.craft.input_count;
     if (input_count > RECIPE_INPUT_MAX) input_count = RECIPE_INPUT_MAX;
@@ -1632,7 +1766,7 @@ static void trade_lineage_walk(trade_lineage_view_t *view,
     } else {
         snprintf(inputs, sizeof(inputs), "signed inputs");
     }
-    trade_lineage_story_add(view, "%s -> %s at %s", inputs,
+    trade_lineage_story_add(view, "Station-attested V1: %s -> %s at %s", inputs,
                             commodity_short_name(commodity_hint), station);
     trade_lineage_append(view->proof, &view->proof_count,
                          TRADE_LINEAGE_PROOF_MAX,
@@ -1640,6 +1774,13 @@ static void trade_lineage_walk(trade_lineage_view_t *view,
                          (unsigned long long)transform.event_id, station,
                          (unsigned long long)transform.epoch,
                          (unsigned)transform.craft.recipe_id);
+    trade_lineage_append(
+        view->proof, &view->proof_count,
+        TRADE_LINEAGE_PROOF_MAX,
+        "CRAFT provenance %s / input_lineage_proven=false / "
+        "conservation_proven=false",
+        cargo_craft_provenance_status_name(
+            transform.craft_provenance.status));
     trade_lineage_proof_hash(view, "CRAFT output ID",
                              transform.craft.output_pub);
     for (int i = 0; i < input_count; i++) {
@@ -1980,6 +2121,14 @@ static bool local_pod_has_detailed_manifest(const cargo_pod_t *pod)
             return false;
     }
     return true;
+}
+
+static bool local_pod_has_selection_token(const cargo_pod_t *pod)
+{
+    if (!pod) return false;
+    for (size_t i = 0; i < sizeof(pod->selection_token); i++)
+        if (pod->selection_token[i] != 0) return true;
+    return false;
 }
 
 static mining_grade_t local_pod_summary_grade(const cargo_pod_t *pod)
@@ -2480,9 +2629,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         out[row_count++] = row;
     }
 
-    /* SELL rows -- visible pods first, one row per pod. Server pod sale
-     * consumes from the end of ship.towed_pods[], so the UI presents the
-     * same order and a digit key sells the pod the player sees. */
+    /* Player-towed rows. Ordinary source-local pods become PRESENT/UNPACK
+     * rows; shipment-bound pods retain the SELL/DELIVER path. */
     int tow_count = ship->towed_pod_count;
     if (tow_count > 10) tow_count = 10;
     for (int t = tow_count - 1; t >= 0 && row_count < max; t--) {
@@ -2493,9 +2641,42 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             pod->commodity >= COMMODITY_COUNT || pod->quantity == 0) {
             continue;
         }
-        if (pod->shipment_id == 0)
-            continue;
         commodity_t c = pod->commodity;
+        if (pod->shipment_id == 0) {
+            bool exact = local_pod_has_exact_commodity_manifest(pod);
+            bool token_ready = local_pod_has_selection_token(pod);
+            bool custody_here =
+                pod->custody_station == 0 ||
+                pod->custody_station ==
+                    (uint8_t)(station_idx + 1);
+            uint8_t blk = exact && token_ready && custody_here
+                ? TRADE_BLOCK_NONE
+                : TRADE_BLOCK_NO_RECEIPT_SOURCE;
+            int quantity = (int)pod->quantity;
+            trade_row_t row = (trade_row_t){
+                .kind = 2,
+                .commodity = c,
+                .grade = trade_pod_display_grade(pod),
+                .stock = quantity,
+                .quantity = quantity,
+                .actionable = blk == TRADE_BLOCK_NONE,
+                .station_stock = 0,
+                .station_capacity = CARGO_POD_UNIT_CAPACITY,
+                .held = quantity,
+                .towed_held = quantity,
+                .towed_pod_quantity = quantity,
+                .is_towed_pod = true,
+                .towed_pod_index = (uint16_t)pod_idx,
+                .block_reason = blk,
+                .prefix_class =
+                    (uint8_t)INGOT_PREFIX_ANONYMOUS,
+            };
+            memcpy(row.pod_selection_token,
+                   pod->selection_token,
+                   sizeof(row.pod_selection_token));
+            out[row_count++] = row;
+            continue;
+        }
         bool finished_good = trade_is_finished_good(c);
         int row_capacity = finished_good
             ? (int)lroundf(MAX_PRODUCT_STOCK)
@@ -2622,7 +2803,7 @@ void trade_page_range(const trade_row_t *rows, int row_count,
     if (capped < 0) capped = 0;
     if (capped > TRADE_MAX_ROWS) capped = TRADE_MAX_ROWS;
     for (int i = 0; i < capped; i++)
-        kinds[i] = rows && rows[i].kind == 1
+        kinds[i] = rows && rows[i].kind != 0
             ? TRADE_ROW_KIND_SELL
             : TRADE_ROW_KIND_BUY;
     trade_page_range_for_kinds(kinds, capped, TRADE_ROWS_PER_PAGE,
@@ -3529,7 +3710,7 @@ static bool station_trade_page_has_pod_rows(const trade_row_t *rows,
     if (!rows) return false;
     for (int i = first; i < last; i++) {
         if (rows[i].is_station_pod ||
-            (rows[i].kind == 1 && rows[i].towed_pod_quantity > 0))
+            (rows[i].kind != 0 && rows[i].towed_pod_quantity > 0))
             return true;
     }
     return false;
@@ -3565,9 +3746,11 @@ bool station_panel_legend_text(station_view_t view,
 
         const char *row_action = "trade";
         if (first < last) {
-            if (rows[first].kind == 1) {
+            if (rows[first].kind != 0) {
                 row_action = station_trade_page_has_pod_rows(rows, first, last)
-                    ? "unload freight"
+                    ? (rows[first].kind == 2
+                        ? "receipt + unpack"
+                        : "unload freight")
                     : "sell unit";
             } else {
                 row_action = "buy crate";
@@ -4100,7 +4283,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             snprintf(pg, sizeof(pg), "page %d/%d   [F] next",
                      page + 1, total_pages);
         const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
-        bool sell_page = first < last && rows[first].kind == 1;
+        bool sell_page = first < last && rows[first].kind != 0;
         bool pod_page = station_trade_page_has_pod_rows(rows, first, last);
         const char *page_kind = sell_page
             ? (compact ? "SELL" : (pod_page ? "YOUR TOWED FREIGHT" : "DOCK SERVICE"))
@@ -4150,7 +4333,9 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
         /* Active rows: red for buy (cost), green for sell (gain). Passive
          * rows are dimmed regardless of direction. */
-        const uint8_t *total_rgb = (r->kind == 0) ? COL_COST : COL_GAIN;
+        const uint8_t *total_rgb = r->kind == 0
+            ? COL_COST
+            : (r->kind == 2 ? COL_TRACKED_JOB : COL_GAIN);
         const uint8_t *row_rgb   = r->actionable ? total_rgb : COL_DIM;
 
         /* Status column on the left of the right-aligned price:
@@ -4193,7 +4378,9 @@ static void draw_trade_view(const station_ui_state_t *ui,
         const char *trade_cur = ui_station_currency(st);
         if (r->actionable) {
             int total = r->total_price > 0 ? r->total_price : r->unit_price;
-            if (r->kind == 0 && r->quantity > 1)
+            if (r->kind == 2)
+                snprintf(total_buf, sizeof(total_buf), "UNPACK");
+            else if (r->kind == 0 && r->quantity > 1)
                 snprintf(total_buf, sizeof(total_buf), "-%d %s x%d",
                          total, trade_cur, r->quantity);
             else if (r->kind == 0)
@@ -4211,6 +4398,9 @@ static void draw_trade_view(const station_ui_state_t *ui,
             case TRADE_BLOCK_NO_BUYER:      why = "(no buyer)";   break;
             case TRADE_BLOCK_NO_SELLER:     why = "(no seller)";  break;
             case TRADE_BLOCK_NO_POD_FRAME:  why = "(need frame)"; break;
+            case TRADE_BLOCK_NO_RECEIPT_SOURCE:
+                why = "(wrong source)";
+                break;
             default:                        why = "";             break;
             }
             snprintf(total_buf, sizeof(total_buf), "%s", why);
@@ -4707,9 +4897,6 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         int from_station = needed -
             (needed < refit[i].in_cargo ? needed : refit[i].in_cargo);
         if (from_station < 0) from_station = 0;
-        bool starter_reserve =
-            upgrade_uses_starter_refit_subsidy(st, ship, refit[i].upgrade,
-                                               from_station);
         if (refit[i].can) {
             /* Actionable: show the hotkey + verb with cost. */
             if (refit[i].credit > 0)
@@ -4726,12 +4913,6 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                     draw_row_lr(cx, my, inner_right, COL_DIM, "next laser",
                                 COL_FADED,
                                 ui_upgrade_effect_label(refit[i].upgrade, ship));
-                    my += row_h;
-                }
-                if (starter_reserve &&
-                    my + row_h + remaining_primary * row_h <= content_bottom) {
-                    draw_row_lr(cx, my, inner_right, COL_DIM, "source",
-                                COL_FADED, "Kepler starter reserve");
                     my += row_h;
                 }
             }
@@ -4763,6 +4944,23 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                 draw_row_lr(cx, my, inner_right, COL_DIM, "next laser",
                             COL_FADED,
                             ui_upgrade_effect_label(refit[i].upgrade, ship));
+                my += row_h;
+            }
+            char supply[96];
+            bool has_supply = ui_first_mining_refit_stock_source_label(
+                refit[i].upgrade, ship, from_station,
+                supply, sizeof(supply));
+            if (!has_supply) {
+                has_supply =
+                    ui_first_mining_refit_production_source_label(
+                        refit[i].upgrade, ship,
+                        supply, sizeof(supply));
+            }
+            if (has_supply &&
+                my + row_h + remaining_primary * row_h <=
+                    content_bottom) {
+                draw_row_lr(cx, my, inner_right, COL_DIM, "available",
+                            COL_FADED, supply);
                 my += row_h;
             }
             char source[112];

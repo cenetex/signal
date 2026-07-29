@@ -18,6 +18,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 FLY_TOML = ROOT / "fly.toml"
+WORKER_SOURCE = ROOT / "workers" / "fly-proxy.js"
 
 
 def _port(value: Any) -> int | None:
@@ -32,16 +33,37 @@ def _port(value: Any) -> int | None:
 
 def fly_config_failures(
     config: dict[str, Any],
+    worker_source: str,
     *,
     root: Path = ROOT,
 ) -> list[str]:
     failures: list[str] = []
 
     app = config.get("app")
-    if not isinstance(app, str) or not re.fullmatch(
+    app_is_valid = isinstance(app, str) and re.fullmatch(
         r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", app
-    ):
+    ) is not None
+    if not app_is_valid:
         failures.append("app must be a non-empty Fly-compatible name")
+    worker_origins = [
+        match.group("value")
+        for match in re.finditer(
+            r"(?m)^\s*const\s+ORIGIN\s*=\s*"
+            r"(?P<quote>['\"])(?P<value>[^'\"]+)(?P=quote)\s*;\s*$",
+            worker_source,
+        )
+    ]
+    if len(worker_origins) != 1:
+        failures.append(
+            "workers/fly-proxy.js must declare exactly one literal ORIGIN"
+        )
+    elif app_is_valid:
+        expected_origin = f"https://{app}.fly.dev"
+        if worker_origins[0] != expected_origin:
+            failures.append(
+                "workers/fly-proxy.js ORIGIN must be "
+                f"{expected_origin!r}"
+            )
     region = config.get("primary_region")
     if not isinstance(region, str) or not re.fullmatch(
         r"[a-z0-9-]+", region
@@ -76,7 +98,13 @@ def fly_config_failures(
         "SIGNAL_SERVER_PORT": "9091",
         "SIGNAL_DATA_DIR": "/app/data",
         "SIGNAL_STATIC_DIR": "/app/public",
+        "SIGNAL_ALLOWED_ORIGIN": "https://signal.ratimics.com",
+        "SIGNAL_REQUIRE_STATION_AUTH_SECRET": "1",
+        "SIGNAL_TRUST_PROXY_HEADERS": "1",
+        "RTC_GATEWAY_PREFIX": "/rtc",
+        "RTC_GATEWAY_ICE_BIND": "fly-global-services",
         "RTC_GATEWAY_ICE_PORT": "50000",
+        "RTC_GATEWAY_ICE_UDP_MUX": "1",
     }
     for key, expected in expected_env.items():
         if env.get(key) != expected:
@@ -150,10 +178,11 @@ def fly_config_failures(
 def main() -> int:
     try:
         config = tomllib.loads(FLY_TOML.read_text(encoding="utf-8"))
+        worker_source = WORKER_SOURCE.read_text(encoding="utf-8")
     except (OSError, tomllib.TOMLDecodeError) as exc:
         print(f"fly.toml could not be parsed: {exc}", file=sys.stderr)
         return 2
-    failures = fly_config_failures(config)
+    failures = fly_config_failures(config, worker_source)
     if failures:
         for failure in failures:
             print(f"fly.toml: {failure}", file=sys.stderr)

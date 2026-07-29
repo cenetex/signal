@@ -85,6 +85,10 @@ typedef struct {
     uint64_t authority_failures;
     uint64_t malformed_headers;
     uint64_t truncated_records;
+    uint64_t craft_station_attested_v1;
+    uint64_t craft_structural_v1_unverified;
+    uint64_t craft_unbound_v0;
+    uint64_t craft_semantic_rejections;
     uint64_t event_type_counts[CHAIN_EVT_TYPE_COUNT];
     char first_failure[160];
 } file_summary_t;
@@ -121,6 +125,7 @@ typedef struct {
     bool has_parent_fragment;
     uint8_t input_pubs[RECIPE_INPUT_MAX][32];
     uint8_t input_count;
+    cargo_craft_provenance_result_t craft_provenance;
 
     uint64_t construction_count;
     int construction_file_index;
@@ -378,26 +383,6 @@ static const char *recipe_name_for(int recipe_id) {
     }
 }
 
-static int recipe_output_commodity(int recipe_id) {
-    switch (recipe_id) {
-    case RECIPE_FRAME_BASIC: return COMMODITY_FRAME;
-    case RECIPE_LASER_BASIC: return COMMODITY_LASER_MODULE;
-    case RECIPE_TRACTOR_COIL: return COMMODITY_TRACTOR_MODULE;
-    case RECIPE_REPAIR_KIT_FAB: return COMMODITY_REPAIR_KIT;
-    default: return -1;
-    }
-}
-
-static int recipe_output_kind(int recipe_id) {
-    switch (recipe_id) {
-    case RECIPE_FRAME_BASIC: return CARGO_KIND_FRAME;
-    case RECIPE_LASER_BASIC: return CARGO_KIND_LASER;
-    case RECIPE_TRACTOR_COIL: return CARGO_KIND_TRACTOR;
-    case RECIPE_REPAIR_KIT_FAB: return CARGO_KIND_REPAIR_KIT;
-    default: return -1;
-    }
-}
-
 static char *dup_text(const char *s) {
     size_t n = strlen(s) + 1u;
     char *out = (char *)malloc(n);
@@ -631,8 +616,15 @@ static void record_craft_asset(analysis_t *analysis, int file_index,
                                const parsed_header_t *hdr,
                                const uint8_t *payload, uint16_t payload_len,
                                uint64_t segment_id, bool strict_ok,
-                               uint32_t world_id, uint32_t world_seq) {
-    if (payload_len < offsetof(chain_payload_craft_t, input_pubs)) return;
+                               uint32_t world_id, uint32_t world_seq,
+                               const cargo_craft_provenance_result_t
+                                   *provenance) {
+    if (!provenance ||
+        !cargo_craft_provenance_is_structurally_valid(
+            provenance->status) ||
+        payload_len != sizeof(chain_payload_craft_t)) {
+        return;
+    }
     int recipe_id = (int)read_le16(&payload[0]);
     uint8_t input_count = payload[2];
     const uint8_t *output_pub = &payload[8];
@@ -640,13 +632,6 @@ static void record_craft_asset(analysis_t *analysis, int file_index,
     if (!row) return;
     row->mint_count++;
     if (row->source != ASSET_SOURCE_UNKNOWN_TRANSFER) return;
-
-    size_t available_inputs = 0;
-    if (payload_len > offsetof(chain_payload_craft_t, input_pubs))
-        available_inputs = ((size_t)payload_len -
-                            offsetof(chain_payload_craft_t, input_pubs)) / 32u;
-    if (available_inputs > RECIPE_INPUT_MAX) available_inputs = RECIPE_INPUT_MAX;
-    if (input_count > available_inputs) input_count = (uint8_t)available_inputs;
 
     row->source = ASSET_SOURCE_CRAFT;
     row->source_file_index = file_index;
@@ -657,11 +642,12 @@ static void record_craft_asset(analysis_t *analysis, int file_index,
     row->source_segment_id = segment_id;
     row->source_strict_ok = strict_ok;
     memcpy(row->source_station_pubkey, hdr->authority, 32);
-    row->kind = recipe_output_kind(recipe_id);
-    row->commodity = recipe_output_commodity(recipe_id);
+    row->kind = payload[4];
+    row->commodity = payload[5];
     row->recipe_id = recipe_id;
     row->prefix_class = INGOT_PREFIX_ANONYMOUS;
     row->input_count = input_count;
+    row->craft_provenance = *provenance;
     for (uint8_t i = 0; i < input_count; i++) {
         memcpy(row->input_pubs[i],
                &payload[offsetof(chain_payload_craft_t, input_pubs) + (size_t)i * 32u],
@@ -857,9 +843,41 @@ static bool analyze_file(analysis_t *analysis, const cli_opts_t *opts,
         else if (hdr.type == CHAIN_EVT_SMELT)
             record_smelt_asset(analysis, file_index, &hdr, payload, payload_len,
                                segment_id, strict_ok, world_id, world_seq);
-        else if (hdr.type == CHAIN_EVT_CRAFT)
-            record_craft_asset(analysis, file_index, &hdr, payload, payload_len,
-                               segment_id, strict_ok, world_id, world_seq);
+        else if (hdr.type == CHAIN_EVT_CRAFT) {
+            cargo_craft_provenance_result_t provenance;
+            cargo_craft_provenance_status_t provenance_status =
+                cargo_craft_provenance_evaluate(
+                    payload, payload_len,
+                    opts->verify_signatures && strict_ok,
+                    &provenance);
+            if (provenance_status ==
+                CARGO_CRAFT_PROVENANCE_STATION_ATTESTED_V1) {
+                summary.craft_station_attested_v1++;
+                record_craft_asset(
+                    analysis, file_index, &hdr,
+                    payload, payload_len, segment_id,
+                    strict_ok, world_id, world_seq,
+                    &provenance);
+            } else if (provenance_status ==
+                       CARGO_CRAFT_PROVENANCE_STRUCTURAL_V1_UNVERIFIED) {
+                summary.craft_structural_v1_unverified++;
+                record_craft_asset(
+                    analysis, file_index, &hdr,
+                    payload, payload_len, segment_id,
+                    false, world_id, world_seq,
+                    &provenance);
+            } else if (provenance_status ==
+                       CARGO_CRAFT_PROVENANCE_UNBOUND_V0) {
+                summary.craft_unbound_v0++;
+            } else {
+                summary.craft_semantic_rejections++;
+                remember_failure(
+                    &summary,
+                    cargo_craft_provenance_status_name(
+                        provenance_status),
+                    hdr.event_id);
+            }
+        }
         else if (hdr.type == CHAIN_EVT_TRANSFER)
             record_transfer_asset(analysis, &hdr, payload, payload_len);
         else if (hdr.type == CHAIN_EVT_CONSTRUCTION)
@@ -912,6 +930,10 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
     uint64_t total_authority_failures = 0;
     uint64_t total_segments = 0;
     uint64_t total_segment_resets = 0;
+    uint64_t total_craft_station_attested_v1 = 0;
+    uint64_t total_craft_structural_v1_unverified = 0;
+    uint64_t total_craft_unbound_v0 = 0;
+    uint64_t total_craft_semantic_rejections = 0;
     for (size_t i = 0; i < analysis->file_count; i++) {
         total_events += analysis->files[i].events_total;
         total_breaks += analysis->files[i].linkage_breaks;
@@ -920,6 +942,14 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
         total_authority_failures += analysis->files[i].authority_failures;
         total_segments += analysis->files[i].segments;
         total_segment_resets += analysis->files[i].segment_resets;
+        total_craft_station_attested_v1 +=
+            analysis->files[i].craft_station_attested_v1;
+        total_craft_structural_v1_unverified +=
+            analysis->files[i].craft_structural_v1_unverified;
+        total_craft_unbound_v0 +=
+            analysis->files[i].craft_unbound_v0;
+        total_craft_semantic_rejections +=
+            analysis->files[i].craft_semantic_rejections;
     }
 
     fprintf(out, "{\n  \"schema\":\"signal.chain_assets.v1\",\n");
@@ -927,7 +957,11 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
                  "\"events\":%llu,\"segments\":%llu,\"segment_resets\":%llu,"
                  "\"linkage_breaks\":%llu,"
                  "\"payload_hash_failures\":%llu,\"signature_failures\":%llu,"
-                 "\"authority_failures\":%llu},\n",
+                 "\"authority_failures\":%llu,"
+                 "\"craft_station_attested_v1\":%llu,"
+                 "\"craft_structural_v1_unverified\":%llu,"
+                 "\"craft_unbound_v0\":%llu,"
+                 "\"craft_semantic_rejections\":%llu},\n",
             analysis->file_count, analysis->asset_count,
             (unsigned long long)total_events,
             (unsigned long long)total_segments,
@@ -935,7 +969,11 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
             (unsigned long long)total_breaks,
             (unsigned long long)total_payload_failures,
             (unsigned long long)total_signature_failures,
-            (unsigned long long)total_authority_failures);
+            (unsigned long long)total_authority_failures,
+            (unsigned long long)total_craft_station_attested_v1,
+            (unsigned long long)total_craft_structural_v1_unverified,
+            (unsigned long long)total_craft_unbound_v0,
+            (unsigned long long)total_craft_semantic_rejections);
 
     fprintf(out, "  \"files\":[\n");
     for (size_t i = 0; i < analysis->file_count; i++) {
@@ -949,6 +987,13 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
                      "\"linkage_breaks\":%llu,\"monotonic_breaks\":%llu,"
                      "\"payload_hash_failures\":%llu,\"signature_failures\":%llu,"
                      "\"authority_failures\":%llu,\"truncated_records\":%llu,"
+                     "\"craft_provenance\":{"
+                     "\"station_attested_v1\":%llu,"
+                     "\"structural_v1_unverified\":%llu,"
+                     "\"unbound_v0\":%llu,"
+                     "\"semantic_rejections\":%llu,"
+                     "\"input_lineage_proven\":false,"
+                     "\"conservation_proven\":false},"
                      "\"first_failure\":",
                 (unsigned long long)f->events_total,
                 (unsigned long long)f->segments,
@@ -958,7 +1003,11 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
                 (unsigned long long)f->payload_hash_failures,
                 (unsigned long long)f->signature_failures,
                 (unsigned long long)f->authority_failures,
-                (unsigned long long)f->truncated_records);
+                (unsigned long long)f->truncated_records,
+                (unsigned long long)f->craft_station_attested_v1,
+                (unsigned long long)f->craft_structural_v1_unverified,
+                (unsigned long long)f->craft_unbound_v0,
+                (unsigned long long)f->craft_semantic_rejections);
         json_string(out, f->first_failure);
         fprintf(out, ",\"event_type_counts\":{");
         bool first = true;
@@ -1026,7 +1075,24 @@ static void emit_json(const analysis_t *analysis, FILE *out) {
             if (j) fprintf(out, ",");
             json_hex32(out, a->input_pubs[j]);
         }
-        fprintf(out, "],\"construction\":{"
+        fprintf(out, "],\"craft_provenance\":{");
+        fprintf(out, "\"status\":");
+        json_string(
+            out,
+            cargo_craft_provenance_status_name(
+                a->craft_provenance.status));
+        fprintf(out, ",\"station_attested\":%s,"
+                     "\"input_lineage_proven\":false,"
+                     "\"conservation_proven\":false,"
+                     "\"output_index\":",
+                a->craft_provenance.station_attested
+                    ? "true" : "false");
+        if (a->craft_provenance.output_index_known)
+            fprintf(out, "%u",
+                    (unsigned)a->craft_provenance.output_index);
+        else
+            fputs("null", out);
+        fprintf(out, "},\"construction\":{"
                      "\"target_kind\":");
         json_string(out, construction_target_name(a->construction_target_kind));
         fprintf(out, ",\"station_index\":%u,\"module_index\":%u,"
@@ -1060,7 +1126,10 @@ static void csv_string(FILE *out, const char *s) {
 static void emit_csv(const analysis_t *analysis, FILE *out) {
     fprintf(out, "cargo_pub_hex,cargo_pub_b58,source_type,source_file,"
                  "source_station_b58,source_event_id,source_epoch,"
-                 "source_segment_id,source_strict_ok,world_id,world_seq,"
+                 "source_segment_id,source_strict_ok,"
+                 "craft_provenance_status,craft_station_attested,"
+                 "input_lineage_proven,conservation_proven,"
+                 "craft_output_index,world_id,world_seq,"
                  "mint_count,transfer_count,construction_count,construction_target,"
                  "construction_station_index,construction_module_index,"
                  "construction_module_type,construction_commodity,"
@@ -1091,11 +1160,21 @@ static void emit_csv(const analysis_t *analysis, FILE *out) {
             csv_string(out, "");
         fprintf(out, ",");
         csv_string(out, station_b58);
-        fprintf(out, ",%llu,%llu,%llu,%s,%llu,%llu,%llu,%llu,%llu,",
+        fprintf(out, ",%llu,%llu,%llu,%s,",
                 (unsigned long long)a->source_event_id,
                 (unsigned long long)a->source_epoch,
                 (unsigned long long)a->source_segment_id,
-                a->source_strict_ok ? "true" : "false",
+                a->source_strict_ok ? "true" : "false");
+        csv_string(
+            out,
+            cargo_craft_provenance_status_name(
+                a->craft_provenance.status));
+        fprintf(out, ",%s,false,false,",
+                a->craft_provenance.station_attested
+                    ? "true" : "false");
+        if (a->craft_provenance.output_index_known)
+            fprintf(out, "%u", (unsigned)a->craft_provenance.output_index);
+        fprintf(out, ",%llu,%llu,%llu,%llu,%llu,",
                 (unsigned long long)a->source_world_id,
                 (unsigned long long)a->source_world_seq,
                 (unsigned long long)a->mint_count,
@@ -1198,6 +1277,18 @@ static void emit_lineage_asset(const analysis_t *analysis,
                 (unsigned long long)asset->source_segment_id);
     }
     fprintf(out, " strict=%s\n", asset->source_strict_ok ? "true" : "false");
+    if (asset->source == ASSET_SOURCE_CRAFT) {
+        emit_indent(out, depth + 1u);
+        fprintf(out,
+                "provenance: %s input_lineage_proven=false "
+                "conservation_proven=false\n",
+                cargo_craft_provenance_status_name(
+                    asset->craft_provenance.status));
+        emit_indent(out, depth + 1u);
+        fputs("input edges: station-attested identifiers only; "
+              "origin, custody, and consumption are not proven by V1\n",
+              out);
+    }
 
     if (asset->transfer_count > 0) {
         emit_indent(out, depth + 1u);
@@ -1442,8 +1533,21 @@ int main(int argc, char **argv) {
     }
     if (out && out != stdout) fclose(out);
 
+    bool craft_semantics_ok = true;
+    for (size_t i = 0; i < analysis.file_count; i++) {
+        if (analysis.files[i].craft_semantic_rejections == 0u)
+            continue;
+        craft_semantics_ok = false;
+        fprintf(stderr,
+                "signal_chain_assets: rejected %llu malformed CRAFT "
+                "event(s) in %s\n",
+                (unsigned long long)
+                    analysis.files[i].craft_semantic_rejections,
+                analysis.files[i].path);
+    }
+
     free(analysis.files);
     free(analysis.assets);
     path_list_free(&paths);
-    return ok ? 0 : 1;
+    return ok && craft_semantics_ok ? 0 : 1;
 }

@@ -10,9 +10,9 @@ import { spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import WebSocket from 'ws';
 
 const execFileAsync = promisify(execFile);
+let WebSocket = null;
 
 const NET_MSG_SESSION = 0x20;
 const NET_MSG_INPUT = 0x04;
@@ -25,6 +25,7 @@ const NET_MSG_LATENCY_PING = 0x3c;
 const NET_MSG_LATENCY_PONG = 0x3d;
 const NET_MSG_INPUT_APPLIED = 0x48;
 const NET_MSG_PUBKEY_CHALLENGE = 0x70;
+const SIGNAL_PROTOCOL_VERSION = 6;
 const SIGNED_ACTION_BUY_INGOT = 2;
 const SIGNED_ACTION_DELIVER = 4;
 const NET_INPUT_MSG_SIZE = 22;
@@ -40,6 +41,9 @@ const FIXTURE_PAYLOAD_BYTES = 19214;
 const FIXTURE_OTHER_PAYLOAD_BYTES = 19210;
 const MANIFEST_DETAIL_MAX = 256;
 const PRESSURE_DISCONNECT_MS = 30000;
+const CLOSE_DRAIN_MS = 1000;
+const FIXTURE_SESSION_TOKEN =
+  Buffer.from('5753425036363321', 'hex'); // "WSBP663!"
 
 function usage() {
   return `Usage: node scripts/ws-backpressure-soak.mjs [options]
@@ -57,7 +61,7 @@ Options:
   --sample-ms=N             Health/RSS sample interval (default: 1000)
   --input-hz=N              Authoritative ack probes/client/sec (default: 1)
   --mutation-hz=N           Provenance actions/sec (default: 0.1; --short: 0.4)
-  --api-token=TOKEN         Station API token for an existing server
+  --funded-session-token=H  Explicit 16-hex test token for --url mutations
   --max-p95-ms=N            Healthy ack p95 ceiling (default: 100)
   --max-p99-ms=N            Healthy ack p99 ceiling (default: 250)
   --max-rss-mb=N            Absolute server RSS ceiling (default: 512)
@@ -82,6 +86,12 @@ function nonNegativeNumber(raw, name) {
   return value;
 }
 
+function sessionTokenFromHex(raw, name) {
+  if (!/^[0-9a-f]{16}$/i.test(raw))
+    throw new Error(`${name} must be exactly 16 hexadecimal characters`);
+  return Buffer.from(raw, 'hex');
+}
+
 function parseArgs(argv) {
   const opts = {
     server: './build/signal_server',
@@ -93,7 +103,7 @@ function parseArgs(argv) {
     sampleMs: 1000,
     inputHz: 1,
     mutationHz: null,
-    apiToken: null,
+    fundedSessionToken: null,
     maxP95Ms: 100,
     maxP99Ms: 250,
     maxRssMb: 512,
@@ -123,8 +133,10 @@ function parseArgs(argv) {
       opts.inputHz = nonNegativeNumber(arg.slice('--input-hz='.length), '--input-hz');
     else if (arg.startsWith('--mutation-hz='))
       opts.mutationHz = nonNegativeNumber(arg.slice('--mutation-hz='.length), '--mutation-hz');
-    else if (arg.startsWith('--api-token='))
-      opts.apiToken = arg.slice('--api-token='.length);
+    else if (arg.startsWith('--funded-session-token='))
+      opts.fundedSessionToken = sessionTokenFromHex(
+        arg.slice('--funded-session-token='.length),
+        '--funded-session-token');
     else if (arg.startsWith('--max-p95-ms='))
       opts.maxP95Ms = nonNegativeNumber(arg.slice('--max-p95-ms='.length), '--max-p95-ms');
     else if (arg.startsWith('--max-p99-ms='))
@@ -147,6 +159,25 @@ function parseArgs(argv) {
   if (opts.clients < 2)
     throw new Error('--clients must be at least 2');
   return opts;
+}
+
+function makeDisposableServerEnv(baseEnv, port, tempDir) {
+  return {
+    ...baseEnv,
+    PORT: String(port),
+    SIGNAL_BIND_HOST: '127.0.0.1',
+    SIGNAL_DATA_DIR: tempDir,
+    SIGNAL_TRUST_PROXY_HEADERS: '1',
+    /*
+     * This harness always creates a throwaway local data directory. Production
+     * correctly requires an operator secret; the explicit development opt-in
+     * lets this disposable world derive its nonpersistent station authority.
+     */
+    SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET: '1',
+    SIGNAL_WS_BACKPRESSURE_FIXTURE: '1',
+    SIGNAL_WORLD_SEED: '663',
+    SIGNAL_WORLD_SEQ: '1',
+  };
 }
 
 function sleep(ms) {
@@ -188,28 +219,6 @@ async function waitForHealth(httpUrl, timeoutMs = 30000) {
   throw new Error(`server health timeout: ${lastError?.message ?? 'unknown'}`);
 }
 
-async function fetchFundedFixtureToken(httpUrl, apiToken) {
-  if (!apiToken) return null;
-  const response = await fetch(`${httpUrl}/api/station/0/state`, {
-    headers: { Authorization: `Bearer ${apiToken}` },
-    signal: AbortSignal.timeout(3000),
-  });
-  if (!response.ok)
-    throw new Error(`station fixture state returned ${response.status}`);
-  const state = await response.json();
-  for (const relationship of state.relationships ?? []) {
-    const pubkey = relationship.pubkey;
-    if (typeof pubkey !== 'string' ||
-        !/^[0-9a-f]{64}$/i.test(pubkey) ||
-        !pubkey.slice(16).match(/^0+$/) ||
-        (relationship.lifetime_credits_in ?? 0) < 1200) {
-      continue;
-    }
-    return Buffer.from(pubkey.slice(0, 16), 'hex');
-  }
-  return null;
-}
-
 async function rssBytes(pid) {
   if (!pid) return null;
   try {
@@ -235,11 +244,12 @@ function u32Delta(later, earlier) {
 }
 
 function makeSession(clientId, sessionToken = null) {
-  const payload = Buffer.alloc(16);
+  const payload = Buffer.alloc(18);
   payload[0] = NET_MSG_SESSION;
   (sessionToken ?? crypto.randomBytes(8)).copy(payload, 1);
   Buffer.from(`S${String(clientId).padStart(6, '0')}`)
     .copy(payload, 9, 0, 7);
+  payload.writeUInt16LE(SIGNAL_PROTOCOL_VERSION, 16);
   return payload;
 }
 
@@ -649,6 +659,7 @@ async function main() {
     process.stdout.write(usage());
     return;
   }
+  ({ default: WebSocket } = await import('ws'));
 
   let child = null;
   let tempDir = null;
@@ -658,7 +669,7 @@ async function main() {
   let serverPid = opts.serverPid;
   let wsUrl = opts.url;
   let httpUrl = null;
-  let stationApiToken = opts.apiToken;
+  let fundedFixtureToken = opts.fundedSessionToken;
   const clients = [];
   const timers = [];
   const state = {
@@ -685,23 +696,11 @@ async function main() {
         path.join(os.tmpdir(), 'signal-ws-backpressure-'));
       const binary = path.resolve(opts.server);
       serverLogPath = path.join(tempDir, 'signal-server.log');
-      stationApiToken =
-        stationApiToken ?? crypto.randomBytes(24).toString('hex');
+      fundedFixtureToken = Buffer.from(FIXTURE_SESSION_TOKEN);
       serverLog = await fs.open(serverLogPath, 'w');
       child = spawn(binary, [], {
         cwd: tempDir,
-        env: {
-          ...process.env,
-          PORT: String(port),
-          SIGNAL_BIND_HOST: '127.0.0.1',
-          SIGNAL_DATA_DIR: tempDir,
-          SIGNAL_TRUST_PROXY_HEADERS: '1',
-          SIGNAL_ALLOW_DEV_STATION_AUTH_SECRET: '1',
-          SIGNAL_API_TOKEN: stationApiToken,
-          SIGNAL_WS_BACKPRESSURE_FIXTURE: '1',
-          SIGNAL_WORLD_SEED: '663',
-          SIGNAL_WORLD_SEQ: '1',
-        },
+        env: makeDisposableServerEnv(process.env, port, tempDir),
         stdio: ['ignore', serverLog.fd, serverLog.fd],
       });
       child.once('exit', (code, signal) => {
@@ -720,11 +719,14 @@ async function main() {
     }
 
     const healthBefore = await waitForHealth(httpUrl);
-    const fundedFixtureToken = await fetchFundedFixtureToken(
-      httpUrl, stationApiToken);
     if (child && !fundedFixtureToken) {
       throw new Error(
-        'backpressure fixture did not expose a funded docked identity');
+        'backpressure fixture did not configure a funded test identity');
+    }
+    if (!child && opts.mutationHz > 0 && !fundedFixtureToken) {
+      throw new Error(
+        '--url mutation tests require --funded-session-token; ' +
+        'station APIs never disclose session bearer credentials');
     }
     const fundedFixtureIdentity = fundedFixtureToken
       ? createClientIdentity() : null;
@@ -907,6 +909,7 @@ async function main() {
         targetHealthSamples.push({
           atMs: performance.now(),
           worldTick: health.world_tick >>> 0,
+          liveConnections: health.live_connections,
           websocket: health.websocket_backpressure,
         });
         if (rss !== null) targetRssSamples.push(rss);
@@ -943,6 +946,7 @@ async function main() {
     const healthBeforeSlow = await fetchHealth(httpUrl);
     const rssAtSlowStart = await rssBytes(serverPid);
     const slowClient = clients[clients.length - 1];
+    const healthyClients = opts.clients - 1;
     slowClient.paused = true;
     slowClient.ws._socket?.pause();
     const slowStart = performance.now();
@@ -963,7 +967,25 @@ async function main() {
     for (const timer of timers) clearInterval(timer);
     timers.length = 0;
     await sample();
-    const healthAfterSlow = await fetchHealth(httpUrl);
+    let healthAfterSlow = await fetchHealth(httpUrl);
+    const actualCloseWaitDeadline =
+      performance.now() + CLOSE_DRAIN_MS + opts.sampleMs + 250;
+    const actualDisconnectSample = slowHealthSamples.find(
+      (samplePoint) =>
+        samplePoint.liveConnections <= healthyClients);
+    let actualDisconnectAfterPauseMs = actualDisconnectSample
+      ? actualDisconnectSample.atMs - slowStart
+      : healthAfterSlow.live_connections <= healthyClients
+        ? performance.now() - slowStart : null;
+    while (healthAfterSlow.live_connections > healthyClients &&
+           performance.now() < actualCloseWaitDeadline) {
+      await sleep(50);
+      healthAfterSlow = await fetchHealth(httpUrl);
+      if (healthAfterSlow.live_connections <= healthyClients) {
+        actualDisconnectAfterPauseMs = performance.now() - slowStart;
+        break;
+      }
+    }
     const baseline = summarizePhase(baselineStats, baselineElapsed);
     const slow = summarizePhase(slowStats, slowElapsed);
     const baselineTransfers = summarizeTransfers(
@@ -1017,7 +1039,6 @@ async function main() {
       .filter((revisions) => revisions.size >= 2).length;
 
     const failures = [];
-    const healthyClients = opts.clients - 1;
     if (healthAfterInitial.live_connections !== opts.clients)
       failures.push(`connected ${healthAfterInitial.live_connections}/${opts.clients}`);
     if (state.healthyUnexpectedCloses.length)
@@ -1078,6 +1099,17 @@ async function main() {
         `slow-reader disconnect timing ` +
         `${disconnectAfterPauseMs ?? 'missing'}ms exceeds ` +
         `${disconnectDeadlineMs}ms`);
+    }
+    const actualDisconnectDeadlineMs =
+      PRESSURE_DISCONNECT_MS + CLOSE_DRAIN_MS + opts.sampleMs + 250;
+    if (healthAfterSlow.live_connections !== healthyClients ||
+        actualDisconnectAfterPauseMs === null ||
+        actualDisconnectAfterPauseMs > actualDisconnectDeadlineMs) {
+      failures.push(
+        `slow-reader socket remained live: ` +
+        `${healthAfterSlow.live_connections}/${healthyClients} healthy-only ` +
+        `after=${actualDisconnectAfterPauseMs ?? 'missing'}ms ` +
+        `deadline=${actualDisconnectDeadlineMs}ms`);
     }
     const explicitBackpressureReasons =
       (reasonDelta.queue_hard_limit ?? 0) +
@@ -1151,6 +1183,11 @@ async function main() {
         disconnect_delta: disconnectDelta,
         disconnect_after_pause_ms: disconnectAfterPauseMs,
         disconnect_deadline_ms: disconnectDeadlineMs,
+        live_connections_after: healthAfterSlow.live_connections,
+        actual_disconnect_after_pause_ms:
+          actualDisconnectAfterPauseMs,
+        actual_disconnect_deadline_ms:
+          actualDisconnectDeadlineMs,
         disconnect_reason_delta: reasonDelta,
         sampled_max_connection_bytes: sampledMaxConnection,
       },
@@ -1234,10 +1271,13 @@ if (process.argv[1] &&
 }
 
 export {
+  SIGNAL_PROTOCOL_VERSION,
   SIGNED_ACTION_BUY_INGOT,
   SIGNED_ACTION_DELIVER,
   createClientIdentity,
+  makeDisposableServerEnv,
   makePubkeyProof,
   makeRegisterPubkey,
+  makeSession,
   makeSignedAction,
 };

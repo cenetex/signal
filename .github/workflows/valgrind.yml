@@ -35,6 +35,7 @@ jobs:
 
       - name: Valgrind memcheck (shard ${{ matrix.shard }}/8)
         run: |
+          set -o pipefail
           cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
           cmake --build build-valgrind --parallel
           # `--track-origins=yes` dropped per #525 — leaks still detected

@@ -17,6 +17,7 @@ LANES = [
     "replay",
     "tools",
     "programs",
+    "deployment",
 ]
 
 

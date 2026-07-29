@@ -413,7 +413,8 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
     float cost = module_build_cost(type);
     commodity_t material = module_build_material(type);
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (!w->contracts[k].active) {
+        if (contract_slot_available_for_post(
+                &w->contracts[k])) {
             w->contracts[k] = (contract_t){
                 .active = true, .action = CONTRACT_TRACTOR,
                 .station_index = (uint8_t)station_idx,

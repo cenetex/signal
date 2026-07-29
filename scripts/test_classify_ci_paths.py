@@ -42,6 +42,28 @@ class CiPathPolicyTests(unittest.TestCase):
         lanes = self.lanes_for("vendor/tweetnacl/tweetnacl.c")
         self.assertTrue({"native", "fuzz"}.issubset(lanes), lanes)
 
+    def test_memzero_codegen_gate_runs_native_lane(self) -> None:
+        for path in (
+            "scripts/check_memzero_codegen.py",
+            "scripts/test_check_memzero_codegen.py",
+        ):
+            self.assertIn("native", self.lanes_for(path), path)
+
+    def test_build_mode_guard_runs_policy_lane(self) -> None:
+        for path in (
+            "scripts/check_make_build_isolation.py",
+            "scripts/test_check_make_build_isolation.py",
+        ):
+            self.assertIn("policy", self.lanes_for(path), path)
+
+    def test_memzero_runtime_runs_native_and_fuzz_lanes(self) -> None:
+        for path in (
+            "shared/signal_memzero.c",
+            "shared/signal_memzero.h",
+        ):
+            lanes = self.lanes_for(path)
+            self.assertTrue({"native", "fuzz"}.issubset(lanes), (path, lanes))
+
     def test_container_inputs_run_clean_image_lane(self) -> None:
         for path in (
             ".dockerignore",
@@ -50,6 +72,19 @@ class CiPathPolicyTests(unittest.TestCase):
             "scripts/webrtc-gateway.mjs",
         ):
             self.assertIn("container", self.lanes_for(path), path)
+
+    def test_deployment_inputs_run_honest_deployment_lane(self) -> None:
+        for path in (
+            "aws/lambda/signal-lobby/package-lock.json",
+            "deploy/lightsail-user-data.sh",
+            "docker/entrypoint.sh",
+            "fly.toml",
+            "workers/fly-proxy.js",
+            "wrangler.toml",
+        ):
+            lanes = self.lanes_for(path)
+            self.assertIn("deployment", lanes, path)
+            self.assertNotIn("container", lanes, path)
 
     def test_core_change_compiles_all_supported_platforms(self) -> None:
         self.assertIn(

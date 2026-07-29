@@ -14,6 +14,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "identity.h"
+#include "signal_memzero.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -301,14 +302,16 @@ static identity_read_result_t read_secret_file(
     bool read_error = ferror(fp) != 0;
     bool eof = feof(fp) != 0;
     bool close_error = fclose(fp) != 0;
+    identity_read_result_t result = IDENTITY_READ_VALID;
     if (read_error || close_error) {
-        return IDENTITY_READ_ERROR;
+        result = IDENTITY_READ_ERROR;
+    } else if (got != SIGNAL_CRYPTO_SECRET_BYTES || !eof) {
+        result = IDENTITY_READ_CORRUPT;
+    } else {
+        memcpy(out, buf, SIGNAL_CRYPTO_SECRET_BYTES);
     }
-    if (got != SIGNAL_CRYPTO_SECRET_BYTES || !eof) {
-        return IDENTITY_READ_CORRUPT;
-    }
-    memcpy(out, buf, SIGNAL_CRYPTO_SECRET_BYTES);
-    return IDENTITY_READ_VALID;
+    signal_memzero_explicit(buf, sizeof(buf));
+    return result;
 }
 
 #if !defined(_WIN32)
@@ -542,6 +545,7 @@ static bool posix_stage_backup_copy(
             break;
         }
     }
+    signal_memzero_explicit(buffer, sizeof(buffer));
     if (ok && !posix_sync_fd(destination)) ok = false;
     if (close(source) != 0) ok = false;
     if (close(destination) != 0) ok = false;
@@ -770,18 +774,20 @@ static bool identity_decode_base64(const char *encoded,
         if (b64_decode_char(encoded[i]) < 0) return false;
     }
     if ((b64_decode_char(encoded[85]) & 0x0f) != 0) return false;
-    uint8_t decoded[SIGNAL_CRYPTO_SECRET_BYTES + 4];
+    uint8_t decoded[SIGNAL_CRYPTO_SECRET_BYTES + 4] = {0};
     size_t decoded_len = 0;
-    if (!b64_decode(encoded, decoded, sizeof(decoded), &decoded_len) ||
-        decoded_len != SIGNAL_CRYPTO_SECRET_BYTES) {
-        return false;
+    bool decoded_ok =
+        b64_decode(encoded, decoded, sizeof(decoded), &decoded_len) &&
+        decoded_len == SIGNAL_CRYPTO_SECRET_BYTES;
+    if (decoded_ok) {
+        memcpy(out->secret, decoded, SIGNAL_CRYPTO_SECRET_BYTES);
+        memcpy(out->pubkey,
+               out->secret + (SIGNAL_CRYPTO_SECRET_BYTES -
+                              SIGNAL_CRYPTO_PUBKEY_BYTES),
+               SIGNAL_CRYPTO_PUBKEY_BYTES);
     }
-    memcpy(out->secret, decoded, SIGNAL_CRYPTO_SECRET_BYTES);
-    memcpy(out->pubkey,
-           out->secret + (SIGNAL_CRYPTO_SECRET_BYTES -
-                          SIGNAL_CRYPTO_PUBKEY_BYTES),
-           SIGNAL_CRYPTO_PUBKEY_BYTES);
-    return true;
+    signal_memzero_explicit(decoded, sizeof(decoded));
+    return decoded_ok;
 }
 #endif /* __EMSCRIPTEN__ */
 
@@ -791,12 +797,12 @@ static bool identity_decode_base64(const char *encoded,
 
 static bool generate_identity(player_identity_t *out) {
     if (!out) return false;
-    memset(out, 0, sizeof(*out));
+    identity_clear(out);
     if (!signal_crypto_keypair(out->pubkey, out->secret)) {
         /* signal_crypto_keypair already clears both arrays, but keep the
          * aggregate guarantee here so future backends cannot leak a partial
          * identity through this persistence boundary. */
-        memset(out, 0, sizeof(*out));
+        identity_clear(out);
         return false;
     }
     return true;
@@ -806,9 +812,11 @@ bool identity_save_to(const player_identity_t *id, const char *path) {
     if (!id) return false;
 #if defined(__EMSCRIPTEN__)
     (void)path;
-    char enc[128];
+    char enc[128] = {0};
     b64_encode(id->secret, SIGNAL_CRYPTO_SECRET_BYTES, enc);
-    return signal_localstorage_save(enc) == 1;
+    bool saved = signal_localstorage_save(enc) == 1;
+    signal_memzero_explicit(enc, sizeof(enc));
+    return saved;
 #else
     if (!path) return false;
     identity_path_lock_t lock;
@@ -821,49 +829,64 @@ bool identity_save_to(const player_identity_t *id, const char *path) {
 
 bool identity_load_or_generate_at(player_identity_t *out, const char *path) {
     if (!out) return false;
-    memset(out, 0, sizeof(*out));
+    identity_clear(out);
 
 #if defined(__EMSCRIPTEN__)
     (void)path;
-    char enc[256];
+    char enc[256] = {0};
     int got = signal_localstorage_load(enc, sizeof(enc));
-    if (got == -1) return false;
+    if (got == -1) {
+        signal_memzero_explicit(enc, sizeof(enc));
+        return false;
+    }
     if (got == -2) {
-        if (!generate_identity(out)) return false;
-        char candidate[128];
-        char winner[256];
+        if (!generate_identity(out)) {
+            signal_memzero_explicit(enc, sizeof(enc));
+            return false;
+        }
+        char candidate[128] = {0};
+        char winner[256] = {0};
         b64_encode(out->secret, SIGNAL_CRYPTO_SECRET_BYTES, candidate);
         int winner_len = signal_localstorage_replace_if_invalid(
             candidate, winner, sizeof(winner));
-        memset(out, 0, sizeof(*out));
-        if (winner_len <= 0 ||
-            !identity_decode_base64(winner, out)) {
-            memset(out, 0, sizeof(*out));
-            return false;
-        }
-        return true;
+        signal_memzero_explicit(candidate, sizeof(candidate));
+        identity_clear(out);
+        bool loaded = winner_len > 0 &&
+            identity_decode_base64(winner, out);
+        signal_memzero_explicit(winner, sizeof(winner));
+        signal_memzero_explicit(enc, sizeof(enc));
+        if (!loaded) identity_clear(out);
+        return loaded;
     }
     if (got > 0) {
-        return identity_decode_base64(enc, out);
+        bool loaded = identity_decode_base64(enc, out);
+        signal_memzero_explicit(enc, sizeof(enc));
+        if (!loaded) identity_clear(out);
+        return loaded;
     }
-    if (!generate_identity(out)) return false;
-    char candidate[128];
-    char winner[256];
+    if (!generate_identity(out)) {
+        signal_memzero_explicit(enc, sizeof(enc));
+        return false;
+    }
+    char candidate[128] = {0};
+    char winner[256] = {0};
     b64_encode(out->secret, SIGNAL_CRYPTO_SECRET_BYTES, candidate);
     int winner_len = signal_localstorage_install_if_absent(
         candidate, winner, sizeof(winner));
-    memset(out, 0, sizeof(*out));
-    if (winner_len <= 0 || !identity_decode_base64(winner, out)) {
-        memset(out, 0, sizeof(*out));
-        return false;
-    }
-    return true;
+    signal_memzero_explicit(candidate, sizeof(candidate));
+    identity_clear(out);
+    bool loaded = winner_len > 0 &&
+        identity_decode_base64(winner, out);
+    signal_memzero_explicit(winner, sizeof(winner));
+    signal_memzero_explicit(enc, sizeof(enc));
+    if (!loaded) identity_clear(out);
+    return loaded;
 #else
     if (!path) return false;
     identity_path_lock_t lock;
     if (!identity_path_lock_acquire(path, &lock)) return false;
     bool loaded = false;
-    uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES];
+    uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES] = {0};
     identity_read_result_t read_result =
         read_secret_file(path, secret);
     if (read_result == IDENTITY_READ_VALID) {
@@ -899,8 +922,9 @@ bool identity_load_or_generate_at(player_identity_t *out, const char *path) {
     loaded = true;
 
 identity_load_done:
+    signal_memzero_explicit(secret, sizeof(secret));
     identity_path_lock_release(&lock);
-    if (!loaded) memset(out, 0, sizeof(*out));
+    if (!loaded) identity_clear(out);
     return loaded;
 #endif
 }
@@ -911,7 +935,7 @@ bool identity_load_or_generate(player_identity_t *out) {
 #else
     char path[2048];
     if (!resolve_default_path(path, sizeof(path))) {
-        if (out) memset(out, 0, sizeof(*out));
+        identity_clear(out);
         fprintf(stderr,
                 "[identity] could not resolve a writable identity path; "
                 "authentication disabled to avoid an ephemeral identity\n");
@@ -919,4 +943,9 @@ bool identity_load_or_generate(player_identity_t *out) {
     }
     return identity_load_or_generate_at(out, path);
 #endif
+}
+
+void identity_clear(player_identity_t *id) {
+    if (!id) return;
+    signal_memzero_explicit(id, sizeof(*id));
 }

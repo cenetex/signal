@@ -12,13 +12,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
+
+#include "signal_memzero.h"
 
 static void signal_randombytes_clear(uint8_t *buf, unsigned long long n) {
     while (buf && n > 0) {
         size_t chunk = n > (unsigned long long)SIZE_MAX
             ? SIZE_MAX : (size_t)n;
-        memset(buf, 0, chunk);
+        signal_memzero_explicit(buf, chunk);
         buf += chunk;
         n -= (unsigned long long)chunk;
     }

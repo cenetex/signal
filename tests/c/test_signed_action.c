@@ -175,6 +175,170 @@ TEST(test_signed_action_dispatch_input_action_marks_station_dirty) {
     ASSERT_EQ_INT(result.station_identity_dirty, 2);
 }
 
+TEST(test_signed_action_present_pod_requires_exact_payload_shape) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    setup_player_with_keypair(w, 0, sk, pk);
+    server_player_t *sp = &w->players[0];
+    uint8_t payload[36] = {0};
+    payload[33] = 0x34;
+    payload[34] = 0x12;
+    uint64_t chain_events_before =
+        w->stations[0].chain_event_count;
+    sim_events_t world_events_before = w->events;
+
+    static const uint16_t invalid_lengths[] = {
+        32u, 34u, 36u,
+    };
+    for (size_t i = 0;
+         i < sizeof(invalid_lengths) /
+             sizeof(invalid_lengths[0]);
+         i++) {
+        server_signed_action_dispatch_result_t result;
+        sp->pending_action_result_valid = false;
+        ASSERT(server_dispatch_signed_action_payload(
+            w, 0, SIGNED_ACTION_PRESENT_POD,
+            payload, invalid_lengths[i],
+            NULL, NULL, &result));
+        ASSERT(result.pod_present_evaluated);
+        ASSERT_EQ_INT(
+            result.pod_present_result,
+            CARGO_POD_PRESENT_REJECT_BAD_ARGS);
+        ASSERT_EQ_INT(result.pod_present_moved, 0);
+        ASSERT_EQ_INT(result.pod_present_action_id, 0);
+        ASSERT(result.pod_present_event_valid);
+        ASSERT_EQ_INT(
+            result.pod_present_event.type,
+            SIM_EVENT_ORDER_REJECTED);
+        ASSERT_EQ_INT(
+            result.pod_present_event.order_rejected.reason,
+            ORDER_REJECT_POD_PRESENT_STALE);
+        ASSERT(!sp->pending_action_result_valid);
+        ASSERT_EQ_INT(w->events.count, world_events_before.count);
+        ASSERT(memcmp(w->events.events, world_events_before.events,
+                      (size_t)world_events_before.count *
+                          sizeof(world_events_before.events[0])) == 0);
+        ASSERT_EQ_INT(
+            (int)w->stations[0].chain_event_count,
+            (int)chain_events_before);
+    }
+
+    ASSERT(server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_PRESENT_POD,
+        payload, invalid_lengths[0],
+        NULL, NULL, NULL));
+    ASSERT_EQ_INT(w->events.count, world_events_before.count);
+    ASSERT(memcmp(w->events.events, world_events_before.events,
+                  (size_t)world_events_before.count *
+                      sizeof(world_events_before.events[0])) == 0);
+}
+
+TEST(test_signed_action_present_pod_result_is_immediate_and_action_correlated) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    uint8_t pk[32], sk[SIGNAL_CRYPTO_SECRET_BYTES];
+    setup_player_with_keypair(w, 0, sk, pk);
+    server_player_t *sp = &w->players[0];
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sim_events_t world_events_before = w->events;
+
+    /* Keep an unrelated tick-driven action pending. PRESENT must neither
+     * overwrite it nor let its rejection mark that action as rejected. */
+    server_begin_pending_action_result(
+        w, sp, 0x9999, 7, NET_ACTION_REPAIR);
+
+    uint8_t payload[35] = {0};
+    payload[33] = 0x34;
+    payload[34] = 0x12;
+    server_signed_action_dispatch_result_t result = {0};
+    ASSERT(server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_PRESENT_POD,
+        payload, sizeof(payload), NULL, NULL, &result));
+    ASSERT(result.pod_present_evaluated);
+    ASSERT_EQ_INT(
+        result.pod_present_result,
+        CARGO_POD_PRESENT_REJECT_STALE);
+    ASSERT(sp->pending_action_result_valid);
+    ASSERT_EQ_INT(sp->pending_action_result_id, 0x9999);
+    ASSERT_EQ_INT(sp->pending_action_result_input_seq, 7);
+    ASSERT_EQ_INT(
+        sp->pending_action_result_action,
+        NET_ACTION_REPAIR);
+    ASSERT_EQ_INT(result.pod_present_action_id, 0x1234);
+    ASSERT(result.pod_present_event_valid);
+    ASSERT_EQ_INT(
+        result.pod_present_event.type,
+        SIM_EVENT_ORDER_REJECTED);
+    ASSERT_EQ_INT(
+        result.pod_present_event.order_rejected.reason,
+        ORDER_REJECT_POD_PRESENT_STALE);
+    ASSERT_EQ_INT(w->events.count, world_events_before.count);
+    ASSERT(memcmp(w->events.events, world_events_before.events,
+                  (size_t)world_events_before.count *
+                      sizeof(world_events_before.events[0])) == 0);
+
+    sim_events_t immediate = {
+        .count = 1,
+    };
+    immediate.events[0] = result.pod_present_event;
+    uint8_t event_buf[
+        NET_EVENT_V2_HEADER_SIZE + NET_EVENT_V2_RECORD_SIZE];
+    int event_len = serialize_events_v2_for_recipient(
+        event_buf, &immediate, 0);
+    ASSERT_EQ_INT(
+        event_len,
+        NET_EVENT_V2_HEADER_SIZE + NET_EVENT_V2_RECORD_SIZE);
+    ASSERT_EQ_INT(event_buf[0], NET_MSG_EVENTS_V2);
+    ASSERT_EQ_INT(event_buf[1], 1);
+    ASSERT_EQ_INT(
+        event_buf[NET_EVENT_V2_HEADER_SIZE +
+                  NET_EVENT_V2_PAYLOAD_OFFSET],
+        ORDER_REJECT_POD_PRESENT_STALE);
+
+    event_len = serialize_events_v2_for_recipient(
+        event_buf, &immediate, 1);
+    ASSERT_EQ_INT(event_len, NET_EVENT_V2_HEADER_SIZE);
+    ASSERT_EQ_INT(event_buf[1], 0);
+
+    payload[33] = 0x78;
+    payload[34] = 0x56;
+    server_signed_action_dispatch_result_t second = {0};
+    ASSERT(server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_PRESENT_POD,
+        payload, sizeof(payload), NULL, NULL, &second));
+    ASSERT_EQ_INT(second.pod_present_action_id, 0x5678);
+    ASSERT(second.pod_present_event_valid);
+    ASSERT_EQ_INT(sp->pending_action_result_id, 0x9999);
+    ASSERT_EQ_INT(w->events.count, world_events_before.count);
+    ASSERT(memcmp(w->events.events, world_events_before.events,
+                  (size_t)world_events_before.count *
+                      sizeof(world_events_before.events[0])) == 0);
+
+    memset(&w->events, 0xA5, sizeof(w->events));
+    w->events.count = SIM_MAX_EVENTS;
+    sim_events_t saturated_events = w->events;
+    payload[33] = 0xEF;
+    payload[34] = 0xBE;
+    server_signed_action_dispatch_result_t saturated = {0};
+    ASSERT(server_dispatch_signed_action_payload(
+        w, 0, SIGNED_ACTION_PRESENT_POD,
+        payload, sizeof(payload), NULL, NULL, &saturated));
+    ASSERT_EQ_INT(saturated.pod_present_action_id, 0xBEEF);
+    ASSERT(saturated.pod_present_event_valid);
+    ASSERT_EQ_INT(saturated.pod_present_event.type,
+                  SIM_EVENT_ORDER_REJECTED);
+    ASSERT_EQ_INT(saturated.pod_present_event.order_rejected.reason,
+                  ORDER_REJECT_POD_PRESENT_STALE);
+    ASSERT(memcmp(&w->events, &saturated_events,
+                  sizeof(w->events)) == 0);
+    ASSERT_EQ_INT(sp->pending_action_result_id, 0x9999);
+}
+
 TEST(test_legacy_unsigned_dispatch_rejects_pubkey_player) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -554,6 +718,8 @@ void register_signed_action_tests(void) {
     RUN(test_signed_action_happy_path);
     RUN(test_signed_action_dispatch_buy_product_payload);
     RUN(test_signed_action_dispatch_input_action_marks_station_dirty);
+    RUN(test_signed_action_present_pod_requires_exact_payload_shape);
+    RUN(test_signed_action_present_pod_result_is_immediate_and_action_correlated);
     RUN(test_legacy_unsigned_dispatch_rejects_pubkey_player);
     RUN(test_anonymous_legacy_named_cargo_actions_are_inert);
     RUN(test_signed_action_invalid_signature_rejected);

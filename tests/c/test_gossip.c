@@ -4,6 +4,11 @@
 #include "sim_ai.h"
 #include "signal_intelligence.h"
 
+#ifndef _WIN32
+#include <pthread.h>
+#include <stdatomic.h>
+#endif
+
 static bool view_has_contract(const knowledge_view_t *view,
                               uint8_t action,
                               uint8_t station,
@@ -446,6 +451,179 @@ TEST(test_hnn_state_encoding_is_deterministic_and_nonzero) {
         ASSERT_EQ_FLOAT(a[i], b[i], 0.0f);
 }
 
+TEST(test_hnn_state_encoding_preserves_continuous_magnitude) {
+    hnn_pilot_features_t low = {.target_dist = 0.1f};
+    hnn_pilot_features_t mid = {.target_dist = 0.5f};
+    hnn_pilot_features_t high = {.target_dist = 1.0f};
+    float low_vec[HNN_DIM];
+    float mid_vec[HNN_DIM];
+    float high_vec[HNN_DIM];
+
+    hnn_encode_state(&low, low_vec);
+    hnn_encode_state(&mid, mid_vec);
+    hnn_encode_state(&high, high_vec);
+
+    float low_mid = hnn_similarity(low_vec, mid_vec);
+    float mid_high = hnn_similarity(mid_vec, high_vec);
+    float low_high = hnn_similarity(low_vec, high_vec);
+    ASSERT(low_mid < 0.9999f);
+    ASSERT(mid_high < 0.9999f);
+    ASSERT(low_high < low_mid);
+    ASSERT(low_high < mid_high);
+}
+
+TEST(test_hnn_state_encoding_defines_zero_sign_and_clipping) {
+    hnn_pilot_features_t negative = {.heading_error = -0.5f};
+    hnn_pilot_features_t zero = {0};
+    hnn_pilot_features_t positive = {.heading_error = 0.5f};
+    hnn_pilot_features_t positive_max = {.heading_error = 1.0f};
+    hnn_pilot_features_t positive_over = {.heading_error = 7.0f};
+    hnn_pilot_features_t negative_max = {.heading_error = -1.0f};
+    hnn_pilot_features_t negative_over = {.heading_error = -7.0f};
+    hnn_pilot_features_t not_finite_nan = {.heading_error = NAN};
+    hnn_pilot_features_t not_finite_pos = {.heading_error = INFINITY};
+    hnn_pilot_features_t not_finite_neg = {.heading_error = -INFINITY};
+    float negative_vec[HNN_DIM];
+    float zero_vec[HNN_DIM];
+    float positive_vec[HNN_DIM];
+    float positive_max_vec[HNN_DIM];
+    float positive_over_vec[HNN_DIM];
+    float negative_max_vec[HNN_DIM];
+    float negative_over_vec[HNN_DIM];
+    float not_finite_nan_vec[HNN_DIM];
+    float not_finite_pos_vec[HNN_DIM];
+    float not_finite_neg_vec[HNN_DIM];
+
+    hnn_encode_state(&negative, negative_vec);
+    hnn_encode_state(&zero, zero_vec);
+    hnn_encode_state(&positive, positive_vec);
+    hnn_encode_state(&positive_max, positive_max_vec);
+    hnn_encode_state(&positive_over, positive_over_vec);
+    hnn_encode_state(&negative_max, negative_max_vec);
+    hnn_encode_state(&negative_over, negative_over_vec);
+    hnn_encode_state(&not_finite_nan, not_finite_nan_vec);
+    hnn_encode_state(&not_finite_pos, not_finite_pos_vec);
+    hnn_encode_state(&not_finite_neg, not_finite_neg_vec);
+
+    ASSERT(hnn_similarity(negative_vec, positive_vec) < 0.9999f);
+    ASSERT(hnn_similarity(negative_vec, zero_vec) < 0.9999f);
+    ASSERT(hnn_similarity(positive_vec, zero_vec) < 0.9999f);
+    for (int i = 0; i < HNN_DIM; i++) {
+        ASSERT_EQ_FLOAT(positive_max_vec[i], positive_over_vec[i], 0.0f);
+        ASSERT_EQ_FLOAT(negative_max_vec[i], negative_over_vec[i], 0.0f);
+        ASSERT_EQ_FLOAT(zero_vec[i], not_finite_nan_vec[i], 0.0f);
+        ASSERT_EQ_FLOAT(zero_vec[i], not_finite_pos_vec[i], 0.0f);
+        ASSERT_EQ_FLOAT(zero_vec[i], not_finite_neg_vec[i], 0.0f);
+    }
+}
+
+TEST(test_hnn_magnitude_sensitive_action_retrieval) {
+    hnn_action_table_t actions;
+    hnn_memory_t distance_memory;
+    hnn_memory_t signal_memory;
+    hnn_memory_t feature_memory;
+    hnn_pilot_features_t near = {.target_dist = 0.1f};
+    hnn_pilot_features_t far = {.target_dist = 0.9f};
+    hnn_pilot_features_t weak = {.signal_quality = 0.1f};
+    hnn_pilot_features_t strong = {.signal_quality = 0.9f};
+    float state_vec[HNN_DIM];
+
+    hnn_action_table_init(&actions);
+    hnn_memory_init(&distance_memory);
+    hnn_encode_state(&near, state_vec);
+    hnn_memory_store(&distance_memory, state_vec, actions.vecs[4]);
+    hnn_encode_state(&far, state_vec);
+    hnn_memory_store(&distance_memory, state_vec, actions.vecs[1]);
+    ASSERT_EQ_INT(hnn_select_action(&distance_memory, &actions, &near, NULL), 4);
+    ASSERT_EQ_INT(hnn_select_action(&distance_memory, &actions, &far, NULL), 1);
+
+    hnn_memory_init(&signal_memory);
+    hnn_encode_state(&weak, state_vec);
+    hnn_memory_store(&signal_memory, state_vec, actions.vecs[0]);
+    hnn_encode_state(&strong, state_vec);
+    hnn_memory_store(&signal_memory, state_vec, actions.vecs[3]);
+    ASSERT_EQ_INT(hnn_select_action(&signal_memory, &actions, &weak, NULL), 0);
+    ASSERT_EQ_INT(hnn_select_action(&signal_memory, &actions, &strong, NULL), 3);
+
+    hnn_memory_init(&feature_memory);
+    hnn_encode_state(&far, state_vec);
+    hnn_memory_store(&feature_memory, state_vec, actions.vecs[5]);
+    hnn_encode_state(&strong, state_vec);
+    hnn_memory_store(&feature_memory, state_vec, actions.vecs[7]);
+    ASSERT_EQ_INT(hnn_select_action(&feature_memory, &actions, &far, NULL), 5);
+    ASSERT_EQ_INT(hnn_select_action(&feature_memory, &actions, &strong, NULL), 7);
+}
+
+static hnn_pilot_features_t hnn_capacity_probe_state(int i) {
+    hnn_pilot_features_t f = {0};
+    f.target_dist = (float)((i * 37) % 101) / 100.0f;
+    f.heading_error = (float)(((i * 53) % 201) - 100) / 100.0f;
+    f.heading_cos = (float)(((i * 71) % 201) - 100) / 100.0f;
+    f.heading_sin = (float)(((i * 89) % 201) - 100) / 100.0f;
+    f.speed = (float)((i * 29) % 101) / 100.0f;
+    f.forward_speed = (float)(((i * 43) % 201) - 100) / 100.0f;
+    f.lateral_speed = (float)(((i * 61) % 201) - 100) / 100.0f;
+    f.brake_distance = (float)((i * 17) % 101) / 100.0f;
+    f.fwd_clear = (float)((i * 23) % 101) / 100.0f;
+    f.left_clear = (float)((i * 31) % 101) / 100.0f;
+    f.right_clear = (float)((i * 47) % 101) / 100.0f;
+    f.signal_quality = (float)((i * 59) % 101) / 100.0f;
+    f.hull_ratio = (float)((i * 67) % 101) / 100.0f;
+    f.goal_close = 1.0f - f.target_dist;
+    return f;
+}
+
+TEST(test_hnn_capacity_preserves_action_signal_through_limit) {
+    static const int checkpoints[] = {1, 16, 32, 64, 128};
+    /*
+     * Encoder-v2 deterministic baseline with three cleanup steps is
+     * 1/1, 4/16, 5/32, 11/64, and 16/128 correct. Keep conservative
+     * floors here so the configured capacity cannot silently fall to
+     * chance while still allowing future fidelity improvements.
+     */
+    static const int minimum_correct[] = {1, 3, 5, 9, 15};
+    hnn_action_table_t actions;
+    hnn_memory_t memory;
+    int checkpoint = 0;
+
+    hnn_action_table_init(&actions);
+    hnn_memory_init(&memory);
+    for (int count = 1; count <= (int)HNN_TRACE_CAPACITY; count++) {
+        hnn_pilot_features_t state = hnn_capacity_probe_state(count - 1);
+        float state_vec[HNN_DIM];
+        hnn_encode_state(&state, state_vec);
+        hnn_memory_store(&memory, state_vec,
+                         actions.vecs[(count - 1) % HNN_ACTION_COUNT]);
+
+        if (count != checkpoints[checkpoint]) continue;
+
+        int correct = 0;
+        float margin_sum = 0.0f;
+        float fidelity_sum = 0.0f;
+        for (int query = 0; query < count; query++) {
+            hnn_pilot_features_t probe = hnn_capacity_probe_state(query);
+            float margin = 0.0f;
+            float fidelity = 0.0f;
+            int selected = hnn_score_actions(
+                &memory, &actions, &probe, NULL, &margin, &fidelity, 3);
+            if (selected == query % HNN_ACTION_COUNT) correct++;
+            margin_sum += margin;
+            fidelity_sum += fidelity;
+        }
+
+        ASSERT(correct >= minimum_correct[checkpoint]);
+        ASSERT(correct * HNN_ACTION_COUNT > count);
+        ASSERT(margin_sum > 0.0f);
+        ASSERT(fidelity_sum > 0.0f);
+        ASSERT_EQ_FLOAT(hnn_memory_capacity_load(&memory),
+                        (float)count / (float)HNN_TRACE_CAPACITY,
+                        0.000001f);
+        checkpoint++;
+    }
+    ASSERT_EQ_INT(checkpoint,
+                  (int)(sizeof(checkpoints) / sizeof(checkpoints[0])));
+}
+
 TEST(test_hnn_memory_contract_reports_trace_diagnostics) {
     hnn_memory_t hnn;
     hnn_memory_init(&hnn);
@@ -640,6 +818,149 @@ TEST(test_hnn_state_encoding_sanitizes_nonfinite_features) {
     for (int i = 0; i < HNN_ACTION_COUNT; i++) ASSERT(isfinite(scores[i]));
     ASSERT(isfinite(margin));
     ASSERT(isfinite(fidelity));
+}
+
+#ifndef _WIN32
+enum {
+    HNN_REENTRANT_THREAD_COUNT = 4,
+    HNN_REENTRANT_SIM_STEPS = 32,
+};
+
+typedef struct {
+    atomic_int ready;
+    atomic_bool go;
+} hnn_reentrant_start_t;
+
+typedef struct {
+    hnn_reentrant_start_t *start;
+    world_t *world;
+    float key[HNN_DIM];
+    float state[HNN_DIM];
+    vec2 final_pos;
+} hnn_reentrant_worker_t;
+
+static void *hnn_reentrant_worker_main(void *opaque) {
+    hnn_reentrant_worker_t *ctx = opaque;
+    hnn_pilot_features_t features = {
+        .target_dist = 0.75f,
+        .heading_error = -0.25f,
+        .heading_cos = 0.96875f,
+        .heading_sin = -0.25f,
+        .speed = 0.40f,
+        .forward_speed = 0.35f,
+        .lateral_speed = 0.05f,
+        .brake_distance = 0.10f,
+        .fwd_clear = 0.80f,
+        .left_clear = 0.60f,
+        .right_clear = 0.70f,
+        .signal_quality = 0.90f,
+        .hull_ratio = 1.0f,
+        .path_count = 0.25f,
+        .path_current = 0.125f,
+    };
+
+    atomic_fetch_add_explicit(&ctx->start->ready, 1,
+                              memory_order_release);
+    while (!atomic_load_explicit(&ctx->start->go,
+                                 memory_order_acquire)) {
+    }
+
+    /*
+     * Each worker enters deterministic key generation, its cache, and
+     * feature/value-key initialization from a fresh thread. The independent
+     * worlds exercise the player-only simulation path at the same time.
+     */
+    hnn_key_vector(0x6245afe123456789ull, ctx->key);
+    hnn_encode_state(&features, ctx->state);
+    for (int i = 0; i < HNN_REENTRANT_SIM_STEPS; i++)
+        world_sim_step_player_only(ctx->world, 0, SIM_DT);
+    ctx->final_pos = ctx->world->players[0].ship->pos;
+    return NULL;
+}
+#endif
+
+TEST(test_hnn_reentrant_key_state_and_simulation) {
+#ifdef _WIN32
+    /* The bounded ThreadSanitizer lane is Linux-only. */
+    ASSERT(true);
+#else
+    hnn_reentrant_start_t start;
+    atomic_init(&start.ready, 0);
+    atomic_init(&start.go, false);
+
+    pthread_t threads[HNN_REENTRANT_THREAD_COUNT];
+    hnn_reentrant_worker_t workers[HNN_REENTRANT_THREAD_COUNT] = {0};
+    int created = 0;
+    int thread_error = 0;
+    bool results_match = true;
+
+    for (int i = 0; i < HNN_REENTRANT_THREAD_COUNT; i++) {
+        workers[i].start = &start;
+        workers[i].world = calloc(1, sizeof(*workers[i].world));
+        if (!workers[i].world) {
+            thread_error = -1;
+            break;
+        }
+        world_reset(workers[i].world);
+        server_player_t *sp = &workers[i].world->players[0];
+        player_init_ship(sp, workers[i].world);
+        sp->connected = true;
+        sp->session_ready = true;
+        sp->docked = false;
+        sp->current_station = -1;
+        sp->ship->pos = v2(120.0f, -80.0f);
+        sp->ship->vel = v2(12.0f, -3.0f);
+        sp->input.thrust = 0.5f;
+        sp->input.turn = -0.25f;
+    }
+
+    if (thread_error == 0) {
+        for (int i = 0; i < HNN_REENTRANT_THREAD_COUNT; i++) {
+            thread_error = pthread_create(
+                &threads[i], NULL, hnn_reentrant_worker_main,
+                &workers[i]);
+            if (thread_error != 0) break;
+            created++;
+        }
+    }
+
+    while (thread_error == 0 &&
+           atomic_load_explicit(&start.ready, memory_order_acquire) !=
+               HNN_REENTRANT_THREAD_COUNT) {
+    }
+    atomic_store_explicit(&start.go, true, memory_order_release);
+
+    for (int i = 0; i < created; i++) {
+        if (pthread_join(threads[i], NULL) != 0 &&
+            thread_error == 0) {
+            thread_error = -1;
+        }
+    }
+
+    if (thread_error == 0) {
+        for (int i = 1; i < HNN_REENTRANT_THREAD_COUNT; i++) {
+            results_match =
+                results_match &&
+                memcmp(workers[0].key, workers[i].key,
+                       sizeof(workers[0].key)) == 0 &&
+                memcmp(workers[0].state, workers[i].state,
+                       sizeof(workers[0].state)) == 0 &&
+                fabsf(workers[0].final_pos.x -
+                      workers[i].final_pos.x) <= 0.000001f &&
+                fabsf(workers[0].final_pos.y -
+                      workers[i].final_pos.y) <= 0.000001f;
+        }
+    }
+
+    for (int i = 0; i < HNN_REENTRANT_THREAD_COUNT; i++) {
+        if (!workers[i].world) continue;
+        world_cleanup(workers[i].world);
+        free(workers[i].world);
+    }
+
+    ASSERT_EQ_INT(thread_error, 0);
+    ASSERT(results_match);
+#endif
 }
 
 TEST(test_hnn_market_memory_maps_specialized_jobs) {
@@ -1477,8 +1798,9 @@ TEST(test_ship_contact_gossip_exchanges_memory_and_holograms) {
                               SIGNAL_FIELD_KIND_HOLOGRAM, 0) > 0.0f);
 }
 
-static void test_reset_holographic_pilot(npc_ship_t *npc) {
-    memset(npc, 0, sizeof(*npc));
+static npc_ship_t *test_reset_holographic_pilot(world_t *w, int npc_slot) {
+    if (!test_world_npc_slot_reset(w, npc_slot)) return NULL;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
     npc->active = true;
     npc->brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
     npc->home_station = 0;
@@ -1486,6 +1808,7 @@ static void test_reset_holographic_pilot(npc_ship_t *npc) {
     npc->hnn_experience_uploaded_station = 0xffu;
     npc->hnn_experience_uploaded_source_station = 0xffu;
     hnn_memory_init(&npc->hnn_mem);
+    return npc;
 }
 
 static void test_reset_station_hnn_experience(station_t *st) {
@@ -1510,8 +1833,8 @@ TEST(test_holographic_pilot_uploads_experience_once) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t *npc = &w.npc_ships[0];
-    test_reset_holographic_pilot(npc);
+    npc_ship_t *npc = test_reset_holographic_pilot(&w, 0);
+    ASSERT(npc != NULL);
     test_store_hnn_trace(&npc->hnn_mem, 0x1234u, 0x5678u);
     npc->hnn_experience_local_version++;
     ASSERT_EQ_INT(npc->hnn_mem.experience_count, 1);
@@ -1541,8 +1864,8 @@ TEST(test_holographic_pilot_transports_station_cell) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t *npc = &w.npc_ships[0];
-    test_reset_holographic_pilot(npc);
+    npc_ship_t *npc = test_reset_holographic_pilot(&w, 0);
+    ASSERT(npc != NULL);
     test_store_hnn_trace(&npc->hnn_mem, 0x2234u, 0x6678u);
     npc->hnn_experience_local_version++;
 
@@ -1569,8 +1892,8 @@ TEST(test_holographic_pilot_rejects_unproven_trace_cargo) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t *npc = &w.npc_ships[0];
-    test_reset_holographic_pilot(npc);
+    npc_ship_t *npc = test_reset_holographic_pilot(&w, 0);
+    ASSERT(npc != NULL);
     test_store_hnn_trace(&npc->hnn_mem, 0x3234u, 0x7678u);
     npc->hnn_experience_station = 0;
     npc->hnn_experience_version = 2;
@@ -1594,8 +1917,8 @@ TEST(test_holographic_pilot_rejects_low_fidelity_trace_cargo) {
     WORLD_DECL;
     world_reset(&w);
 
-    npc_ship_t *npc = &w.npc_ships[0];
-    test_reset_holographic_pilot(npc);
+    npc_ship_t *npc = test_reset_holographic_pilot(&w, 0);
+    ASSERT(npc != NULL);
     test_store_hnn_trace(&npc->hnn_mem, 0x4234u, 0x8678u);
     npc->hnn_mem.last_retrieval_similarity = -1.0f;
     npc->hnn_mem.last_margin = 0.0f;
@@ -1672,10 +1995,15 @@ void register_gossip_tests(void) {
     RUN(test_signal_intelligence_worker_reason_records_route_risk);
     RUN(test_hnn_core_key_cache_preserves_bind_round_trip);
     RUN(test_hnn_state_encoding_is_deterministic_and_nonzero);
+    RUN(test_hnn_state_encoding_preserves_continuous_magnitude);
+    RUN(test_hnn_state_encoding_defines_zero_sign_and_clipping);
+    RUN(test_hnn_magnitude_sensitive_action_retrieval);
+    RUN(test_hnn_capacity_preserves_action_signal_through_limit);
     RUN(test_hnn_memory_contract_reports_trace_diagnostics);
     RUN(test_hnn_holonet_single_cell_matches_flat_trace);
     RUN(test_hnn_holonet_routes_novel_states_to_distinct_cells);
     RUN(test_hnn_state_encoding_sanitizes_nonfinite_features);
+    RUN(test_hnn_reentrant_key_state_and_simulation);
     RUN(test_hnn_market_memory_maps_specialized_jobs);
     RUN(test_route_reputation_memory_reinforces_repeated_evidence);
     RUN(test_station_trust_memory_reinforces_repeated_evidence);

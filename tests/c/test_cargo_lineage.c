@@ -88,7 +88,7 @@ TEST(test_cargo_lineage_labels_legacy_parentless) {
     ASSERT_STR_EQ(story, "legacy cargo at Helios");
 }
 
-TEST(test_cargo_lineage_story_names_signed_product_inputs) {
+TEST(test_cargo_lineage_story_does_not_claim_product_input_proof) {
     uint8_t fragment[32] = {0};
     for (int i = 0; i < 32; i++) fragment[i] = (uint8_t)(0x40 + i);
 
@@ -102,7 +102,9 @@ TEST(test_cargo_lineage_story_names_signed_product_inputs) {
 
     char story[96];
     cargo_lineage_story_label(&product, story, sizeof(story));
-    ASSERT_STR_EQ(story, "pressed at Prospect from signed ingots");
+    ASSERT_STR_EQ(
+        story,
+        "pressed at Prospect (input lineage unproven)");
 }
 
 void register_cargo_lineage_tests(void);
@@ -113,5 +115,5 @@ void register_cargo_lineage_tests(void) {
     RUN(test_station_short_name_invalid_returns_sentinel);
     RUN(test_cargo_lineage_labels_ingot);
     RUN(test_cargo_lineage_labels_legacy_parentless);
-    RUN(test_cargo_lineage_story_names_signed_product_inputs);
+    RUN(test_cargo_lineage_story_does_not_claim_product_input_proof);
 }

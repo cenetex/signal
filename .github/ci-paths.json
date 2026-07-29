@@ -10,7 +10,8 @@
     "cross_platform": "Linux, macOS ARM/Metal, and Windows/MSVC client and server compile",
     "replay": "Native/WASM deterministic replay comparison",
     "tools": "Standalone C command-line tools and packnft tests",
-    "programs": "Locked Rust checks and tests for the burn-to-mint programs"
+    "programs": "Locked Rust checks and tests for the burn-to-mint programs",
+    "deployment": "Locked AWS Lambda dependencies and deployment entrypoint/config contracts"
   },
   "always_lanes": [
     "policy"
@@ -63,6 +64,8 @@
         "shared/manifest.c",
         "shared/manifest.h",
         "shared/signal_crypto.h",
+        "shared/signal_memzero.c",
+        "shared/signal_memzero.h",
         "vendor/tweetnacl/**"
       ],
       "lanes": [
@@ -142,6 +145,7 @@
         "server/Dockerfile",
         "scripts/fly-webrtc-entrypoint.sh",
         "scripts/lightsail-webrtc-entrypoint.sh",
+        "scripts/test-webrtc-gateway.mjs",
         "scripts/webrtc-gateway.mjs"
       ],
       "lanes": [
@@ -153,7 +157,9 @@
       "scope": "gate",
       "paths": [
         ".clang-tidy",
-        "cppcheck.suppressions"
+        "cppcheck.suppressions",
+        "scripts/check_memzero_codegen.py",
+        "scripts/test_check_memzero_codegen.py"
       ],
       "lanes": [
         "native"
@@ -214,6 +220,19 @@
       ]
     },
     {
+      "name": "deployment-gates",
+      "scope": "gate",
+      "paths": [
+        "scripts/check_deployment_inputs.py",
+        "scripts/test_check_deployment_inputs.py",
+        "scripts/check_fly_config.py",
+        "scripts/test_check_fly_config.py"
+      ],
+      "lanes": [
+        "deployment"
+      ]
+    },
+    {
       "name": "ci-controller",
       "scope": "gate",
       "paths": [
@@ -229,7 +248,8 @@
         "cross_platform",
         "replay",
         "tools",
-        "programs"
+        "programs",
+        "deployment"
       ]
     },
     {
@@ -264,7 +284,8 @@
       "lanes": [
         "native",
         "browser",
-        "container"
+        "container",
+        "deployment"
       ]
     },
     {
@@ -300,7 +321,7 @@
         "wrangler.toml"
       ],
       "lanes": [
-        "container"
+        "deployment"
       ]
     },
     {

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -25,7 +26,34 @@ REQUIRED_JOBS = {
     "replay",
     "tools",
     "programs",
+    "deployment",
     "ci-required",
+}
+
+EXPECTED_SHIPPING_LANES = {
+    "core-runtime": {
+        "native",
+        "soak",
+        "browser",
+        "container",
+        "cross_platform",
+        "replay",
+    },
+    "vendored-runtime": {
+        "native",
+        "soak",
+        "fuzz",
+        "browser",
+        "container",
+        "cross_platform",
+        "replay",
+    },
+    "browser-runtime": {"browser", "container"},
+    "node-package": {"browser", "container"},
+    "production-container": {"container"},
+    "standalone-tools": {"native", "tools"},
+    "deployment-config": {"deployment"},
+    "independent-solana-programs": {"programs"},
 }
 
 
@@ -36,6 +64,103 @@ def workflow_sources() -> dict[str, str]:
     }
 
 
+def script_sources() -> dict[str, str]:
+    return {
+        path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / "scripts").rglob("*"))
+        if path.is_file() and path.suffix in {".js", ".mjs"}
+    }
+
+
+def static_import_specifiers(source: str) -> list[str]:
+    """Return ESM imports evaluated while a module is being loaded."""
+    specifiers = []
+    for match in re.finditer(
+        r"^[ \t]*import[ \t]+(?P<body>.*?);",
+        source,
+        re.MULTILINE | re.DOTALL,
+    ):
+        body = match.group("body")
+        imported = re.search(
+            r"\bfrom\s+(['\"])(?P<specifier>[^'\"]+)\1",
+            body,
+            re.DOTALL,
+        )
+        if imported is None:
+            imported = re.match(
+                r"\s*(['\"])(?P<specifier>[^'\"]+)\1",
+                body,
+                re.DOTALL,
+            )
+        if imported is not None:
+            specifiers.append(imported.group("specifier"))
+    return specifiers
+
+
+NODE_LEGACY_BUILTINS = {
+    "assert",
+    "buffer",
+    "child_process",
+    "crypto",
+    "events",
+    "fs",
+    "http",
+    "https",
+    "net",
+    "os",
+    "path",
+    "stream",
+    "tls",
+    "url",
+    "util",
+}
+
+
+def policy_node_dependency_failures(
+    policy_job: str,
+    sources: dict[str, str],
+) -> list[str]:
+    """Keep always-run Node self-tests usable before package installation."""
+    entrypoints = re.findall(
+        r"^\s*node(?:\s+--test)?\s+"
+        r"(scripts/[A-Za-z0-9_./-]+\.(?:mjs|js))\b",
+        policy_job,
+        re.MULTILINE,
+    )
+    failures = []
+    visited: set[str] = set()
+    pending = list(entrypoints)
+    while pending:
+        path = pending.pop()
+        if path in visited:
+            continue
+        visited.add(path)
+        source = sources.get(path)
+        if source is None:
+            failures.append(
+                f"ci.yml: policy Node self-test source {path!r} is missing"
+            )
+            continue
+        for specifier in static_import_specifiers(source):
+            if (specifier.startswith("node:")
+                    or specifier in NODE_LEGACY_BUILTINS):
+                continue
+            if specifier.startswith("."):
+                resolved = posixpath.normpath(
+                    posixpath.join(posixpath.dirname(path), specifier)
+                )
+                if resolved in sources:
+                    pending.append(resolved)
+                continue
+            failures.append(
+                "ci.yml: always-run policy Node self-test dependency graph "
+                f"imports external package {specifier!r} from {path}; "
+                "load it only in the executable path or install locked "
+                "dependencies before running policy self-tests"
+            )
+    return failures
+
+
 def job_block(source: str, job: str) -> str:
     match = re.search(
         rf"^  {re.escape(job)}:\s*$\n"
@@ -44,6 +169,78 @@ def job_block(source: str, job: str) -> str:
         re.MULTILINE,
     )
     return match.group("body") if match else ""
+
+
+def exact_aggregate_env_failures(
+    aggregate: str,
+    policy_lanes: set[str],
+) -> list[str]:
+    """Require each aggregate input to come from its matching job/output."""
+    expected = {
+        "CI_RESULT_CLASSIFY": "${{ needs.classify.result }}",
+    }
+    for lane in policy_lanes:
+        suffix = lane.upper()
+        expected[f"CI_RESULT_{suffix}"] = (
+            f"${{{{ needs.{lane}.result }}}}"
+        )
+        expected[f"CI_SELECTED_{suffix}"] = (
+            f"${{{{ needs.classify.outputs.{lane} }}}}"
+        )
+
+    assignments: dict[str, list[str]] = {}
+    for match in re.finditer(
+        r"^\s+(?P<name>CI_(?:RESULT|SELECTED)_[A-Z0-9_]+):"
+        r"\s*(?P<value>.*?)\s*$",
+        aggregate,
+        re.MULTILINE,
+    ):
+        assignments.setdefault(match.group("name"), []).append(
+            match.group("value")
+        )
+
+    failures = []
+    for name, value in sorted(expected.items()):
+        actual = assignments.get(name, [])
+        if actual != [value]:
+            failures.append(
+                f"ci.yml: ci-required must map {name} exactly to {value!r} "
+                f"(got {actual!r})"
+            )
+    for name in sorted(set(assignments) - set(expected)):
+        failures.append(
+            f"ci.yml: ci-required has unexpected aggregate input {name}"
+        )
+    return failures
+
+
+def exact_shipping_lane_failures(policy: dict) -> list[str]:
+    """Require an explicit, complete lane contract for shipping surfaces."""
+    shipping = {
+        category.get("name"): category
+        for category in policy.get("categories", [])
+        if category.get("scope") == "shipping"
+    }
+    failures = []
+    for name, expected in EXPECTED_SHIPPING_LANES.items():
+        category = shipping.get(name)
+        if category is None:
+            failures.append(
+                f"ci-paths.json: missing shipping category {name!r}"
+            )
+            continue
+        actual = set(category.get("lanes", []))
+        if actual != expected:
+            failures.append(
+                f"ci-paths.json: shipping category {name!r} must map "
+                f"exactly to {sorted(expected)!r} (got {sorted(actual)!r})"
+            )
+    for name in sorted(set(shipping) - set(EXPECTED_SHIPPING_LANES)):
+        failures.append(
+            f"ci-paths.json: shipping category {name!r} has no pinned "
+            "expected lane set"
+        )
+    return failures
 
 
 def action_pin_failures(sources: dict[str, str]) -> list[str]:
@@ -73,9 +270,11 @@ def action_pin_failures(sources: dict[str, str]) -> list[str]:
 def contract_failures(
     sources: dict[str, str],
     policy: dict,
+    scripts: dict[str, str],
 ) -> list[str]:
     failures: list[str] = []
     ci = sources.get("ci.yml", "")
+    failures.extend(exact_shipping_lane_failures(policy))
     replay = sources.get("replay.yml", "")
     release = sources.get("release.yml", "")
 
@@ -120,6 +319,9 @@ def contract_failures(
             failures.append(
                 f"ci.yml: ci-required does not need {required!r}"
             )
+    failures.extend(
+        exact_aggregate_env_failures(aggregate, policy_lanes)
+    )
     if "if: always()" not in aggregate:
         failures.append("ci.yml: ci-required must run with if: always()")
     if "python3 scripts/check_ci_required.py" not in aggregate:
@@ -131,12 +333,20 @@ def contract_failures(
             "ci.yml: policy job must run pinned actionlint v1.7.12"
         )
     policy_job = job_block(ci, "policy")
+    failures.extend(policy_node_dependency_failures(policy_job, scripts))
     for marker in (
         "python3 scripts/check_banned_apis.py",
+        "python3 scripts/check_cargo_trust_boundaries.py",
+        "python3 scripts/test_check_cargo_trust_boundaries.py",
         "python3 scripts/check_deterministic_libm.py",
+        "python3 scripts/check_deployment_inputs.py",
+        "python3 scripts/test_check_deployment_inputs.py",
+        "python3 scripts/test_check_client_memory_budget.py",
+        "python3 scripts/test_check_memzero_codegen.py",
         "node scripts/test-rati-anchor-batch.mjs",
         "node scripts/test-rati-anchor-stamp.mjs",
         "node scripts/test-relay-region-broker.mjs",
+        "node --test scripts/test-relay-traffic-probe.mjs",
         "node scripts/test-ws-backpressure-soak.mjs",
         "node scripts/test-ws-latency-proxy.mjs",
     ):
@@ -145,10 +355,29 @@ def contract_failures(
                 f"ci.yml: policy job lacks script check {marker!r}"
             )
 
+    native = job_block(ci, "native")
+    if "make memzero-codegen" not in native:
+        failures.append(
+            "ci.yml: native job lacks optimized explicit-wipe codegen gate"
+        )
+
+    scheduled_sanitizers = sources.get("soak.yml", "")
+    for marker, description in (
+        ("make memzero-codegen test-msan",
+         "scoped MemorySanitizer lifecycle gate"),
+        ("make test-tsan", "bounded ThreadSanitizer gate"),
+    ):
+        if marker not in scheduled_sanitizers:
+            failures.append(
+                f"soak.yml: scheduled workflow lacks {description}"
+            )
+
     browser = job_block(ci, "browser")
     browser_requirements = {
         "emscripten/emsdk:4.0.15": "pinned Emscripten 4.0.15",
         "-DCMAKE_BUILD_TYPE=Release": "release WASM configuration",
+        "python3 scripts/check_client_memory_budget.py":
+            "release WASM memory budget",
         "npm ci": "locked npm install",
         "npx --no-install playwright install --with-deps chromium":
             "locked Chromium installation",
@@ -172,11 +401,32 @@ def contract_failures(
             )
 
     container = job_block(ci, "container")
-    for marker in ("docker build --no-cache",):
+    container_requirements = {
+        "docker build --no-cache":
+            "clean production-image build",
+        "ls --omit=dev --all":
+            "recorded production dependency tree",
+        "audit --omit=dev":
+            "production dependency audit",
+        "test ! -e /root/.npm":
+            "npm-cache absence check",
+        "test ! -e node_modules/@playwright/test":
+            "development-dependency absence check",
+        "production-container-dependencies-${{ github.sha }}":
+            "uploaded dependency and audit evidence",
+        "npm run test:rtc-gateway":
+            "packaged WebRTC gateway test",
+    }
+    for marker, description in container_requirements.items():
         if marker not in container:
             failures.append(
-                f"ci.yml: container job lacks {marker!r}"
+                f"ci.yml: container job lacks {description} "
+                f"({marker!r})"
             )
+    if container.count("set -o pipefail") < 2:
+        failures.append(
+            "ci.yml: container evidence pipelines must enable pipefail"
+        )
     if "FLY_API_TOKEN" in container or "setup-flyctl" in container:
         failures.append(
             "ci.yml: required container lane must not depend on Fly secrets"
@@ -189,6 +439,41 @@ def contract_failures(
             failures.append(
                 f"ci.yml: policy job lacks local Fly contract {marker!r}"
             )
+
+    deployment = job_block(ci, "deployment")
+    deployment_requirements = {
+        "node-version: '24'": "SAM-compatible Node 24 runtime",
+        "cache-dependency-path: "
+        "aws/lambda/signal-lobby/package-lock.json":
+            "nested Lambda dependency lock",
+        "python3 scripts/check_deployment_inputs.py":
+            "deployment input contract",
+        "python3 scripts/check_fly_config.py":
+            "local Fly contract",
+        "bash -n deploy/lightsail-user-data.sh":
+            "Lightsail bootstrap syntax check",
+        "sh -n docker/entrypoint.sh":
+            "local container entrypoint syntax check",
+        "npm ci --ignore-scripts --omit=dev":
+            "locked Lambda production dependency install",
+        "npm ls --omit=dev --all":
+            "Lambda production dependency tree validation",
+        "import('./aws/lambda/signal-lobby/index.mjs')":
+            "Lambda dependency-resolving module smoke",
+        "import('./workers/fly-proxy.js')":
+            "Worker module smoke",
+    }
+    for marker, description in deployment_requirements.items():
+        if marker not in deployment:
+            failures.append(
+                f"ci.yml: deployment job lacks {description} "
+                f"({marker!r})"
+            )
+
+    if "set -o pipefail" not in sources.get("valgrind.yml", ""):
+        failures.append(
+            "valgrind.yml: truncated memcheck pipeline must enable pipefail"
+        )
 
     programs = job_block(ci, "programs")
     for manifest in (
@@ -242,6 +527,7 @@ def contract_failures(
         "--verify-tag",
         "--json isDraft",
         "Release $RELEASE_TAG is already published",
+        "python3 scripts/check_client_memory_budget.py",
     ):
         if marker not in release:
             failures.append(
@@ -254,6 +540,12 @@ def contract_failures(
                 "release.yml: draft staging must depend on "
                 f"{build_job}"
             )
+
+    deploy = sources.get("deploy-fly.yml", "")
+    if "python3 scripts/check_client_memory_budget.py" not in deploy:
+        failures.append(
+            "deploy-fly.yml: browser build lacks release WASM memory budget"
+        )
 
     expected_browser = classify_ci_paths.classify_paths(
         [
@@ -277,6 +569,25 @@ def contract_failures(
             "ci-paths.json: vendored crypto must select native and fuzz"
         )
 
+    for path in (
+        "aws/lambda/signal-lobby/package-lock.json",
+        "deploy/lightsail-user-data.sh",
+        "docker/entrypoint.sh",
+        "fly.toml",
+        "workers/fly-proxy.js",
+        "wrangler.toml",
+    ):
+        classified = classify_ci_paths.classify_paths([path], policy)
+        if classified.unknown or "deployment" not in classified.lanes:
+            failures.append(
+                f"ci-paths.json: {path} must select deployment"
+            )
+        if "container" in classified.lanes:
+            failures.append(
+                f"ci-paths.json: {path} must not claim production-container "
+                "coverage"
+            )
+
     failures.extend(action_pin_failures(sources))
     for name, source in sources.items():
         if re.search(r"\bnpx\s+(?!.*--no-install)", source):
@@ -291,7 +602,9 @@ def contract_failures(
 def main() -> int:
     try:
         policy = classify_ci_paths.load_policy()
-        failures = contract_failures(workflow_sources(), policy)
+        failures = contract_failures(
+            workflow_sources(), policy, script_sources()
+        )
     except (OSError, ValueError) as exc:
         print(f"workflow contract check could not run: {exc}", file=sys.stderr)
         return 2

@@ -63,6 +63,7 @@ jobs:
         run: |
           cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH="${GITHUB_SHA::7}"
           cmake --build build --target signal_replay --parallel
+          ./build/signal_replay --self-test-public-hash
           python3 scripts/check_deterministic_build_flags.py build/compile_commands.json
 
       - name: Build WASM replay
@@ -127,6 +128,7 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGIT_HASH="${GITHUB_SHA::7}"
           cmake --build build --target signal_replay --parallel
+          ./build/signal_replay --self-test-public-hash
           python3 scripts/check_deterministic_build_flags.py build/compile_commands.json
 
       - name: Export macOS ARM replay bundle

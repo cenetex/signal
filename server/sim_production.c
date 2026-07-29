@@ -7,15 +7,16 @@
 #include "laser.h"
 #include "sim_asteroid.h"      /* fracture_claim_state_reset */
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
+#include "actor_principal_resolver.h"
 #include "manifest.h"
 #include "cargo_receipt_trust.h"
 #include "mining.h"            /* grade roll at smelt time */
 #include "fixpoint.h"
-#include "sha256.h"
 #include "chain_log.h"         /* signed event emission (#479 C) */
 #include "ship_birth_reservation.h"
 #include <stdlib.h>            /* abs */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -47,6 +48,18 @@ static int connected_player_by_token(const world_t *w, const uint8_t token[8]) {
             return i;
     }
     return -1;
+}
+
+static void smelt_public_player_label(const server_player_t *player,
+                                      char out[12]) {
+    actor_principal_t principal = actor_principal_none();
+    if (out &&
+        actor_principal_from_verified_player(player, &principal) &&
+        principal.kind == (uint8_t)ACTOR_PRINCIPAL_PLAYER) {
+        mining_callsign_from_pubkey(principal.id, out);
+        return;
+    }
+    if (out) snprintf(out, 12, "%s", "anonymous");
 }
 
 static const cargo_receipt_chain_t *production_station_chain_at(
@@ -100,6 +113,10 @@ static bool production_chainless_pod_trusted(
     const world_t *w, int station_idx, const cargo_pod_t *pod) {
     if (!pod || !cargo_pod_has_exact_manifest(pod, pod->commodity))
         return false;
+    if (!cargo_pod_custody_charge_anchor_valid(pod) ||
+        pod->custody_charge_total > 0) {
+        return false;
+    }
     for (uint16_t i = 0; i < pod->manifest_count; i++) {
         if (!production_chainless_unit_trusted(
                 w, station_idx, &pod->manifest_units[i])) {
@@ -389,6 +406,10 @@ static bool production_pod_can_accept_output(const cargo_pod_t *pod,
                                              int product_count) {
     if (!pod || product_count <= 0 || commodity >= COMMODITY_COUNT)
         return false;
+    if (!cargo_pod_custody_charge_anchor_valid(pod) ||
+        pod->custody_charge_total > 0) {
+        return false;
+    }
     if (!cargo_pod_has_exact_manifest(pod, commodity))
         return false;
     if (pod->manifest_count > CARGO_POD_UNIT_CAPACITY)
@@ -997,6 +1018,7 @@ void sim_step_station_production(world_t *w, float dt) {
     step_station_cargo_pod_tractors(w, 0.0f);
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
 
         for (int m = 0; m < st->module_count; m++) {
             module_type_t mt = st->modules[m].type;
@@ -1600,12 +1622,9 @@ void step_furnace_smelting(world_t *w, float dt) {
              * fallback. */
             int tower = connected_player_by_token(w, a->last_towed_token);
             int fracturer = connected_player_by_token(w, a->last_fractured_token);
-            SIM_LOG("[smelt-attr] tower=%d fracturer=%d tow_tok=%02x%02x%02x%02x frac_tok=%02x%02x%02x%02x\n",
-                    tower, fracturer,
-                    a->last_towed_token[0], a->last_towed_token[1],
-                    a->last_towed_token[2], a->last_towed_token[3],
-                    a->last_fractured_token[0], a->last_fractured_token[1],
-                    a->last_fractured_token[2], a->last_fractured_token[3]);
+            SIM_LOG("[smelt-attr] tower_match=%s fracturer_match=%s\n",
+                    tower >= 0 ? "connected" : "unresolved",
+                    fracturer >= 0 ? "connected" : "unresolved");
 
             /* Grade is committed when the fracture claim resolves.
              * Smelt only publishes that cached value — no fresh dice. */
@@ -1619,16 +1638,15 @@ void step_furnace_smelting(world_t *w, float dt) {
              * other players see them flicker across the Network tab. */
             if (grade >= MINING_GRADE_RATI && roller >= 0) {
                 char msg[96];
-                uint8_t pk[32];
-                sha256_bytes(w->players[roller].session_token, 8, pk);
-                char cs[8];
-                mining_callsign_from_pubkey(pk, cs);
+                char actor_label[12];
+                smelt_public_player_label(
+                    &w->players[roller], actor_label);
                 if (grade == MINING_GRADE_COMMISSIONED)
                     snprintf(msg, sizeof(msg), "%s published commissioned ore  +%d",
-                             cs, bonus_cr);
+                             actor_label, bonus_cr);
                 else
                     snprintf(msg, sizeof(msg), "%s published RATi ore  +%d",
-                             cs, bonus_cr);
+                             actor_label, bonus_cr);
                 signal_channel_post(w, smelt_station, msg, "");
             }
 

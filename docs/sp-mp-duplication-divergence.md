@@ -146,7 +146,7 @@ MP-only policy currently includes:
 - unsigned-action counters and logs
 - station identity dirty flags after shipyard/order actions
 - signed-action rejection logging
-- legacy-save claiming
+- persistent save load/reconnect policy
 - session reconnect/live-state transfer
 - player-save load by token/pubkey
 - join/leave broadcasts and analytics
@@ -156,7 +156,7 @@ SP-only behavior currently includes:
 - a single fixed pid (`0`)
 - no pre-session message gate at the loopback shell
 - immediate local credit seeding on same-pubkey/proof/session
-- no legacy-save claim support
+- retired legacy-save claim packets share the same inert reducer as MP
 - no reconnect/live-state transfer path
 
 Impact:

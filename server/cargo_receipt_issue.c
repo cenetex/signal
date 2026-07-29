@@ -48,6 +48,7 @@ enum {
     CARGO_RECEIPT_ORIGIN_AUTHORITY_CACHE_CAP = 8,
     CARGO_RECEIPT_ORIGIN_INDEX_INITIAL_CAPACITY = 64,
     CARGO_RECEIPT_ORIGIN_INDEX_MAX_RECORDS = 16384,
+    CARGO_RECEIPT_ORIGIN_TRANSFER_INDEX_MAX_RECORDS = 16384,
 };
 
 typedef struct {
@@ -97,6 +98,11 @@ _Static_assert(
         sizeof(cargo_receipt_origin_index_record_t) ==
         21u * 1024u * 1024u,
     "origin index vectors must remain bounded to 21 MiB total");
+_Static_assert(
+    CARGO_RECEIPT_ORIGIN_AUTHORITY_CACHE_CAP *
+        CARGO_RECEIPT_ORIGIN_TRANSFER_INDEX_MAX_RECORDS * 32u ==
+        4u * 1024u * 1024u,
+    "origin transfer vectors must remain bounded to 4 MiB total");
 
 typedef struct {
     bool valid;
@@ -113,6 +119,9 @@ typedef struct {
     size_t record_count;
     size_t record_capacity;
     cargo_receipt_origin_index_record_t *records;
+    size_t transferred_count;
+    size_t transferred_capacity;
+    uint8_t (*transferred_pubs)[32];
 } cargo_receipt_origin_authority_cache_entry_t;
 
 static cargo_receipt_origin_authority_cache_entry_t
@@ -137,6 +146,7 @@ void cargo_receipt_origin_cache_reset(void) {
     for (size_t i = 0;
          i < CARGO_RECEIPT_ORIGIN_AUTHORITY_CACHE_CAP; i++) {
         free(g_cargo_receipt_origin_authority_cache[i].records);
+        free(g_cargo_receipt_origin_authority_cache[i].transferred_pubs);
     }
     memset(g_cargo_receipt_origin_authority_cache, 0,
            sizeof(g_cargo_receipt_origin_authority_cache));
@@ -454,13 +464,18 @@ static void cargo_receipt_origin_authority_cache_release(
     cargo_receipt_origin_authority_cache_entry_t *entry) {
     if (!entry) return;
     free(entry->records);
+    free(entry->transferred_pubs);
     memset(entry, 0, sizeof(*entry));
 }
 
+static bool cargo_receipt_origin_transfer_insert_sorted(
+    cargo_receipt_origin_authority_cache_entry_t *entry,
+    const uint8_t cargo_pub[32]);
+
 /*
- * A transfer append contains no origin-producing event, so a previously
- * verified current-authority index remains semantically unchanged. Under the
- * chain log's synchronous single-writer model, preserve that proof only when
+ * A canonical transfer append adds one spent identity without changing the
+ * origin-producing rows. Under the chain log's synchronous single-writer
+ * model, preserve that proof only when
  * this exact process owns an uninterrupted, exact append from the cached file
  * and station heads. Arbitrary file growth never enters this path; any
  * mismatch drops the entry so the next lookup performs a full cryptographic
@@ -477,6 +492,7 @@ typedef struct {
     uint8_t authority[32];
     uint8_t registry_fingerprint[32];
     uint8_t station_chain_last_hash[32];
+    uint8_t transferred_cargo_pub[32];
     cargo_receipt_origin_file_state_t file_before;
     char path[256];
 } cargo_receipt_origin_trusted_append_t;
@@ -485,9 +501,10 @@ static cargo_receipt_origin_trusted_append_t
 cargo_receipt_origin_cache_begin_trusted_append(
     const station_t *station,
     uint16_t expected_event_count,
-    uint64_t expected_file_growth) {
+    uint64_t expected_file_growth,
+    const uint8_t transferred_cargo_pub[32]) {
     cargo_receipt_origin_trusted_append_t token = {0};
-    if (!station || expected_event_count == 0 ||
+    if (!station || !transferred_cargo_pub || expected_event_count == 0 ||
         expected_file_growth == 0 || !chain_log_disk_enabled() ||
         !station_authority_registry_validate(station)) {
         return token;
@@ -562,6 +579,8 @@ cargo_receipt_origin_cache_begin_trusted_append(
            registry_fingerprint, 32);
     memcpy(token.station_chain_last_hash,
            station->chain_last_hash, 32);
+    memcpy(token.transferred_cargo_pub,
+           transferred_cargo_pub, 32);
     token.file_before = opened;
     return token;
 }
@@ -647,7 +666,9 @@ static void cargo_receipt_origin_cache_finish_trusted_append(
 
     same_entry =
         cargo_receipt_origin_trusted_append_entry_is_same(token);
-    if (accepted && same_entry) {
+    if (accepted && same_entry &&
+        cargo_receipt_origin_transfer_insert_sorted(
+            token->entry, token->transferred_cargo_pub)) {
         token->entry->file = opened_after;
         token->entry->station_chain_event_count =
             append->last_event_id;
@@ -734,8 +755,15 @@ typedef enum {
 } cargo_receipt_origin_index_reserve_result_t;
 
 typedef struct {
+    bool occupied;
+    uint8_t cargo_pub[32];
+} cargo_receipt_origin_transfer_hash_slot_t;
+
+typedef struct {
     cargo_receipt_origin_authority_cache_entry_t *entry;
     cargo_receipt_origin_index_reserve_result_t reserve_result;
+    cargo_receipt_origin_transfer_hash_slot_t *transfer_slots;
+    size_t transfer_slot_capacity;
 } cargo_receipt_origin_index_build_t;
 
 static size_t cargo_receipt_origin_index_record_limit(void) {
@@ -791,6 +819,190 @@ cargo_receipt_origin_index_reserve(
     entry->records = records;
     entry->record_capacity = capacity;
     return CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_OK;
+}
+
+static cargo_receipt_origin_index_reserve_result_t
+cargo_receipt_origin_transfer_reserve(
+    cargo_receipt_origin_authority_cache_entry_t *entry,
+    size_t needed) {
+    if (!entry) return CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_ALLOC;
+    if (needed <= entry->transferred_capacity)
+        return CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_OK;
+    size_t limit = cargo_receipt_origin_index_record_limit();
+    if (limit > CARGO_RECEIPT_ORIGIN_TRANSFER_INDEX_MAX_RECORDS)
+        limit = CARGO_RECEIPT_ORIGIN_TRANSFER_INDEX_MAX_RECORDS;
+    if (needed > limit ||
+        needed > SIZE_MAX / sizeof(*entry->transferred_pubs)) {
+        return CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_LIMIT;
+    }
+
+    size_t capacity = entry->transferred_capacity;
+    if (capacity == 0)
+        capacity = CARGO_RECEIPT_ORIGIN_INDEX_INITIAL_CAPACITY;
+    while (capacity < needed) {
+        if (capacity > SIZE_MAX / 2u) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2u;
+    }
+    if (capacity > limit) capacity = limit;
+    if (capacity < needed ||
+        capacity > SIZE_MAX / sizeof(*entry->transferred_pubs)) {
+        return CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_LIMIT;
+    }
+
+#if defined(SIGNAL_CARGO_RECEIPT_TESTING)
+    if (g_cargo_receipt_origin_cache_test_fail_next_record_allocation) {
+        g_cargo_receipt_origin_cache_test_fail_next_record_allocation =
+            false;
+        return CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_ALLOC;
+    }
+#endif
+    uint8_t (*pubs)[32] = realloc(
+        entry->transferred_pubs,
+        capacity * sizeof(*entry->transferred_pubs));
+    if (!pubs) return CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_ALLOC;
+    entry->transferred_pubs = pubs;
+    entry->transferred_capacity = capacity;
+    return CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_OK;
+}
+
+static int cargo_receipt_origin_transfer_compare(
+    const void *left,
+    const void *right) {
+    return memcmp(left, right, 32);
+}
+
+static size_t cargo_receipt_origin_transfer_lower_bound(
+    const cargo_receipt_origin_authority_cache_entry_t *entry,
+    const uint8_t cargo_pub[32]) {
+    size_t low = 0;
+    size_t high = entry ? entry->transferred_count : 0;
+    while (low < high) {
+        size_t middle = low + (high - low) / 2u;
+        if (memcmp(entry->transferred_pubs[middle],
+                   cargo_pub, 32) < 0) {
+            low = middle + 1u;
+        } else {
+            high = middle;
+        }
+    }
+    return low;
+}
+
+static bool cargo_receipt_origin_transfer_contains(
+    const cargo_receipt_origin_authority_cache_entry_t *entry,
+    const uint8_t cargo_pub[32]) {
+    if (!entry || !cargo_pub ||
+        (entry->transferred_count > 0 &&
+         !entry->transferred_pubs)) {
+        return false;
+    }
+    size_t position =
+        cargo_receipt_origin_transfer_lower_bound(entry, cargo_pub);
+    return position < entry->transferred_count &&
+        memcmp(entry->transferred_pubs[position],
+               cargo_pub, 32) == 0;
+}
+
+static bool cargo_receipt_origin_transfer_insert_sorted(
+    cargo_receipt_origin_authority_cache_entry_t *entry,
+    const uint8_t cargo_pub[32]) {
+    if (!entry || !cargo_pub) return false;
+    size_t position =
+        cargo_receipt_origin_transfer_lower_bound(entry, cargo_pub);
+    if (position < entry->transferred_count &&
+        memcmp(entry->transferred_pubs[position],
+               cargo_pub, 32) == 0) {
+        return true;
+    }
+    if (entry->transferred_count == SIZE_MAX)
+        return false;
+    if (cargo_receipt_origin_transfer_reserve(
+            entry, entry->transferred_count + 1u) !=
+        CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_OK) {
+        return false;
+    }
+    if (position < entry->transferred_count) {
+        memmove(
+            &entry->transferred_pubs[position + 1u],
+            &entry->transferred_pubs[position],
+            (entry->transferred_count - position) *
+                sizeof(*entry->transferred_pubs));
+    }
+    memcpy(entry->transferred_pubs[position], cargo_pub, 32);
+    entry->transferred_count++;
+    return true;
+}
+
+static uint64_t cargo_receipt_origin_transfer_hash(
+    const uint8_t cargo_pub[32]) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (size_t i = 0; i < 32; i++) {
+        hash ^= cargo_pub[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static bool cargo_receipt_origin_transfer_index_add(
+    const chain_payload_transfer_t *transfer,
+    void *user) {
+    cargo_receipt_origin_index_build_t *build =
+        (cargo_receipt_origin_index_build_t *)user;
+    if (!transfer || !build || !build->entry) return false;
+
+    size_t limit = cargo_receipt_origin_index_record_limit();
+    if (limit > CARGO_RECEIPT_ORIGIN_TRANSFER_INDEX_MAX_RECORDS)
+        limit = CARGO_RECEIPT_ORIGIN_TRANSFER_INDEX_MAX_RECORDS;
+    if (!build->transfer_slots) {
+        size_t capacity = 1u;
+        while (capacity < limit * 2u) capacity *= 2u;
+        build->transfer_slots = calloc(
+            capacity, sizeof(*build->transfer_slots));
+        if (!build->transfer_slots) {
+            build->reserve_result =
+                CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_ALLOC;
+            return false;
+        }
+        build->transfer_slot_capacity = capacity;
+    }
+
+    size_t mask = build->transfer_slot_capacity - 1u;
+    size_t position =
+        (size_t)cargo_receipt_origin_transfer_hash(
+            transfer->cargo_pub) & mask;
+    for (;;) {
+        cargo_receipt_origin_transfer_hash_slot_t *slot =
+            &build->transfer_slots[position];
+        if (!slot->occupied) {
+            if (build->entry->transferred_count >= limit) {
+                build->reserve_result =
+                    CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_LIMIT;
+                return false;
+            }
+            cargo_receipt_origin_index_reserve_result_t reserved =
+                cargo_receipt_origin_transfer_reserve(
+                    build->entry,
+                    build->entry->transferred_count + 1u);
+            if (reserved !=
+                CARGO_RECEIPT_ORIGIN_INDEX_RESERVE_OK) {
+                build->reserve_result = reserved;
+                return false;
+            }
+            memcpy(
+                build->entry->transferred_pubs[
+                    build->entry->transferred_count++],
+                transfer->cargo_pub, 32);
+            slot->occupied = true;
+            memcpy(slot->cargo_pub, transfer->cargo_pub, 32);
+            return true;
+        }
+        if (memcmp(slot->cargo_pub, transfer->cargo_pub, 32) == 0)
+            return true;
+        position = (position + 1u) & mask;
+    }
 }
 
 static int cargo_receipt_origin_index_record_compare(
@@ -945,6 +1157,7 @@ cargo_receipt_origin_authority_cache_build(
 
     bool transient_failure = false;
     bool state_changed = false;
+    FILE *verified_snapshot = NULL;
     cargo_receipt_origin_file_state_t snapshot_before;
     bool snapshot_before_ready =
         cargo_receipt_origin_file_state_open(
@@ -954,14 +1167,18 @@ cargo_receipt_origin_authority_cache_build(
     } else if (!cargo_receipt_origin_file_state_equal(
                    before, &snapshot_before)) {
         state_changed = true;
+    } else if (!chain_log_snapshot_evidence_file(
+                   snapshot, &verified_snapshot)) {
+        transient_failure = true;
     } else {
         entry->file = snapshot_before;
         chain_log_verify_report_t report;
         memset(&report, 0, sizeof(report));
         g_cargo_receipt_origin_cache_stats.full_verifications++;
         bool verified = chain_log_verify_with_pubkey(
-            snapshot, authority, &report);
-        bool verification_io_failure = ferror(snapshot) != 0;
+            verified_snapshot, authority, &report);
+        bool verification_io_failure =
+            ferror(verified_snapshot) != 0;
         if (!verified) {
             if (verification_io_failure) {
                 transient_failure = true;
@@ -974,14 +1191,21 @@ cargo_receipt_origin_authority_cache_build(
                 .entry = entry,
             };
             size_t transform_count = 0;
+            size_t transfer_count = 0;
             uint8_t verified_last_hash[32] = {0};
             g_cargo_receipt_origin_cache_stats.index_builds++;
             bool indexed =
-                chain_log_visit_cargo_transforms_from_verified_file(
-                    snapshot, report.valid_events,
+                chain_log_visit_cargo_evidence_from_verified_file(
+                    verified_snapshot, report.valid_events,
                     cargo_receipt_origin_index_add, &build,
-                    &transform_count, verified_last_hash);
-            bool index_io_failure = ferror(snapshot) != 0;
+                    cargo_receipt_origin_transfer_index_add, &build,
+                    &transform_count, &transfer_count,
+                    verified_last_hash);
+            bool index_io_failure =
+                ferror(verified_snapshot) != 0;
+            free(build.transfer_slots);
+            build.transfer_slots = NULL;
+            (void)transfer_count;
             if (!indexed ||
                 transform_count != entry->record_count) {
                 if (build.reserve_result ==
@@ -1011,10 +1235,21 @@ cargo_receipt_origin_authority_cache_build(
                         sizeof(*entry->records),
                         cargo_receipt_origin_index_record_compare);
                 }
+                if (entry->transferred_count > 1u) {
+                    qsort(
+                        entry->transferred_pubs,
+                        entry->transferred_count,
+                        sizeof(*entry->transferred_pubs),
+                        cargo_receipt_origin_transfer_compare);
+                }
                 entry->history_status =
                     CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED;
             }
         }
+    }
+    if (verified_snapshot &&
+        fclose(verified_snapshot) != 0) {
+        transient_failure = true;
     }
 
 #if defined(SIGNAL_CARGO_RECEIPT_TESTING)
@@ -1061,9 +1296,13 @@ cargo_receipt_origin_authority_cache_build(
     if (entry->history_status !=
         CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED) {
         free(entry->records);
+        free(entry->transferred_pubs);
         entry->records = NULL;
         entry->record_count = 0;
         entry->record_capacity = 0;
+        entry->transferred_pubs = NULL;
+        entry->transferred_count = 0;
+        entry->transferred_capacity = 0;
     }
     return entry;
 }
@@ -1462,7 +1701,8 @@ chain_log_append_result_t cargo_receipt_commit_prepared_transfer(
     cargo_receipt_origin_trusted_append_t trusted_append =
         cargo_receipt_origin_cache_begin_trusted_append(
             station, prepared->event_count,
-            expected_file_growth);
+            expected_file_growth,
+            prepared->transfer.cargo_pub);
     chain_log_append_result_t append = chain_log_emit_batch(
         w, station, events, prepared->event_count);
     cargo_receipt_origin_cache_finish_trusted_append(
@@ -1515,7 +1755,9 @@ cargo_receipt_resolve_exact_identity(
     const uint8_t authority[32],
     const uint8_t cargo_pub[32],
     const uint8_t event_hash_pin[32],
-    cargo_receipt_origin_proof_t *out_proof) {
+    cargo_receipt_origin_proof_t *out_proof,
+    bool *out_transferred) {
+    if (out_transferred) *out_transferred = false;
     char path[256];
     if (!chain_log_path_for(authority, path, sizeof(path)))
         return CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_UNAVAILABLE;
@@ -1546,6 +1788,8 @@ cargo_receipt_resolve_exact_identity(
         cargo_receipt_origin_authority_index_lookup(
             station, entry, cargo_pub,
             event_hash_pin, out_proof);
+    bool transferred =
+        cargo_receipt_origin_transfer_contains(entry, cargo_pub);
 
     cargo_receipt_origin_file_state_t after;
     if (!cargo_receipt_origin_file_state(path, &after)) {
@@ -1558,6 +1802,7 @@ cargo_receipt_resolve_exact_identity(
         memset(out_proof, 0, sizeof(*out_proof));
         return CARGO_RECEIPT_ORIGIN_RESOLVE_HISTORY_INVALID;
     }
+    if (out_transferred) *out_transferred = transferred;
     return status;
 }
 
@@ -1583,7 +1828,7 @@ cargo_receipt_resolve_origin_for_authority(
         return CARGO_RECEIPT_ORIGIN_RESOLVE_TRANSFORM_NOT_FOUND;
     }
     return cargo_receipt_resolve_exact_identity(
-        station, authority, cargo_pub, NULL, out_proof);
+        station, authority, cargo_pub, NULL, out_proof, NULL);
 }
 
 cargo_receipt_origin_resolve_status_t
@@ -1613,7 +1858,7 @@ cargo_receipt_resolve_origin_for_authority_pinned(
     }
     return cargo_receipt_resolve_exact_identity(
         station, authority, cargo_pub,
-        event_hash_pin, out_proof);
+        event_hash_pin, out_proof, NULL);
 }
 
 cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
@@ -1635,6 +1880,7 @@ cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
     bool missing_history = false;
     bool missing_empty_current = false;
     bool found_origin = false;
+    bool already_transferred = false;
     cargo_receipt_origin_proof_t found_proof = {0};
     for (uint8_t i = 0; i < station->authority_registry_count; i++) {
         const station_authority_record_t *record =
@@ -1644,10 +1890,13 @@ cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
             continue;
         }
         cargo_receipt_origin_proof_t proof = {0};
+        bool transferred = false;
         cargo_receipt_origin_resolve_status_t status =
             cargo_receipt_resolve_exact_identity(
                 station, record->pubkey, cargo_pub,
-                NULL, &proof);
+                NULL, &proof, &transferred);
+        already_transferred =
+            already_transferred || transferred;
         if (status == CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED) {
             if (found_origin)
                 return
@@ -1685,6 +1934,10 @@ cargo_receipt_origin_resolve_status_t cargo_receipt_resolve_local_origin(
         }
     }
     if (found_origin && !missing_history) {
+        if (already_transferred) {
+            return
+                CARGO_RECEIPT_ORIGIN_RESOLVE_ALREADY_TRANSFERRED;
+        }
         *out_proof = found_proof;
         return CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED;
     }
@@ -1710,6 +1963,8 @@ const char *cargo_receipt_origin_resolve_status_name(
             return "transform_not_found";
         case CARGO_RECEIPT_ORIGIN_RESOLVE_TRANSFORM_AMBIGUOUS:
             return "transform_ambiguous";
+        case CARGO_RECEIPT_ORIGIN_RESOLVE_ALREADY_TRANSFERRED:
+            return "already_transferred";
         default:
             return "unknown";
     }
@@ -1937,15 +2192,17 @@ cargo_receipt_present_result_t cargo_receipt_present_to_ship(
         cargo_store_cleanup(&staged);
         return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
     }
-    cargo_receipt_chain_t *slot = &receipts->chains[idx];
+    const cargo_receipt_chain_t *slot = &receipts->chains[idx];
     if (!receipt_chain_prefix_matches(slot, chain, chain_len)) {
         cargo_store_cleanup(&staged);
         return CARGO_RECEIPT_PRESENT_REJECT_EXISTING_MISMATCH;
     }
 
-    memset(slot, 0, sizeof(*slot));
-    memcpy(slot->links, chain, (size_t)chain_len * sizeof(chain[0]));
-    slot->len = chain_len;
+    if (!ship_receipts_set_chain(
+            receipts, (uint16_t)idx, &presented)) {
+        cargo_store_cleanup(&staged);
+        return CARGO_RECEIPT_PRESENT_REJECT_RECEIPT_STORE;
+    }
     cargo_store_cleanup(&sp->ship->cargo_store);
     sp->ship->cargo_store = staged;
     return CARGO_RECEIPT_PRESENT_OK;

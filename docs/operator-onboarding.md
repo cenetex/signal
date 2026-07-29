@@ -223,6 +223,13 @@ supported flow is:
    `station_t`, persist them in the station catalog, and rebroadcast station
    identity to clients.
 
+Relationship rows never expose reconnect/session credentials. Current,
+proof-resolved players appear as `actor_kind:"derived"` with a
+domain-separated `actor_id`; token-keyed or otherwise unresolved historical
+rows appear as `actor_kind:"legacy-unattributed"` with `actor_id:null`.
+`activity_history.top_haulers` uses the same object shape. Treat these values
+as public presentation identifiers, not authorization material.
+
 When `chain_history` is included, `chain_history.route_history_aggregate[]`
 exposes compact cross-station route-memory groups built from recent signed
 route-history rows. Each aggregate includes route/action labels, signed row
@@ -391,12 +398,18 @@ the outpost's identity is gone — start fresh by planting a new outpost.
 The chain log emitter writes header + payload-length + payload then `fflush`
 and closes ([`server/chain_log.c`](../server/chain_log.c)). The disk may
 contain a partial last entry. The verifier will walk up to the last good
-entry and report the count, but the server now treats the station as
-`CHAIN_HEALTH_FAILED` and blocks future appends. If the on-disk log is fully
-valid but simply ahead of `world.sav` because the process died after an append
-and before autosave, `world_load()` adopts the verified disk tail automatically.
-If verification fails, restore a matching save/log pair or archive the damaged
-chain for investigation before starting a new station identity.
+entry and report the count, but the server treats the station as
+`CHAIN_HEALTH_FAILED` and blocks future appends.
+
+A fully valid on-disk tail can also be ahead of the selected world generation
+when the process dies after the durable append but before its gameplay mutation
+and the next save. The server does not adopt that tail: advancing only the
+saved continuation pointer could preserve an event while losing its cargo,
+credit, or construction effect. It reports `CHAIN_HEALTH_MISMATCH`, leaves the
+log untouched, and blocks appends. Restore a matching save/log pair or preserve
+both for an exactly-once replay/rollback repair. If verification itself fails,
+archive the damaged chain for investigation before starting a new station
+identity.
 
 ### `world.sav` corruption
 
@@ -422,12 +435,29 @@ simultaneously.
 
 ### Save corruption on `saves/pubkey/<...>.sav`
 
-A corrupted player save affects only that player. The legacy claim flow
-(`"claim-legacy-save-v1" || <token_hex>` signed by the player's identity
-secret — see PR #491 and `/CLAUDE.md` "Save layout") is the migration
-mechanism for legacy session-token saves; for already-pubkey-keyed saves,
-restore from backup and accept that the player loses any progress between
-the backup and the corruption.
+A corrupted player save affects only that player. The old arbitrary-basename
+legacy claim flow is disabled and must not be used as a restore mechanism: it
+did not prove ownership of the named token-keyed save. For a pubkey-keyed
+save, restore from backup and accept that the player loses any progress
+between the backup and the corruption.
+
+For a canonical token-keyed save, the server may issue one opaque,
+short-lived recovery offer after session and pubkey proof. There is no
+operator-supplied filename and no namespace listing. Do not rename or copy a
+legacy file into the pubkey namespace by hand: recovery publishes a complete
+world/player generation and uses atomic no-replace semantics. The recovery
+client prompt requires a fresh `ENTER` to confirm; `ESC` leaves the remote
+source untouched and closes the provisional connection. The later docked UI
+work in #658 expands that bootstrap prompt but does not change its opaque
+signed-action boundary. The recovery
+generation carries a manifest-authenticated consumption marker and
+deliberately has no automatic fallback edge to the source-bearing generation;
+if that new generation is damaged, restore it from backup rather than
+re-enabling the consumed token save. A
+`migration-failure` accompanied by unresolved ownership-quarantine diagnostics
+is intentionally fail-closed; v81 discarded the bearer token needed to
+attribute those historical rows safely. See
+[`legacy-save-recovery.md`](legacy-save-recovery.md).
 
 ## Troubleshooting
 

@@ -101,14 +101,19 @@ Per-player saves live under `saves/`:
   canonical layout: a returning player is recognized by their
   cryptographic identity across server restarts and session-token
   rotation.
-- `saves/legacy/<token_hex>.sav` — fallback for anonymous / pre-A.1
-  clients that haven't registered a pubkey, plus the destination of
-  any pre-A.4 saves migrated at startup. Players claim their legacy
-  save by signing `"claim-legacy-save-v1" || <token_hex>` with their
-  identity secret; the server verifies and renames the legacy file
-  into `saves/pubkey/`, appending `legacy_claims.log` for audit.
-  First-claim-wins; this records the claimant identity but cannot prove
-  original ownership of a pre-identity token — see #479-A.4.
+- `saves/legacy/player_<token_hex>.sav` — fallback for anonymous / pre-A.1
+  clients that haven't registered a pubkey. A same-token reconnect also
+  probes the historical top-level path directly; startup never scans or
+  moves unrelated player saves. The old arbitrary-basename claim
+  protocol is disabled because a signature from an unrelated
+  pubkey did not prove ownership of the named save. Servers do not list
+  this namespace, and the retired claim packet is inert. The replacement
+  flow derives one canonical source internally and offers only an opaque,
+  proof/connection-bound one-time ID; it publishes a complete generation
+  with atomic no-replace semantics. Unattributable v81 ownership-quarantine
+  rows still fail closed. See
+  [`docs/legacy-save-recovery.md`](docs/legacy-save-recovery.md) for the
+  #672 boundary and remaining reconciliation blocker. #658 remains blocked.
 
 `world.sav` is versioned. The current and minimum-accepted versions are the
 `SAVE_VERSION` / `MIN_SAVE_VERSION` constants in `server/sim_save.c` — treat

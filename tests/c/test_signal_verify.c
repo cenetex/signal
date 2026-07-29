@@ -12,6 +12,7 @@
  */
 #include "test_harness.h"
 
+#include "cargo_legacy_classify.h"
 #include "chain_log.h"
 #include "station_authority.h"
 #include "game_sim.h"
@@ -537,31 +538,32 @@ TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
     w->stations[0].chain_event_count = 0;
     memset(w->stations[0].chain_last_hash, 0, 32);
 
-    chain_payload_smelt_t smelt_a = {0};
-    chain_payload_smelt_t smelt_b = {0};
-    chain_payload_craft_t craft = {0};
+    uint8_t fragment_pub[32];
     for (int b = 0; b < 32; b++) {
-        smelt_a.fragment_pub[b] = (uint8_t)(0x10 + b);
-        smelt_a.ingot_pub[b] = (uint8_t)(0x40 + b);
-        smelt_b.fragment_pub[b] = (uint8_t)(0x80 + b);
-        smelt_b.ingot_pub[b] = (uint8_t)(0xB0 + b);
-        craft.output_pub[b] = (uint8_t)(0xE0 + b);
+        fragment_pub[b] = (uint8_t)(0x10 + b);
     }
-    smelt_a.prefix_class = INGOT_PREFIX_RATI;
-    smelt_a.mined_block = 111;
-    smelt_b.prefix_class = INGOT_PREFIX_K;
-    smelt_b.mined_block = 222;
+
+    cargo_unit_t ingot = {0};
+    const uint16_t ingot_index = 0;
+    ASSERT(hash_ingot(
+        COMMODITY_FERRITE_INGOT,
+        MINING_GRADE_COMMON,
+        fragment_pub, ingot_index, &ingot));
+    ingot.mined_block = 111u;
+    chain_payload_smelt_t smelt_a = {0};
+    ASSERT(chain_payload_smelt_bind_output(
+        &smelt_a, fragment_pub, ingot_index, &ingot));
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
                           &smelt_a, sizeof(smelt_a)) == 1);
-    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
-                          &smelt_b, sizeof(smelt_b)) == 2);
 
-    craft.recipe_id = RECIPE_FRAME_BASIC;
-    craft.input_count = 2;
-    memcpy(craft.input_pubs[0], smelt_a.ingot_pub, 32);
-    memcpy(craft.input_pubs[1], smelt_b.ingot_pub, 32);
+    cargo_unit_t frame = {0};
+    ASSERT(hash_product(
+        RECIPE_FRAME_BASIC, &ingot, 1u, 2u, &frame));
+    chain_payload_craft_t craft = {0};
+    ASSERT(chain_payload_craft_bind_output(
+        &craft, &ingot, 1u, &frame));
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CRAFT,
-                          &craft, sizeof(craft)) == 3);
+                          &craft, sizeof(craft)) == 2);
 
     chain_payload_construction_t construction = {0};
     memcpy(construction.cargo_pub, craft.output_pub, 32);
@@ -574,10 +576,10 @@ TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
     construction.contributed_units = 1.0f;
     construction.progress_after = 0.25f;
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CONSTRUCTION,
-                          &construction, sizeof(construction)) == 4);
+                          &construction, sizeof(construction)) == 3);
 
     chain_payload_construction_t station_construction = {0};
-    memcpy(station_construction.cargo_pub, smelt_b.ingot_pub, 32);
+    memcpy(station_construction.cargo_pub, smelt_a.ingot_pub, 32);
     station_construction.target_kind = CONSTRUCTION_TARGET_STATION;
     station_construction.station_index = 0;
     station_construction.module_index = 0xff;
@@ -587,7 +589,7 @@ TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
     station_construction.contributed_units = 1.0f;
     station_construction.progress_after = 0.50f;
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CONSTRUCTION,
-                          &station_construction, sizeof(station_construction)) == 5);
+                          &station_construction, sizeof(station_construction)) == 4);
 
     const char *asset_bin = sv_find_signal_chain_assets_bin();
     if (!asset_bin) {
@@ -606,7 +608,7 @@ TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
     sv_hex32(smelt_a.fragment_pub, fragment_hex);
 
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "%s --no-signatures --lineage=%s %s 2>/dev/null",
+    snprintf(cmd, sizeof(cmd), "%s --lineage=%s %s 2>/dev/null",
              asset_bin, output_hex, log_path);
     FILE *p = popen(cmd, "r");
     ASSERT(p != NULL);
@@ -618,15 +620,21 @@ TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
     ASSERT(strstr(output, "Signal lineage") != NULL);
     ASSERT(strstr(output, "frame ") != NULL);
     ASSERT(strstr(output, "recipe=1:frame_basic") != NULL);
+    ASSERT(strstr(
+        output,
+        "provenance: station_attested_v1 "
+        "input_lineage_proven=false conservation_proven=false") != NULL);
+    ASSERT(strstr(output, "input_lineage_proven=true") == NULL);
+    ASSERT(strstr(output, "conservation_proven=true") == NULL);
     ASSERT(strstr(output, input_hex) != NULL);
     ASSERT(strstr(output, fragment_hex) != NULL);
-    ASSERT(strstr(output, "prefix=RATi") != NULL);
+    ASSERT(strstr(output, "prefix=") != NULL);
     ASSERT(strstr(output, "construction:") != NULL);
     ASSERT(strstr(output, "target=module") != NULL);
     ASSERT(strstr(output, "module_index=7") != NULL);
     ASSERT(strstr(output, "progress_after=0.250") != NULL);
 
-    snprintf(cmd, sizeof(cmd), "%s --no-signatures --built-from=module:0:7 %s 2>/dev/null",
+    snprintf(cmd, sizeof(cmd), "%s --built-from=module:0:7 %s 2>/dev/null",
              asset_bin, log_path);
     p = popen(cmd, "r");
     ASSERT(p != NULL);
@@ -641,9 +649,9 @@ TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
     ASSERT(strstr(output, output_hex) != NULL);
     ASSERT(strstr(output, "recipe=1:frame_basic") != NULL);
     ASSERT(strstr(output, input_hex) != NULL);
-    ASSERT(strstr(output, "prefix=RATi") != NULL);
+    ASSERT(strstr(output, "prefix=") != NULL);
 
-    snprintf(cmd, sizeof(cmd), "%s --no-signatures --built-from=station:0 %s 2>/dev/null",
+    snprintf(cmd, sizeof(cmd), "%s --built-from=station:0 %s 2>/dev/null",
              asset_bin, log_path);
     p = popen(cmd, "r");
     ASSERT(p != NULL);
@@ -655,11 +663,11 @@ TEST(test_signal_chain_assets_lineage_cli_prints_craft_tree) {
     ASSERT(strstr(output, "Signal infrastructure lineage") != NULL);
     ASSERT(strstr(output, "target: station station_index=0") != NULL);
     ASSERT(strstr(output, "contributors: 1") != NULL);
-    ASSERT(strstr(output, "prefix=K") != NULL);
+    ASSERT(strstr(output, "prefix=") != NULL);
     sv_teardown();
 }
 
-TEST(test_signal_rati_receipt_cli_emits_smelt_receipt) {
+TEST(test_signal_rati_receipt_cli_v0_is_audit_only) {
     sv_setup("rati_receipt");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -702,11 +710,14 @@ TEST(test_signal_rati_receipt_cli_emits_smelt_receipt) {
                           &claim, sizeof(claim)) == 1);
 
     chain_payload_smelt_t smelt = {0};
-    for (int b = 0; b < 32; b++) {
-        smelt.ingot_pub[b] = (uint8_t)(0x60 + b);
-    }
     memcpy(smelt.fragment_pub, claim.fragment_pub, 32);
-    smelt.prefix_class = INGOT_PREFIX_RATI;
+    ASSERT(cargo_legacy_identity_v0_derive(
+        (uint16_t)RECIPE_SMELT, smelt.fragment_pub, 7u,
+        smelt.ingot_pub));
+    uint8_t legacy_prefix = 0;
+    ASSERT(cargo_legacy_prefix_class_v0_derive(
+        smelt.ingot_pub, &legacy_prefix));
+    smelt.prefix_class = legacy_prefix;
     smelt.mined_block = 777;
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
                           &smelt, sizeof(smelt)) == 2);
@@ -726,7 +737,7 @@ TEST(test_signal_rati_receipt_cli_emits_smelt_receipt) {
     sv_hex32(smelt.ingot_pub, ingot_hex);
 
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "%s --min-prefix=RATi %s 2>/dev/null",
+    snprintf(cmd, sizeof(cmd), "%s --min-prefix=anonymous %s 2>/dev/null",
              receipt_bin, log_path);
     FILE *p = popen(cmd, "r");
     ASSERT(p != NULL);
@@ -740,11 +751,434 @@ TEST(test_signal_rati_receipt_cli_emits_smelt_receipt) {
     ASSERT(strstr(output, "\"version\":\"rati_mining_receipt_v1\"") != NULL);
     ASSERT(strstr(output, "\"kind\":\"CHAIN_EVT_SMELT\"") != NULL);
     ASSERT(strstr(output, "\"kind\":\"CHAIN_EVT_CLAIM_FRAGMENT\"") != NULL);
-    ASSERT(strstr(output, "\"prefix_class\":\"RATi\"") != NULL);
-    ASSERT(strstr(output, "\"grade\":\"RATi\"") != NULL);
-    ASSERT(strstr(output, "\"grade_verified\":true") != NULL);
+    ASSERT(strstr(output, "\"proof_level\":\"unbound_v0\"") != NULL);
+    ASSERT(strstr(output, "\"status\":\"audit_only_unbound_v0\"") != NULL);
+    ASSERT(strstr(output, "\"station_attested_semantics\":false") != NULL);
+    ASSERT(strstr(output, "\"mining_proven\":false") != NULL);
+    ASSERT(strstr(output, "\"grade\":null") != NULL);
+    ASSERT(strstr(output, "\"grade_attested\":false") != NULL);
+    ASSERT(strstr(output, "\"grade_verified\":false") != NULL);
+    ASSERT(strstr(output, "\"grade_verified\":true") == NULL);
+    ASSERT(strstr(output, "\"output_index\":7") != NULL);
+    ASSERT(strstr(output, "\"output_index_source\":\"legacy_identity_recovery\"") != NULL);
+    ASSERT(strstr(output, "\"refinery_context_tick\":777") != NULL);
+    ASSERT(strstr(output, "\"claim_match_status\":\"unique_unbound_observation_v1\"") != NULL);
+    ASSERT(strstr(output, "\"grade_math_consistent\":true") != NULL);
     ASSERT(strstr(output, fragment_hex) != NULL);
     ASSERT(strstr(output, ingot_hex) != NULL);
+
+    sv_teardown();
+}
+
+TEST(test_signal_rati_receipt_cli_v1_is_station_attested_not_mining_proven) {
+    sv_setup("rati_receipt_v1");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 50003u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    uint8_t fragment_pub[32];
+    for (int b = 0; b < 32; b++)
+        fragment_pub[b] = (uint8_t)(0x31 + b);
+
+    /* Duplicate matching claim observations must not be resolved by
+     * silently selecting whichever one happened to be last. */
+    chain_payload_claim_fragment_t claim = {0};
+    memcpy(claim.fragment_pub, fragment_pub, 32);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CLAIM_FRAGMENT,
+                          &claim, sizeof(claim)) == 1);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CLAIM_FRAGMENT,
+                          &claim, sizeof(claim)) == 2);
+
+    cargo_unit_t output_unit;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RATI,
+                      fragment_pub, 17u, &output_unit));
+    output_unit.mined_block = 888;
+    chain_payload_smelt_t smelt;
+    ASSERT(chain_payload_smelt_bind_output(
+        &smelt, fragment_pub, 17u, &output_unit));
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) == 3);
+
+    cargo_unit_t frame = {0};
+    ASSERT(hash_product(
+        RECIPE_FRAME_BASIC, &output_unit, 1u, 1u, &frame));
+    chain_payload_craft_t craft = {0};
+    ASSERT(chain_payload_craft_bind_output(
+        &craft, &output_unit, 1u, &frame));
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CRAFT,
+                          &craft, sizeof(craft)) == 4);
+
+    const char *receipt_bin = sv_find_signal_rati_receipt_bin();
+    if (!receipt_bin) {
+        TEST_WARN("signal_rati_receipt binary not built; skipping CLI receipt subprocess check");
+        sv_teardown();
+        return;
+    }
+
+    char log_path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey,
+                              log_path, sizeof(log_path)));
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s --min-prefix=anonymous %s 2>/dev/null",
+             receipt_bin, log_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[8192] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, p);
+    int status = pclose(p);
+    ASSERT(status == 0);
+    ASSERT(got > 0);
+
+    ASSERT(strstr(output, "\"receipt_count\":1") != NULL);
+    ASSERT(strstr(output, "\"proof_level\":\"station_attested_v1\"") != NULL);
+    ASSERT(strstr(output, "\"status\":\"valid_station_attested_v1\"") != NULL);
+    ASSERT(strstr(output, "\"semantics_version\":1") != NULL);
+    ASSERT(strstr(output, "\"station_attested_semantics\":true") != NULL);
+    ASSERT(strstr(output, "\"mining_proven\":false") != NULL);
+    ASSERT(strstr(output, "\"grade\":\"RATi\"") != NULL);
+    ASSERT(strstr(output, "\"grade_attested\":true") != NULL);
+    ASSERT(strstr(output, "\"grade_verified\":false") != NULL);
+    ASSERT(strstr(output, "\"grade_verified\":true") == NULL);
+    ASSERT(strstr(output, "\"commodity\":\"ferrite_ingot\"") != NULL);
+    ASSERT(strstr(output, "\"output_index\":17") != NULL);
+    ASSERT(strstr(output, "\"output_index_source\":\"station_attested_smelt_v1\"") != NULL);
+    ASSERT(strstr(output, "\"refinery_context_tick\":888") != NULL);
+    ASSERT(strstr(output, "\"claim_match_status\":\"ambiguous\"") != NULL);
+    ASSERT(strstr(output, "\"claim\":null") != NULL);
+    ASSERT(strstr(
+        output,
+        "\"craft_provenance\":{\"scope\":\"all_verified_events\","
+        "\"station_attested_v1\":1,\"unbound_v0\":0,"
+        "\"input_lineage_proven\":false,"
+        "\"conservation_proven\":false}") != NULL);
+
+    const char *verify_bin = sv_find_signal_verify_bin();
+    if (verify_bin) {
+        snprintf(cmd, sizeof(cmd),
+                 "%s --report=json %s 2>/dev/null",
+                 verify_bin, log_path);
+        p = popen(cmd, "r");
+        ASSERT(p != NULL);
+        memset(output, 0, sizeof(output));
+        got = fread(output, 1, sizeof(output) - 1, p);
+        status = pclose(p);
+        ASSERT(status == 0);
+        ASSERT(got > 0);
+        ASSERT(strstr(
+            output,
+            "\"craft_provenance\":{"
+            "\"station_attested_v1\":1,"
+            "\"unbound_v0\":0,"
+            "\"semantic_rejections\":0") != NULL);
+        ASSERT(strstr(
+            output,
+            "\"input_lineage_proven\":false,"
+            "\"conservation_proven\":false") != NULL);
+    }
+
+    sv_teardown();
+}
+
+TEST(test_signal_rati_receipt_cli_rejects_invalid_v0_identity) {
+    sv_setup("rati_receipt_bad_v0");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 50004u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    chain_payload_smelt_t smelt = {0};
+    for (int b = 0; b < 32; b++) {
+        smelt.fragment_pub[b] = (uint8_t)(0x41 + b);
+        smelt.ingot_pub[b] = (uint8_t)(0x91 + b);
+    }
+    uint8_t legacy_prefix = 0;
+    ASSERT(cargo_legacy_prefix_class_v0_derive(
+        smelt.ingot_pub, &legacy_prefix));
+    smelt.prefix_class = legacy_prefix;
+    smelt.mined_block = 999;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) == 1);
+
+    const char *receipt_bin = sv_find_signal_rati_receipt_bin();
+    if (!receipt_bin) {
+        TEST_WARN("signal_rati_receipt binary not built; skipping CLI receipt subprocess check");
+        sv_teardown();
+        return;
+    }
+
+    char log_path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey,
+                              log_path, sizeof(log_path)));
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s --min-prefix=anonymous %s 2>&1",
+             receipt_bin, log_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[2048] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, p);
+    int status = pclose(p);
+    ASSERT(status != 0);
+    ASSERT(got > 0);
+    ASSERT(strstr(output, "proof_status=reject_identity_v0") != NULL);
+    ASSERT(strstr(output, "\"receipt_count\"") == NULL);
+
+    sv_teardown();
+}
+
+TEST(test_signal_rati_receipt_cli_rejects_invalid_v1_identity) {
+    sv_setup("rati_receipt_bad_v1");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 50005u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    uint8_t fragment_pub[32];
+    for (int b = 0; b < 32; b++)
+        fragment_pub[b] = (uint8_t)(0x51 + b);
+    cargo_unit_t output_unit;
+    ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_pub, 23u, &output_unit));
+    chain_payload_smelt_t smelt;
+    ASSERT(chain_payload_smelt_bind_output(
+        &smelt, fragment_pub, 23u, &output_unit));
+    smelt.ingot_pub[0] ^= 0x80u;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) == 1);
+
+    const char *receipt_bin = sv_find_signal_rati_receipt_bin();
+    if (!receipt_bin) {
+        TEST_WARN("signal_rati_receipt binary not built; skipping CLI receipt subprocess check");
+        sv_teardown();
+        return;
+    }
+
+    char log_path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey,
+                              log_path, sizeof(log_path)));
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s --min-prefix=anonymous %s 2>&1",
+             receipt_bin, log_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[2048] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, p);
+    int status = pclose(p);
+    ASSERT(status != 0);
+    ASSERT(got > 0);
+    ASSERT(strstr(output, "proof_status=reject_identity_v1") != NULL);
+    ASSERT(strstr(output, "\"receipt_count\"") == NULL);
+
+    sv_teardown();
+}
+
+TEST(test_signal_rati_receipt_cli_rejects_wrong_smelt_payload_length) {
+    sv_setup("rati_receipt_bad_length");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 50006u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    uint8_t short_smelt[16] = {0};
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          short_smelt, sizeof(short_smelt)) == 1);
+
+    const char *receipt_bin = sv_find_signal_rati_receipt_bin();
+    if (!receipt_bin) {
+        TEST_WARN("signal_rati_receipt binary not built; skipping CLI receipt subprocess check");
+        sv_teardown();
+        return;
+    }
+
+    char log_path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey,
+                              log_path, sizeof(log_path)));
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s --min-prefix=anonymous %s 2>&1",
+             receipt_bin, log_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[2048] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, p);
+    int status = pclose(p);
+    ASSERT(status != 0);
+    ASSERT(got > 0);
+    ASSERT(strstr(output,
+                  "proof_status=reject_smelt_payload_length") != NULL);
+    ASSERT(strstr(output, "\"receipt_count\"") == NULL);
+
+    sv_teardown();
+}
+
+TEST(test_craft_cli_surfaces_reject_duplicate_input_consistently) {
+    sv_setup("craft_duplicate_input");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 50008u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    chain_payload_craft_t craft = {0};
+    craft.recipe_id = (uint16_t)RECIPE_LASER_BASIC;
+    craft.input_count = 2u;
+    craft.semantics_version = CHAIN_CARGO_SEMANTICS_V1;
+    craft.output_kind = (uint8_t)CARGO_KIND_LASER;
+    craft.output_commodity =
+        (uint8_t)COMMODITY_LASER_MODULE;
+    craft.output_grade = (uint8_t)MINING_GRADE_FINE;
+    craft.output_quantity = 1u;
+    memset(craft.output_pub, 0xA5, sizeof(craft.output_pub));
+    memset(craft.input_pubs[0], 0x5A,
+           sizeof(craft.input_pubs[0]));
+    memcpy(craft.input_pubs[1], craft.input_pubs[0],
+           sizeof(craft.input_pubs[1]));
+    ASSERT_EQ_INT(
+        chain_log_emit(
+            w, &w->stations[0], CHAIN_EVT_CRAFT,
+            &craft, (uint16_t)sizeof(craft)),
+        1);
+
+    char log_path[256];
+    ASSERT(chain_log_path_for(
+        w->stations[0].station_pubkey,
+        log_path, sizeof(log_path)));
+    char cmd[1024];
+    char output[8192];
+
+    const char *verify_bin = sv_find_signal_verify_bin();
+    if (verify_bin) {
+        snprintf(cmd, sizeof(cmd),
+                 "%s --report=json %s 2>&1",
+                 verify_bin, log_path);
+        FILE *p = popen(cmd, "r");
+        ASSERT(p != NULL);
+        memset(output, 0, sizeof(output));
+        size_t got =
+            fread(output, 1, sizeof(output) - 1, p);
+        int status = pclose(p);
+        ASSERT(status != 0);
+        ASSERT(got > 0);
+        ASSERT(strstr(
+            output,
+            "\"semantic_rejections\":1") != NULL);
+        ASSERT(strstr(
+            output,
+            "\"first_rejection\":\"reject_duplicate_input\"")
+            != NULL);
+        ASSERT(strstr(
+            output,
+            "\"input_lineage_proven\":false") != NULL);
+        ASSERT(strstr(
+            output,
+            "\"conservation_proven\":false") != NULL);
+    }
+
+    const char *receipt_bin =
+        sv_find_signal_rati_receipt_bin();
+    if (receipt_bin) {
+        snprintf(cmd, sizeof(cmd), "%s %s 2>&1",
+                 receipt_bin, log_path);
+        FILE *p = popen(cmd, "r");
+        ASSERT(p != NULL);
+        memset(output, 0, sizeof(output));
+        size_t got =
+            fread(output, 1, sizeof(output) - 1, p);
+        int status = pclose(p);
+        ASSERT(status != 0);
+        ASSERT(got > 0);
+        ASSERT(strstr(
+            output,
+            "proof_status=reject_duplicate_input") != NULL);
+        ASSERT(strstr(output, "record_kind=craft") != NULL);
+        ASSERT(strstr(output, "\"receipt_count\"") == NULL);
+    }
+
+    const char *asset_bin =
+        sv_find_signal_chain_assets_bin();
+    if (asset_bin) {
+        snprintf(cmd, sizeof(cmd), "%s %s 2>&1",
+                 asset_bin, log_path);
+        FILE *p = popen(cmd, "r");
+        ASSERT(p != NULL);
+        memset(output, 0, sizeof(output));
+        size_t got =
+            fread(output, 1, sizeof(output) - 1, p);
+        int status = pclose(p);
+        ASSERT(status != 0);
+        ASSERT(got > 0);
+        ASSERT(strstr(
+            output,
+            "\"craft_semantic_rejections\":1") != NULL);
+        ASSERT(strstr(
+            output,
+            "event 1: reject_duplicate_input") != NULL);
+        ASSERT(strstr(output, "\"assets\":[") != NULL);
+        ASSERT(strstr(
+            output,
+            "\"source_type\":\"CRAFT\"") == NULL);
+    }
+
+    sv_teardown();
+}
+
+TEST(test_signal_verify_cli_names_all_current_event_types) {
+    sv_setup("verify_type_names");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 50007u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    chain_payload_construction_t construction = {0};
+    chain_payload_route_history_t route = {0};
+    chain_payload_claim_fragment_t claim = {0};
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CONSTRUCTION,
+                          &construction, sizeof(construction)) == 1);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_ROUTE_HISTORY,
+                          &route, sizeof(route)) == 2);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_CLAIM_FRAGMENT,
+                          &claim, sizeof(claim)) == 3);
+
+    const char *verify_bin = sv_find_signal_verify_bin();
+    if (!verify_bin) {
+        TEST_WARN("signal_verify binary not built; skipping CLI type-name subprocess check");
+        sv_teardown();
+        return;
+    }
+
+    char log_path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey,
+                              log_path, sizeof(log_path)));
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s --report=json %s 2>/dev/null",
+             verify_bin, log_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[4096] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, p);
+    int status = pclose(p);
+    ASSERT(status == 0);
+    ASSERT(got > 0);
+    ASSERT(strstr(output, "\"CONSTRUCTION\":1") != NULL);
+    ASSERT(strstr(output, "\"ROUTE_HISTORY\":1") != NULL);
+    ASSERT(strstr(output, "\"CLAIM_FRAGMENT\":1") != NULL);
+    ASSERT(strstr(output, "\"UNKNOWN\"") == NULL);
 
     sv_teardown();
 }
@@ -764,6 +1198,12 @@ void register_signal_verify_tests(void) {
 #ifndef _WIN32
     RUN(test_signal_verify_tower_chain_invariant_detects_orphan);
     RUN(test_signal_chain_assets_lineage_cli_prints_craft_tree);
-    RUN(test_signal_rati_receipt_cli_emits_smelt_receipt);
+    RUN(test_signal_rati_receipt_cli_v0_is_audit_only);
+    RUN(test_signal_rati_receipt_cli_v1_is_station_attested_not_mining_proven);
+    RUN(test_signal_rati_receipt_cli_rejects_invalid_v0_identity);
+    RUN(test_signal_rati_receipt_cli_rejects_invalid_v1_identity);
+    RUN(test_signal_rati_receipt_cli_rejects_wrong_smelt_payload_length);
+    RUN(test_craft_cli_surfaces_reject_duplicate_input_consistently);
+    RUN(test_signal_verify_cli_names_all_current_event_types);
 #endif
 }

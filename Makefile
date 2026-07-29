@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-san-soak test-tsan build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -28,10 +28,14 @@ install-hooks:
 # Use Ninja if installed — significantly faster parallel builds and
 # better dependency tracking than Make. Falls back to Make otherwise.
 GENERATOR := $(shell command -v ninja >/dev/null 2>&1 && echo "-G Ninja")
+SIGNAL_HOST_OS := $(shell uname -s 2>/dev/null || echo Unknown)
 BUILD_TYPE ?= RelWithDebInfo
 GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SIM_PROFILE ?=
 SIM_PROFILE_CMAKE := -DSIGNAL_SIM_PROFILE=$(if $(SIM_PROFILE),ON,OFF)
+SERVER_BUILD_DIR ?= build-server
+SERVER_BUILD_BIN := $(SERVER_BUILD_DIR)/signal_server
+SERVER_COMPAT_BIN := build/signal_server
 
 # --- Native desktop client ---
 build:
@@ -44,12 +48,23 @@ build-web:
 	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
 	emmake cmake --build build-web --parallel
 	python3 scripts/check_deterministic_build_flags.py build-web/compile_commands.json
+	python3 scripts/check_client_memory_budget.py build-web/signal.wasm
 
 # --- Headless game server ---
+# Keep the server in its own CMake cache. CMake option values are sticky:
+# reusing `build/` after a BUILD_TESTS_ONLY=ON configure can otherwise make
+# `cmake --build ... --target signal_server` return success while leaving an
+# old on-disk binary untouched. Copy the verified result to the historical
+# path so existing scripts and operator docs remain compatible.
 build-server:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
-	@ln -sf build/compile_commands.json compile_commands.json
-	cmake --build build --target signal_server --parallel
+	cmake $(GENERATOR) -S . -B $(SERVER_BUILD_DIR) \
+		-DCMAKE_BUILD_TYPE=$(BUILD_TYPE) \
+		-DBUILD_TESTS_ONLY=OFF -DBUILD_SERVER_ONLY=ON -DBUILD_TOOLS=OFF \
+		-DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
+	@ln -sf $(SERVER_BUILD_DIR)/compile_commands.json compile_commands.json
+	cmake --build $(SERVER_BUILD_DIR) --target signal_server --parallel
+	cmake -E make_directory build
+	cmake -E copy_if_different $(SERVER_BUILD_BIN) $(SERVER_COMPAT_BIN)
 
 # --- Offline WASD flight-brain training traces ---
 FLIGHT_TRACE_EPISODES ?= 1000
@@ -327,7 +342,14 @@ build-test:
 	# an incremental build of the same -O2/-g object cache, so unchanged
 	# files don't re-link.
 	cmake --build build --target signal --parallel
+	cmake --build build --target signal_client_memory --parallel
+	./build/signal_client_memory
 	python3 scripts/check_deterministic_build_flags.py
+
+client-memory-budget:
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
+	cmake --build build --target signal_client_memory --parallel
+	./build/signal_client_memory
 
 # Number of shards for the parallel test runner. Defaults to min(8, ncores).
 NCORES := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
@@ -450,6 +472,9 @@ SANITIZER ?= address,undefined
 SAN_BUILD_DIR ?= build-san
 SAN_TEST_FLAGS ?= --quiet --no-soak
 SAN_SOAK_TEST_FLAGS ?= --quiet --soak-only
+# LeakSanitizer ships with Linux ASan. Apple's runtime does not support it,
+# so Linux CI is the authoritative leak gate while macOS keeps ASan usable.
+ASAN_DETECT_LEAKS ?= $(if $(filter Linux,$(SIGNAL_HOST_OS)),1,0)
 
 build-san:
 	cmake $(GENERATOR) -S . -B $(SAN_BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug \
@@ -459,12 +484,8 @@ build-san:
 	@ln -sf $(SAN_BUILD_DIR)/compile_commands.json compile_commands.json
 	cmake --build $(SAN_BUILD_DIR) --parallel
 
-test-san test-san-soak: TEST_BIN=./$(SAN_BUILD_DIR)/signal_test
-# Legacy fixtures frequently clear seeded station/NPC arrays with memset,
-# discarding fixture-owned manifests before WORLD_DECL cleanup runs. Keep this
-# gate focused on address/undefined behavior until those fixture leaks are
-# migrated to cleanup-aware reset helpers.
-test-san test-san-soak: TEST_ENV=ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+test-san test-san-soak: TEST_BIN=$(SAN_BUILD_DIR)/signal_test
+test-san test-san-soak: TEST_ENV=ASAN_OPTIONS=detect_leaks=$(ASAN_DETECT_LEAKS):halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 test-san: TEST_SUITE_LABEL=sanitized non-soak
 test-san: build-san
 	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
@@ -474,16 +495,60 @@ test-san-soak: TEST_EXPECTED_COUNT=$(SOAK_TEST_COUNT)
 test-san-soak: build-san
 	$(call RUN_PARALLEL_TESTS,$(SAN_SOAK_TEST_FLAGS))
 
-test-tsan: TEST_BIN=./build-tsan/signal_test
-test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1
-test-tsan:
-	cmake $(GENERATOR) -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
+MSAN_CC ?= clang
+MSAN_BUILD_DIR ?= build-msan
+MSAN_TEST_FILTERS ?= signal_memzero identity_clear station_authority_cleanup manifest_reset
+
+build-msan:
+	cmake $(GENERATOR) -S . -B $(MSAN_BUILD_DIR) \
+		-DCMAKE_C_COMPILER=$(MSAN_CC) -DCMAKE_BUILD_TYPE=Debug \
 		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
-		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
-		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
-	@ln -sf build-tsan/compile_commands.json compile_commands.json
-	cmake --build build-tsan --parallel
-	$(call RUN_PARALLEL_TESTS,$(SAN_TEST_FLAGS))
+		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer -fPIE" \
+		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins=2 -pie"
+	@ln -sf $(MSAN_BUILD_DIR)/compile_commands.json compile_commands.json
+	cmake --build $(MSAN_BUILD_DIR) --target signal_test --parallel
+
+test-msan: build-msan
+	@set -e; \
+	for filter in $(MSAN_TEST_FILTERS); do \
+		echo "MSan: $$filter"; \
+		MSAN_OPTIONS=halt_on_error=1:exit_code=86:poison_in_dtor=1 \
+			$(TEST_RUNNER) $(MSAN_BUILD_DIR)/signal_test \
+			--quiet --no-soak --filter=$$filter; \
+	done
+
+MEMZERO_CC ?= clang
+MEMZERO_IR ?= build-safety/signal_memzero.ll
+
+memzero-codegen:
+	@mkdir -p $(dir $(MEMZERO_IR))
+	$(MEMZERO_CC) -std=c11 -O3 -DSIGNAL_MEMZERO_FORCE_FALLBACK=1 \
+		-S -emit-llvm -Ishared shared/signal_memzero.c -o $(MEMZERO_IR)
+	python3 scripts/check_memzero_codegen.py $(MEMZERO_IR)
+
+build-mode-contract:
+	python3 scripts/check_make_build_isolation.py
+	python3 scripts/test_check_make_build_isolation.py
+
+TSAN_CC ?= clang
+TSAN_BUILD_DIR ?= build-tsan
+TSAN_TEST_FLAGS ?= --quiet --no-soak --filter=hnn_reentrant_key_state_and_simulation
+
+build-tsan:
+	cmake $(GENERATOR) -S . -B $(TSAN_BUILD_DIR) \
+		-DCMAKE_C_COMPILER=$(TSAN_CC) -DCMAKE_BUILD_TYPE=Debug \
+		-DBUILD_TESTS_ONLY=ON -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE) \
+		-DCMAKE_C_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer -fPIE" \
+		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -pie"
+	@ln -sf $(TSAN_BUILD_DIR)/compile_commands.json compile_commands.json
+	cmake --build $(TSAN_BUILD_DIR) --target signal_test --parallel
+
+test-tsan: TEST_BIN=$(TSAN_BUILD_DIR)/signal_test
+test-tsan: TEST_ENV=TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1
+test-tsan: TEST_SHARDS=1
+test-tsan: TEST_SUITE_LABEL=bounded ThreadSanitizer
+test-tsan: build-tsan
+	$(call RUN_PARALLEL_TESTS,$(TSAN_TEST_FLAGS))
 
 # libFuzzer harness for untrusted receipt/handoff decode paths.
 # Requires a clang that ships the libFuzzer runtime — Xcode CLT clang
@@ -495,7 +560,9 @@ test-tsan:
 # headless: decoder fuzzing must not depend on desktop audio/window libraries.
 FUZZ_CC ?= $(shell if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then echo /opt/homebrew/opt/llvm/bin/clang; else echo clang; fi)
 FUZZ_TIME ?= 60
+FUZZ_TIMEOUT ?= 10
 FUZZ_WORK_CORPUS ?= build-fuzz/corpus
+FUZZ_MODES := receipt-chain receipt-store handoff
 # Large enough for the ticket prefix plus HANDOFF_SHIP_SNAPSHOT_MAX_SIZE.
 # Without this override libFuzzer defaults to 4096 bytes and cannot reach
 # multi-cargo snapshots with full receipt chains.
@@ -505,30 +572,75 @@ fuzz-receipts:
 		-DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=OFF \
 		-DSIGNAL_BUILD_FUZZERS=ON -DCMAKE_C_COMPILER=$(FUZZ_CC)
 	cmake --build build-fuzz --parallel --target fuzz_cargo_receipt
-	mkdir -p tests/fuzz/artifacts tests/fuzz/corpus $(FUZZ_WORK_CORPUS)
-	./build-fuzz/fuzz_cargo_receipt $(FUZZ_WORK_CORPUS) tests/fuzz/corpus \
-		-artifact_prefix=tests/fuzz/artifacts/ \
-		-max_total_time=$(FUZZ_TIME) -max_len=$(FUZZ_MAX_LEN) \
+	@test -d tests/fuzz/corpus || { \
+		echo "tracked fuzz corpus missing: tests/fuzz/corpus" >&2; exit 2; \
+	}
+	mkdir -p tests/fuzz/artifacts $(FUZZ_WORK_CORPUS)
+	@echo "Replaying the complete tracked mixed-mode corpus"
+	./build-fuzz/fuzz_cargo_receipt tests/fuzz/corpus \
+		-artifact_prefix=tests/fuzz/artifacts/replay- \
+		-runs=0 -timeout=$(FUZZ_TIMEOUT) -max_len=$(FUZZ_MAX_LEN) \
 		-print_final_stats=1
+	@set -e; \
+	for mode in $(FUZZ_MODES); do \
+		echo "Exploring fuzz mode $$mode for $(FUZZ_TIME)s"; \
+		mkdir -p "$(FUZZ_WORK_CORPUS)/$$mode"; \
+		SIGNAL_FUZZ_MODE="$$mode" \
+			./build-fuzz/fuzz_cargo_receipt \
+			"$(FUZZ_WORK_CORPUS)/$$mode" tests/fuzz/corpus \
+			-artifact_prefix="tests/fuzz/artifacts/$$mode-" \
+			-max_total_time=$(FUZZ_TIME) \
+			-timeout=$(FUZZ_TIMEOUT) -max_len=$(FUZZ_MAX_LEN) \
+			-print_final_stats=1; \
+	done
 
 # Replays corpus/crash artifacts through the harness under plain
 # ASan/UBSan (no libFuzzer) — use for triage of tests/fuzz/artifacts/.
-# Exit is nonzero if any artifact crashes. Note: the tweetnacl UBSan
-# loosening (-fno-sanitize=shift,signed-integer-overflow) applies to the
-# whole single-TU invocation here; the CMake fuzz build scopes it
-# per-file. This target is for triage, not a gate.
+# Exit is nonzero if any artifact crashes. Compile the upstream TweetNaCl
+# translation unit separately so its reviewed UB exemptions cannot disable
+# instrumentation in the project-owned entropy, wrapper, or wipe code.
+FUZZ_STANDALONE_CFLAGS := -std=c11 -O1 -g -DSIGNAL_FUZZ_STANDALONE \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-Ishared -Iserver -Iclient -Ivendor/tweetnacl
+FUZZ_STANDALONE_OBJECTS := \
+	build-fuzz/fuzz_cargo_receipt_standalone.o \
+	build-fuzz/cargo_receipt_standalone.o \
+	build-fuzz/handoff_ticket_standalone.o \
+	build-fuzz/manifest_standalone.o \
+	build-fuzz/commodity_standalone.o \
+	build-fuzz/randombytes_standalone.o \
+	build-fuzz/signal_crypto_tweetnacl_standalone.o \
+	build-fuzz/signal_memzero_standalone.o \
+	build-fuzz/tweetnacl_upstream_standalone.o
+
 fuzz-receipts-standalone:
 	@mkdir -p build-fuzz tests/fuzz/artifacts tests/fuzz/corpus
-	$(FUZZ_CC) -std=c11 -O1 -g -DSIGNAL_FUZZ_STANDALONE \
-		-fsanitize=address,undefined -fno-omit-frame-pointer \
-		-fno-sanitize=shift -fno-sanitize=signed-integer-overflow \
-		-Ishared -Iserver -Iclient -Ivendor/tweetnacl \
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -c \
 		tests/fuzz/fuzz_cargo_receipt.c \
-		shared/cargo_receipt.c shared/handoff_ticket.c \
-		shared/manifest.c shared/commodity.c \
-		vendor/tweetnacl/tweetnacl.c vendor/tweetnacl/randombytes.c \
+		-o build-fuzz/fuzz_cargo_receipt_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -c \
+		shared/cargo_receipt.c -o build-fuzz/cargo_receipt_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -c \
+		shared/handoff_ticket.c -o build-fuzz/handoff_ticket_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -c \
+		shared/manifest.c -o build-fuzz/manifest_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -c \
+		shared/commodity.c -o build-fuzz/commodity_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -c \
+		vendor/tweetnacl/randombytes.c \
+		-o build-fuzz/randombytes_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -c \
 		vendor/tweetnacl/signal_crypto_tweetnacl.c \
-		-lm -o build-fuzz/fuzz_cargo_receipt_standalone
+		-o build-fuzz/signal_crypto_tweetnacl_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -c \
+		shared/signal_memzero.c -o build-fuzz/signal_memzero_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_CFLAGS) -w \
+		-fno-sanitize=shift -fno-sanitize=signed-integer-overflow \
+		-c vendor/tweetnacl/tweetnacl.c \
+		-o build-fuzz/tweetnacl_upstream_standalone.o
+	$(FUZZ_CC) $(FUZZ_STANDALONE_OBJECTS) \
+		-fsanitize=address,undefined -lm \
+		-o build-fuzz/fuzz_cargo_receipt_standalone
 	@set --; \
 	for f in tests/fuzz/artifacts/* tests/fuzz/corpus/*; do \
 		if [ -f "$$f" ]; then set -- "$$@" "$$f"; fi; \
@@ -536,6 +648,10 @@ fuzz-receipts-standalone:
 	if [ "$$#" -gt 0 ]; then \
 		./build-fuzz/fuzz_cargo_receipt_standalone "$$@"; \
 	fi
+
+cargo-trust-audit:
+	python3 scripts/check_cargo_trust_boundaries.py
+	python3 scripts/test_check_cargo_trust_boundaries.py
 
 banned-apis:
 	python3 scripts/check_banned_apis.py
@@ -687,6 +803,9 @@ RTC_GATEWAY_UPSTREAM ?= ws://127.0.0.1:9091/ws
 
 rtc-gateway:
 	npm run rtc-gateway -- --listen=$(RTC_GATEWAY_LISTEN) --upstream=$(RTC_GATEWAY_UPSTREAM)
+
+test-rtc-gateway:
+	npm run test:rtc-gateway
 
 # --- Static web bundle / Fly deploy ---
 site: build-web

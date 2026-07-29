@@ -25,6 +25,9 @@ typedef struct {
     cargo_legality_result_t legality;
     int origin_station;
     int first_rejected_link;
+    cargo_craft_provenance_status_t craft_provenance;
+    bool craft_input_lineage_proven;
+    bool craft_conservation_proven;
 } cargo_receipt_station_evaluation_t;
 
 /*
@@ -33,7 +36,9 @@ typedef struct {
  * A missing or invalid origin proof, cargo mismatch, bad signature, broken
  * link, or revoked authority always rejects. Unknown and explicitly
  * untrusted authorities are interpreted through the evaluating station's
- * screening/black-market policy. Every receipt author is checked.
+ * screening/black-market policy. Every receipt author is checked. A valid
+ * CRAFT V1 origin is reported as station-attested only; the input-lineage
+ * and conservation fields remain false until a future proof version exists.
  */
 cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
     const world_t *world,

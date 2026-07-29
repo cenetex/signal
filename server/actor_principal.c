@@ -33,6 +33,67 @@ bool actor_principal_from_verified_player(
         ACTOR_PRINCIPAL_PLAYER, sp->pubkey, out);
 }
 
+bool actor_principal_from_npc(
+    const npc_ship_t *npc,
+    actor_principal_t *out) {
+    static const char domain[] = "SIGNAL-npc-actor-v1";
+    if (out) *out = actor_principal_none();
+    if (!npc || !out || !npc->active) return false;
+
+    uint8_t any = 0;
+    for (size_t i = 0; i < sizeof(npc->session_token); i++)
+        any |= npc->session_token[i];
+    if (any == 0) return false;
+
+    uint8_t id[ACTOR_PRINCIPAL_ID_SIZE];
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, domain, sizeof(domain) - 1);
+    sha256_update(&ctx, npc->session_token,
+                  sizeof(npc->session_token));
+    sha256_final(&ctx, id);
+    return actor_principal_from_stable_id(
+        ACTOR_PRINCIPAL_NPC, id, out);
+}
+
+bool actor_principal_from_unique_npc_slot(
+    const world_t *w,
+    int npc_slot,
+    actor_principal_t *out,
+    bool *out_token_conflict) {
+    if (out) *out = actor_principal_none();
+    if (out_token_conflict) *out_token_conflict = false;
+    if (!w || !out || npc_slot < 0 ||
+        npc_slot >= MAX_NPC_SHIPS) {
+        return false;
+    }
+    const npc_ship_t *npc = &w->npc_ships[npc_slot];
+    if (!npc->active) return false;
+
+    uint8_t any = 0;
+    for (size_t i = 0; i < sizeof(npc->session_token); i++)
+        any |= npc->session_token[i];
+    if (any == 0) return false;
+
+    for (int other_slot = 0;
+         other_slot < MAX_NPC_SHIPS;
+         other_slot++) {
+        if (other_slot == npc_slot) continue;
+        const npc_ship_t *other =
+            &w->npc_ships[other_slot];
+        if (!other->active) continue;
+        if (memcmp(
+                other->session_token,
+                npc->session_token,
+                sizeof(npc->session_token)) == 0) {
+            if (out_token_conflict)
+                *out_token_conflict = true;
+            return false;
+        }
+    }
+    return actor_principal_from_npc(npc, out);
+}
+
 static bool station_actor_bytes_nonzero(const uint8_t *bytes, size_t len) {
     if (!bytes) return false;
     uint8_t any = 0;
@@ -313,6 +374,34 @@ actor_resolution_result_t world_resolve_player_principal(
     return actor_resolution(ACTOR_RESOLUTION_OFFLINE, -1);
 }
 
+actor_resolution_result_t world_resolve_npc_principal(
+    const world_t *w,
+    const actor_principal_t *principal) {
+    actor_resolution_result_t unknown =
+        actor_resolution(ACTOR_RESOLUTION_UNKNOWN, -1);
+    if (!w || !principal ||
+        principal->kind != ACTOR_PRINCIPAL_NPC ||
+        !actor_principal_is_canonical(principal)) {
+        return unknown;
+    }
+
+    int matched_slot = -1;
+    for (int slot = 0; slot < MAX_NPC_SHIPS; slot++) {
+        const npc_ship_t *npc = &w->npc_ships[slot];
+        actor_principal_t candidate = actor_principal_none();
+        if (!actor_principal_from_npc(npc, &candidate) ||
+            !actor_principal_equal(&candidate, principal)) {
+            continue;
+        }
+        if (matched_slot >= 0) return unknown;
+        matched_slot = slot;
+    }
+    if (matched_slot < 0)
+        return actor_resolution(ACTOR_RESOLUTION_OFFLINE, -1);
+    return actor_resolution(
+        ACTOR_RESOLUTION_ONLINE, (int16_t)matched_slot);
+}
+
 actor_resolution_result_t world_resolve_station_principal(
     const world_t *w,
     const actor_principal_t *principal) {
@@ -339,4 +428,26 @@ actor_resolution_result_t world_resolve_station_principal(
         return actor_resolution(ACTOR_RESOLUTION_OFFLINE, -1);
     return actor_resolution(
         ACTOR_RESOLUTION_ONLINE, (int16_t)matched_slot);
+}
+
+actor_resolution_result_t world_resolve_actor_principal(
+    const world_t *w,
+    const actor_principal_t *principal) {
+    if (!principal || !actor_principal_is_canonical(principal)) {
+        return actor_resolution(ACTOR_RESOLUTION_UNKNOWN, -1);
+    }
+    switch ((actor_principal_kind_t)principal->kind) {
+        case ACTOR_PRINCIPAL_PLAYER:
+            return world_resolve_player_principal(w, principal);
+        case ACTOR_PRINCIPAL_NPC:
+            return world_resolve_npc_principal(w, principal);
+        case ACTOR_PRINCIPAL_STATION:
+            return world_resolve_station_principal(w, principal);
+        case ACTOR_PRINCIPAL_NONE:
+        case ACTOR_PRINCIPAL_UNATTRIBUTED:
+        case ACTOR_PRINCIPAL_SYSTEM:
+        case ACTOR_PRINCIPAL_KIND_COUNT:
+        default:
+            return actor_resolution(ACTOR_RESOLUTION_UNKNOWN, -1);
+    }
 }
