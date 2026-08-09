@@ -31,6 +31,19 @@ static bool test_path_join(char *out, size_t out_size,
     return n > 0 && (size_t)n < out_size;
 }
 
+static bool test_generation_dir_path(
+    char *out, size_t out_size, const char *root, uint64_t generation) {
+    if (!out || !root || generation == 0) return false;
+    int n = snprintf(out, out_size, "%s/generation-%020llu", root,
+                     (unsigned long long)generation);
+    return n > 0 && (size_t)n < out_size;
+}
+
+static bool test_path_exists(const char *path) {
+    struct stat st;
+    return path && stat(path, &st) == 0;
+}
+
 static bool test_prepare_generation_world(
     world_t *world,
     const uint8_t token[8],
@@ -395,6 +408,45 @@ TEST(test_persistence_generation_publish_boundaries_and_player_carry) {
     ASSERT_STR_EQ(selected.player_dir, ambiguous.player_dir);
 }
 
+TEST(test_persistence_generation_prunes_bounded_history_after_publish) {
+    char root[PERSISTENCE_GENERATION_PATH_MAX];
+    char legacy[PERSISTENCE_GENERATION_PATH_MAX];
+    ASSERT(snprintf(root, sizeof(root), "%s/%s",
+                    test_tmp_dir(), "generation_bounded_history") > 0);
+    ASSERT(snprintf(legacy, sizeof(legacy), "%s/%s",
+                    test_tmp_dir(), "generation_bounded_history_legacy") > 0);
+    static const uint8_t token[8] =
+        {0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88};
+    WORLD_HEAP world = calloc(1, sizeof(*world));
+    ASSERT(world != NULL);
+    ASSERT(test_prepare_generation_world(
+        world, token, 1.0f, 40.0f, 10.0f));
+    bool save_slots[MAX_PLAYERS] = {0};
+    save_slots[0] = true;
+
+    persistence_generation_paths_t published = {0};
+    for (uint64_t generation = 1; generation <= 12u; generation++) {
+        world->time = (float)generation;
+        ASSERT(persistence_generation_commit(
+            root, legacy, world, save_slots,
+            PERSISTENCE_GENERATION_FAULT_NONE, &published));
+        ASSERT(published.generation == generation);
+    }
+
+    for (uint64_t generation = 1; generation <= 12u; generation++) {
+        char path[PERSISTENCE_GENERATION_PATH_MAX];
+        ASSERT(test_generation_dir_path(
+            path, sizeof(path), root, generation));
+        ASSERT_EQ_INT(test_path_exists(path), generation >= 5u);
+    }
+
+    ASSERT(test_corrupt_file_byte(published.world_path));
+    persistence_generation_paths_t fallback = {0};
+    ASSERT_EQ_INT(persistence_generation_resolve(root, &fallback),
+                  PERSISTENCE_GENERATION_PREVIOUS);
+    ASSERT(fallback.generation == 11u);
+}
+
 TEST(test_persistence_generation_recovery_follows_published_lineage) {
     char root[PERSISTENCE_GENERATION_PATH_MAX];
     char legacy[PERSISTENCE_GENERATION_PATH_MAX];
@@ -557,6 +609,7 @@ TEST(test_persistence_generation_rejects_symlinked_legacy_namespace) {
 
 void register_persistence_generation_tests(void) {
     RUN(test_persistence_generation_publish_boundaries_and_player_carry);
+    RUN(test_persistence_generation_prunes_bounded_history_after_publish);
     RUN(test_persistence_generation_recovery_follows_published_lineage);
     RUN(test_persistence_generation_rejects_missing_namespace_directory);
     RUN(test_persistence_generation_rejects_embedded_nul_manifest_path);

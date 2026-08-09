@@ -29,10 +29,12 @@
 #endif
 #include <windows.h>
 #define GENERATION_MKDIR(path) _mkdir(path)
+#define GENERATION_RMDIR(path) _rmdir(path)
 #else
 #include <dirent.h>
 #include <unistd.h>
 #define GENERATION_MKDIR(path) mkdir((path), 0700)
+#define GENERATION_RMDIR(path) rmdir(path)
 #endif
 
 #define GENERATION_MANIFEST_MAGIC "SIGGEN1\0"
@@ -45,6 +47,7 @@
 #define GENERATION_RECOVERY_MARKER_MAGIC "SIGLRC1\0"
 #define GENERATION_MAX_ENTRIES 65536u
 #define GENERATION_MAX_DEPTH 8
+#define GENERATION_RETAIN_COUNT 8u
 
 typedef enum {
     FS_NODE_REGULAR = 1,
@@ -268,6 +271,40 @@ static bool directory_entries_read(const char *dir,
               directory_entry_compare);
     }
     return true;
+}
+
+static bool directory_tree_remove(const char *dir, unsigned depth) {
+    if (!dir || !dir[0] || depth > GENERATION_MAX_DEPTH ||
+        fs_node_kind(dir) != FS_NODE_DIRECTORY) {
+        return false;
+    }
+    directory_entries_t entries;
+    if (!directory_entries_read(dir, &entries, false)) return false;
+    bool ok = true;
+    for (size_t i = 0; i < entries.count; i++) {
+        char path[PERSISTENCE_GENERATION_PATH_MAX];
+        if (!path_join(path, sizeof(path), dir, entries.items[i].name)) {
+            ok = false;
+            break;
+        }
+        if (entries.items[i].kind == FS_NODE_DIRECTORY) {
+            if (!directory_tree_remove(path, depth + 1u)) {
+                ok = false;
+                break;
+            }
+        } else if (entries.items[i].kind == FS_NODE_REGULAR) {
+            if (remove(path) != 0) {
+                ok = false;
+                break;
+            }
+        } else {
+            /* Never follow or remove links and other unexpected nodes. */
+            ok = false;
+            break;
+        }
+    }
+    directory_entries_free(&entries);
+    return ok && GENERATION_RMDIR(dir) == 0;
 }
 
 static bool has_suffix(const char *text, const char *suffix) {
@@ -1699,6 +1736,45 @@ static bool parse_generation_name(const char *name, uint64_t *generation) {
     return true;
 }
 
+/*
+ * CURRENT is already durable before this runs. Cleanup is deliberately
+ * best-effort: inability to reclaim an old generation must not turn a
+ * successfully published save into a reported failure. The authenticated
+ * current and previous generations are always retained. Nearby generations
+ * remain as bounded forensic history; a recovery publish still has no
+ * authenticated previous edge and therefore cannot select that history.
+ */
+static void prune_unreferenced_generations(
+    const char *root_dir, const generation_pointer_t *pointer) {
+    if (!root_dir || !pointer || pointer->current_generation == 0)
+        return;
+    directory_entries_t entries;
+    if (!directory_entries_read(root_dir, &entries, false)) return;
+    for (size_t i = 0; i < entries.count; i++) {
+        if (entries.items[i].kind != FS_NODE_DIRECTORY) continue;
+        uint64_t generation = 0;
+        if (!parse_generation_name(entries.items[i].name, &generation))
+            continue;
+        bool retain = generation == pointer->current_generation ||
+                      generation == pointer->previous_generation;
+        if (!retain && generation < pointer->current_generation &&
+            pointer->current_generation - generation <
+                GENERATION_RETAIN_COUNT) {
+            retain = true;
+        }
+        if (retain) continue;
+
+        char generation_dir[PERSISTENCE_GENERATION_PATH_MAX];
+        if (!path_join(generation_dir, sizeof(generation_dir),
+                       root_dir, entries.items[i].name)) {
+            continue;
+        }
+        if (directory_tree_remove(generation_dir, 0u))
+            (void)persistence_sync_parent_dir(generation_dir);
+    }
+    directory_entries_free(&entries);
+}
+
 static bool next_generation_create(
     const char *root_dir,
     uint64_t *generation_out,
@@ -2034,6 +2110,7 @@ static bool persistence_generation_commit_internal(
         if (recovery_result)
             *recovery_result = PERSISTENCE_RECOVERY_COMMIT_OK;
         recovery_source_guard_close(&source_guard);
+        prune_unreferenced_generations(root_dir, &pointer);
         return true;
     }
     memcpy(candidate.manifest_sha256, manifest_sha256, 32);
@@ -2041,6 +2118,7 @@ static bool persistence_generation_commit_internal(
     if (recovery_result)
         *recovery_result = PERSISTENCE_RECOVERY_COMMIT_OK;
     recovery_source_guard_close(&source_guard);
+    prune_unreferenced_generations(root_dir, &pointer);
     return true;
 
 commit_failure:
