@@ -2615,6 +2615,21 @@ TEST(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper) {
     ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
     ASSERT(ledger_balance(kepler, sp->session_token) > before);
     ASSERT(sp->ship->stat_credits_earned > 0.0f);
+
+    /* A retained station pod stays active while its hopper consumes it. The
+     * same object remains visible to the world simulation for many ticks, so
+     * custody—not destruction—is the at-most-once payout boundary. */
+    float balance_after = ledger_balance(kepler, sp->session_token);
+    float earned_after = sp->ship->stat_credits_earned;
+    for (int retry = 0; retry < 1000; retry++) {
+        sp->input.service_sell = true;
+        sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+        world_sim_step(&w, SIM_DT);
+    }
+    ASSERT_EQ_FLOAT(ledger_balance(kepler, sp->session_token),
+                    balance_after, 0.001f);
+    ASSERT_EQ_FLOAT(sp->ship->stat_credits_earned,
+                    earned_after, 0.001f);
 }
 
 TEST(test_towed_cargo_pod_intake_full_ledger_is_inert) {

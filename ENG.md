@@ -292,21 +292,22 @@ future RATi vessel-birth events.
 
 ### 4.2 Backlog Dependency Graph
 
-The active backlog is ordered by dependency, not by excitement:
+The active dependency is player-first: a trustworthy economic action, a smooth
+rock, and a complete loop come before broader substrate expansion.
 
-1. **#588 determinism acceptance:** full `q32.32` migration or explicit promotion of the strict native↔WASM replay ratchet with broader platform coverage.
-2. **#340 / #339 manifest authority:** make trade, delivery, and production move concrete `cargo_unit_t` rows by default and retire finished-goods float authority.
-3. **Visible matter algebra:** migrate conserved production to the quartering rule: fragment -> 4 ingots, ingot -> 4 frames, ingot+frame -> module, and 4 frames -> station block. Preserve effective rock costs by restating frame costs at 16/20 and ingot costs at 4/10 of their legacy values; route repair work away from the 100-kit path toward block-count hull/station repair.
-4. **Lineage view:** CLI cargo lineage exists; next expose rock -> fragment -> ingot -> frame -> outpost/gate contribution as a first-class UI query over manifests, receipts, and chain logs.
-5. **#587 typed provenance contracts:** contract targets become explicit object/event pubkeys, including fracture/death fulfillment.
-6. **#354 / #355 / #356 settlement bridge:** game-sim validation emits canonical settlement events and signal-channel roots.
-7. **Player-facing legibility:** cargo lineage and station history become first-class UI surfaces.
-8. **Institution tooling:** shared contracts, escrowed cargo, station-endorsed bounties, route health dashboards, and public construction manifests.
-9. **#294 unified ship/controller model:** NPC and player cargo semantics converge on the same `ship_t`/`character_t` substrate.
-10. **#590 / #591 / #589 permaweb/P2P:** client Arweave reads, peer anchoring, and WebRTC quorum behavior.
-11. **#496 RATi vessel identity:** RATi-bearing vessels become substrate-born identities after manifest and settlement semantics are canonical.
-12. **#343 / #603 hull/station blocks:** unify hull-as-merkle, sheared blocks, and ship/station repair so damage removes visible blocks and repair welds matter back on; repair kits disappear as a player-facing unit.
-13. **#285 streaming entity pool:** cap lifting and `game_sim.c` extraction once economic/provenance invariants are stable.
+1. **#686:** at-most-once station payout commit.
+2. **#685 / #687:** asteroid-motion correction and measured frame pacing.
+3. **#617:** canonical atomic tow relation and smooth presentation.
+4. **#674:** receipt-preserving physical handoff for normal outpost founding.
+5. **#684:** measured physics-feel review.
+6. **#666:** crash-consistent persistence off the simulation loop.
+7. **#619 / #688 / #689:** interaction clarity, first-hour progression, and
+   rock combat/reward feel.
+
+These items form milestone #690. #588's strict replay profile is accepted and
+remains a gate. #339/#340 are complete. Settlement expansion, broad authority
+or controller rewrites, permaweb/P2P, RATi identity, and cap lifting are gated
+until Playable Core passes.
 
 ---
 

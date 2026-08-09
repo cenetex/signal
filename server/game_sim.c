@@ -4644,12 +4644,30 @@ static float station_intake_pod_quote(world_t *w,
     return value;
 }
 
-static bool station_intake_pay_for_pod(world_t *w,
-                                       server_player_t *sp,
-                                       station_t *st,
-                                       int station_idx,
-                                       cargo_pod_t *pod) {
-    if (!w || !sp || !st || !pod) return false;
+typedef struct {
+    bool ready;
+    bool by_contract;
+    int contract_index;
+    float value;
+    uint16_t units;
+    contract_t staged_claim;
+    ledger_earn_stage_t ledger_stage;
+} station_intake_sale_t;
+
+/*
+ * Quote and validate one physical intake sale without mutating custody,
+ * contracts, ledgers, or player statistics. The caller completes the tow-link
+ * handoff first and then applies this bounded stage as one infallible commit.
+ * This ordering is the at-most-once boundary: a failed detach/module transfer
+ * can never leave a credit behind for a pod the player still controls.
+ */
+static bool station_intake_stage_pod_sale(
+    world_t *w, server_player_t *sp, station_t *st,
+    int station_idx, cargo_pod_t *pod,
+    station_intake_sale_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!w || !sp || !st || !pod || !out) return false;
+
     bool by_contract = false;
     int contract_index = -1;
     contract_t staged_claim = {0};
@@ -4673,24 +4691,45 @@ static bool station_intake_pay_for_pod(world_t *w,
         return false;
     }
 
-    /*
-     * Quote, claimant, and the exact ledger row are now staged. The bounded
-     * assignments below cannot fail, so custody and contract bookkeeping
-     * never consume a pod after a silent full-ledger credit rejection.
-     */
-    st->ledger[ledger_stage.index] =
-        ledger_stage.row;
-    st->ledger_count =
-        ledger_stage.ledger_count;
-    sp->ship->stat_credits_earned += value;
-    cargo_pod_set_station_custody(pod, station_idx);
+    *out = (station_intake_sale_t){
+        .ready = true,
+        .by_contract = by_contract,
+        .contract_index = contract_index,
+        .value = value,
+        .units = units,
+        .staged_claim = staged_claim,
+        .ledger_stage = ledger_stage,
+    };
+    return true;
+}
 
-    if (contract_index >= 0 &&
-        contract_index < MAX_CONTRACTS) {
-        contract_t *ct = &w->contracts[contract_index];
+static void station_intake_commit_pod_sale(
+    world_t *w, server_player_t *sp, station_t *st,
+    int station_idx, cargo_pod_t *pod,
+    const station_intake_sale_t *sale) {
+    if (!w || !sp || !st || !pod || !sale || !sale->ready)
+        return;
+
+    /*
+     * The physical tow relation already belongs to the station module. Quote,
+     * claimant, and the exact ledger row were staged before that handoff. The
+     * bounded assignments below cannot fail, so custody and credit become
+     * visible together and a retry observes station ownership before it can
+     * ever reach another payout.
+     */
+    cargo_pod_set_station_custody(pod, station_idx);
+    st->ledger[sale->ledger_stage.index] =
+        sale->ledger_stage.row;
+    st->ledger_count =
+        sale->ledger_stage.ledger_count;
+    sp->ship->stat_credits_earned += sale->value;
+
+    if (sale->contract_index >= 0 &&
+        sale->contract_index < MAX_CONTRACTS) {
+        contract_t *ct = &w->contracts[sale->contract_index];
         contract_ownership_commit_staged_claim(
-            ct, &staged_claim);
-        ct->quantity_needed -= (float)units;
+            ct, &sale->staged_claim);
+        ct->quantity_needed -= (float)sale->units;
         if (ct->quantity_needed <= 0.01f) {
             ct->active = false;
             emit_event(w, (sim_event_t){
@@ -4701,15 +4740,14 @@ static bool station_intake_pay_for_pod(world_t *w,
 
     SIM_LOG("[intake] player %d sold %s crate (%u units) for %.0f cr at %s\n",
             sp->id, commodity_short_name(pod->commodity),
-            (unsigned)units, value, st->name);
+            (unsigned)sale->units, sale->value, st->name);
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_SELL, .player_id = sp->id,
         .sell = { .station = station_idx,
                   .grade = MINING_GRADE_COMMON,
-                  .base_cr = (int)lroundf(value),
+                  .base_cr = (int)lroundf(sale->value),
                   .bonus_cr = 0,
-                  .by_contract = by_contract ? 1u : 0u }});
-    return true;
+                  .by_contract = sale->by_contract ? 1u : 0u }});
 }
 
 static bool cargo_pod_matches_buy_grade(const cargo_pod_t *pod,
@@ -9105,12 +9143,23 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
         if (cargo_pod_custody_station(pod) >= 0)
             return false;
     }
-    if (!station_intake_pay_for_pod(w, sp, st, best_station, pod))
+    station_intake_sale_t sale = {0};
+    if (!station_intake_stage_pod_sale(
+            w, sp, st, best_station, pod, &sale)) {
         return false;
+    }
 
     if (!player_detach_cargo_pod(w, sp, pod_idx)) return false;
-    (void)world_cargo_pod_set_module_tractor(
-        w, pod_idx, best_station, best_module);
+    if (!world_cargo_pod_set_module_tractor(
+            w, pod_idx, best_station, best_module)) {
+        /* Restore the physical owner when the station relation cannot be
+         * published. No ledger or contract mutation has happened yet. */
+        (void)world_cargo_pod_set_player_tractor(
+            w, pod_idx, tractor_player);
+        return false;
+    }
+    station_intake_commit_pod_sale(
+        w, sp, st, best_station, pod, &sale);
     if (best_station >= 0 && best_station < MAX_STATIONS &&
         best_module >= 0 && best_module < MAX_MODULES_PER_STATION) {
         w->stations[best_station].modules[best_module].active_pulse = 1.0f;
