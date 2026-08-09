@@ -212,6 +212,7 @@ set(SIGNAL_CLIENT_SOURCES
     client/legacy_recovery_view.c
     client/client_log.c
     client/reconciliation_diagnostics.c
+    client/asteroid_presentation.c
     client/tow_presentation_diagnostics.c
     client/tow_adverse_gate.c
     client/zero_latency_gate.c
@@ -378,6 +379,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_signal_field.c
         tests/c/test_state_digest.c
         tests/c/test_reconciliation_diagnostics.c
+        tests/c/test_asteroid_presentation.c
         tests/c/test_tow_presentation_diagnostics.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
@@ -385,6 +387,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         client/public_actor_presentation.c
         client/client_log.c
         client/reconciliation_diagnostics.c
+        client/asteroid_presentation.c
         client/tow_presentation_diagnostics.c
         client/episode_lifecycle.c
         client/episode_media.c
@@ -883,6 +886,17 @@ if(EMSCRIPTEN)
         "'_get_net_motion_replay_depth'"
         "'_get_net_motion_unacked_inputs'"
         "'_get_net_motion_action_queue_depth'"
+        "'_reset_local_asteroid_motion_telemetry'"
+        "'_get_local_asteroid_motion_feed_active'"
+        "'_get_local_asteroid_motion_frame_samples'"
+        "'_get_local_asteroid_motion_presented_samples'"
+        "'_get_local_asteroid_motion_starvation_events'"
+        "'_get_local_asteroid_motion_max_correction'"
+        "'_get_local_asteroid_motion_max_velocity_discontinuity'"
+        "'_get_local_asteroid_motion_max_screen_jerk'"
+        "'_get_local_asteroid_motion_max_avoided_correction'"
+        "'_get_local_asteroid_motion_class_samples'"
+        "'_local_asteroid_motion_within_thresholds'"
         "'_signal_zero_latency_gate_run'"
         "'_signal_zero_latency_gate_perturb'"
         "'_signal_zero_latency_gate_ready'"

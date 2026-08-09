@@ -12,6 +12,7 @@
  * thrown-rock damage and kills. */
 #define ROCK_THROW_BALLISTIC_SECONDS 6.0f
 #define ASTEROID_THROW_TIMER_TICKS 12u  /* 120 Hz sim -> 0.1s timer quantum */
+#define ASTEROID_AMBIENT_DRAG 0.42f
 
 /* The 30 Hz asteroid pair plan is exhaustive for ordinary cells, then uses
  * four rotating cyclic-distance bands / bipartite matchings for dense cells.

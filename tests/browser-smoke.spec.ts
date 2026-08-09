@@ -2171,6 +2171,60 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  test('local asteroid presentation removes the 10 Hz correction rhythm', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires local singleplayer authority');
+    test.setTimeout(45_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(smokeUrl({ singleplayer: true }));
+    await waitForRuntime(page);
+    const canvas = page.locator('canvas');
+    await expect(canvas).toBeVisible({ timeout: 20_000 });
+    await canvas.click();
+    await tap(page, 'Escape');
+    await tap(page, 'E');
+    await expect
+      .poll(async () => (await playerStateSnapshot(page))?.docked ?? 1, {
+        timeout: 8_000,
+        message: 'asteroid motion gate should launch into local flight',
+      })
+      .toBe(0);
+    await expect.poll(
+      () => wasmNumber(page, 'get_local_asteroid_motion_feed_active'),
+      {
+        timeout: 10_000,
+        message: 'local authority asteroid pose feed should become active',
+      },
+    ).toBe(1);
+
+    await wasmNumber(page, 'reset_local_asteroid_motion_telemetry');
+    await expect.poll(
+      () => wasmNumber(page, 'get_local_asteroid_motion_presented_samples'),
+      { timeout: 8_000 },
+    ).toBeGreaterThan(30);
+
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_frame_samples'))
+      .toBeGreaterThan(0);
+    expect(await wasmNumberArg(page, 'get_local_asteroid_motion_class_samples', 0))
+      .toBeGreaterThan(0); // loose drift
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_starvation_events'))
+      .toBe(0);
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_correction'))
+      .toBeLessThanOrEqual(0.01);
+    expect(await wasmNumber(
+      page, 'get_local_asteroid_motion_max_velocity_discontinuity',
+    )).toBeLessThanOrEqual(0.01);
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_screen_jerk'))
+      .toBeLessThanOrEqual(500_000);
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_avoided_correction'))
+      .toBeGreaterThan(0);
+    expect(await wasmNumber(page, 'local_asteroid_motion_within_thresholds'))
+      .toBe(1);
+
+    expectNoFatalErrors(logs);
+  });
+
   test('live relay launch accepts flight input', async ({ page }) => {
     test.skip(!usesLiveSmokeUrl(), 'requires SMOKE_URL pointed at a live relay URL');
     test.skip(

@@ -664,7 +664,8 @@ void sim_world_integrate_bodies(world_t *w, sim_body_phase_t phase,
                 body.flags |= SIM_BODY_FLAG_TOWED;
             else {
                 body.flags |= SIM_BODY_FLAG_DRAG;
-                body.velocity_multiplier = 1.0f / (1.0f + 0.42f * dt);
+                body.velocity_multiplier =
+                    1.0f / (1.0f + ASTEROID_AMBIENT_DRAG * dt);
             }
             sim_body_advance(body, dt);
         }

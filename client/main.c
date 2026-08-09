@@ -555,6 +555,7 @@ static void reset_world(void) {
     g.inspect_receipt_browser = false;
     g.inspect_was_active = false;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    reset_local_asteroid_motion_telemetry();
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
     g.npc_interp.interval = 0.1f;
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
@@ -2619,10 +2620,10 @@ float signal_render_frame_duration_ms(void) {
 #endif
 
 static void render_frame(void) {
-    interpolate_world_for_render();
     float frame_dt = (float)sapp_frame_duration();
     if (frame_dt <= 0.0f) frame_dt = 1.0f / 60.0f;
     if (frame_dt > 0.1f) frame_dt = 0.1f;
+    interpolate_world_for_render_frame(frame_dt);
     g_render_frame_duration_ms = frame_dt * 1000.0f;
     step_local_player_render_offset(frame_dt);
 
@@ -2659,8 +2660,12 @@ static void render_frame(void) {
                 saved_ship_angle +
                 LOCAL_PLAYER.input.turn * hull->turn_speed * render_ahead);
         }
+        float asteroid_render_ahead =
+            get_local_asteroid_motion_feed_active()
+                ? 0.0f : render_ahead;
         saved_asteroid_count = apply_local_towed_asteroid_render_pose(
-            saved_asteroids, g.local_player_render_offset, render_ahead);
+            saved_asteroids, g.local_player_render_offset,
+            asteroid_render_ahead);
         saved_pod_count = apply_local_towed_cargo_pod_render_pose(
             saved_pods, g.local_player_render_offset, render_ahead);
         saved_scaffold_active = apply_local_towed_scaffold_render_pose(

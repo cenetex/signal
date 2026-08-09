@@ -12,6 +12,7 @@
 #include "net_clock.h"
 #include "remote_receipt_cache.h"
 #include "state_digest.h"
+#include "asteroid_presentation.h"
 
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
@@ -27,7 +28,6 @@
  * distant rocks. Prediction must span that interval instead of freezing
  * after a fraction of a second. */
 #define ASTEROID_RENDER_PREDICT_MAX_SEC 60.0f
-#define ASTEROID_AMBIENT_DRAG 0.42f
 #define ASTEROID_RENDER_CORRECTION_CUTOFF_SEC \
     (ASTEROID_RENDER_CORRECTION_SEC * 4.0f)
 #define NPC_RENDER_CORRECTION_SEC 0.18f
@@ -50,6 +50,9 @@
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
 static remote_receipt_cache_t remote_pending_receipts;
+static asteroid_presentation_diagnostics_t
+    local_asteroid_presentation_diagnostics;
+static bool local_asteroid_presentation_feed_active;
 
 static void net_replay_clear_frames(void);
 static void net_clear_tow_projections(void);
@@ -862,37 +865,6 @@ static void net_collect_towed_asteroids(bool towed[MAX_ASTEROIDS]) {
     }
 }
 
-static void asteroid_predict_motion(const asteroid_t *base, float elapsed,
-                                    bool towed, vec2 *out_pos, vec2 *out_vel) {
-    vec2 pos = base->pos;
-    vec2 vel = base->vel;
-
-    if (towed) {
-        pos = v2_add(pos, v2_scale(vel, elapsed));
-    } else if (elapsed > 0.0f) {
-        /* Match sim_step_asteroid_dynamics(): integrate position, then apply
-         * the rational drag factor once per fixed simulation tick. Cache the
-         * derived constants and use one exponential for the smooth
-         * fractional-tick continuation; fixed-tick positions remain exact. */
-        static float drag_decay_rate;
-        static float drag_displacement_limit;
-        if (drag_decay_rate <= 0.0f) {
-            float drag_step =
-                1.0f / (1.0f + ASTEROID_AMBIENT_DRAG * SIM_DT);
-            drag_decay_rate = -logf(drag_step) / SIM_DT;
-            drag_displacement_limit = SIM_DT / (1.0f - drag_step);
-        }
-        float retained = expf(-drag_decay_rate * elapsed);
-        float displacement_scale =
-            drag_displacement_limit * (1.0f - retained);
-        pos = v2_add(pos, v2_scale(vel, displacement_scale));
-        vel = v2_scale(vel, retained);
-    }
-
-    *out_pos = pos;
-    *out_vel = vel;
-}
-
 static asteroid_t asteroid_render_state_at(int slot, float elapsed,
                                            bool towed) {
     const asteroid_t *prev = &g.asteroid_interp.prev[slot];
@@ -901,7 +873,8 @@ static asteroid_t asteroid_render_state_at(int slot, float elapsed,
     if (!curr->active) return out;
 
     elapsed = clampf(elapsed, 0.0f, ASTEROID_RENDER_PREDICT_MAX_SEC);
-    asteroid_predict_motion(curr, elapsed, towed, &out.pos, &out.vel);
+    asteroid_presentation_predict_motion(
+        curr, elapsed, towed, &out.pos, &out.vel);
     out.age += elapsed;
     out.rotation = wrap_angle(curr->rotation + curr->spin * elapsed);
 
@@ -3427,7 +3400,56 @@ void sync_local_player_slot_from_network(void) {
     if (LOCAL_PLAYER.connection) LOCAL_PLAYER.connection->conn = NULL;
 }
 
-void interpolate_world_for_render(void) {
+static void apply_local_authority_asteroid_presentation(float frame_dt)
+{
+    local_asteroid_presentation_feed_active = false;
+    const world_t *authority =
+        local_server_world_const(&g.local_server);
+    if (!g.net_authority_enabled || !net_is_loopback() ||
+        !g.local_server.active || !authority) {
+        return;
+    }
+
+    local_asteroid_presentation_feed_active = true;
+    asteroid_presentation_diagnostics_begin_frame(
+        &local_asteroid_presentation_diagnostics);
+    float render_ahead = g.runtime.accumulator;
+    if (!isfinite(render_ahead) || render_ahead < 0.0f)
+        render_ahead = 0.0f;
+    if (render_ahead > SIM_DT) render_ahead = SIM_DT;
+    float zoom = g.boost_zoom;
+    if (!isfinite(zoom) || zoom <= 0.01f) zoom = 1.0f;
+    float pixels_per_world = 1.0f / zoom;
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *dst = &g.world.asteroids[i];
+        asteroid_t legacy = *dst;
+        asteroid_t presented;
+        asteroid_motion_class_t motion_class = ASTEROID_MOTION_LOOSE;
+        asteroid_presentation_action_t action =
+            asteroid_presentation_resolve(
+                authority, &legacy, i, render_ahead,
+                &presented, &motion_class);
+        if (action == ASTEROID_PRESENTATION_PRESENT) {
+            *dst = presented;
+            asteroid_presentation_diagnostics_present(
+                &local_asteroid_presentation_diagnostics,
+                i, motion_class, &legacy, dst, &presented,
+                frame_dt, pixels_per_world);
+        } else if (action == ASTEROID_PRESENTATION_RETIRE) {
+            dst->active = false;
+            asteroid_presentation_diagnostics_retire(
+                &local_asteroid_presentation_diagnostics, i);
+        } else if (authority->asteroids[i].active && legacy.active) {
+            asteroid_presentation_diagnostics_skip(
+                &local_asteroid_presentation_diagnostics,
+                i, motion_class, &legacy,
+                frame_dt, pixels_per_world);
+        }
+    }
+}
+
+void interpolate_world_for_render_frame(float frame_dt) {
     bool asteroid_towed[MAX_ASTEROIDS];
     net_collect_towed_asteroids(asteroid_towed);
 
@@ -3443,6 +3465,12 @@ void interpolate_world_for_render(void) {
         *dst = asteroid_render_state_at(
             i, g.asteroid_interp.elapsed[i], asteroid_towed[i]);
     }
+
+    /* Local singleplayer still decodes the exact 10 Hz multiplayer stream,
+     * then replaces only render pose with the in-process 120 Hz authority.
+     * Server state is separate and const here, so presentation can never
+     * feed smoothed values back into gameplay. */
+    apply_local_authority_asteroid_presentation(frame_dt);
 
     float npc_elapsed = clampf(g.npc_interp.t * g.npc_interp.interval,
                                0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
@@ -3509,6 +3537,73 @@ void interpolate_world_for_render(void) {
     }
     if (!g.tow_snapshot_received)
         sync_local_towed_pods_from_cargo_authority();
+}
+
+void interpolate_world_for_render(void)
+{
+    interpolate_world_for_render_frame(SIM_DT);
+}
+
+void reset_local_asteroid_motion_telemetry(void)
+{
+    asteroid_presentation_diagnostics_reset(
+        &local_asteroid_presentation_diagnostics);
+}
+
+int get_local_asteroid_motion_feed_active(void)
+{
+    return local_asteroid_presentation_feed_active ? 1 : 0;
+}
+
+int get_local_asteroid_motion_frame_samples(void)
+{
+    return (int)local_asteroid_presentation_diagnostics.frame_samples;
+}
+
+int get_local_asteroid_motion_presented_samples(void)
+{
+    return (int)local_asteroid_presentation_diagnostics.presented_samples;
+}
+
+int get_local_asteroid_motion_starvation_events(void)
+{
+    return (int)local_asteroid_presentation_diagnostics.starvation_events;
+}
+
+float get_local_asteroid_motion_max_correction(void)
+{
+    return local_asteroid_presentation_diagnostics.max_correction_world;
+}
+
+float get_local_asteroid_motion_max_velocity_discontinuity(void)
+{
+    return local_asteroid_presentation_diagnostics
+        .max_velocity_discontinuity;
+}
+
+float get_local_asteroid_motion_max_screen_jerk(void)
+{
+    return local_asteroid_presentation_diagnostics.max_screen_jerk;
+}
+
+float get_local_asteroid_motion_max_avoided_correction(void)
+{
+    return local_asteroid_presentation_diagnostics
+        .max_legacy_correction_avoided;
+}
+
+int get_local_asteroid_motion_class_samples(int motion_class)
+{
+    if (motion_class < 0 ||
+        motion_class >= ASTEROID_MOTION_CLASS_COUNT) return 0;
+    return (int)local_asteroid_presentation_diagnostics
+        .class_samples[motion_class];
+}
+
+int local_asteroid_motion_within_thresholds(void)
+{
+    return asteroid_presentation_diagnostics_within_thresholds(
+        &local_asteroid_presentation_diagnostics) ? 1 : 0;
 }
 
 const NetPlayerState* net_get_interpolated_players(void) {

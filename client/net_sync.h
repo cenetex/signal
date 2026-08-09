@@ -149,6 +149,21 @@ void sync_local_player_slot_from_network(void);
 
 /* Interpolate asteroid, NPC, and player positions for smooth multiplayer rendering. */
 void interpolate_world_for_render(void);
+void interpolate_world_for_render_frame(float frame_dt);
+
+/* Local-authority asteroid presentation telemetry. Motion class indices are
+ * asteroid_motion_class_t values from asteroid_presentation.h. */
+void reset_local_asteroid_motion_telemetry(void);
+int get_local_asteroid_motion_feed_active(void);
+int get_local_asteroid_motion_frame_samples(void);
+int get_local_asteroid_motion_presented_samples(void);
+int get_local_asteroid_motion_starvation_events(void);
+float get_local_asteroid_motion_max_correction(void);
+float get_local_asteroid_motion_max_velocity_discontinuity(void);
+float get_local_asteroid_motion_max_screen_jerk(void);
+float get_local_asteroid_motion_max_avoided_correction(void);
+int get_local_asteroid_motion_class_samples(int motion_class);
+int local_asteroid_motion_within_thresholds(void);
 
 /* Get interpolated remote player states for rendering. */
 const NetPlayerState* net_get_interpolated_players(void);
