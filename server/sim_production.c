@@ -566,6 +566,25 @@ static int production_find_free_pod_slot(const world_t *w) {
     return -1;
 }
 
+static bool production_self_package_frame_output(
+    const recipe_def_t *recipe, const cargo_unit_t *products,
+    int product_count, cargo_unit_t *out_shell,
+    int *out_payload_count) {
+    if (!recipe || !products || !out_shell || !out_payload_count ||
+        recipe->output_commodity != COMMODITY_FRAME || product_count < 2 ||
+        products[product_count - 1].commodity != (uint8_t)COMMODITY_FRAME) {
+        return false;
+    }
+
+    /* A frame press must not deadlock when no folded frame is available to
+     * package its output. Use one newly crafted frame as the carrier shell;
+     * the remaining products are payload, so the recipe still creates
+     * exactly product_count frame units. */
+    *out_shell = products[product_count - 1];
+    *out_payload_count = product_count - 1;
+    return true;
+}
+
 static int station_manifest_craft_product_pod_batch(world_t *w,
                                                     int station_idx,
                                                     int module_idx,
@@ -643,6 +662,7 @@ static int station_manifest_craft_product_pod_batch(world_t *w,
     production_pod_plan_t shell_plan = {0};
     production_loose_shell_t loose_shell = {0};
     bool loose_shell_used = false;
+    int payload_count = output_count;
     if (!new_pod) {
         staged_pod = w->cargo_pods[pod_idx];
         if (!production_pod_can_accept_output(
@@ -706,19 +726,24 @@ static int station_manifest_craft_product_pod_batch(world_t *w,
                 break;
             }
             if (shell_actual < 0) {
-                cargo_store_cleanup(&staged_station);
-                return 0;
-            }
-            int staged_shell = manifest_find(
-                &staged_station.manifest,
-                st->manifest.units[shell_actual].pub);
-            if (staged_shell < 0 ||
-                !cargo_store_remove_with_chain(
-                    &staged_station,
-                    (uint16_t)staged_shell,
-                    &shell, NULL)) {
-                cargo_store_cleanup(&staged_station);
-                return 0;
+                if (!production_self_package_frame_output(
+                        recipe, products, output_count, &shell,
+                        &payload_count)) {
+                    cargo_store_cleanup(&staged_station);
+                    return 0;
+                }
+            } else {
+                int staged_shell = manifest_find(
+                    &staged_station.manifest,
+                    st->manifest.units[shell_actual].pub);
+                if (staged_shell < 0 ||
+                    !cargo_store_remove_with_chain(
+                        &staged_station,
+                        (uint16_t)staged_shell,
+                        &shell, NULL)) {
+                    cargo_store_cleanup(&staged_station);
+                    return 0;
+                }
             }
         }
         const station_module_t *module =
@@ -734,10 +759,10 @@ static int station_manifest_craft_product_pod_batch(world_t *w,
         staged_pod.active = true;
         staged_pod.kind = CARGO_POD_CARGO;
         staged_pod.commodity = recipe->output_commodity;
-        staged_pod.quantity = (uint16_t)output_count;
-        staged_pod.manifest_count = (uint16_t)output_count;
+        staged_pod.quantity = (uint16_t)payload_count;
+        staged_pod.manifest_count = (uint16_t)payload_count;
         memcpy(staged_pod.manifest_units, products,
-               (size_t)output_count * sizeof(products[0]));
+               (size_t)payload_count * sizeof(products[0]));
         staged_pod.pos = v2_add(
             module_pos, v2_scale(dir, mouth_offset));
         staged_pod.vel = station_ring_point_velocity(
@@ -846,6 +871,7 @@ static int station_loose_pod_craft_product_pod_batch(
     bool new_output_pod = output_pod_idx < 0;
     cargo_store_t staged_station = {0};
     bool staged_station_live = false;
+    int payload_count = product_count;
 
     if (!new_output_pod) {
         cargo_pod_t *output = production_stage_pod(
@@ -890,17 +916,24 @@ static int station_loose_pod_craft_product_pod_batch(
                     break;
                 }
             }
-            if (shell_idx < 0 ||
-                !cargo_store_clone(
-                    &staged_station, &st->cargo_store)) {
-                return 0;
-            }
-            staged_station_live = true;
-            if (!cargo_store_remove_with_chain(
-                    &staged_station, (uint16_t)shell_idx,
-                    &shell, NULL)) {
-                cargo_store_cleanup(&staged_station);
-                return 0;
+            if (shell_idx < 0) {
+                if (!production_self_package_frame_output(
+                        recipe, products, product_count, &shell,
+                        &payload_count)) {
+                    return 0;
+                }
+            } else {
+                if (!cargo_store_clone(
+                        &staged_station, &st->cargo_store)) {
+                    return 0;
+                }
+                staged_station_live = true;
+                if (!cargo_store_remove_with_chain(
+                        &staged_station, (uint16_t)shell_idx,
+                        &shell, NULL)) {
+                    cargo_store_cleanup(&staged_station);
+                    return 0;
+                }
             }
         }
 
@@ -915,10 +948,10 @@ static int station_loose_pod_craft_product_pod_batch(
         output->active = true;
         output->kind = CARGO_POD_CARGO;
         output->commodity = recipe->output_commodity;
-        output->quantity = (uint16_t)product_count;
-        output->manifest_count = (uint16_t)product_count;
+        output->quantity = (uint16_t)payload_count;
+        output->manifest_count = (uint16_t)payload_count;
         memcpy(output->manifest_units, products,
-               (size_t)product_count * sizeof(products[0]));
+               (size_t)payload_count * sizeof(products[0]));
         const station_module_t *module =
             &st->modules[module_idx];
         vec2 module_pos = module_world_pos_ring(

@@ -4893,6 +4893,75 @@ TEST(test_station_production_consumes_loose_ingot_pod) {
     ASSERT(pod->has_shell_frame);
 }
 
+TEST(test_frame_press_self_packages_when_frame_shells_are_exhausted) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    cargo_unit_t input = {0};
+    cargo_unit_t expected_shell = {0};
+    int press_idx = -1;
+    uint8_t fragment_pub[32] = {0};
+
+    fragment_pub[31] = 0x26;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        st->modules[m].input_buffer = 0.0f;
+        st->modules[m].output_buffer = 0.0f;
+        st->modules[m].craft_progress = 0.0f;
+    }
+
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_pub, 0, &input));
+    ASSERT(test_anchor_smelt_unit(&w, 1, &input));
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, &input, 1,
+                        CELL_STRUTS_PER_INGOT - 1, &expected_shell));
+
+    int hopper_idx = station_find_hopper_for(
+        st, COMMODITY_FERRITE_INGOT);
+    ASSERT(hopper_idx >= 0);
+    const station_module_t *hopper = &st->modules[hopper_idx];
+    vec2 hopper_pos = module_world_pos_ring(
+        st, hopper->ring, hopper->slot);
+    vec2 hopper_out = v2_norm(v2_sub(hopper_pos, st->pos));
+    vec2 pod_pos = v2_add(
+        hopper_pos, v2_scale(
+            hopper_out, STATION_MODULE_COL_RADIUS + 18.0f + 8.0f));
+    int input_pod = spawn_cargo_pod_with_manifest(
+        &w, pod_pos,
+        station_ring_point_velocity(st, hopper->ring, pod_pos),
+        COMMODITY_FERRITE_INGOT, &input, 1, CARGO_POD_CARGO);
+    ASSERT(input_pod >= 0);
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, input_pod, 1, hopper_idx));
+
+    uint64_t events_before = st->chain_event_count;
+    sim_step_station_production(&w, 1.0f);
+
+    ASSERT_EQ_INT(test_count_exact_pod_units(
+                      &w, COMMODITY_FERRITE_INGOT), 0);
+    const cargo_pod_t *output = test_first_exact_pod_with_units(
+        &w, COMMODITY_FRAME, CELL_STRUTS_PER_INGOT - 1);
+    ASSERT(output != NULL);
+    ASSERT(output->has_shell_frame);
+    ASSERT(memcmp(output->shell_frame.pub,
+                  expected_shell.pub, 32) == 0);
+    ASSERT_EQ_INT(output->shell_frame.recipe_id, RECIPE_FRAME_BASIC);
+    ASSERT_EQ_INT(test_count_exact_pod_units(&w, COMMODITY_FRAME),
+                  CELL_STRUTS_PER_INGOT - 1);
+    ASSERT_EQ_INT((int)st->chain_event_count,
+                  (int)events_before + CELL_STRUTS_PER_INGOT);
+}
+
 TEST(test_station_physical_craft_append_failure_is_inert) {
     WORLD_DECL;
     const chain_log_test_fault_point_t faults[] = {
@@ -11800,6 +11869,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_station_production_ejects_frame_pod);
     RUN(test_station_production_fills_existing_frame_output_pod);
     RUN(test_station_production_consumes_loose_ingot_pod);
+    RUN(test_frame_press_self_packages_when_frame_shells_are_exhausted);
     RUN(test_station_physical_craft_append_failure_is_inert);
     RUN(test_frame_press_accepts_player_towed_ingot_pod_at_press);
     RUN(test_station_hopper_accepts_player_towed_ingot_pod);
