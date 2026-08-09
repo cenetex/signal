@@ -1385,6 +1385,7 @@ ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
 int world_station_stored_hull_count(const world_t *w, int station_idx,
                                     hull_class_t hull_class);
 void world_refresh_station_hull_inventories(world_t *w);
+void world_refresh_station_physical_inventories(world_t *w);
 bool world_ship_asset_sync_from_player(world_t *w, server_player_t *sp);
 bool world_ship_asset_sync_from_npc(world_t *w, int npc_slot);
 bool world_player_release_ship_asset(world_t *w, int player_slot);

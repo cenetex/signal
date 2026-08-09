@@ -1908,7 +1908,12 @@ static float test_station_market_pod_sell_quote(const station_t *st,
         quote += station_sell_price_unit(st, unit) *
                  mining_payout_multiplier((mining_grade_t)unit->grade);
     }
-    return quote;
+    if (pod->has_shell_frame) {
+        quote += station_sell_price_unit(st, &pod->shell_frame) *
+                 mining_payout_multiplier(
+                     (mining_grade_t)pod->shell_frame.grade);
+    }
+    return (float)llroundf(quote);
 }
 
 static void test_move_pod_past_station_charge_boundary(world_t *w,
@@ -2005,6 +2010,23 @@ TEST(test_station_production_yard_makes_frames) {
     ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FERRITE_INGOT), 4);
     ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME),
                   CELL_STRUTS_PER_INGOT);
+}
+
+TEST(test_station_production_does_not_drain_physical_stock_as_storage) {
+    STATION_DECL(station);
+    station.modules[station.module_count++] =
+        (station_module_t){ .type = MODULE_FRAME_PRESS };
+    station._physical_inventory_cache[COMMODITY_FERRITE_INGOT] = 2.0f;
+
+    step_station_production(&station, 1, 1.0f);
+
+    ASSERT_EQ_FLOAT(station_inventory_amount(
+                        &station, COMMODITY_FERRITE_INGOT),
+                    2.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station_stored_inventory_amount(
+                        &station, COMMODITY_FERRITE_INGOT),
+                    0.0f, 0.001f);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME), 0);
 }
 
 TEST(test_station_production_beamworks_makes_modules) {
@@ -3430,8 +3452,8 @@ TEST(test_first_cross_station_haul_uses_local_ledgers) {
                     prospect_start, 0.001f);
     ASSERT_EQ_FLOAT(ledger_balance(kepler, sp->session_token), kepler_start, 0.001f);
 
-    float expected_ingot_cost = test_station_market_pod_sell_quote(
-        prospect, &w.cargo_pods[bought_ingot_pod]);
+    float expected_ingot_cost =
+        (float)w.cargo_pods[bought_ingot_pod].custody_charge_total;
     ASSERT(expected_ingot_cost > 0.0f);
     test_move_pod_past_station_charge_boundary(&w, 0, bought_ingot_pod);
     world_sim_step(&w, SIM_DT);
@@ -4541,7 +4563,7 @@ TEST(test_refinery_smelts_fragment_into_ingot_pod) {
     ASSERT_EQ_INT(w.players[0].ship->towed_count, 0);
     ASSERT_EQ_FLOAT(station_inventory_amount(
                         &w.stations[0], COMMODITY_FERRITE_INGOT),
-                    station_ingots_before, 0.001f);
+                    station_ingots_before + 10.0f, 0.001f);
     ASSERT_EQ_INT(station_finished_count(&w.stations[0], COMMODITY_FRAME),
                   station_frames_before);
     ASSERT_EQ_INT(economy_count_exact_pod_units(&w, COMMODITY_FRAME),
@@ -4980,7 +5002,7 @@ TEST(test_furnace_without_hopper_does_not_smelt) {
     ASSERT(!w.asteroids[frag].active);
     ASSERT_EQ_FLOAT(station_inventory_amount(
                         &w.stations[0], COMMODITY_FERRITE_INGOT),
-                    initial_ingots, 0.001f);
+                    initial_ingots + 8.0f, 0.001f);
     ASSERT(economy_count_exact_pod_units(&w, COMMODITY_FERRITE_INGOT) >=
            initial_pod_units + 8);
     ASSERT_EQ_INT((int)w.hopper_smelt_events, 0);
@@ -5203,6 +5225,7 @@ void register_economy_basic_tests(void) {
     RUN(test_market_buy_ignores_legacy_manifest_ingots);
     RUN(test_sell_towed_pod_transfers_whole_pod);
     RUN(test_station_production_yard_makes_frames);
+    RUN(test_station_production_does_not_drain_physical_stock_as_storage);
     RUN(test_station_production_beamworks_makes_modules);
     RUN(test_station_repair_cost_no_damage);
     RUN(test_station_repair_cost_with_damage);

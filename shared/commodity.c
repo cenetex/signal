@@ -204,12 +204,19 @@ float station_sell_price(const station_t* station, commodity_t commodity) {
     return base * (1.0f + deficit * deficit);
 }
 
-float station_inventory_amount(const station_t* station, commodity_t commodity) {
+float station_stored_inventory_amount(const station_t* station,
+                                      commodity_t commodity) {
     if (!station || commodity < 0 || commodity >= COMMODITY_COUNT) return 0.0f;
     if (commodity < COMMODITY_RAW_ORE_COUNT)
         return station->_inventory_cache[commodity];
     return (float)manifest_count_by_commodity(&station->manifest, commodity) +
            station->_finished_residue[commodity];
+}
+
+float station_inventory_amount(const station_t* station, commodity_t commodity) {
+    if (!station || commodity < 0 || commodity >= COMMODITY_COUNT) return 0.0f;
+    return station_stored_inventory_amount(station, commodity) +
+           station->_physical_inventory_cache[commodity];
 }
 
 /* Unit-aware variants: same dynamic stock curve as above, scaled by

@@ -72,12 +72,14 @@ void step_station_production(station_t* stations, int count, float dt) {
             rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
             produce = fminf(rate * dt, room);
 
-            primary_avail = station_inventory_amount(station, recipe.primary_input) /
+            primary_avail = station_stored_inventory_amount(
+                                station, recipe.primary_input) /
                             recipe.primary_units_per_batch;
             produce = fminf(produce, primary_avail);
             if (recipe.secondary_input < COMMODITY_COUNT) {
                 secondary_avail =
-                    station_inventory_amount(station, recipe.secondary_input) /
+                    station_stored_inventory_amount(
+                        station, recipe.secondary_input) /
                     recipe.secondary_units_per_batch;
                 produce = fminf(produce, secondary_avail);
             }

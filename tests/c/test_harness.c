@@ -253,7 +253,8 @@ world_t *setup_collision_world_heap(void) {
     return w;
 }
 
-int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
+static int test_setup_placed_scaffold_mode(
+    world_t *w, int *out_mod_idx, bool reset_to_supply_phase) {
     w->players[0].connected = true;
     player_init_ship(&w->players[0], w);
     w->players[0].docked = false;
@@ -272,6 +273,8 @@ int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
             w->stations[outpost].modules[i].build_progress = 1.0f;
     }
     rebuild_signal_chain(w);
+    if (!reset_to_supply_phase)
+        memset(w->contracts, 0, sizeof(w->contracts));
     int before = w->stations[outpost].module_count;
     vec2 ring1_near = v2_add(outpost_pos, v2(180.0f, 0.0f));
     int idx = spawn_scaffold(w, MODULE_FURNACE, ring1_near, 0);
@@ -279,7 +282,20 @@ int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
     for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
     if (w->stations[outpost].module_count != before + 1) return -1;
     *out_mod_idx = before;
+    if (reset_to_supply_phase) {
+        /* Supply-path tests exercise a bare, unprefabricated module. */
+        w->stations[outpost].modules[before].build_progress = 0.0f;
+    }
     return outpost;
+}
+
+int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
+    return test_setup_placed_scaffold_mode(w, out_mod_idx, true);
+}
+
+int test_setup_prefabricated_placed_scaffold(
+    world_t *w, int *out_mod_idx) {
+    return test_setup_placed_scaffold_mode(w, out_mod_idx, false);
 }
 
 int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds) {

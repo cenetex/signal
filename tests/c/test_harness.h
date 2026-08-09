@@ -330,6 +330,8 @@ void mining_find_best_claim(const uint8_t seed[32], const uint8_t player_pub[32]
 int test_place_outpost_via_tow(world_t *w, server_player_t *sp, vec2 pos);
 world_t *setup_collision_world_heap(void);
 int test_setup_placed_scaffold(world_t *w, int *out_mod_idx);
+int test_setup_prefabricated_placed_scaffold(
+    world_t *w, int *out_mod_idx);
 int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds);
 double econ_total_credits(const world_t *w);
 bool test_set_ship_finished_units(ship_t *ship, commodity_t c, int count,

@@ -4212,6 +4212,10 @@ static bool world_load_payload(
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++)
         delivery_ownership_refresh_projection(
             w, &w->delivery_shipments[i]);
+    /* Physical pod stock is derived and deliberately absent from the save.
+     * Rebuild it from the loaded custody/manifest state before any UI,
+     * pricing, replay digest, or automation can observe the world. */
+    world_refresh_station_physical_inventories(w);
     gossip_bootstrap_world_stations(w);
     *result = WORLD_LOAD_RESULT_OK;
     return true;

@@ -766,6 +766,10 @@ typedef struct {
     /* Fractional production/consumption below one addressable cargo unit.
      * Whole finished units always live in cargo_store.manifest. */
     float _finished_residue[COMMODITY_COUNT];
+    /* Derived, non-persisted count of cargo units physically held in pods
+     * under this station's custody.  Pod shells contribute one FRAME here.
+     * Rebuilt from world cargo pods; never mutate as inventory authority. */
+    float _physical_inventory_cache[COMMODITY_COUNT];
     uint32_t services;
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];

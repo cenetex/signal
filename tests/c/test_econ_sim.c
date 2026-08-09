@@ -81,7 +81,12 @@ static float test_station_market_pod_sell_quote(const station_t *st,
         quote += station_sell_price_unit(st, unit) *
                  mining_payout_multiplier((mining_grade_t)unit->grade);
     }
-    return quote;
+    if (pod->has_shell_frame) {
+        quote += station_sell_price_unit(st, &pod->shell_frame) *
+                 mining_payout_multiplier(
+                     (mining_grade_t)pod->shell_frame.grade);
+    }
+    return (float)llroundf(quote);
 }
 
 static void test_move_pod_past_station_charge_boundary(world_t *w,

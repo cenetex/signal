@@ -2365,6 +2365,35 @@ TEST(test_world_load_current_does_not_duplicate_starter_frame_pods) {
     remove(TMP("test_existing_starter_frames.sav"));
 }
 
+TEST(test_world_load_rebuilds_station_physical_inventory_cache) {
+    WORLD_HEAP source = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(source != NULL);
+    ASSERT(loaded != NULL);
+    world_reset(source);
+    world_reset(loaded);
+
+    float expected[MAX_STATIONS];
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        expected[s] =
+            source->stations[s]
+                ._physical_inventory_cache[COMMODITY_FRAME];
+        loaded->stations[s]
+            ._physical_inventory_cache[COMMODITY_FRAME] = 777.0f;
+    }
+
+    ASSERT(world_save(source, TMP("test_physical_inventory_cache.sav")));
+    ASSERT(world_load(
+        loaded, TMP("test_physical_inventory_cache.sav")));
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        ASSERT_EQ_FLOAT(
+            loaded->stations[s]
+                ._physical_inventory_cache[COMMODITY_FRAME],
+            expected[s], 0.001f);
+    }
+
+}
+
 TEST(test_world_load_v71_backfills_missing_starter_laser_modules) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -4249,6 +4278,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_save_load_preserves_cargo_pod_charge_anchor);
     RUN(test_world_load_v70_backfills_missing_starter_frame_pods);
     RUN(test_world_load_current_does_not_duplicate_starter_frame_pods);
+    RUN(test_world_load_rebuilds_station_physical_inventory_cache);
     RUN(test_world_load_v71_backfills_missing_starter_laser_modules);
     RUN(test_world_load_v71_does_not_duplicate_starter_laser_modules);
     RUN(test_world_load_current_backfills_missing_starter_refit_order);

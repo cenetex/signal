@@ -445,11 +445,23 @@ static int station_find_output_pod_for_module(world_t *w,
                 w, station_idx, pod))
             continue;
         if (cargo_pod_has_player_tractor(pod)) continue;
-        if (cargo_pod_is_tractored_by_module(pod, station_idx, module_idx) ||
-            (output_hopper >= 0 &&
-             cargo_pod_is_tractored_by_module(pod, station_idx,
-                                               output_hopper)))
-            return i;
+        if (cargo_pod_is_tractored_by_module(
+                pod, station_idx, module_idx)) {
+            if (cargo_pod_module_tractor_arrived(
+                    w, pod, station_idx, module_idx)) {
+                return i;
+            }
+            continue;
+        }
+        if (output_hopper >= 0 &&
+            cargo_pod_is_tractored_by_module(
+                pod, station_idx, output_hopper)) {
+            if (cargo_pod_module_tractor_arrived(
+                    w, pod, station_idx, output_hopper)) {
+                return i;
+            }
+            continue;
+        }
         if (cargo_pod_has_module_tractor(pod)) continue;
 
         float d = v2_dist_sq(pod->pos, module_pos);
@@ -1076,14 +1088,16 @@ void sim_step_station_production(world_t *w, float dt) {
             bool secondary_ready = true;
             if (recipe.secondary_input < COMMODITY_COUNT) {
                 secondary_ready =
-                    station_inventory_amount(st, recipe.secondary_input) + FLOAT_EPSILON >=
+                    station_stored_inventory_amount(
+                        st, recipe.secondary_input) + FLOAT_EPSILON >=
                     recipe.secondary_units_per_batch;
             }
             bool buffer_ready =
                 st->modules[m].input_buffer + FLOAT_EPSILON >= recipe.primary_units_per_batch &&
                 secondary_ready;
             bool inventory_ready =
-                station_inventory_amount(st, input_com) + FLOAT_EPSILON >=
+                station_stored_inventory_amount(st, input_com) +
+                    FLOAT_EPSILON >=
                     recipe.primary_units_per_batch &&
                 secondary_ready;
             if (!pod_ready && !buffer_ready &&
@@ -1113,12 +1127,14 @@ void sim_step_station_production(world_t *w, float dt) {
                 bool from_buffer =
                     st->modules[m].input_buffer + FLOAT_EPSILON >= recipe.primary_units_per_batch;
                 if (!from_buffer &&
-                    station_inventory_amount(st, input_com) + FLOAT_EPSILON <
+                    station_stored_inventory_amount(st, input_com) +
+                        FLOAT_EPSILON <
                     recipe.primary_units_per_batch) {
                     break;
                 }
                 if (recipe.secondary_input < COMMODITY_COUNT &&
-                    station_inventory_amount(st, recipe.secondary_input) + FLOAT_EPSILON <
+                    station_stored_inventory_amount(
+                        st, recipe.secondary_input) + FLOAT_EPSILON <
                     recipe.secondary_units_per_batch) {
                     break;
                 }
@@ -1872,7 +1888,8 @@ void step_module_flow(world_t *w, float dt) {
                     }
                     {
                         commodity_t com = tag;
-                        float stored = station_inventory_amount(st, com);
+                        float stored =
+                            station_stored_inventory_amount(st, com);
                         if (stored <= 0.1f) continue;
                         /* Check if any module on this station actually wants this */
                         bool wanted = false;
@@ -1927,7 +1944,8 @@ void step_module_flow(world_t *w, float dt) {
             float pull = best_rate * dt;
             if (pull > st->modules[p].output_buffer) pull = st->modules[p].output_buffer;
             if (producer_kind == MODULE_KIND_STORAGE) {
-                float stored = station_inventory_amount(st, output);
+                float stored =
+                    station_stored_inventory_amount(st, output);
                 if (pull > stored) pull = stored;
             }
             if (pull > room) pull = room;
