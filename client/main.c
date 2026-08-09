@@ -4220,8 +4220,8 @@ int signal_smoke_remote_towable_interp_check(void) {
 
         interpolate_world_for_render();
         loopback_packet_path_ok =
-            fabsf(g.world.asteroids[7].pos.x) < 0.001f &&
-            fabsf(g.world.asteroids[7].pos.y) < 0.001f &&
+            fabsf(g.world.asteroids[7].pos.x - 100.0f) < 0.001f &&
+            fabsf(g.world.asteroids[7].pos.y - 25.0f) < 0.001f &&
             fabsf(g.asteroid_interp.curr[7].pos.x) < 0.001f &&
             g.asteroid_interp.elapsed[7] > 0.0f;
     }
