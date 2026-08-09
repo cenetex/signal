@@ -973,8 +973,10 @@ static bool persistence_recovery_invariant_failed = false;
 
 /* Truncate the build SHA (GIT_HASH at compile time, "dev" otherwise) to
  * 8 hex chars and parse as u32 for the leaderboard's build_id column.
- * The same value is emitted as a BUILD_INFO operator post at startup so
- * the chain replay walker can tag historical deaths with their build. */
+ * The same value is emitted as a BUILD_INFO operator post when a fresh
+ * world's chain is created so the replay walker can tag historical deaths
+ * with their build. Resumed worlds must not append boot-only records before
+ * a matching persistence generation exists. */
 static uint32_t signal_build_id_u32(void) {
 #ifdef GIT_HASH
     const char *hash = GIT_HASH;
@@ -8043,19 +8045,19 @@ static bool load_world_state(void) {
         printf("[server] replayed %d highscore(s) from chain log\n",
                highscores.count);
 
-    /* Anchor the current world's identity in every station chain. The
-     * BUILD_INFO + WORLD_INFO operator posts let replay/analyzer walks
-     * tag subsequent events with this world's belt_seed, world_seq, and
-     * build SHA. emit_world_identity_anchor is below. */
-    emit_world_identity_anchor();
+    /* Anchor a new world's identity in every station chain. A resumed world
+     * already has its identity cursor in the signed history. Appending two
+     * boot-only records on every restart advances the durable logs ahead of
+     * the selected world/player generation; a second restart then correctly
+     * blocks all station appends because those records have no matching
+     * snapshot. Keep genesis authoring on the fresh-world path only. */
+    if (fresh_world) emit_world_identity_anchor();
     return true;
 }
 
-/* Forward-declared above load_world_state but defined here so it can
- * use chain_log_emit + the static GIT_HASH constant. Idempotent: emits
- * one BUILD_INFO and one WORLD_INFO per station every server start
- * (the chain log grows by 2 events per station per restart, which is
- * fine and gives every station log its own world cursor). */
+/* Forward-declared above load_world_state but defined here so it can use
+ * chain_log_emit + the static GIT_HASH constant. Called once when a fresh
+ * world's chain is created; resumed worlds reuse their existing cursor. */
 static void emit_world_identity_anchor_for_station(station_t *st) {
     if (!st || !station_exists(st)) return;
 #ifdef GIT_HASH
