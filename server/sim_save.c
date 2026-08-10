@@ -6190,7 +6190,8 @@ static bool legacy_recovery_save_snapshot_valid(
             LEGACY_SHIP_HOLD_INGOTS_MAX) {
         return false;
     }
-    for (int commodity = 0; commodity < COMMODITY_COUNT; commodity++) {
+    for (int commodity = 0;
+         commodity < SAVE_V82_COMMODITY_COUNT; commodity++) {
         if (!isfinite(ship->cargo[commodity]) ||
             ship->cargo[commodity] < 0.0f ||
             ship->cargo[commodity] >
