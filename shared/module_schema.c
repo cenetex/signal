@@ -143,6 +143,20 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .prerequisite = MODULE_FRAME_PRESS, /* tier 4 — needs frames */
         .pair_intake = MODULE_HOPPER,
     },
+    [MODULE_ENGINE_FAB] = {
+        .name = "Engine Fab",
+        .kind = MODULE_KIND_PRODUCER,
+        .input = COMMODITY_FRAME,
+        .output = COMMODITY_ENGINE_MODULE,
+        .rate = 0.5f, .buffer_capacity = 12.0f,
+        .build_material = 32.0f, .build_commodity = COMMODITY_CUPRITE_INGOT,
+        .order_fee = 125,
+        .services = 0,
+        .valid_rings = MODULE_RINGS_INDUSTRIAL,
+        .variant_count = 0,
+        .prerequisite = MODULE_FURNACE,
+        .pair_intake = MODULE_HOPPER,
+    },
 };
 
 /* ----- Lookup helpers ----- */
@@ -206,11 +220,18 @@ module_inputs_t module_required_inputs(module_type_t type) {
         r.commodities[1] = COMMODITY_FRAME;
         r.count = 2;
         break;
+    case MODULE_ENGINE_FAB:
+        r.commodities[0] = COMMODITY_FRAME;
+        r.commodities[1] = COMMODITY_CUPRITE_INGOT;
+        r.commodities[2] = COMMODITY_CRYSTAL_INGOT;
+        r.count = 3;
+        break;
     case MODULE_SHIPYARD:
         r.commodities[0] = COMMODITY_FRAME;
         r.commodities[1] = COMMODITY_LASER_MODULE;
         r.commodities[2] = COMMODITY_TRACTOR_MODULE;
-        r.count = 3;
+        r.commodities[3] = COMMODITY_ENGINE_MODULE;
+        r.count = 4;
         break;
     default:
         break;
@@ -238,6 +259,7 @@ commodity_t module_required_output(module_type_t type) {
     case MODULE_FRAME_PRESS:  return COMMODITY_FRAME;
     case MODULE_LASER_FAB:    return COMMODITY_LASER_MODULE;
     case MODULE_TRACTOR_FAB:  return COMMODITY_TRACTOR_MODULE;
+    case MODULE_ENGINE_FAB:   return COMMODITY_ENGINE_MODULE;
     /* SHIPYARD output is a physical scaffold body, not a commodity. */
     default: return COMMODITY_COUNT;
     }

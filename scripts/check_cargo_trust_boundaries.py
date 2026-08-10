@@ -41,7 +41,10 @@ COMPOSED_EVALUATOR_MINIMUMS = {
     "server/sim_ai.c": 5,
     "server/cargo_receipt_issue.c": 2,
 }
-COMPOSED_EVALUATOR = "cargo_receipt_evaluate_at_station"
+COMPOSED_EVALUATORS = (
+    "cargo_receipt_evaluate_at_station",
+    "cargo_receipt_evaluate_physical_origin_at_station",
+)
 
 REQUIRED_APPEND_APIS = (
     "chain_log_emit_batch",
@@ -214,7 +217,10 @@ def audit_sources(sources: Mapping[str, str]) -> list[str]:
         if source is None:
             findings.append(f"{path}: audited mutation module is missing")
             continue
-        count = len(call_offsets(source, COMPOSED_EVALUATOR))
+        count = sum(
+            len(call_offsets(source, evaluator))
+            for evaluator in COMPOSED_EVALUATORS
+        )
         if count < minimum:
             findings.append(
                 f"{path}: composed evaluator call count {count} is below "

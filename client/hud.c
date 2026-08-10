@@ -529,7 +529,8 @@ static const char *hud_module_consequence(const station_t *st, int module_idx) {
     }
     case MODULE_FRAME_PRESS:
     case MODULE_LASER_FAB:
-    case MODULE_TRACTOR_FAB: {
+    case MODULE_TRACTOR_FAB:
+    case MODULE_ENGINE_FAB: {
         module_inputs_t req = module_instance_required_inputs(m);
         commodity_t out = module_instance_output(m);
         if (req.count <= 0 || out >= COMMODITY_COUNT) break;
@@ -545,7 +546,7 @@ static const char *hud_module_consequence(const station_t *st, int module_idx) {
     }
     case MODULE_SHIPYARD:
         snprintf(label, sizeof(label),
-                 "Frames + Laser Modules + Tractor Modules -> ships/kits");
+                 "Frames + Engines + tools -> ships; tools -> kits");
         return label;
     case MODULE_HOPPER:
         if ((commodity_t)m->commodity < COMMODITY_COUNT) {

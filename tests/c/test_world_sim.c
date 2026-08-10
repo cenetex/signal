@@ -3468,8 +3468,19 @@ TEST(test_dead_neural_worker_auto_respawns) {
     world_reset(w);
     memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
     station_t *kepler = &w->stations[1];
-    ASSERT(station_finished_mint(kepler, COMMODITY_FRAME, 2, NULL) == 2);
-    ASSERT(station_finished_mint(kepler, COMMODITY_TRACTOR_MODULE, 1, NULL) == 1);
+    shipyard_bill_t bill = {0};
+    ASSERT(shipyard_hull_bill(HULL_CLASS_DRONE_TRACTOR, &bill));
+    ASSERT(station_finished_mint(
+        kepler, COMMODITY_FRAME, bill.units[COMMODITY_FRAME], NULL) ==
+        bill.units[COMMODITY_FRAME]);
+    ASSERT(station_finished_mint(
+        kepler, COMMODITY_TRACTOR_MODULE,
+        bill.units[COMMODITY_TRACTOR_MODULE], NULL) ==
+        bill.units[COMMODITY_TRACTOR_MODULE]);
+    ASSERT(station_finished_mint(
+        kepler, COMMODITY_ENGINE_MODULE,
+        bill.units[COMMODITY_ENGINE_MODULE], NULL) ==
+        bill.units[COMMODITY_ENGINE_MODULE]);
     ASSERT(test_anchor_station_legacy_cargo(w, 1));
     /* Find the Kepler-homed tug. */
     int target_slot = -1;

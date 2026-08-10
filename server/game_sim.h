@@ -1359,6 +1359,13 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
  * picker surfaces the seed stock. */
 void world_seed_station_manifests(world_t *w);
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
+typedef struct {
+    int units[COMMODITY_COUNT];
+} shipyard_bill_t;
+
+bool shipyard_hull_bill(hull_class_t hull_class, shipyard_bill_t *out_bill);
+/* Compatibility projection for callers that only display the legacy three
+ * materials. New commission code must use shipyard_hull_bill(). */
 bool shipyard_hull_cost(hull_class_t hull_class, int *out_frames,
                         int *out_lasers, int *out_tractors);
 bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class);
@@ -1477,6 +1484,9 @@ typedef enum {
          : (uint64_t)LONG_MAX)
 
 bool world_save(const world_t *w, const char *path);
+/* Deep, allocation-independent copy used by background persistence. */
+world_t *world_snapshot_clone_create(const world_t *source);
+void world_snapshot_clone_destroy(world_t *snapshot);
 /*
  * Both entry points synchronously decode through the same seekable-stream
  * implementation. world_load_bytes borrows `bytes` only for the duration of
@@ -1605,10 +1615,14 @@ void ledger_record_dock(station_t *st, const uint8_t pubkey[32], uint64_t tick);
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
 const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);
 void signal_chain_set_disk_enabled(bool enabled);
+#ifdef SIGNAL_SAVE_TESTING
+void signal_chain_test_set_write_failure(bool enabled);
+#endif
 
 /* Replay the on-disk hash chain into the world's signal_channel ring
  * buffer at server boot. Idempotent — safe to call once after world
- * init. Reads chain dir entries written by signal_channel_post. */
+ * init. Reads the authenticated bounded tail written by
+ * signal_channel_post. */
 void signal_chain_load(world_t *w);
 /* Maps a producer commodity to the module type that fabricates it.
  * Returns MODULE_COUNT for raw ore / unknown inputs. Test-exposed; the
@@ -1627,14 +1641,18 @@ void activate_outpost(world_t *w, int station_idx);
 /* Cargo-pod module tractor tuning. Economic custody does not create a
  * long-range physical beam: docks and hoppers both obey their real reach. */
 #define CARGO_POD_DOCK_TRACTOR_RANGE (HOPPER_PULL_RANGE * 1.65f)
+#define CARGO_POD_STATION_TRANSFER_RANGE (STATION_RING_RADIUS[3] * 2.25f)
+#define CARGO_POD_SECURITY_HOLD_SECONDS 0.25f
 static inline tractor_beam_t cargo_pod_module_tractor_beam(float range) {
     return tractor_tow_beam(range, 0.0f);
 }
 
 static inline float cargo_pod_module_tractor_range(module_type_t module_type) {
-    return module_type == MODULE_DOCK
-        ? CARGO_POD_DOCK_TRACTOR_RANGE
-        : HOPPER_PULL_RANGE;
+    if (module_type == MODULE_DOCK) return CARGO_POD_DOCK_TRACTOR_RANGE;
+    module_kind_t kind = module_kind(module_type);
+    if (kind == MODULE_KIND_PRODUCER || kind == MODULE_KIND_SHIPYARD)
+        return CARGO_POD_STATION_TRANSFER_RANGE;
+    return HOPPER_PULL_RANGE;
 }
 
 static inline float cargo_pod_module_tractor_range_for_pod(

@@ -1191,6 +1191,8 @@ const char *module_consequence_label(module_type_t type) {
         return "Laser fab online -- laser modules can be built here.";
     case MODULE_TRACTOR_FAB:
         return "Tractor fab online -- tractor modules can be built here.";
+    case MODULE_ENGINE_FAB:
+        return "Engine fab online -- propulsion modules can be built here.";
     case MODULE_SHIPYARD:
         return "Shipyard online -- ships and scaffold kits can be ordered.";
     default:
@@ -2282,6 +2284,7 @@ static void render_world(void) {
                 case MODULE_FRAME_PRESS: sell_c = COMMODITY_FRAME; break;
                 case MODULE_LASER_FAB:   sell_c = COMMODITY_LASER_MODULE; break;
                 case MODULE_TRACTOR_FAB: sell_c = COMMODITY_TRACTOR_MODULE; break;
+                case MODULE_ENGINE_FAB:  sell_c = COMMODITY_ENGINE_MODULE; break;
                 default: break;
             }
             if ((int)sell_c >= 0) {
@@ -2713,10 +2716,6 @@ static void advance_simulation_frame(float frame_dt) {
         sim_step(SIM_DT);
         g.runtime.accumulator -= SIM_DT;
         sim_steps++;
-    }
-
-    if (g.runtime.accumulator >= SIM_DT) {
-        g.runtime.accumulator = 0.0f;
     }
 }
 
@@ -4813,8 +4812,9 @@ static void legacy_recovery_ui_update_adapter(void) {
 }
 
 static void frame(void) {
-    float max_frame_dt = SIM_DT * (float)MAX_SIM_STEPS_PER_FRAME;
-    float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
+    float frame_dt = (float)sapp_frame_duration();
+    if (!isfinite(frame_dt) || frame_dt < 0.0f)
+        frame_dt = 0.0f;
     g.net_time += frame_dt;
 
     /* --- Network authority: poll incoming and send input before sim. --- */

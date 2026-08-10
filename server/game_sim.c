@@ -1,3 +1,7 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 /*
  * game_sim.c -- Game simulation for Signal Space Miner.
  * Used by both the authoritative server and the client (local sim).
@@ -62,11 +66,15 @@
 #include "contract_ownership.h"
 #include "ship_birth_reservation.h"
 #include "net_protocol.h"
+#if defined(SIGNAL_SERVER_PERSISTENCE)
+#include "persistence_io.h"
+#endif
 
 #include "chain_log.h"         /* per-station signed event log (#479 C) */
 #include "protocol.h"      /* NET_MSG_SIGNED_ACTION + signed_action_type_t */
 #include "wire_codec.h"
 #include <math.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -3961,6 +3969,10 @@ static bool cargo_pod_set_station_dock_custody(world_t *w,
 
     world_cargo_pod_clear_tractor(w, pod_idx);
     cargo_pod_set_station_custody(pod, station_idx);
+    /* A perimeter intake keeps the pod visibly parked while the station
+     * performs its provenance/trust check. Internal producer towing cannot
+     * begin in the same tick as a player-to-station custody transfer. */
+    pod->age = 0.0f;
     if (!world_cargo_pod_set_module_tractor(
             w, pod_idx, station_idx, dock_idx)) return false;
 
@@ -4000,6 +4012,7 @@ bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod) {
     tractor_binding_t tractor = pod->tractor;
     uint8_t tow_hardpoint_tag =
         pod->tow_hardpoint_tag;
+    int custody_station = cargo_pod_custody_station(pod);
 
     memset(pod, 0, sizeof(*pod));
     pod->active = true;
@@ -4021,6 +4034,8 @@ bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod) {
     pod->tractor = tractor;
     pod->tow_hardpoint_tag =
         tow_hardpoint_tag;
+    if (custody_station >= 0)
+        cargo_pod_set_station_custody(pod, custody_station);
     return true;
 }
 
@@ -8211,6 +8226,22 @@ static bool station_module_can_tractor_shell_frame_pod(const station_t *st,
     return schema && schema->kind == MODULE_KIND_PRODUCER;
 }
 
+static bool station_shipyard_can_tractor_input_pod(
+    const station_t *st, int module_idx, const cargo_pod_t *pod) {
+    if (!st || !pod || pod->commodity >= COMMODITY_COUNT ||
+        module_idx < 0 || module_idx >= st->module_count ||
+        module_idx >= MAX_MODULES_PER_STATION ||
+        !cargo_pod_has_exact_manifest(pod, pod->commodity)) {
+        return false;
+    }
+    const station_module_t *module = &st->modules[module_idx];
+    if (module->scaffold || module->type != MODULE_SHIPYARD) return false;
+    module_inputs_t required = module_required_inputs(MODULE_SHIPYARD);
+    for (int i = 0; i < required.count; i++)
+        if (required.commodities[i] == pod->commodity) return true;
+    return false;
+}
+
 static float point_segment_dist_sq(vec2 p, vec2 a, vec2 b);
 
 static bool station_module_input_hopper_for_pod(const station_t *st,
@@ -8246,7 +8277,7 @@ static bool station_module_input_hopper_for_pod(const station_t *st,
     vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
     int best_hopper = -1;
     vec2 best_hopper_pos = module_pos;
-    float best_d = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    float best_d = 1e18f;
     for (int h = 0; h < st->module_count && h < MAX_MODULES_PER_STATION; h++) {
         const station_module_t *hopper = &st->modules[h];
         if (hopper->scaffold || hopper->type != MODULE_HOPPER ||
@@ -8256,7 +8287,10 @@ static bool station_module_input_hopper_for_pod(const station_t *st,
         vec2 hopper_pos = module_world_pos_ring(st, hopper->ring,
                                                 hopper->slot);
         float d = v2_dist_sq(module_pos, hopper_pos);
-        if (d > HOPPER_PULL_RANGE * HOPPER_PULL_RANGE) continue;
+        if (schema->kind == MODULE_KIND_SHIPYARD &&
+            d > HOPPER_PULL_RANGE * HOPPER_PULL_RANGE) {
+            continue;
+        }
         if (best_hopper < 0 || d < best_d) {
             best_d = d;
             best_hopper = h;
@@ -8570,15 +8604,24 @@ static bool cargo_pod_find_module_input_module(const world_t *w,
                                                      &hopper_idx, NULL))
                 continue;
             const station_module_t *hopper = &st->modules[hopper_idx];
-            vec2 hopper_pos = station_module_cargo_mouth(st, hopper, pod);
-            float d = v2_dist_sq(pod->pos, hopper_pos);
+            const station_module_t *module = &st->modules[m];
+            vec2 hopper_pos = station_module_cargo_mouth(
+                st, hopper, pod);
+            vec2 module_pos = station_module_cargo_mouth(
+                st, module, pod);
+            float hopper_d = v2_dist_sq(pod->pos, hopper_pos);
+            float module_d = v2_dist_sq(pod->pos, module_pos);
+            int owner_module = hopper_d <= module_d
+                ? hopper_idx : m;
+            float d = hopper_d <= module_d
+                ? hopper_d : module_d;
             if (d > acquire_sq) continue;
             float score = cargo_pod_module_candidate_score(
-                w, s, hopper_idx, d, acquire_sq);
+                w, s, owner_module, d, acquire_sq);
             if (score <= best_score) {
                 best_score = score;
                 best_station = s;
-                best_module = hopper_idx;
+                best_module = owner_module;
             }
         }
     }
@@ -8911,6 +8954,8 @@ static bool cargo_pod_current_module_tractor_link(
                        dock_owner ||
                        station_module_input_hopper_for_pod(st, module_idx, pod,
                                                            NULL, NULL) ||
+                       station_shipyard_can_tractor_input_pod(
+                           st, module_idx, pod) ||
                        station_producer_can_tractor_output_pod(st, module_idx, pod) ||
                        station_module_can_tractor_shell_frame_pod(st, module_idx, pod);
     bool station_can_hold = station_is_active(st) ||
@@ -9102,6 +9147,81 @@ static bool station_player_buy_intent_targets_pod(const world_t *w,
     return false;
 }
 
+static bool station_has_routed_recipe_input(
+    const world_t *w, int station_idx, commodity_t commodity,
+    const cargo_pod_t *exclude) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        commodity >= COMMODITY_COUNT) {
+        return false;
+    }
+    const station_t *st = &w->stations[station_idx];
+    if (station_stored_inventory_amount(st, commodity) >= 1.0f)
+        return true;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *candidate = &w->cargo_pods[i];
+        int owner_station = -1;
+        int owner_module = -1;
+        if (candidate == exclude ||
+            !cargo_pod_has_exact_manifest(candidate, commodity) ||
+            !cargo_pod_module_tractor_indices(
+                candidate, &owner_station, &owner_module) ||
+            owner_station != station_idx) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool cargo_pod_find_ready_producer_input(
+    const world_t *w, int station_idx, const cargo_pod_t *pod,
+    int *out_module) {
+    if (!w || !pod || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        pod->commodity >= COMMODITY_COUNT) {
+        return false;
+    }
+    const station_t *st = &w->stations[station_idx];
+    int best_module = -1;
+    int best_score = -1;
+    for (int m = 0; m < st->module_count &&
+                    m < MAX_MODULES_PER_STATION; m++) {
+        const station_module_t *module = &st->modules[m];
+        producer_recipe_t recipe = {0};
+        if (module->scaffold || module->type == MODULE_FURNACE ||
+            !producer_recipe_for_module(module->type, &recipe) ||
+            recipe.input_count <= 1) {
+            continue;
+        }
+        bool wants_pod = false;
+        bool other_inputs_ready = true;
+        int ready_others = 0;
+        for (size_t input = 0; input < recipe.input_count; input++) {
+            if (recipe.inputs[input] == pod->commodity && !wants_pod) {
+                wants_pod = true;
+                continue;
+            }
+            if (!station_has_routed_recipe_input(
+                    w, station_idx, recipe.inputs[input], pod)) {
+                other_inputs_ready = false;
+                break;
+            }
+            ready_others++;
+        }
+        if (!wants_pod || !other_inputs_ready) continue;
+        /* Keep a complete multi-input batch together. A frame + cuprite +
+         * crystal set therefore routes to Engine Fab before a two-input fab
+         * can steal one member and strand the rest. */
+        int score = ready_others * 100 + (int)recipe.input_count;
+        if (score > best_score) {
+            best_score = score;
+            best_module = m;
+        }
+    }
+    if (best_module < 0) return false;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
 static bool cargo_pod_try_handoff_from_station_module(world_t *w,
                                                       int pod_idx,
                                                       cargo_pod_t *pod) {
@@ -9119,17 +9239,25 @@ static bool cargo_pod_try_handoff_from_station_module(world_t *w,
         st, module_idx, pod);
     bool producer_owner = station_producer_can_tractor_output_pod(
         st, module_idx, pod);
-    if (!dock_owner && !producer_owner)
+    bool hopper_owner = station_hopper_can_tractor_pod(
+        st, module_idx, pod);
+    if (!dock_owner && !producer_owner && !hopper_owner)
         return false;
     if (dock_owner &&
         station_player_buy_intent_targets_pod(w, station_idx, pod_idx, pod))
         return false;
-    if (!cargo_pod_module_tractor_arrived(w, pod, station_idx, module_idx))
-        return false;
-    if (!cargo_pod_find_station_work_module(w, station_idx, pod,
-                                            &best_module)) {
+    if (hopper_owner &&
+        cargo_pod_custody_station(pod) == station_idx &&
+        pod->age < CARGO_POD_SECURITY_HOLD_SECONDS) {
         return false;
     }
+    if (!cargo_pod_module_tractor_arrived(w, pod, station_idx, module_idx))
+        return false;
+    if (hopper_owner) {
+        if (!cargo_pod_find_ready_producer_input(
+                w, station_idx, pod, &best_module)) return false;
+    } else if (!cargo_pod_find_station_work_module(
+                   w, station_idx, pod, &best_module)) return false;
     if (best_module < 0 || best_module == module_idx ||
         best_module >= st->module_count ||
         best_module >= MAX_MODULES_PER_STATION) {
@@ -11405,6 +11533,9 @@ static bool heritage_recipe_for_commodity(commodity_t c, recipe_id_t *out) {
         case COMMODITY_REPAIR_KIT:
             *out = RECIPE_REPAIR_KIT_FAB;
             return true;
+        case COMMODITY_ENGINE_MODULE:
+            *out = RECIPE_ENGINE_BASIC;
+            return true;
         default:
             return false;
     }
@@ -11867,8 +11998,12 @@ static void step_contracts(world_t *w, float dt) {
         if (!need.active && !has_production_contract) {
             struct { commodity_t ingot; bool needed; } checks[] = {
                 { COMMODITY_FERRITE_INGOT, station_has_module(st, MODULE_FRAME_PRESS) },
-                { COMMODITY_CRYSTAL_INGOT, station_has_module(st, MODULE_LASER_FAB) },
-                { COMMODITY_CUPRITE_INGOT, station_has_module(st, MODULE_TRACTOR_FAB) },
+                { COMMODITY_CRYSTAL_INGOT,
+                  station_has_module(st, MODULE_LASER_FAB) ||
+                  station_has_module(st, MODULE_ENGINE_FAB) },
+                { COMMODITY_CUPRITE_INGOT,
+                  station_has_module(st, MODULE_TRACTOR_FAB) ||
+                  station_has_module(st, MODULE_ENGINE_FAB) },
             };
             float worst_deficit = 0.0f;
             int worst_idx = -1;
@@ -11931,10 +12066,11 @@ static void step_contracts(world_t *w, float dt) {
                 { COMMODITY_FRAME,          MODULE_FRAME_PRESS  },
                 { COMMODITY_LASER_MODULE,   MODULE_LASER_FAB    },
                 { COMMODITY_TRACTOR_MODULE, MODULE_TRACTOR_FAB  },
+                { COMMODITY_ENGINE_MODULE,  MODULE_ENGINE_FAB   },
             };
             float worst_deficit = 0.0f;
             int   worst_idx = -1;
-            for (int j = 0; j < 3; j++) {
+            for (int j = 0; j < 4; j++) {
                 if (station_has_module(st, kit_inputs[j].producer)) continue;
                 station_supply_need_t supply = station_supply_need_for(
                     st, kit_inputs[j].c);
@@ -12032,6 +12168,7 @@ module_type_t producer_module_for_commodity(commodity_t c) {
         case COMMODITY_FERRITE_INGOT:
         case COMMODITY_CUPRITE_INGOT:
         case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE;
+        case COMMODITY_ENGINE_MODULE: return MODULE_ENGINE_FAB;
         default:                      return MODULE_COUNT;
     }
 }
@@ -12104,53 +12241,24 @@ bool cargo_pod_take_manifest_unit(cargo_pod_t *pod,
     return true;
 }
 
-static bool shipyard_hopper_serves_yard(const station_t *st,
-                                        int hopper_idx,
-                                        commodity_t material,
-                                        int specific_yard_idx) {
-    if (!st || hopper_idx < 0 || hopper_idx >= st->module_count ||
-        material >= COMMODITY_COUNT) {
-        return false;
-    }
-    const station_module_t *hopper = &st->modules[hopper_idx];
-    if (hopper->scaffold || hopper->type != MODULE_HOPPER) return false;
-    if ((commodity_t)hopper->commodity != material) return false;
-    vec2 hopper_pos = module_world_pos_ring(st, hopper->ring, hopper->slot);
-    float reach_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
-    for (int i = 0; i < st->module_count; i++) {
-        if (specific_yard_idx >= 0 && i != specific_yard_idx) continue;
-        const station_module_t *yard = &st->modules[i];
-        if (yard->scaffold || yard->type != MODULE_SHIPYARD) continue;
-        module_inputs_t req = module_required_inputs(MODULE_SHIPYARD);
-        bool accepts = false;
-        for (int r = 0; r < req.count; r++) {
-            if (req.commodities[r] == material) {
-                accepts = true;
-                break;
-            }
-        }
-        if (!accepts) continue;
-        vec2 yard_pos = module_world_pos_ring(st, yard->ring, yard->slot);
-        if (v2_dist_sq(hopper_pos, yard_pos) <= reach_sq)
-            return true;
-    }
-    return false;
-}
-
 static bool shipyard_chainless_unit_trusted(const world_t *w,
                                             int station_idx,
+                                            const cargo_pod_t *pod,
                                             const cargo_unit_t *unit) {
     if (!w || !unit || station_idx < 0 ||
         station_idx >= w->station_count ||
-        station_idx >= MAX_STATIONS ||
-        unit->origin_station != (uint8_t)station_idx) {
+        station_idx >= MAX_STATIONS || !pod) {
+        return false;
+    }
+    if (unit->origin_station != (uint8_t)station_idx &&
+        cargo_pod_custody_station(pod) != station_idx) {
         return false;
     }
     cargo_receipt_station_evaluation_t evaluated =
-        cargo_receipt_evaluate_at_station(w, station_idx, unit, NULL);
+        cargo_receipt_evaluate_physical_origin_at_station(
+            w, station_idx, unit);
     return evaluated.accepted &&
-           evaluated.local_origin_without_receipt &&
-           evaluated.origin_station == station_idx;
+           evaluated.origin_station == (int)unit->origin_station;
 }
 
 static bool shipyard_pod_material_trusted(const world_t *w,
@@ -12165,13 +12273,14 @@ static bool shipyard_pod_material_trusted(const world_t *w,
     }
     for (uint16_t i = 0; i < pod->manifest_count; i++) {
         if (!shipyard_chainless_unit_trusted(
-                w, station_idx, &pod->manifest_units[i])) {
+                w, station_idx, pod,
+                &pod->manifest_units[i])) {
             return false;
         }
     }
     return !pod->has_shell_frame ||
            shipyard_chainless_unit_trusted(
-               w, station_idx, &pod->shell_frame);
+               w, station_idx, pod, &pod->shell_frame);
 }
 
 static bool emit_shipyard_construction_contributions(
@@ -12284,11 +12393,17 @@ static bool shipyard_material_pod_staged_at_hopper(const world_t *w,
                                                    int yard_idx,
                                                    bool allow_player_tow) {
     if (!w || !st || !pod || material >= COMMODITY_COUNT) return false;
+    bool arrived_at_yard = yard_idx >= 0 &&
+        yard_idx < st->module_count &&
+        cargo_pod_is_tractored_by_module(
+            pod, station_idx, yard_idx) &&
+        cargo_pod_module_tractor_arrived(
+            w, pod, station_idx, yard_idx);
+    if (arrived_at_yard) return true;
     for (int i = 0; i < st->module_count; i++) {
         const station_module_t *hopper = &st->modules[i];
         if (hopper->scaffold || hopper->type != MODULE_HOPPER) continue;
         if ((commodity_t)hopper->commodity != material) continue;
-        if (!shipyard_hopper_serves_yard(st, i, material, yard_idx)) continue;
         if (cargo_pod_is_tractored_by_module(pod, station_idx, i)) {
             return cargo_pod_module_tractor_arrived(
                 w, pod, station_idx, i);
@@ -12977,27 +13092,42 @@ static bool ship_birth_assembly_consume(world_t *w, int station_idx,
     return true;
 }
 
+bool shipyard_hull_bill(hull_class_t hull_class, shipyard_bill_t *out_bill) {
+    if (!out_bill || (unsigned)hull_class >= HULL_CLASS_COUNT) return false;
+    cell_graph_t graph = {0};
+    if (!cell_graph_authored(ship_cell_layout_kind(hull_class), &graph))
+        return false;
+    cell_matter_cost_t matter = cell_graph_matter_cost(&graph);
+    memset(out_bill, 0, sizeof(*out_bill));
+    out_bill->units[COMMODITY_FRAME] = matter.struts;
+    out_bill->units[COMMODITY_ENGINE_MODULE] =
+        cell_graph_role_count(&graph, CELL_ROLE_ENGINE);
+    out_bill->units[COMMODITY_LASER_MODULE] =
+        cell_graph_role_count(&graph, CELL_ROLE_WEAPON);
+    out_bill->units[COMMODITY_TRACTOR_MODULE] =
+        cell_graph_role_count(&graph, CELL_ROLE_TOW);
+    return true;
+}
+
 bool shipyard_hull_cost(hull_class_t hull_class, int *out_frames,
                         int *out_lasers, int *out_tractors) {
-    if ((unsigned)hull_class >= HULL_CLASS_COUNT) return false;
-    const hull_def_t *def = hull_def_for_class(hull_class);
-    int frames = 2 * (int)def->module_slots;
-    if (def->module_mask & SHIP_MODULE_CARGO) frames += 2;
-    int lasers = (def->module_mask & SHIP_MODULE_LASER) ? 1 : 0;
-    int tractors = (def->module_mask & SHIP_MODULE_TRACTOR) ? 1 : 0;
-    if (out_frames) *out_frames = frames;
-    if (out_lasers) *out_lasers = lasers;
-    if (out_tractors) *out_tractors = tractors;
+    shipyard_bill_t bill = {0};
+    if (!shipyard_hull_bill(hull_class, &bill)) return false;
+    if (out_frames) *out_frames = bill.units[COMMODITY_FRAME];
+    if (out_lasers) *out_lasers = bill.units[COMMODITY_LASER_MODULE];
+    if (out_tractors) *out_tractors = bill.units[COMMODITY_TRACTOR_MODULE];
     return true;
 }
 
 bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class) {
     if (!st || station_active_shipyard_count(st) < 1) return false;
-    int frames = 0, lasers = 0, tractors = 0;
-    if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors)) return false;
-    return station_finished_count(st, COMMODITY_FRAME) >= frames &&
-           station_finished_count(st, COMMODITY_LASER_MODULE) >= lasers &&
-           station_finished_count(st, COMMODITY_TRACTOR_MODULE) >= tractors;
+    shipyard_bill_t bill = {0};
+    if (!shipyard_hull_bill(hull_class, &bill)) return false;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        if (station_finished_count(st, (commodity_t)c) < bill.units[c])
+            return false;
+    }
+    return true;
 }
 
 static int shipyard_station_material_available(const station_t *st,
@@ -13038,14 +13168,17 @@ static bool shipyard_can_commission_hull_at_yard(const world_t *w,
         return false;
     const station_module_t *yard = &st->modules[yard_idx];
     if (yard->scaffold || yard->type != MODULE_SHIPYARD) return false;
-    int frames = 0, lasers = 0, tractors = 0;
-    if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors)) return false;
-    return shipyard_material_available(st, w, station_idx, ship, COMMODITY_FRAME,
-                                       include_towed_pods, yard_idx) >= frames &&
-           shipyard_material_available(st, w, station_idx, ship, COMMODITY_LASER_MODULE,
-                                       include_towed_pods, yard_idx) >= lasers &&
-           shipyard_material_available(st, w, station_idx, ship, COMMODITY_TRACTOR_MODULE,
-                                       include_towed_pods, yard_idx) >= tractors;
+    shipyard_bill_t bill = {0};
+    if (!shipyard_hull_bill(hull_class, &bill)) return false;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        if (bill.units[c] <= 0) continue;
+        if (shipyard_material_available(
+                st, w, station_idx, ship, (commodity_t)c,
+                include_towed_pods, yard_idx) < bill.units[c]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool shipyard_find_ready_yard_for_hull(const world_t *w,
@@ -13219,13 +13352,18 @@ static bool shipyard_stage_one_material(
 
 static bool shipyard_consume_hull_materials_atomic(
     world_t *w, station_t *st, int station_idx, ship_t *ship,
-    int frames, int lasers, int tractors,
+    const shipyard_bill_t *bill,
     bool include_towed_pods, int yard_idx) {
-    if (!w || !st || frames < 0 || lasers < 0 || tractors < 0 ||
-        frames + lasers + tractors <= 0 ||
-        frames + lasers + tractors > CHAIN_LOG_BATCH_MAX_EVENTS) {
+    if (!w || !st || !bill) {
         return false;
     }
+    int total_units = 0;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        if (bill->units[c] < 0) return false;
+        total_units += bill->units[c];
+    }
+    if (total_units <= 0 || total_units > CHAIN_LOG_BATCH_MAX_EVENTS)
+        return false;
 
     shipyard_material_plan_t *plan =
         calloc(1, sizeof(*plan));
@@ -13234,18 +13372,14 @@ static bool shipyard_consume_hull_materials_atomic(
         free(plan);
         return false;
     }
-    bool frames_ok = shipyard_stage_one_material(
-            w, st, station_idx, ship, COMMODITY_FRAME,
-            frames, include_towed_pods, yard_idx, plan);
-    bool lasers_ok = frames_ok && shipyard_stage_one_material(
-            w, st, station_idx, ship, COMMODITY_LASER_MODULE,
-            lasers, include_towed_pods, yard_idx, plan);
-    bool tractors_ok = lasers_ok && shipyard_stage_one_material(
-            w, st, station_idx, ship, COMMODITY_TRACTOR_MODULE,
-            tractors, include_towed_pods, yard_idx, plan);
-    bool staged = frames_ok && lasers_ok && tractors_ok;
-    if (!staged || plan->unit_count !=
-            (size_t)(frames + lasers + tractors) ||
+    bool staged = true;
+    for (int c = 0; c < COMMODITY_COUNT && staged; c++) {
+        if (bill->units[c] <= 0) continue;
+        staged = shipyard_stage_one_material(
+            w, st, station_idx, ship, (commodity_t)c,
+            bill->units[c], include_towed_pods, yard_idx, plan);
+    }
+    if (!staged || plan->unit_count != (size_t)total_units ||
         !emit_shipyard_construction_contributions(
             w, st, station_idx, yard_idx,
             plan->units, plan->unit_count, 0.0f,
@@ -13266,9 +13400,9 @@ static bool shipyard_consume_hull_materials_atomic(
         if (!w->cargo_pods[pod_idx].active)
             world_cargo_pod_clear_tractor(w, pod_idx);
     }
-    station_finished_sync(st, COMMODITY_FRAME);
-    station_finished_sync(st, COMMODITY_LASER_MODULE);
-    station_finished_sync(st, COMMODITY_TRACTOR_MODULE);
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        if (bill->units[c] > 0)
+            station_finished_sync(st, (commodity_t)c);
     shipyard_material_plan_cleanup(plan);
     free(plan);
     return true;
@@ -13321,10 +13455,16 @@ static bool shipyard_queue_hull_build(
         }
     }
 
+    ship_t *material_ship = NULL;
+    if (include_towed_pods) {
+        if (!sp || !sp->ship) return false;
+        material_ship = sp->ship;
+    }
+
     int yard_idx = -1;
     bool use_birth_assembly = false;
     if (!shipyard_find_ready_yard_for_hull(
-            w, st, station_idx, include_towed_pods ? sp->ship : NULL,
+            w, st, station_idx, material_ship,
             hull_class, include_towed_pods, &yard_idx)) {
         if (station_active_shipyard_count(st) < 1 ||
             !ship_birth_station_has_fragments(w, station_idx)) {
@@ -13341,25 +13481,24 @@ static bool shipyard_queue_hull_build(
         ? (uint8_t)PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY
         : (uint8_t)PENDING_SHIP_BUILD_MODE_MATERIAL;
 
-    int frames = 0, lasers = 0, tractors = 0;
-    if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors)) return false;
-    float frame_price = station_sell_price(st, COMMODITY_FRAME);
-    float laser_price = station_sell_price(st, COMMODITY_LASER_MODULE);
-    float tractor_price = station_sell_price(st, COMMODITY_TRACTOR_MODULE);
+    shipyard_bill_t bill = {0};
+    if (!shipyard_hull_bill(hull_class, &bill)) return false;
+    /* Quote against the same trusted, pre-consumption material state used by
+     * the readiness check. Consuming first changes the stock curve and would
+     * let the transaction charge a price the player never saw. */
+    float commission_cost = 0.0f;
+    if (!use_birth_assembly) {
+        for (int c = 0; c < COMMODITY_COUNT; c++)
+            commission_cost += (float)bill.units[c] *
+                station_sell_price(st, (commodity_t)c);
+    }
     if (!use_birth_assembly &&
         !shipyard_consume_hull_materials_atomic(
             w, st, station_idx,
-            include_towed_pods ? sp->ship : NULL,
-            frames, lasers, tractors,
+            material_ship,
+            &bill,
             include_towed_pods, yard_idx)) {
         return false;
-    }
-
-    float commission_cost = 0.0f;
-    if (!use_birth_assembly) {
-        commission_cost += (float)frames * frame_price;
-        commission_cost += (float)lasers * laser_price;
-        commission_cost += (float)tractors * tractor_price;
     }
 
     if (debit_player && sp) {
@@ -13717,8 +13856,8 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
                 int rate_units =
                     (int)floorf((nascent->age + dt) * rate + 0.0001f) -
                     (int)floorf(nascent->age * rate + 0.0001f);
-                int room_units = (int)ceilf(room - 0.0001f);
-                if (rate_units > room_units) rate_units = room_units;
+                int remaining_units = (int)ceilf(room - 0.0001f);
+                if (rate_units > remaining_units) rate_units = remaining_units;
                 if (rate_units > 0) {
                     int stored_units =
                         shipyard_feed_nascent_from_station_store(
@@ -14101,21 +14240,24 @@ static void step_scaffolds(world_t *w, float dt) {
  * REST handler, not this helper). */
 /* Compute a block's entry_hash given its content and the prev block's hash.
  * Layout hashed: prev_hash(32) || id(8 LE) || ts(4 LE) || sender(2 LE) ||
- * text_len(1) || text(text_len). Stable across server restarts. */
+ * text_len(1) || audio_len(1) || fixed text bytes || fixed audio bytes.
+ * Stable across restarts and covers record padding as well as visible data. */
 static void signal_chain_hash_block(const uint8_t prev_hash[32],
                                     const signal_channel_msg_t *m,
                                     uint8_t out[32]) {
     sha256_ctx_t ctx;
     sha256_init(&ctx);
     sha256_update(&ctx, prev_hash, 32);
-    uint8_t header[15];
+    uint8_t header[16];
     for (int k = 0; k < 8; k++) header[k]      = (uint8_t)(m->id >> (8 * k));
     for (int k = 0; k < 4; k++) header[8 + k]  = (uint8_t)(m->timestamp_ms >> (8 * k));
     header[12] = (uint8_t)(m->sender_station & 0xFF);
     header[13] = (uint8_t)((uint16_t)m->sender_station >> 8);
     header[14] = m->text_len;
+    header[15] = m->audio_len;
     sha256_update(&ctx, header, sizeof(header));
-    sha256_update(&ctx, m->text, m->text_len);
+    sha256_update(&ctx, m->text, sizeof(m->text));
+    sha256_update(&ctx, m->audio_url, sizeof(m->audio_url));
     sha256_final(&ctx, out);
 }
 
@@ -14126,35 +14268,171 @@ static bool signal_chain_hash_is_zero(const uint8_t hash[32]) {
     return true;
 }
 
-/* Append a sealed block to the per-station chain log on disk. The log
- * is the durable source of truth — the in-memory ring is just a cache.
- * Format: each record is a fixed-size signal_channel_msg_t blob (no
- * prev_hash field needed since prev_hash = previous record's entry_hash;
- * genesis is the all-zero hash). */
-static bool signal_chain_disk_enabled = true;
+#define SIGNAL_CHAIN_PATH "chain/signal-channel.v2"
+#define SIGNAL_CHAIN_MAGIC 0x32564353u /* "SCV2" in little endian */
+#define SIGNAL_CHAIN_VERSION 1u
+#define SIGNAL_CHAIN_RECORD_SIZE 544u
+
+#if defined(SIGNAL_SERVER_PERSISTENCE)
+static void signal_chain_store_u16(uint8_t *out, uint16_t value) {
+    out[0] = (uint8_t)value;
+    out[1] = (uint8_t)(value >> 8);
+}
+
+static void signal_chain_store_u32(uint8_t *out, uint32_t value) {
+    for (int i = 0; i < 4; i++) out[i] = (uint8_t)(value >> (8 * i));
+}
+
+static void signal_chain_store_u64(uint8_t *out, uint64_t value) {
+    for (int i = 0; i < 8; i++) out[i] = (uint8_t)(value >> (8 * i));
+}
+#endif
+
+static uint16_t signal_chain_load_u16(const uint8_t *in) {
+    return (uint16_t)in[0] | ((uint16_t)in[1] << 8);
+}
+
+static uint32_t signal_chain_load_u32(const uint8_t *in) {
+    uint32_t value = 0;
+    for (int i = 0; i < 4; i++) value |= (uint32_t)in[i] << (8 * i);
+    return value;
+}
+
+static uint64_t signal_chain_load_u64(const uint8_t *in) {
+    uint64_t value = 0;
+    for (int i = 0; i < 8; i++) value |= (uint64_t)in[i] << (8 * i);
+    return value;
+}
+
+#if defined(SIGNAL_SERVER_PERSISTENCE)
+static void signal_chain_encode_record(
+    const uint8_t prev_hash[32], const signal_channel_msg_t *m,
+    uint8_t out[SIGNAL_CHAIN_RECORD_SIZE]
+) {
+    memset(out, 0, SIGNAL_CHAIN_RECORD_SIZE);
+    signal_chain_store_u32(out, SIGNAL_CHAIN_MAGIC);
+    signal_chain_store_u16(out + 4, SIGNAL_CHAIN_VERSION);
+    memcpy(out + 8, prev_hash, 32);
+    signal_chain_store_u64(out + 40, m->id);
+    signal_chain_store_u32(out + 48, m->timestamp_ms);
+    signal_chain_store_u16(out + 52, (uint16_t)m->sender_station);
+    out[54] = m->text_len;
+    out[55] = m->audio_len;
+    memcpy(out + 56, m->text, SIGNAL_CHANNEL_TEXT_MAX);
+    memcpy(out + 256, m->audio_url, SIGNAL_CHANNEL_AUDIO_MAX);
+    memcpy(out + 512, m->entry_hash, 32);
+}
+#endif
+
+static bool signal_chain_decode_record(
+    const uint8_t in[SIGNAL_CHAIN_RECORD_SIZE], uint8_t prev_hash[32],
+    signal_channel_msg_t *m
+) {
+    if (signal_chain_load_u32(in) != SIGNAL_CHAIN_MAGIC ||
+        signal_chain_load_u16(in + 4) != SIGNAL_CHAIN_VERSION ||
+        signal_chain_load_u16(in + 6) != 0) {
+        return false;
+    }
+    memset(m, 0, sizeof(*m));
+    memcpy(prev_hash, in + 8, 32);
+    m->id = signal_chain_load_u64(in + 40);
+    m->timestamp_ms = signal_chain_load_u32(in + 48);
+    m->sender_station = (int16_t)signal_chain_load_u16(in + 52);
+    m->text_len = in[54];
+    m->audio_len = in[55];
+    if (m->id == 0 || m->text_len == 0 ||
+        m->text_len >= SIGNAL_CHANNEL_TEXT_MAX ||
+        m->sender_station < -1 || m->sender_station >= MAX_STATIONS) {
+        return false;
+    }
+    memcpy(m->text, in + 56, SIGNAL_CHANNEL_TEXT_MAX);
+    memcpy(m->audio_url, in + 256, SIGNAL_CHANNEL_AUDIO_MAX);
+    memcpy(m->entry_hash, in + 512, 32);
+    if (m->text[m->text_len] != '\0' ||
+        m->audio_url[m->audio_len] != '\0') {
+        return false;
+    }
+    uint8_t expected[32];
+    signal_chain_hash_block(prev_hash, m, expected);
+    return memcmp(expected, m->entry_hash, sizeof(expected)) == 0;
+}
+
+/* Append only after a complete, durable record can be published. The single
+ * file preserves the global feed order; old per-station raw-struct files are
+ * deliberately not replayed because they cannot prove their linkage. */
+static bool signal_chain_disk_enabled = false;
+#ifdef SIGNAL_SAVE_TESTING
+static bool signal_chain_test_write_failure = false;
+
+void signal_chain_test_set_write_failure(bool enabled) {
+    signal_chain_test_write_failure = enabled;
+}
+#endif
 
 void signal_chain_set_disk_enabled(bool enabled) {
     signal_chain_disk_enabled = enabled;
 }
 
-static void signal_chain_persist(int station, const signal_channel_msg_t *m) {
-    if (!signal_chain_disk_enabled) return;
-    char dir[]  = "chain";
-    char path[64];
-    snprintf(path, sizeof(path), "%s/%d.chain", dir, station);
-#ifdef _WIN32
-    _mkdir(dir);
+static bool signal_chain_persist(const uint8_t prev_hash[32],
+                                 const signal_channel_msg_t *m) {
+    if (!signal_chain_disk_enabled) return true;
+#if !defined(SIGNAL_SERVER_PERSISTENCE)
+    (void)prev_hash;
+    (void)m;
+    return false;
 #else
-    mkdir(dir, 0755);
+#ifdef SIGNAL_SAVE_TESTING
+    if (signal_chain_test_write_failure) return false;
 #endif
-    FILE *f = fopen(path, "ab");
-    if (!f) return;
-    fwrite(m, sizeof(*m), 1, f);
-    fclose(f);
+    bool created_dir = false;
+#ifdef _WIN32
+    if (_mkdir("chain") == 0) created_dir = true;
+#else
+    if (mkdir("chain", 0755) == 0) created_dir = true;
+#endif
+    else if (errno != EEXIST) {
+        return false;
+    }
+
+    FILE *f = fopen(SIGNAL_CHAIN_PATH, "ab+");
+    if (!f) return false;
+    bool new_file = false;
+    long original_end = -1;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        original_end = ftell(f);
+        new_file = original_end == 0;
+    }
+    uint8_t record[SIGNAL_CHAIN_RECORD_SIZE];
+    signal_chain_encode_record(prev_hash, m, record);
+    bool ok = original_end >= 0 &&
+              fwrite(record, 1, sizeof(record), f) == sizeof(record) &&
+              persistence_flush_durable(f);
+    if (fclose(f) != 0) ok = false;
+    if (ok && (new_file || created_dir))
+        ok = persistence_sync_parent_dir(SIGNAL_CHAIN_PATH);
+    if (!ok) {
+        if (new_file) {
+            (void)remove(SIGNAL_CHAIN_PATH);
+        } else if (original_end >= 0) {
+#ifdef _WIN32
+            FILE *rollback = fopen(SIGNAL_CHAIN_PATH, "rb+");
+            if (rollback) {
+                (void)_chsize_s(_fileno(rollback), (size_t)original_end);
+                (void)fclose(rollback);
+            }
+#else
+            if (truncate(SIGNAL_CHAIN_PATH, (off_t)original_end) != 0)
+                ok = false;
+#endif
+        }
+    }
+    return ok;
+#endif
 }
 
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url) {
-    if (!w || !text || text[0] == '\0') return 0;
+    if (!w || !text || text[0] == '\0' || sender_station < -1 ||
+        sender_station >= MAX_STATIONS) return 0;
     signal_channel_t *ch = &w->signal_channel;
 
     /* Prev hash = the durable replay tail, or genesis (zeroes). Fall back
@@ -14167,12 +14445,18 @@ uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, c
         memcpy(prev_hash, ch->msgs[prev_slot].entry_hash, 32);
     }
 
-    int slot = ch->head;
-    signal_channel_msg_t *m = &ch->msgs[slot];
-    memset(m, 0, sizeof(*m));
-    ch->next_id++;
-    m->id = ch->next_id;
-    m->timestamp_ms = (uint32_t)(w->time * 1000.0f);
+    if (ch->next_id == UINT64_MAX) return 0;
+    signal_channel_msg_t staged;
+    memset(&staged, 0, sizeof(staged));
+    signal_channel_msg_t *m = &staged;
+    m->id = ch->next_id + 1u;
+    double timestamp_ms = (double)w->time * 1000.0;
+    if (!isfinite(timestamp_ms) || timestamp_ms <= 0.0)
+        m->timestamp_ms = 0;
+    else if (timestamp_ms >= (double)UINT32_MAX)
+        m->timestamp_ms = UINT32_MAX;
+    else
+        m->timestamp_ms = (uint32_t)timestamp_ms;
     m->sender_station = (int16_t)sender_station;
     size_t tn = strlen(text);
     if (tn > SIGNAL_CHANNEL_TEXT_MAX - 1) tn = SIGNAL_CHANNEL_TEXT_MAX - 1;
@@ -14187,117 +14471,73 @@ uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, c
         m->audio_len = (uint8_t)(an > 255 ? 255 : an);
     }
 
-    /* Seal the block: hash content + prev → entry_hash, then persist. */
+    /* Seal and durably append before publishing any in-memory state. */
     signal_chain_hash_block(prev_hash, m, m->entry_hash);
+    if (!signal_chain_persist(prev_hash, m)) return 0;
+
+    int slot = ch->head;
+    ch->msgs[slot] = staged;
+    ch->next_id = staged.id;
     memcpy(ch->last_hash, m->entry_hash, sizeof(ch->last_hash));
-    signal_chain_persist(sender_station, m);
 
     ch->head = (ch->head + 1) % SIGNAL_CHANNEL_CAPACITY;
     if (ch->count < SIGNAL_CHANNEL_CAPACITY) ch->count++;
     return m->id;
 }
 
-/* Replay the on-disk chain on server boot. Reads the tail of each
- * station's chain file (last SIGNAL_CHANNEL_CAPACITY blocks) into the
- * world's ring buffer so the Network tab survives restarts. Bumps
- * ch->next_id past the highest block id seen. */
+/* Replay a bounded, authenticated tail of the global feed on server boot. */
 void signal_chain_load(world_t *w) {
     if (!w) return;
     signal_channel_t *ch = &w->signal_channel;
-    /* Two-pass: first pass collects all blocks across all stations into
-     * a sortable buffer; second sorts by id, de-duplicates replayed ids,
-     * and inserts the latest SIGNAL_CHANNEL_CAPACITY into the ring. The
-     * chain spans the whole world (single feed across stations), so a
-     * single ordering and one durable tail hash matter. */
-    signal_channel_msg_t *scratch = NULL;
-    size_t collected = 0;
-#ifndef _WIN32
-    size_t scratch_cap = 0;
-    /* POSIX directory walk. Windows server is build-only (no production
-     * deploy), so we no-op there to keep the cross-compile clean. */
-    DIR *dir = opendir("chain");
-    if (!dir) return;
-    bool oom = false;
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL && !oom) {
-        const char *name = de->d_name;
-        size_t n = strlen(name);
-        if (n < 7 || strcmp(name + n - 6, ".chain") != 0) continue;
-        /* dirent_t::d_name can be up to 255 bytes; precision-cap so
-         * gcc -Werror=format-truncation is happy. "chain/" is 6 chars,
-         * +null = 7, leaving 73 for the filename. */
-        char path[80];
-        snprintf(path, sizeof(path), "chain/%.73s", name);
-        FILE *f = fopen(path, "rb");
-        if (!f) continue;
-        for (;;) {
-            signal_channel_msg_t msg;
-            if (fread(&msg, sizeof(msg), 1, f) != 1) break;
-            if (msg.id == 0) continue;
-            if (collected >= scratch_cap) {
-                size_t next_cap = scratch_cap ? scratch_cap * 2u : 256u;
-                signal_channel_msg_t *next =
-                    (signal_channel_msg_t *)realloc(scratch,
-                                                    next_cap * sizeof(*scratch));
-                if (!next) {
-                    oom = true;
-                    break;
-                }
-                scratch = next;
-                scratch_cap = next_cap;
-            }
-            scratch[collected++] = msg;
-        }
-        fclose(f);
-    }
-    closedir(dir);
-    if (oom) {
-        free(scratch);
+    memset(ch, 0, sizeof(*ch));
+    FILE *f = fopen(SIGNAL_CHAIN_PATH, "rb");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        (void)fclose(f);
         return;
     }
-#endif
+    long bytes = ftell(f);
+    if (bytes <= 0 || (bytes % (long)SIGNAL_CHAIN_RECORD_SIZE) != 0) {
+        (void)fclose(f);
+        return;
+    }
+    uint64_t total = (uint64_t)bytes / SIGNAL_CHAIN_RECORD_SIZE;
+    size_t retained = total > SIGNAL_CHANNEL_CAPACITY
+        ? SIGNAL_CHANNEL_CAPACITY : (size_t)total;
+    uint64_t skip = total - retained;
+    if (skip > (uint64_t)LONG_MAX / SIGNAL_CHAIN_RECORD_SIZE ||
+        fseek(f, (long)(skip * SIGNAL_CHAIN_RECORD_SIZE), SEEK_SET) != 0) {
+        (void)fclose(f);
+        return;
+    }
 
-    /* Sort by id (insertion sort — collected is small in practice). */
-    for (size_t i = 1; i < collected; i++) {
-        signal_channel_msg_t key = scratch[i];
-        size_t j = i;
-        while (j > 0 && scratch[j - 1u].id > key.id) {
-            scratch[j] = scratch[j - 1u];
-            j--;
+    signal_channel_msg_t *messages =
+        (signal_channel_msg_t *)calloc(retained, sizeof(*messages));
+    uint8_t (*prev_hashes)[32] = calloc(retained, sizeof(*prev_hashes));
+    bool valid = messages && prev_hashes;
+    for (size_t i = 0; valid && i < retained; i++) {
+        uint8_t record[SIGNAL_CHAIN_RECORD_SIZE];
+        valid = fread(record, 1, sizeof(record), f) == sizeof(record) &&
+                signal_chain_decode_record(record, prev_hashes[i],
+                                           &messages[i]);
+        if (valid && i > 0) {
+            valid = messages[i].id == messages[i - 1u].id + 1u &&
+                    memcmp(prev_hashes[i], messages[i - 1u].entry_hash,
+                           32) == 0;
         }
-        scratch[j] = key;
     }
-
-    /* Collapse duplicate ids caused by old fresh-world restarts reusing
-     * ids 1..N. Stable sort order means the later disk occurrence wins. */
-    size_t unique = 0;
-    for (size_t i = 0; i < collected; i++) {
-        if (unique > 0 && scratch[unique - 1u].id == scratch[i].id) {
-            scratch[unique - 1u] = scratch[i];
-        } else {
-            scratch[unique++] = scratch[i];
+    if (fclose(f) != 0) valid = false;
+    if (valid && retained > 0) {
+        for (size_t i = 0; i < retained; i++) {
+            ch->msgs[ch->head] = messages[i];
+            ch->head = (ch->head + 1) % SIGNAL_CHANNEL_CAPACITY;
+            ch->count++;
         }
+        ch->next_id = messages[retained - 1u].id;
+        memcpy(ch->last_hash, messages[retained - 1u].entry_hash, 32);
     }
-
-    /* Take the most recent SIGNAL_CHANNEL_CAPACITY unique ids into the ring,
-     * but keep next_id and last_hash from the full unique replay tail. */
-    size_t start = (unique > SIGNAL_CHANNEL_CAPACITY)
-        ? unique - SIGNAL_CHANNEL_CAPACITY : 0;
-    ch->head = 0;
-    ch->count = 0;
-    ch->next_id = 0;
-    memset(ch->last_hash, 0, sizeof(ch->last_hash));
-    if (unique > 0) {
-        ch->next_id = scratch[unique - 1u].id;
-        memcpy(ch->last_hash, scratch[unique - 1u].entry_hash,
-               sizeof(ch->last_hash));
-    }
-    for (size_t i = start; i < unique; i++) {
-        ch->msgs[ch->head] = scratch[i];
-        ch->head = (ch->head + 1) % SIGNAL_CHANNEL_CAPACITY;
-        if (ch->count < SIGNAL_CHANNEL_CAPACITY) ch->count++;
-    }
-    free(scratch);
+    free(prev_hashes);
+    free(messages);
 }
 
 /* Iterate messages in post order (oldest first) via callback-free index
@@ -16585,6 +16825,7 @@ void world_ensure_seeded_freeport(world_t *w) {
     st->base_price[COMMODITY_LASER_MODULE] = 32.0f;
     st->base_price[COMMODITY_TRACTOR_MODULE] = 34.0f;
     st->base_price[COMMODITY_REPAIR_KIT] = 1.0f;
+    st->base_price[COMMODITY_ENGINE_MODULE] = 30.0f;
     add_module_at(st, MODULE_DOCK, 1, 0);
     st->arm_count = 1;
     rebuild_station_services(st);
@@ -17197,6 +17438,7 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_FRAME]          = 2.0f;
     w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 16.0f;
     w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 18.0f;
+    w->stations[0].base_price[COMMODITY_ENGINE_MODULE]  = 24.0f;
     w->stations[0].signal_range = 9000.0f;
     /* Ring 1: dock + relay + ferrite furnace (tagged FERRITE_INGOT). */
     add_module_at(&w->stations[0], MODULE_DOCK,         1, 0);
@@ -17246,6 +17488,7 @@ void world_reset(world_t *w) {
     /* Kepler imports laser/tractor modules for its shipyard kit fab. */
     w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 16.0f;
     w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 18.0f;
+    w->stations[1].base_price[COMMODITY_ENGINE_MODULE]  = 24.0f;
     /* Ring 1: dock + relay + shipyard. The shipyard sits on the inner
      * ring so its three input hoppers can read as a compact ring-2
      * staging belt instead of being buried on the outer hull. */
@@ -17258,6 +17501,7 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[1], 2, 3, COMMODITY_LASER_MODULE);   /* feeds SHIPYARD    */
     add_hopper_for(&w->stations[1], 2, 4, COMMODITY_FRAME);          /* frame output + shipyard input */
     add_hopper_for(&w->stations[1], 2, 5, COMMODITY_TRACTOR_MODULE); /* feeds SHIPYARD    */
+    add_hopper_for(&w->stations[1], 2, 2, COMMODITY_ENGINE_MODULE);  /* imported engine staging */
     /* Ring 3: ferrite-ingot hopper feeding the frame press, plus the
      * second shipyard gantry that unlocks station-module scaffold
      * fabrication. A single yard is enough for hull commissions; two
@@ -17296,6 +17540,7 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 14.0f;
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 16.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 18.0f;
+    w->stations[2].base_price[COMMODITY_ENGINE_MODULE] = 24.0f;
     w->stations[2].base_price[COMMODITY_REPAIR_KIT] = 1.0f;
     /* Helios imports frames for its shipyard kit fab. */
     w->stations[2].base_price[COMMODITY_FRAME]          = 2.0f;
@@ -17320,6 +17565,7 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[2], 2, 3, COMMODITY_CRYSTAL_ORE);
     add_hopper_for(&w->stations[2], 2, 4, COMMODITY_CUPRITE_ORE);
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5);
+    add_module_at(&w->stations[2], MODULE_ENGINE_FAB,   3, 0);
     /* Ring 3: 2 more furnaces (crystal + cuprite output) plus frame /
      * cuprite-ingot / laser / tractor module hoppers for the ring-2 fabs
      * and shipyard. The second shipyard gantry gives Helios enough
@@ -17333,6 +17579,7 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[2], 3, 5, COMMODITY_CUPRITE_INGOT);
     add_furnace_for(&w->stations[2],   3, 6, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(&w->stations[2], 3, 7, COMMODITY_TRACTOR_MODULE); /* TRACTOR_FAB output + shipyard input */
+    add_hopper_for(&w->stations[2], 3, 8, COMMODITY_ENGINE_MODULE);  /* ENGINE_FAB output + shipyard input */
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].arm_speed[1] = STATION_RING_SPEED;
@@ -17408,6 +17655,19 @@ void world_reset(world_t *w) {
 
     (void)world_ensure_starter_frame_pods(w);
     (void)world_ensure_starter_laser_module_reserve(w);
+    /* A small sealed propulsion reserve bootstraps replacement workers while
+     * Helios's new physical Engine Fab pipeline spins up. It is ordinary
+     * manifest cargo and is consumed by the same shipyard BOM as later output. */
+    {
+        static const uint8_t kepler_origin[8] =
+            { 'K','E','P','E','N','G','v','1' };
+        static const uint8_t helios_origin[8] =
+            { 'H','E','L','E','N','G','v','1' };
+        (void)station_finished_mint(
+            &w->stations[1], COMMODITY_ENGINE_MODULE, 8, kepler_origin);
+        (void)station_finished_mint(
+            &w->stations[2], COMMODITY_ENGINE_MODULE, 8, helios_origin);
+    }
     (void)world_ensure_starter_mining_refit_work_order(w);
     world_refresh_station_physical_inventories(w);
 

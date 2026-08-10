@@ -5448,6 +5448,8 @@ TEST(test_top_demand_no_shortage_returns_none) {
         kepler, COMMODITY_LASER_MODULE, 100));
     ASSERT(test_set_station_finished_units(
         kepler, COMMODITY_TRACTOR_MODULE, 100));
+    ASSERT(test_set_station_finished_units(
+        kepler, COMMODITY_ENGINE_MODULE, 100));
     station_demand_t d = station_top_demand(kepler);
     ASSERT_EQ_INT((int)d.commodity, (int)COMMODITY_COUNT);
     ASSERT_EQ_FLOAT(d.severity, 0.0f, 0.001f);

@@ -8865,7 +8865,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     uint8_t buf[PROTOCOL_INFO_SIZE];
     int len = serialize_protocol_info(buf, 8, 50, 100, 250, 300, 2000);
 
-    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 6);
+    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 7);
     ASSERT_EQ_INT(SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION, 3);
     ASSERT(len >= PROTOCOL_INFO_HEADER_SIZE);
     ASSERT(len <= PROTOCOL_INFO_SIZE);

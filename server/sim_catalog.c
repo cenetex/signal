@@ -45,7 +45,8 @@
 #define catalog_replace_file  persistence_replace_file
 
 #define CATALOG_MAGIC   0x53544E43  /* "STNC" */
-#define CATALOG_VERSION 8  /* v8: immutable station actor identity.
+#define CATALOG_VERSION 9  /* v9: Engine commodity pricing and Helios Engine Fab.
+                            * v8: immutable station actor identity.
                             * v7: Helios furnace set is 2x crystal + 1x cuprite.
                             * v6: station-authored NPC/RATi hail text.
                             * v5: repair Helios smelter ore/furnace adjacency.
@@ -171,6 +172,26 @@ static bool catalog_normalize_helios_furnaces(station_t *st) {
 static bool station_catalog_migrate_v7_helios(station_t *st, int index, uint32_t ver) {
     if (!st || index != 2 || ver >= 7) return false;
     bool changed = catalog_normalize_helios_furnaces(st);
+    if (changed) rebuild_station_services(st);
+    return changed;
+}
+
+static bool station_catalog_migrate_v9_engine(station_t *st, int index,
+                                              uint32_t ver) {
+    if (!st || ver >= 9) return false;
+    bool changed = false;
+    if (index == 2)
+        changed |= catalog_place_module(st, MODULE_ENGINE_FAB, 3, 0);
+    if (index == 1)
+        changed |= catalog_place_hopper(
+            st, COMMODITY_ENGINE_MODULE, 2, 2);
+    if (index == 2)
+        changed |= catalog_place_hopper(
+            st, COMMODITY_ENGINE_MODULE, 3, 8);
+    if (st->base_price[COMMODITY_ENGINE_MODULE] <= 0.0f) {
+        st->base_price[COMMODITY_ENGINE_MODULE] = 24.0f;
+        changed = true;
+    }
     if (changed) rebuild_station_services(st);
     return changed;
 }
@@ -378,7 +399,12 @@ static bool station_catalog_load_one(
     READ_FIELD(f, st->dock_radius);
     READ_FIELD(f, st->signal_range);
     READ_FIELD(f, st->signal_connected);
-    READ_FIELD(f, st->base_price);
+    memset(st->base_price, 0, sizeof(st->base_price));
+    size_t price_count = ver >= 9 ? COMMODITY_COUNT : 10u;
+    if (fread(st->base_price, sizeof(float), price_count, f) != price_count) {
+        fclose(f);
+        return false;
+    }
     READ_FIELD(f, st->services);
 
     /* Modules */
@@ -473,6 +499,9 @@ static bool station_catalog_load_one(
     }
     if (station_catalog_migrate_v7_helios(st, index, ver)) {
         printf("[catalog] migrated station %d to v7 Helios crystal layout\n", index);
+    }
+    if (station_catalog_migrate_v9_engine(st, index, ver)) {
+        printf("[catalog] migrated station %d to v9 engine economy\n", index);
     }
 
     /* Rebuild service flags from module list */

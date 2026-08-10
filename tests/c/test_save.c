@@ -167,6 +167,52 @@ static void test_remove_starter_refit_markers(world_t *w) {
 }
 
 static bool test_patch_catalog_version(const char *path, uint32_t version) {
+    if (version < 9) {
+        FILE *source = fopen(path, "rb");
+        if (!source) return false;
+        if (fseek(source, 0, SEEK_END) != 0) {
+            fclose(source);
+            return false;
+        }
+        long source_len = ftell(source);
+        station_t layout = {0};
+        long engine_price_offset =
+            8L + (long)sizeof(layout.id) + (long)sizeof(layout.name) +
+            (long)sizeof(layout.pos) + (long)sizeof(layout.radius) +
+            (long)sizeof(layout.dock_radius) +
+            (long)sizeof(layout.signal_range) +
+            (long)sizeof(layout.signal_connected) +
+            10L * (long)sizeof(float);
+        if (source_len < engine_price_offset + (long)sizeof(float) +
+                         (long)sizeof(uint32_t)) {
+            fclose(source);
+            return false;
+        }
+        uint8_t *bytes = malloc((size_t)source_len);
+        if (!bytes || fseek(source, 0, SEEK_SET) != 0 ||
+            fread(bytes, 1, (size_t)source_len, source) !=
+                (size_t)source_len) {
+            free(bytes);
+            fclose(source);
+            return false;
+        }
+        fclose(source);
+        memmove(bytes + engine_price_offset,
+                bytes + engine_price_offset + sizeof(float),
+                (size_t)(source_len - engine_price_offset -
+                         (long)sizeof(float)));
+        source_len -= (long)sizeof(float);
+        source = fopen(path, "wb");
+        bool rewritten = source &&
+            fwrite(bytes, 1, (size_t)source_len, source) ==
+                (size_t)source_len &&
+            fflush(source) == 0;
+        free(bytes);
+        if (!source) return false;
+        if (fclose(source) != 0) rewritten = false;
+        if (!rewritten) return false;
+    }
+
     FILE *f = fopen(path, "rb+");
     if (!f) return false;
     fseek(f, 0, SEEK_END);
@@ -3050,7 +3096,7 @@ TEST(test_v81_cargo_pod_player_slot_migrates_to_bound_quarantine) {
              * v82: each active cargo pod replaces its 1-byte player slot
              * with a 33-byte principal plus 8-byte quarantine binding.
              * Fresh worlds have two starter pods, so +80 bytes. */
-#define EXPECTED_SAVE_SIZE 841174
+#define EXPECTED_SAVE_SIZE 846454
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -3087,7 +3133,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 82);
+    ASSERT_EQ_INT((int)version, 83);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -3818,7 +3864,7 @@ TEST(test_world_load_result_vocabulary_and_bounds) {
             destination,
             TMP("world_load_result_missing.sav")) ==
         WORLD_LOAD_RESULT_IO);
-    ASSERT(WORLD_SAVE_MAX_BYTES > UINT64_C(841174));
+    ASSERT(WORLD_SAVE_MAX_BYTES > UINT64_C(846454));
     if (WORLD_SAVE_MAX_BYTES < (uint64_t)SIZE_MAX) {
         size_t oversized =
             (size_t)(WORLD_SAVE_MAX_BYTES + UINT64_C(1));

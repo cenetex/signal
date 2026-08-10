@@ -86,13 +86,11 @@ static bool production_station_unit_trusted(
     return evaluated.accepted;
 }
 
-/*
- * Physical pods intentionally do not carry receipt sidecars.  They can only
- * participate in a provenance-sensitive local production transaction when
- * the exact unit resolves against the receiving station's own durable
- * SMELT/CRAFT history.  Cross-station physical cargo must first acquire a
- * receipt-backed manifest row; origin_station alone is never proof.
- */
+/* Physical pods intentionally do not carry receipt sidecars. Local output is
+ * proven against this station's durable history; imported physical inputs use
+ * production_physical_unit_trusted() below so station custody plus the exact
+ * origin station history replaces the missing sidecar without trusting the
+ * origin_station label alone. */
 static bool production_chainless_unit_trusted(
     const world_t *w, int station_idx, const cargo_unit_t *unit) {
     if (!w || !unit || station_idx < 0 ||
@@ -107,6 +105,25 @@ static bool production_chainless_unit_trusted(
     return evaluated.accepted &&
            evaluated.local_origin_without_receipt &&
            evaluated.origin_station == station_idx;
+}
+
+static bool production_physical_unit_trusted(
+    const world_t *w, int station_idx,
+    const cargo_pod_t *pod, const cargo_unit_t *unit) {
+    if (!w || !pod || !unit || station_idx < 0 ||
+        station_idx >= w->station_count ||
+        station_idx >= MAX_STATIONS) {
+        return false;
+    }
+    if (unit->origin_station != (uint8_t)station_idx &&
+        cargo_pod_custody_station(pod) != station_idx) {
+        return false;
+    }
+    cargo_receipt_station_evaluation_t evaluated =
+        cargo_receipt_evaluate_physical_origin_at_station(
+            w, station_idx, unit);
+    return evaluated.accepted &&
+           evaluated.origin_station == (int)unit->origin_station;
 }
 
 static bool production_chainless_pod_trusted(
@@ -279,10 +296,6 @@ static bool production_pod_staged_at_matching_hopper(
     }
     const station_module_t *module = &st->modules[module_idx];
     if (module->scaffold) return false;
-    vec2 module_pos = module_world_pos_ring(
-        st, module->ring, module->slot);
-    const float consumer_range_sq =
-        HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
 
     if (cargo_pod_is_tractored_by_module(
             pod, station_idx, module_idx)) {
@@ -293,11 +306,7 @@ static bool production_pod_staged_at_matching_hopper(
             if (!hopper->scaffold &&
                 hopper->type == MODULE_HOPPER &&
                 (commodity_t)hopper->commodity == commodity) {
-                vec2 hopper_pos = module_world_pos_ring(
-                    st, hopper->ring, hopper->slot);
-                if (v2_dist_sq(hopper_pos, module_pos) <=
-                        consumer_range_sq &&
-                    cargo_pod_module_tractor_arrived(
+                if (cargo_pod_module_tractor_arrived(
                         w, pod, station_idx, module_idx)) {
                     return true;
                 }
@@ -312,12 +321,6 @@ static bool production_pod_staged_at_matching_hopper(
             (commodity_t)hopper->commodity != commodity ||
             !cargo_pod_is_tractored_by_module(
                 pod, station_idx, i)) {
-            continue;
-        }
-        vec2 hopper_pos = module_world_pos_ring(
-            st, hopper->ring, hopper->slot);
-        if (v2_dist_sq(hopper_pos, module_pos) >
-            consumer_range_sq) {
             continue;
         }
         if (cargo_pod_module_tractor_arrived(
@@ -372,8 +375,8 @@ static bool station_select_loose_pod_recipe_inputs(
                 pod->manifest_units[unit_idx];
             if (!manifest_unit_matches_recipe_input(
                     &unit, commodity) ||
-                !production_chainless_unit_trusted(
-                    w, station_idx, &unit)) {
+                !production_physical_unit_trusted(
+                    w, station_idx, pod, &unit)) {
                 continue;
             }
             selected[want] = (loose_pod_recipe_input_t){
@@ -417,6 +420,24 @@ static bool production_pod_can_accept_output(const cargo_pod_t *pod,
     return (int)pod->manifest_count + product_count <= CARGO_POD_UNIT_CAPACITY;
 }
 
+static int station_product_output_target(const station_t *st,
+                                         const station_module_t *module,
+                                         int module_idx) {
+    int target = station_find_output_hopper_for_module(st, module);
+    if (target >= 0) return target;
+    /* Engine modules are shipyard-only inputs. When no storage hopper is
+     * authored, station control tows the sealed output straight from the fab
+     * to an active yard, where the normal provenance gate runs before quote
+     * or consumption. */
+    if (module && module->type == MODULE_ENGINE_FAB) {
+        for (int i = 0; i < st->module_count; i++) {
+            if (!st->modules[i].scaffold &&
+                st->modules[i].type == MODULE_SHIPYARD) return i;
+        }
+    }
+    return module_idx;
+}
+
 static int station_find_output_pod_for_module(world_t *w,
                                               const station_t *st,
                                               int station_idx,
@@ -430,8 +451,12 @@ static int station_find_output_pod_for_module(world_t *w,
     }
 
     const station_module_t *module = &st->modules[module_idx];
-    int output_hopper = station_find_output_hopper_for_module(st, module);
-    vec2 module_pos = module_world_pos_ring(st, module->ring, module->slot);
+    int output_hopper = station_product_output_target(
+        st, module, module_idx);
+    const station_module_t *target_module =
+        &st->modules[output_hopper];
+    vec2 module_pos = module_world_pos_ring(
+        st, target_module->ring, target_module->slot);
     const float staged_sq =
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_idx = -1;
@@ -480,6 +505,7 @@ typedef struct {
 
 static bool production_select_loose_shell(
     const world_t *w, int station_idx, int module_idx,
+    const cargo_unit_t *excluded, size_t excluded_count,
     production_loose_shell_t *out) {
     if (!w || !out || station_idx < 0 ||
         station_idx >= w->station_count ||
@@ -489,12 +515,6 @@ static bool production_select_loose_shell(
         return false;
     }
     const station_t *station = &w->stations[station_idx];
-    const station_module_t *target =
-        &station->modules[module_idx];
-    vec2 target_pos = module_world_pos_ring(
-        station, target->ring, target->slot);
-    const float shell_lane_sq =
-        HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         const cargo_pod_t *pod = &w->cargo_pods[i];
         if (!cargo_pod_has_exact_manifest(
@@ -528,18 +548,27 @@ static bool production_select_loose_shell(
                 schema->kind == MODULE_KIND_PRODUCER;
         }
         if (!owner_can_supply) continue;
-        vec2 owner_pos = module_world_pos_ring(
-            station, owner->ring, owner->slot);
-        if (v2_dist_sq(owner_pos, target_pos) >
-            shell_lane_sq) {
-            continue;
+        const cargo_unit_t *unit = NULL;
+        for (uint16_t at = pod->manifest_count; at > 0; at--) {
+            const cargo_unit_t *candidate =
+                &pod->manifest_units[at - 1u];
+            bool reserved_for_recipe = false;
+            for (size_t input = 0; input < excluded_count; input++) {
+                if (memcmp(candidate->pub, excluded[input].pub,
+                           sizeof(candidate->pub)) == 0) {
+                    reserved_for_recipe = true;
+                    break;
+                }
+            }
+            if (reserved_for_recipe) continue;
+            if (!production_physical_unit_trusted(
+                    w, station_idx, pod, candidate)) {
+                continue;
+            }
+            unit = candidate;
+            break;
         }
-        const cargo_unit_t *unit =
-            &pod->manifest_units[pod->manifest_count - 1u];
-        if (!production_chainless_unit_trusted(
-                w, station_idx, unit)) {
-            continue;
-        }
+        if (!unit) continue;
         *out = (production_loose_shell_t){
             .pod_idx = i,
             .unit = *unit,
@@ -704,7 +733,7 @@ static int station_manifest_craft_product_pod_batch(world_t *w,
         }
         cargo_unit_t shell = {0};
         if (production_select_loose_shell(
-                w, station_idx, module_idx,
+                w, station_idx, module_idx, NULL, 0,
                 &loose_shell)) {
             if (!production_stage_take_selected_unit(
                     &shell_plan, w, loose_shell.pod_idx,
@@ -813,8 +842,8 @@ static int station_manifest_craft_product_pod_batch(world_t *w,
     w->cargo_pods[pod_idx] = staged_pod;
     if (new_pod) world_cargo_pod_clear_tractor(w, pod_idx);
     const station_module_t *module = &st->modules[module_idx];
-    int output_hopper =
-        station_find_output_hopper_for_module(st, module);
+    int output_hopper = station_product_output_target(
+        st, module, module_idx);
     (void)world_cargo_pod_set_module_tractor(
         w, pod_idx, station_idx,
         output_hopper >= 0 ? output_hopper : module_idx);
@@ -910,6 +939,7 @@ static int station_loose_pod_craft_product_pod_batch(
         production_loose_shell_t loose_shell = {0};
         if (production_select_loose_shell(
                 w, station_idx, module_idx,
+                inputs, recipe->input_count,
                 &loose_shell)) {
             if (!production_stage_take_selected_unit(
                     &pod_plan, w, loose_shell.pod_idx,
@@ -1016,8 +1046,8 @@ static int station_loose_pod_craft_product_pod_batch(
     }
     const station_module_t *module =
         &st->modules[module_idx];
-    int output_hopper =
-        station_find_output_hopper_for_module(st, module);
+    int output_hopper = station_product_output_target(
+        st, module, module_idx);
     (void)world_cargo_pod_set_module_tractor(
         w, output_pod_idx, station_idx,
         output_hopper >= 0
@@ -1053,7 +1083,7 @@ void sim_step_refinery_production(world_t *w, float dt) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Station production (frame press, laser fab, tractor fab)            */
+/* Station production (frame press and component fabs)                 */
 /* Uses module input buffers from the flow graph — placement matters.  */
 /* Fabs still accept legacy inventory-backed inputs during the          */
 /* transition, but finished batches eject as physical cargo pods.       */
@@ -1078,28 +1108,32 @@ void sim_step_station_production(world_t *w, float dt) {
             const recipe_def_t *recipe_def = recipe_get(recipe.recipe_id);
             if (!recipe_def) continue;
 
-            commodity_t input_com = recipe.primary_input;
+            if (recipe.input_count == 0) continue;
+            commodity_t input_com = recipe.inputs[0];
             commodity_t output_com = recipe.output;
             if (input_com >= COMMODITY_COUNT || output_com >= COMMODITY_COUNT) continue;
             float rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
             bool pod_ready =
                 station_loose_pod_recipe_inputs_available(
                     w, st, s, m, recipe_def);
-            bool secondary_ready = true;
-            if (recipe.secondary_input < COMMODITY_COUNT) {
-                secondary_ready =
-                    station_stored_inventory_amount(
-                        st, recipe.secondary_input) + FLOAT_EPSILON >=
-                    recipe.secondary_units_per_batch;
+            bool remaining_inputs_ready = true;
+            for (size_t input = 1; input < recipe.input_count; input++) {
+                if (station_stored_inventory_amount(
+                        st, recipe.inputs[input]) + FLOAT_EPSILON <
+                    recipe.input_units_per_batch[input]) {
+                    remaining_inputs_ready = false;
+                    break;
+                }
             }
             bool buffer_ready =
-                st->modules[m].input_buffer + FLOAT_EPSILON >= recipe.primary_units_per_batch &&
-                secondary_ready;
+                st->modules[m].input_buffer + FLOAT_EPSILON >=
+                    recipe.input_units_per_batch[0] &&
+                remaining_inputs_ready;
             bool inventory_ready =
                 station_stored_inventory_amount(st, input_com) +
                     FLOAT_EPSILON >=
-                    recipe.primary_units_per_batch &&
-                secondary_ready;
+                    recipe.input_units_per_batch[0] &&
+                remaining_inputs_ready;
             if (!pod_ready && !buffer_ready &&
                 !inventory_ready) {
                 continue;
@@ -1125,19 +1159,25 @@ void sim_step_station_production(world_t *w, float dt) {
                     continue;
                 }
                 bool from_buffer =
-                    st->modules[m].input_buffer + FLOAT_EPSILON >= recipe.primary_units_per_batch;
+                    st->modules[m].input_buffer + FLOAT_EPSILON >=
+                    recipe.input_units_per_batch[0];
                 if (!from_buffer &&
                     station_stored_inventory_amount(st, input_com) +
                         FLOAT_EPSILON <
-                    recipe.primary_units_per_batch) {
+                    recipe.input_units_per_batch[0]) {
                     break;
                 }
-                if (recipe.secondary_input < COMMODITY_COUNT &&
-                    station_stored_inventory_amount(
-                        st, recipe.secondary_input) + FLOAT_EPSILON <
-                    recipe.secondary_units_per_batch) {
-                    break;
+                bool all_inputs_ready = true;
+                for (size_t input = 1;
+                     input < recipe.input_count; input++) {
+                    if (station_stored_inventory_amount(
+                            st, recipe.inputs[input]) + FLOAT_EPSILON <
+                        recipe.input_units_per_batch[input]) {
+                        all_inputs_ready = false;
+                        break;
+                    }
                 }
+                if (!all_inputs_ready) break;
 
                 int crafted = station_manifest_craft_product_pod_batch(
                     w, s, m, recipe.recipe_id);
@@ -1147,7 +1187,8 @@ void sim_step_station_production(world_t *w, float dt) {
                 }
 
                 if (from_buffer) {
-                    st->modules[m].input_buffer -= recipe.primary_units_per_batch;
+                    st->modules[m].input_buffer -=
+                        recipe.input_units_per_batch[0];
                     if (st->modules[m].input_buffer < 0.0f) st->modules[m].input_buffer = 0.0f;
                 }
                 /* The manifest craft transaction consumed the selected cargo
@@ -1464,6 +1505,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                 production_loose_shell_t loose_shell = {0};
                 if (production_select_loose_shell(
                         w, smelt_station, smelt_module,
+                        NULL, 0,
                         &loose_shell)) {
                     if (!production_stage_take_selected_unit(
                             &shell_plan, w,

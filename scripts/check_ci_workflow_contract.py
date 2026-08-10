@@ -546,6 +546,14 @@ def contract_failures(
         failures.append(
             "deploy-fly.yml: browser build lacks release WASM memory budget"
         )
+    for workflow_name, workflow_source in (
+        ("release.yml", release),
+        ("deploy-fly.yml", deploy),
+    ):
+        if "make cargo-trust-audit" not in workflow_source:
+            failures.append(
+                f"{workflow_name}: safety gates lack cargo trust caller audit"
+            )
 
     expected_browser = classify_ci_paths.classify_paths(
         [

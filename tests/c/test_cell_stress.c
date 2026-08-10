@@ -28,7 +28,7 @@ TEST(test_thrown_rock_impulse_shears_expected_non_core_cell) {
     memset(impact.payload_manifest_root, 0xB2, 32);
     ASSERT(cell_stress_apply_impact(&graph, &stress, &impact, &result));
     ASSERT(result.sheared);
-    ASSERT_EQ_INT(result.remaining.count, 3);
+    ASSERT_EQ_INT(result.remaining.count, 4);
     ASSERT(result.remaining.nodes[0].identity == control);
     ASSERT_EQ_INT(result.salvage.graph.count, 1);
     ASSERT(result.salvage.graph.nodes[0].identity == carrier);
@@ -140,8 +140,8 @@ TEST(test_multi_cell_repair_is_independent_of_salvage_node_order) {
     cell_graph_t remaining = {
         .version = 1,
         .kind = CELL_LAYOUT_NONE,
-        .count = 2,
-        .nodes = {original.nodes[0], original.nodes[3]},
+        .count = 3,
+        .nodes = {original.nodes[0], original.nodes[3], original.nodes[4]},
     };
     cell_salvage_t salvage = {
         .active = true,

@@ -229,6 +229,16 @@ static const recipe_def_t RECIPE_TABLE[RECIPE_COUNT] = {
         .input_count = 0,
         .input_commodities = { COMMODITY_COUNT, COMMODITY_COUNT },
     },
+    [RECIPE_ENGINE_BASIC] = {
+        .id = RECIPE_ENGINE_BASIC,
+        .name = "engine/basic",
+        .output_kind = CARGO_KIND_ENGINE,
+        .output_commodity = COMMODITY_ENGINE_MODULE,
+        .output_count = 1,
+        .input_count = 3,
+        .input_commodities = { COMMODITY_FRAME, COMMODITY_CUPRITE_INGOT,
+                               COMMODITY_CRYSTAL_INGOT },
+    },
 };
 
 static int compare_pub_32(const void *lhs, const void *rhs) {
@@ -253,6 +263,8 @@ static bool cargo_kind_matches_commodity(cargo_kind_t kind, commodity_t commodit
         return commodity == COMMODITY_TRACTOR_MODULE;
     case CARGO_KIND_REPAIR_KIT:
         return commodity == COMMODITY_REPAIR_KIT;
+    case CARGO_KIND_ENGINE:
+        return commodity == COMMODITY_ENGINE_MODULE;
     default:
         return false;
     }
@@ -350,6 +362,8 @@ const char *cargo_kind_name(cargo_kind_t kind) {
     case CARGO_KIND_FRAME:   return "frame";
     case CARGO_KIND_LASER:   return "laser";
     case CARGO_KIND_TRACTOR: return "tractor";
+    case CARGO_KIND_REPAIR_KIT: return "repair kit";
+    case CARGO_KIND_ENGINE:  return "engine";
     default:                 return "unknown";
     }
 }
@@ -886,6 +900,7 @@ static cargo_pod_content_shape_t cargo_content_shape_for_kind(
         return CARGO_POD_CONTENT_STRUT;
     case CARGO_KIND_LASER:
     case CARGO_KIND_TRACTOR:
+    case CARGO_KIND_ENGINE:
         return CARGO_POD_CONTENT_ACTIVE;
     case CARGO_KIND_REPAIR_KIT:
         return CARGO_POD_CONTENT_SERVICE;
@@ -1166,6 +1181,7 @@ bool cargo_kind_for_commodity(commodity_t commodity, cargo_kind_t *out_kind) {
     if (commodity == COMMODITY_LASER_MODULE)   { *out_kind = CARGO_KIND_LASER;      return true; }
     if (commodity == COMMODITY_TRACTOR_MODULE) { *out_kind = CARGO_KIND_TRACTOR;    return true; }
     if (commodity == COMMODITY_REPAIR_KIT)     { *out_kind = CARGO_KIND_REPAIR_KIT; return true; }
+    if (commodity == COMMODITY_ENGINE_MODULE)  { *out_kind = CARGO_KIND_ENGINE;     return true; }
     return false;
 }
 

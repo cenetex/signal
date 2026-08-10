@@ -885,8 +885,10 @@ enum {
  * Version 5 replaces arbitrary-basename legacy claims with one opaque,
  * connection-bound offer confirmed through the signed-action nonce stream.
  * Version 6 replaces bearer-backed combat attribution with typed public
- * actor IDs and marks legacy event attribution explicitly unknown. */
-#define SIGNAL_PROTOCOL_VERSION 6u
+ * actor IDs and marks legacy event attribution explicitly unknown.
+ * Version 7 adds Engine cargo/module identities and expands station module
+ * records for the first Engine Fab. */
+#define SIGNAL_PROTOCOL_VERSION 7u
 #define SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION 3u
 
 enum {

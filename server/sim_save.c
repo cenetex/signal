@@ -90,7 +90,9 @@
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
 #define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
-#define SAVE_VERSION 82  /* v82: cargo-pod player tow custody uses canonical
+#define SAVE_VERSION 83  /* v83: append Engine commodity/module identities and
+                          * expand station module slots from 16 to 18.
+                          * v82: cargo-pod player tow custody uses canonical
                           * actor principals. Runtime player slots are
                           * projections only; ambiguous v81 slots migrate into
                           * bound, inert ownership quarantine rows.
@@ -385,6 +387,7 @@ typedef struct {
 /* Set by world_load() before read_station() so per-station readers know
  * which version they're parsing and can handle field additions. */
 static int g_loaded_save_version = SAVE_VERSION;
+static int g_writing_save_version = SAVE_VERSION;
 /* Exclusive end of the CRC-covered payload for the active world decode.
  * Count-driven readers use it to prove their complete variable-width section
  * exists before reserving dynamic storage. Restored after every load. */
@@ -508,6 +511,30 @@ void world_apply_cargo_schema_migration(world_t *w) {
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
 #define READ_FIELD(f, val)  do { if (fread(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
+
+enum {
+    SAVE_V82_COMMODITY_COUNT = 10,
+    SAVE_V82_MODULE_COUNT = 16,
+};
+
+static bool write_commodity_floats(FILE *f,
+                                   const float values[COMMODITY_COUNT]) {
+    size_t count = g_writing_save_version >= 83
+        ? COMMODITY_COUNT : SAVE_V82_COMMODITY_COUNT;
+    return fwrite(values, sizeof(float), count, f) == count;
+}
+
+static bool read_commodity_floats(FILE *f,
+                                  float values[COMMODITY_COUNT]) {
+    size_t count = g_loaded_save_version >= 83
+        ? COMMODITY_COUNT : SAVE_V82_COMMODITY_COUNT;
+    memset(values, 0, sizeof(float) * COMMODITY_COUNT);
+    return fread(values, sizeof(float), count, f) == count;
+}
+
+static int save_module_slot_count_for_version(int version) {
+    return version >= 83 ? MAX_MODULES_PER_STATION : SAVE_V82_MODULE_COUNT;
+}
 
 static bool world_load_payload_has_bytes(FILE *f, size_t byte_count) {
     if (!f || g_loaded_save_payload_end < 0) return false;
@@ -842,12 +869,14 @@ static bool read_station(FILE *f, station_t *s) {
 
 static bool write_station_session(FILE *f, const station_t *s) {
     /* Raw hopper inventory plus sub-unit finished-production residue. */
-    WRITE_FIELD(f, s->_inventory_cache);
-    WRITE_FIELD(f, s->_finished_residue);
+    if (!write_commodity_floats(f, s->_inventory_cache) ||
+        !write_commodity_floats(f, s->_finished_residue)) return false;
     /* Per-module production buffers */
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+    for (int m = 0; m < save_module_slot_count_for_version(
+                            g_writing_save_version); m++)
         WRITE_FIELD(f, s->modules[m].input_buffer);
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+    for (int m = 0; m < save_module_slot_count_for_version(
+                            g_writing_save_version); m++)
         WRITE_FIELD(f, s->modules[m].output_buffer);
     /* (credit_pool field removed in v43 — derived from ledger now.) */
     /* Economy ledger */
@@ -999,15 +1028,17 @@ static bool read_station_session(
     int station_index,
     world_load_result_t *load_result) {
     /* Inventory */
-    READ_FIELD(f, s->_inventory_cache);
+    if (!read_commodity_floats(f, s->_inventory_cache)) return false;
     if (g_loaded_save_version >= 75)
-        READ_FIELD(f, s->_finished_residue);
+        { if (!read_commodity_floats(f, s->_finished_residue)) return false; }
     else
         memset(s->_finished_residue, 0, sizeof(s->_finished_residue));
     /* Per-module production buffers */
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+    for (int m = 0; m < save_module_slot_count_for_version(
+                            g_loaded_save_version); m++)
         READ_FIELD(f, s->modules[m].input_buffer);
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+    for (int m = 0; m < save_module_slot_count_for_version(
+                            g_loaded_save_version); m++)
         READ_FIELD(f, s->modules[m].output_buffer);
     /* credit_pool was stored v23..v42; dropped in v43 (derived field).
      * For older saves, read and discard; the value is recoverable from
@@ -1677,7 +1708,7 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->ship->vel);
     WRITE_FIELD(f, n->ship->angle);
     ship_cargo_snapshot(n->ship, cargo_snapshot);
-    WRITE_FIELD(f, cargo_snapshot);
+    if (!write_commodity_floats(f, cargo_snapshot)) return false;
     WRITE_FIELD(f, n->target_asteroid);
     WRITE_FIELD(f, n->home_station);
     WRITE_FIELD(f, n->dest_station);
@@ -1700,7 +1731,7 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
     READ_FIELD(f, n->ship->pos);
     READ_FIELD(f, n->ship->vel);
     READ_FIELD(f, n->ship->angle);
-    READ_FIELD(f, n->ship->cargo);
+    if (!read_commodity_floats(f, n->ship->cargo)) return false;
     READ_FIELD(f, n->target_asteroid);
     READ_FIELD(f, n->home_station);
     READ_FIELD(f, n->dest_station);
@@ -1852,7 +1883,7 @@ static bool write_asset_ship_payload(FILE *f, const ship_t *ship) {
     WRITE_FIELD(f, ship->angle);
     WRITE_FIELD(f, ship->hull);
     ship_cargo_snapshot(ship, cargo_snapshot);
-    WRITE_FIELD(f, cargo_snapshot);
+    if (!write_commodity_floats(f, cargo_snapshot)) return false;
     WRITE_FIELD(f, ship->hull_class);
     WRITE_FIELD(f, ship->mining_level);
     WRITE_FIELD(f, ship->hold_level);
@@ -1881,7 +1912,7 @@ static bool read_asset_ship_payload(
     READ_FIELD(f, ship->vel);
     READ_FIELD(f, ship->angle);
     READ_FIELD(f, ship->hull);
-    READ_FIELD(f, ship->cargo);
+    if (!read_commodity_floats(f, ship->cargo)) return false;
     READ_FIELD(f, ship->hull_class);
     READ_FIELD(f, ship->mining_level);
     READ_FIELD(f, ship->hold_level);
@@ -3461,7 +3492,10 @@ static bool world_save_version(const world_t *w, const char *path,
 
     FILE *f = fopen(tmp_path, "wb");
     if (!f) return false;
+    int prior_writing_version = g_writing_save_version;
+    g_writing_save_version = (int)output_version;
     bool ok = world_save_payload(w, f, output_version);
+    g_writing_save_version = prior_writing_version;
     if (ok) ok = fflush(f) == 0;
     if (fclose(f) != 0) ok = false;
     if (!ok) {
@@ -4402,6 +4436,16 @@ static world_t *world_load_candidate_create(const world_t *source) {
     return candidate;
 }
 
+world_t *world_snapshot_clone_create(const world_t *source) {
+    return world_load_candidate_create(source);
+}
+
+void world_snapshot_clone_destroy(world_t *snapshot) {
+    if (!snapshot) return;
+    world_cleanup(snapshot);
+    free(snapshot);
+}
+
 static world_load_result_t world_load_owned_stream(
     world_t *w,
     FILE *f) {
@@ -4510,7 +4554,10 @@ bool world_load(world_t *w, const char *path) {
  * can read older files without depending on the current ship_t layout. */
 typedef struct {
     vec2 pos; vec2 vel; float angle; float hull;
-    float cargo[COMMODITY_COUNT];
+    /* PLY1-PLY7 fixed ship blobs predate Engine Modules. Finished cargo is
+     * authoritative in the manifest tail, so keep the historical snapshot
+     * width stable and let new commodities live in that tail. */
+    float cargo[SAVE_V82_COMMODITY_COUNT];
     hull_class_t hull_class;
     int mining_level, hold_level, tractor_level;
     int16_t towed_fragments[10]; uint8_t towed_count;
@@ -4540,7 +4587,7 @@ static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    memcpy(dst->cargo, src->cargo, sizeof(src->cargo));
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -4564,7 +4611,7 @@ static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
  * stable for old saves. */
 typedef struct {
     vec2 pos; vec2 vel; float angle; float hull;
-    float cargo[COMMODITY_COUNT];
+    float cargo[SAVE_V82_COMMODITY_COUNT];
     hull_class_t hull_class;
     int mining_level, hold_level, tractor_level;
     int16_t towed_fragments[10]; uint8_t towed_count;
@@ -4592,7 +4639,9 @@ static void encode_v4_ship(ship_v4_t *dst, const ship_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    ship_cargo_snapshot(src, dst->cargo);
+    float cargo_snapshot[COMMODITY_COUNT] = {0};
+    ship_cargo_snapshot(src, cargo_snapshot);
+    memcpy(dst->cargo, cargo_snapshot, sizeof(dst->cargo));
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -4621,7 +4670,7 @@ static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    memcpy(dst->cargo, src->cargo, sizeof(src->cargo));
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -4665,7 +4714,7 @@ static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
 /* Old ship layout with global credits field — for PLY2 migration */
 typedef struct {
     vec2 pos; vec2 vel; float angle; float hull;
-    float cargo[COMMODITY_COUNT];
+    float cargo[SAVE_V82_COMMODITY_COUNT];
     float credits; /* REMOVED in PLY3 */
     hull_class_t hull_class;
     int mining_level, hold_level, tractor_level;
@@ -5074,7 +5123,7 @@ static void migrate_v2_ship(ship_t *dst, const ship_v2_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    memcpy(dst->cargo, src->cargo, sizeof(src->cargo));
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -6141,7 +6190,8 @@ static bool legacy_recovery_save_snapshot_valid(
             LEGACY_SHIP_HOLD_INGOTS_MAX) {
         return false;
     }
-    for (int commodity = 0; commodity < COMMODITY_COUNT; commodity++) {
+    for (int commodity = 0;
+         commodity < SAVE_V82_COMMODITY_COUNT; commodity++) {
         if (!isfinite(ship->cargo[commodity]) ||
             ship->cargo[commodity] < 0.0f ||
             ship->cargo[commodity] >
