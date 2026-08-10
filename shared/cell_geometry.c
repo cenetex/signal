@@ -234,12 +234,14 @@ bool cell_graph_authored(cell_layout_kind_t kind, cell_graph_t *out) {
     case CELL_LAYOUT_TUG:
         PUSH(0, 0, CELL_SHAPE_HEX, CELL_ROLE_CONTROL, 0);
         PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_ENGINE, 3);
+        PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_TOW, 0);
         break;
     case CELL_LAYOUT_LIGHT_FREIGHTER:
         PUSH(0, 0, CELL_SHAPE_HEX, CELL_ROLE_CONTROL, 0);
         PUSH(1, 0, CELL_SHAPE_HEX, CELL_ROLE_CARGO, 0);
         PUSH(2, 0, CELL_SHAPE_HEX, CELL_ROLE_CARGO, 0);
         PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_ENGINE, 3);
+        PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_TOW, 0);
         break;
     case CELL_LAYOUT_HEAVY_FREIGHTER:
         PUSH(0, 0, CELL_SHAPE_REINFORCED_HEX, CELL_ROLE_CONTROL, 0);
@@ -255,7 +257,7 @@ bool cell_graph_authored(cell_layout_kind_t kind, cell_graph_t *out) {
         PUSH(0, 0, CELL_SHAPE_HEX, CELL_ROLE_CONTROL, 0);
         PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_ENGINE, 3);
         PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_TOW, 0);
-        PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_SENSOR, 5);
+        PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_WEAPON, 5);
         break;
     case CELL_LAYOUT_STATION_HUB_7:
         PUSH(0, 0, CELL_SHAPE_REINFORCED_HEX, CELL_ROLE_HUB, 0);
@@ -266,6 +268,17 @@ bool cell_graph_authored(cell_layout_kind_t kind, cell_graph_t *out) {
                                           CELL_ROLE_SYSTEM;
             PUSH(c.q, c.r, CELL_SHAPE_HEX, role, 0);
         }
+        break;
+    case CELL_LAYOUT_CARGO_DRONE:
+        PUSH(0, 0, CELL_SHAPE_HEX, CELL_ROLE_CONTROL, 0);
+        PUSH(1, 0, CELL_SHAPE_HEX, CELL_ROLE_CARGO, 0);
+        PUSH(2, 0, CELL_SHAPE_HEX, CELL_ROLE_CARGO, 0);
+        PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_ENGINE, 3);
+        break;
+    case CELL_LAYOUT_LASER_DRONE:
+        PUSH(0, 0, CELL_SHAPE_HEX, CELL_ROLE_CONTROL, 0);
+        PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_ENGINE, 3);
+        PUSH(0, 0, CELL_SHAPE_TRIANGLE, CELL_ROLE_WEAPON, 0);
         break;
     default:
         return false;

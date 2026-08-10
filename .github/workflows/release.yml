@@ -37,7 +37,7 @@ jobs:
           make test
           make test-soak
           make test-san
-          make banned-apis deterministic-libm doc-freshness soak-automation vendor-drift
+          make cargo-trust-audit banned-apis deterministic-libm doc-freshness soak-automation vendor-drift
           make cppcheck
 
   build-native:

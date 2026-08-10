@@ -37,13 +37,15 @@ const char* ship_loadout_name(hull_class_t hull_class) {
 cell_layout_kind_t ship_cell_layout_kind(hull_class_t hull_class) {
     switch (hull_class) {
     case HULL_CLASS_HAULER:
-    case HULL_CLASS_DRONE_CARGO:
         return CELL_LAYOUT_LIGHT_FREIGHTER;
+    case HULL_CLASS_DRONE_CARGO:
+        return CELL_LAYOUT_CARGO_DRONE;
     case HULL_CLASS_DRONE_TRACTOR:
         return CELL_LAYOUT_TUG;
+    case HULL_CLASS_DRONE_LASER:
+        return CELL_LAYOUT_LASER_DRONE;
     case HULL_CLASS_MINER:
     case HULL_CLASS_NPC_MINER:
-    case HULL_CLASS_DRONE_LASER:
     default:
         return CELL_LAYOUT_UTILITY;
     }

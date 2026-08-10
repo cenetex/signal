@@ -306,13 +306,17 @@ static void format_upstream_step(commodity_t commodity,
         snprintf(out, out_size, "MAKE FRAME: FE INGOT TO FRAME PRESS");
         break;
     case COMMODITY_LASER_MODULE:
-        snprintf(out, out_size, "MAKE LASER MOD: CU INGOT + FRAME");
+        snprintf(out, out_size, "MAKE LASER MOD: CR INGOT + FRAME");
         break;
     case COMMODITY_TRACTOR_MODULE:
-        snprintf(out, out_size, "MAKE TRACTOR MOD: CR INGOT + FRAME");
+        snprintf(out, out_size, "MAKE TRACTOR MOD: CU INGOT + FRAME");
         break;
     case COMMODITY_REPAIR_KIT:
         snprintf(out, out_size, "MAKE REPAIR KITS: FRAME + LASER + TRACTOR");
+        break;
+    case COMMODITY_ENGINE_MODULE:
+        snprintf(out, out_size,
+                 "MAKE ENGINE: FRAME + CU INGOT + CR INGOT");
         break;
     default:
         snprintf(out, out_size, "SOURCE %s", commodity_short_name(commodity));
@@ -630,6 +634,7 @@ static int commodity_spine_priority(commodity_t commodity) {
     case COMMODITY_CRYSTAL_INGOT:    return 7;
     case COMMODITY_TRACTOR_MODULE:   return 8;
     case COMMODITY_REPAIR_KIT:       return 9;
+    case COMMODITY_ENGINE_MODULE:    return 10;
     default:                         return 20;
     }
 }

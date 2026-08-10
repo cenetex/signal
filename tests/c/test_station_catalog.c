@@ -98,46 +98,64 @@ static bool station_catalog_test_patch_actor(
 }
 
 static bool station_catalog_test_downgrade_to_v7(const char *path) {
-    FILE *f = fopen(path, "rb+");
+    FILE *f = fopen(path, "rb");
     if (!f) return false;
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);
         return false;
     }
     long size = ftell(f);
-    if (size < TEST_CATALOG_CRC_SIZE + ACTOR_PRINCIPAL_ID_SIZE) {
+    station_t layout = {0};
+    long engine_price_offset =
+        TEST_CATALOG_HEADER_SIZE +
+        (long)sizeof(layout.id) +
+        (long)sizeof(layout.name) +
+        (long)sizeof(layout.pos) +
+        (long)sizeof(layout.radius) +
+        (long)sizeof(layout.dock_radius) +
+        (long)sizeof(layout.signal_range) +
+        (long)sizeof(layout.signal_connected) +
+        10L * (long)sizeof(float);
+    if (size < engine_price_offset + (long)sizeof(float) +
+                   TEST_CATALOG_CRC_SIZE + ACTOR_PRINCIPAL_ID_SIZE) {
         fclose(f);
         return false;
     }
-    long legacy_payload_size =
-        size - TEST_CATALOG_CRC_SIZE - ACTOR_PRINCIPAL_ID_SIZE;
-    uint32_t version = 7;
-    if (fseek(f, sizeof(uint32_t), SEEK_SET) != 0 ||
-        fwrite(&version, sizeof(version), 1, f) != 1 ||
-        fflush(f) != 0 ||
-        fseek(f, 0, SEEK_SET) != 0) {
+    uint8_t *bytes = malloc((size_t)size);
+    if (!bytes || fseek(f, 0, SEEK_SET) != 0 ||
+        fread(bytes, 1, (size_t)size, f) != (size_t)size) {
+        free(bytes);
         fclose(f);
         return false;
     }
+    fclose(f);
 
-    uint32_t crc = 0;
-    uint8_t chunk[4096];
-    long remaining = legacy_payload_size;
-    while (remaining > 0) {
-        size_t want = remaining < (long)sizeof(chunk)
-            ? (size_t)remaining
-            : sizeof(chunk);
-        size_t read_size = fread(chunk, 1, want, f);
-        if (read_size != want) {
-            fclose(f);
-            return false;
-        }
-        crc = station_catalog_test_crc32_update(crc, chunk, read_size);
-        remaining -= (long)read_size;
-    }
-    bool ok = fseek(f, legacy_payload_size, SEEK_SET) == 0 &&
-        fwrite(&crc, sizeof(crc), 1, f) == 1 &&
+    /* v9 inserted one price immediately after the historical ten-price
+     * array. v8 then appended the actor before CRC. Remove both fields so
+     * this fixture is an actual v7 payload, not a relabelled v9 stream. */
+    memmove(bytes + engine_price_offset,
+            bytes + engine_price_offset + sizeof(float),
+            (size_t)(size - engine_price_offset - (long)sizeof(float)));
+    size -= (long)sizeof(float);
+    long actor_offset =
+        size - TEST_CATALOG_CRC_SIZE - ACTOR_PRINCIPAL_ID_SIZE;
+    memmove(bytes + actor_offset,
+            bytes + actor_offset + ACTOR_PRINCIPAL_ID_SIZE,
+            (size_t)(size - actor_offset - ACTOR_PRINCIPAL_ID_SIZE));
+    size -= ACTOR_PRINCIPAL_ID_SIZE;
+
+    uint32_t version = 7;
+    memcpy(bytes + sizeof(uint32_t), &version, sizeof(version));
+    long legacy_payload_size = size - TEST_CATALOG_CRC_SIZE;
+    uint32_t crc = station_catalog_test_crc32_update(
+        0, bytes, (size_t)legacy_payload_size);
+    memcpy(bytes + legacy_payload_size, &crc, sizeof(crc));
+
+    f = fopen(path, "wb");
+    bool ok = f && fwrite(bytes, 1, (size_t)size, f) == (size_t)size &&
         fflush(f) == 0;
+    free(bytes);
+    if (!f) return false;
     if (fclose(f) != 0) ok = false;
     return ok;
 }

@@ -71,6 +71,20 @@ const char *example = "cargo_receipt_verify_signature(receipt)";
             for failure in failures
         ), failures)
 
+    def test_physical_origin_evaluator_is_a_composed_boundary(self) -> None:
+        sources = baseline_sources()
+        sources["server/sim_construction.c"] = (
+            sources["server/sim_construction.c"].replace(
+                "cargo_receipt_evaluate_at_station(0, 0, 0, 0);",
+                (
+                    "cargo_receipt_evaluate_physical_origin_at_station("
+                    "0, 0, 0, 0);"
+                ),
+                1,
+            )
+        )
+        self.assertEqual(audit.audit_sources(sources), [])
+
     def test_ignored_required_append_is_rejected(self) -> None:
         sources = baseline_sources()
         sources["server/sim_production.c"] += """

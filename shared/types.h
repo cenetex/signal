@@ -161,6 +161,8 @@ typedef enum {
                                    * from 1 FRAME + 1 LASER + 1 TRACTOR → 100 kits.
                                    * The end-of-chain demand sink that closes
                                    * the ferrite + cuprite production loops. */
+    COMMODITY_ENGINE_MODULE,     /* frame + cuprite + crystal: propulsion cell
+                                  * installed by shipyards on new hulls */
     COMMODITY_COUNT,
 } commodity_t;
 
@@ -282,6 +284,7 @@ typedef enum {
      * raw-ore buffers live in _inventory_cache[]. Keep the enum value
      * for wire/save stability and legacy tests. */
     CARGO_KIND_ORE        = 5,
+    CARGO_KIND_ENGINE     = 6,
     CARGO_KIND_COUNT
 } cargo_kind_t;
 
@@ -339,6 +342,7 @@ typedef enum {
     RECIPE_TRACTOR_COIL,
     RECIPE_REPAIR_KIT_FAB,    /* 1 frame + 1 laser + 1 tractor -> 100 repair kits at shipyards */
     RECIPE_LEGACY_MIGRATE,
+    RECIPE_ENGINE_BASIC,
     RECIPE_COUNT
 } recipe_id_t;
 
@@ -655,7 +659,8 @@ typedef enum {
      * see SAVE_VERSION 44 migration. SHIPYARD pinned to its old value
      * to keep the migration table simple. */
     MODULE_SHIPYARD = 9,
-    MODULE_COUNT = 10
+    MODULE_ENGINE_FAB = 10,
+    MODULE_COUNT = 11
 } module_type_t;
 
 /* module_type_name moved to module_schema.h — reads from schema. */
@@ -673,6 +678,7 @@ static inline const char *commodity_short_label(commodity_t c) {
         case COMMODITY_REPAIR_KIT:    return "repair kits";
         case COMMODITY_LASER_MODULE:  return "laser modules";
         case COMMODITY_TRACTOR_MODULE:return "tractor modules";
+        case COMMODITY_ENGINE_MODULE: return "engine modules";
         default:                      return "units";
     }
 }
@@ -719,7 +725,7 @@ typedef struct {
 } station_module_t;
 
 enum {
-    MAX_MODULES_PER_STATION = 16,
+    MAX_MODULES_PER_STATION = 18,
     MAX_ARMS = 4,
     PLAYER_PLAN_TYPE_LIMIT = 2, /* max distinct planned module types per player */
 };

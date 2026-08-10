@@ -48,6 +48,8 @@ static bool kind_matches_commodity(uint8_t kind, uint8_t commodity) {
         return commodity == (uint8_t)COMMODITY_TRACTOR_MODULE;
     case CARGO_KIND_REPAIR_KIT:
         return commodity == (uint8_t)COMMODITY_REPAIR_KIT;
+    case CARGO_KIND_ENGINE:
+        return commodity == (uint8_t)COMMODITY_ENGINE_MODULE;
     case CARGO_KIND_ORE:
     case CARGO_KIND_COUNT:
         return false;
@@ -95,6 +97,15 @@ bool cargo_craft_v1_recipe_shape(
             .input_count = 3,
             .output_kind = (uint8_t)CARGO_KIND_REPAIR_KIT,
             .output_commodity = (uint8_t)COMMODITY_REPAIR_KIT,
+        };
+        break;
+    case RECIPE_ENGINE_BASIC:
+        shape = (cargo_craft_v1_recipe_shape_t){
+            .recipe_id = (uint16_t)RECIPE_ENGINE_BASIC,
+            .output_count = 1,
+            .input_count = 3,
+            .output_kind = (uint8_t)CARGO_KIND_ENGINE,
+            .output_commodity = (uint8_t)COMMODITY_ENGINE_MODULE,
         };
         break;
     case RECIPE_LEGACY_MIGRATE:

@@ -9,10 +9,9 @@
  * remain instance-selected and intentionally do not resolve here. */
 typedef struct {
     recipe_id_t recipe_id;
-    commodity_t primary_input;
-    float primary_units_per_batch;
-    commodity_t secondary_input;
-    float secondary_units_per_batch;
+    size_t input_count;
+    commodity_t inputs[RECIPE_INPUT_MAX];
+    float input_units_per_batch[RECIPE_INPUT_MAX];
     commodity_t output;
     float output_units_per_batch;
 } producer_recipe_t;

@@ -46,6 +46,20 @@ cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
     const cargo_unit_t *unit,
     const cargo_receipt_chain_t *chain);
 
+/*
+ * Evaluate receipt-less cargo that is still represented by its physical pod.
+ * The caller must separately prove that the evaluating station owns that pod;
+ * this function proves the exact unit against its declared origin station's
+ * durable SMELT/CRAFT history, then applies the evaluating station's authority
+ * and origin policy.  This is the physical-custody counterpart to a receipt
+ * chain, not permission to trust an origin_station label by itself.
+ */
+cargo_receipt_station_evaluation_t
+cargo_receipt_evaluate_physical_origin_at_station(
+    const world_t *world,
+    int evaluating_station,
+    const cargo_unit_t *unit);
+
 #ifdef __cplusplus
 }
 #endif

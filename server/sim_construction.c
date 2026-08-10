@@ -94,19 +94,22 @@ static const cargo_receipt_chain_t *construction_station_chain_at(
 }
 
 static bool construction_chainless_unit_trusted(
-    const world_t *w, int station_idx, const cargo_unit_t *unit) {
+    const world_t *w, int station_idx,
+    const cargo_pod_t *pod, const cargo_unit_t *unit) {
     if (!w || !unit || station_idx < 0 ||
         station_idx >= w->station_count ||
-        station_idx >= MAX_STATIONS ||
-        unit->origin_station != (uint8_t)station_idx) {
+        station_idx >= MAX_STATIONS || !pod) {
+        return false;
+    }
+    if (unit->origin_station != (uint8_t)station_idx &&
+        cargo_pod_custody_station(pod) != station_idx) {
         return false;
     }
     cargo_receipt_station_evaluation_t evaluated =
-        cargo_receipt_evaluate_at_station(
-            w, station_idx, unit, NULL);
+        cargo_receipt_evaluate_physical_origin_at_station(
+            w, station_idx, unit);
     return evaluated.accepted &&
-           evaluated.local_origin_without_receipt &&
-           evaluated.origin_station == station_idx;
+           evaluated.origin_station == (int)unit->origin_station;
 }
 
 static bool construction_pod_arrived_for_module(
@@ -184,7 +187,7 @@ static int consume_trusted_module_supply_pod(
                 &pod->manifest_units[
                     pod->manifest_count - 1u - unit_count];
             if (!construction_chainless_unit_trusted(
-                    w, station_idx, candidate)) {
+                    w, station_idx, pod, candidate)) {
                 break;
             }
             units[unit_count++] = *candidate;

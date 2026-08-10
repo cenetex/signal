@@ -124,6 +124,7 @@ const char* station_role_name(const station_t* station) {
         case MODULE_FRAME_PRESS: return "Yard";
         case MODULE_LASER_FAB:   return "Beamworks";
         case MODULE_TRACTOR_FAB: return "Beamworks";
+        case MODULE_ENGINE_FAB:  return "Engine Works";
         case MODULE_SIGNAL_RELAY:return "Outpost";
         default:                 return "Station";
     }
@@ -136,6 +137,7 @@ const char* station_role_short_name(const station_t* station) {
         case MODULE_FRAME_PRESS: return "YARD";
         case MODULE_LASER_FAB:   return "BEAM";
         case MODULE_TRACTOR_FAB: return "BEAM";
+        case MODULE_ENGINE_FAB:  return "ENG";
         case MODULE_SIGNAL_RELAY:return "OTP";
         default:                 return "STN";
     }
@@ -148,6 +150,7 @@ const char* station_role_hub_label(const station_t* station) {
         case MODULE_FRAME_PRESS: return "YARD // presses frames";
         case MODULE_LASER_FAB:   return "BEAMWORKS // builds lasers";
         case MODULE_TRACTOR_FAB: return "BEAMWORKS // builds tractors";
+        case MODULE_ENGINE_FAB:  return "ENGINE WORKS // builds engines";
         case MODULE_SIGNAL_RELAY:return "OUTPOST // broadcasts signal";
         default:                 return "STATION";
     }
@@ -160,6 +163,7 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
         case MODULE_FRAME_PRESS: PAL_UNPACK3(PAL_MODULE_FRAME_PRESS, *r, *g0, *b); break;
         case MODULE_LASER_FAB:   PAL_UNPACK3(PAL_MODULE_LASER_FAB,   *r, *g0, *b); break;
         case MODULE_TRACTOR_FAB: PAL_UNPACK3(PAL_MODULE_TRACTOR_FAB, *r, *g0, *b); break;
+        case MODULE_ENGINE_FAB:  PAL_UNPACK3(PAL_MODULE_ENGINE_FAB, *r, *g0, *b); break;
         case MODULE_SIGNAL_RELAY:PAL_UNPACK3(PAL_MODULE_SIGNAL_RELAY, *r, *g0, *b); break;
         default:                 PAL_UNPACK3(PAL_STATION_NEUTRAL,     *r, *g0, *b); break;
     }
@@ -343,6 +347,7 @@ static module_type_t ui_product_producer_module(commodity_t commodity)
     case COMMODITY_FRAME:          return MODULE_FRAME_PRESS;
     case COMMODITY_LASER_MODULE:   return MODULE_LASER_FAB;
     case COMMODITY_TRACTOR_MODULE: return MODULE_TRACTOR_FAB;
+    case COMMODITY_ENGINE_MODULE:  return MODULE_ENGINE_FAB;
     default:                       return MODULE_COUNT;
     }
 }
@@ -2080,12 +2085,13 @@ bool station_shipyard_can_commission_hull_local(const station_t *st,
                                                 hull_class_t hull_class)
 {
     if (!st || station_active_shipyard_count(st) < 1) return false;
-    int frames = 0, lasers = 0, tractors = 0;
-    if (!shipyard_hull_cost(hull_class, &frames, &lasers, &tractors))
-        return false;
-    return station_shipyard_material_available_local(st, COMMODITY_FRAME) >= frames &&
-           station_shipyard_material_available_local(st, COMMODITY_LASER_MODULE) >= lasers &&
-           station_shipyard_material_available_local(st, COMMODITY_TRACTOR_MODULE) >= tractors;
+    shipyard_bill_t bill = {0};
+    if (!shipyard_hull_bill(hull_class, &bill)) return false;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        if (station_shipyard_material_available_local(
+                st, (commodity_t)c) < bill.units[c]) return false;
+    }
+    return true;
 }
 
 static bool trade_is_finished_good(commodity_t c)
@@ -5215,6 +5221,7 @@ static const char *yard_module_effect_label(module_type_t type)
     case MODULE_FRAME_PRESS:  return "presses frames";
     case MODULE_LASER_FAB:    return "builds lasers";
     case MODULE_TRACTOR_FAB:  return "builds tractors";
+    case MODULE_ENGINE_FAB:   return "builds engines";
     case MODULE_SHIPYARD:     return "builds ships/kits";
     default:                  return "adds station function";
     }
@@ -5269,22 +5276,26 @@ static void draw_yard_view(const station_ui_state_t *ui,
             draw_more_rows_hint(cx, my, "more yard rows hidden");
             return;
         }
-        int frames = 0, lasers = 0, tractors = 0;
-        (void)shipyard_hull_cost(hull_rows[i].hull, &frames, &lasers, &tractors);
+        shipyard_bill_t bill = {0};
+        (void)shipyard_hull_bill(hull_rows[i].hull, &bill);
         int have_frames =
             station_shipyard_material_available_local(st, COMMODITY_FRAME);
         int have_lasers =
             station_shipyard_material_available_local(st, COMMODITY_LASER_MODULE);
         int have_tractors =
             station_shipyard_material_available_local(st, COMMODITY_TRACTOR_MODULE);
+        int have_engines =
+            station_shipyard_material_available_local(st, COMMODITY_ENGINE_MODULE);
         bool ready = station_shipyard_can_commission_hull_local(
             st, hull_rows[i].hull);
-        char left[64], right[32];
+        char left[64], right[48];
         snprintf(left, sizeof(left), "[%s] %s",
                  hull_rows[i].key, ship_loadout_name(hull_rows[i].hull));
-        snprintf(right, sizeof(right), "%d/%df %d/%dl %d/%dt",
-                 have_frames, frames, have_lasers, lasers,
-                 have_tractors, tractors);
+        snprintf(right, sizeof(right), "%d/%df %d/%dl %d/%dt %d/%de",
+                 have_frames, bill.units[COMMODITY_FRAME],
+                 have_lasers, bill.units[COMMODITY_LASER_MODULE],
+                 have_tractors, bill.units[COMMODITY_TRACTOR_MODULE],
+                 have_engines, bill.units[COMMODITY_ENGINE_MODULE]);
         draw_row_lr(cx, my, inner_right,
                     ready ? (const uint8_t[3]){ PAL_TEXT_SECONDARY }
                           : (const uint8_t[3]){ PAL_CANNOT_AFFORD },

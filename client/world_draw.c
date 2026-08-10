@@ -1187,6 +1187,7 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
     case MODULE_FRAME_PRESS:  PAL_UNPACK3(PAL_MODULE_FRAME_PRESS,  *r, *g, *b); return;
     case MODULE_LASER_FAB:    PAL_UNPACK3(PAL_MODULE_LASER_FAB,    *r, *g, *b); return;
     case MODULE_TRACTOR_FAB:  PAL_UNPACK3(PAL_MODULE_TRACTOR_FAB,  *r, *g, *b); return;
+    case MODULE_ENGINE_FAB:   PAL_UNPACK3(PAL_MODULE_ENGINE_FAB,   *r, *g, *b); return;
     case MODULE_SIGNAL_RELAY: PAL_UNPACK3(PAL_MODULE_SIGNAL_RELAY,  *r, *g, *b); return;
     case MODULE_REPAIR_BAY:   PAL_UNPACK3(PAL_MODULE_REPAIR_BAY,    *r, *g, *b); return;
     case MODULE_SHIPYARD:     PAL_UNPACK3(PAL_MODULE_SHIPYARD,      *r, *g, *b); return;
@@ -1214,6 +1215,7 @@ void commodity_color(commodity_t c, float *r, float *g, float *b) {
     case COMMODITY_LASER_MODULE:   PAL_UNPACK3(PAL_COMMODITY_LASER_MODULE,   *r, *g, *b); return;
     case COMMODITY_TRACTOR_MODULE: PAL_UNPACK3(PAL_COMMODITY_TRACTOR_MODULE, *r, *g, *b); return;
     case COMMODITY_REPAIR_KIT:     PAL_UNPACK3(PAL_COMMODITY_REPAIR_KIT,     *r, *g, *b); return;
+    case COMMODITY_ENGINE_MODULE:  PAL_UNPACK3(PAL_COMMODITY_ENGINE_MODULE,  *r, *g, *b); return;
     default:                       PAL_UNPACK3(PAL_MODULE_GENERIC,           *r, *g, *b); return;
     }
 }
@@ -1406,7 +1408,8 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
     /* ---- FABRICATOR (press, laser, tractor): Pentagon ---- */
     case MODULE_FRAME_PRESS:
     case MODULE_LASER_FAB:
-    case MODULE_TRACTOR_FAB: {
+    case MODULE_TRACTOR_FAB:
+    case MODULE_ENGINE_FAB: {
         /* Filled pentagon hull */
         fill_ngon(5, 28, mr*0.30f, mg*0.30f, mb*0.30f, alpha);
         /* Inner pentagon (product chamber) */
@@ -1559,7 +1562,8 @@ static void draw_layout_warning_outline(module_type_t type,
         outline_ngon(20, 35.0f, wr, wg, wb, a);
     } else if (type == MODULE_FRAME_PRESS ||
                type == MODULE_LASER_FAB ||
-               type == MODULE_TRACTOR_FAB) {
+               type == MODULE_TRACTOR_FAB ||
+               type == MODULE_ENGINE_FAB) {
         outline_ngon(5, 35.0f, wr, wg, wb, a);
     } else {
         sgl_c4f(wr, wg, wb, a);
@@ -2455,7 +2459,8 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             /* Fabricator: beam to nearest supplier when input buffer has material */
             if (!m->scaffold && (m->type == MODULE_FRAME_PRESS ||
                                   m->type == MODULE_LASER_FAB ||
-                                  m->type == MODULE_TRACTOR_FAB)) {
+                                  m->type == MODULE_TRACTOR_FAB ||
+                                  m->type == MODULE_ENGINE_FAB)) {
                 float fr, fg, fb;
                 module_color(m->type, &fr, &fg, &fb);
                 bool producing = station->modules[mod_idx[i]].input_buffer > 0.1f;

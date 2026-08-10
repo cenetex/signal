@@ -315,12 +315,9 @@ static void set_resolved_chainless_trust(
     out->trust.authority_trust = authority.trust;
 }
 
-cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
-    const world_t *world,
-    int evaluating_station,
-    const cargo_unit_t *unit,
-    const cargo_receipt_chain_t *chain) {
-    cargo_receipt_station_evaluation_t out = {
+static cargo_receipt_station_evaluation_t
+cargo_receipt_station_evaluation_default(void) {
+    return (cargo_receipt_station_evaluation_t){
         .accepted = false,
         .local_origin_without_receipt = false,
         .trust = {
@@ -346,6 +343,15 @@ cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
         .craft_input_lineage_proven = false,
         .craft_conservation_proven = false,
     };
+}
+
+cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
+    const world_t *world,
+    int evaluating_station,
+    const cargo_unit_t *unit,
+    const cargo_receipt_chain_t *chain) {
+    cargo_receipt_station_evaluation_t out =
+        cargo_receipt_station_evaluation_default();
     if (!world || !unit || evaluating_station < 0 ||
         evaluating_station >= world->station_count ||
         evaluating_station >= MAX_STATIONS ||
@@ -494,6 +500,92 @@ cargo_receipt_station_evaluation_t cargo_receipt_evaluate_at_station(
      * station policy may decide whether suspicious/contraband authority or
      * origin attributes are tolerated.
      */
+    out.accepted = cargo_legality_station_accepts(out.legality);
+    return out;
+}
+
+cargo_receipt_station_evaluation_t
+cargo_receipt_evaluate_physical_origin_at_station(
+    const world_t *world,
+    int evaluating_station,
+    const cargo_unit_t *unit) {
+    cargo_receipt_station_evaluation_t out =
+        cargo_receipt_station_evaluation_default();
+    if (!world || !unit || evaluating_station < 0 ||
+        evaluating_station >= world->station_count ||
+        evaluating_station >= MAX_STATIONS ||
+        unit->origin_station >= world->station_count ||
+        unit->origin_station >= MAX_STATIONS ||
+        !station_exists(&world->stations[evaluating_station]) ||
+        !station_exists(&world->stations[unit->origin_station])) {
+        return out;
+    }
+
+    const station_t *viewer = &world->stations[evaluating_station];
+    const int origin_station = (int)unit->origin_station;
+    const station_t *origin_station_state =
+        &world->stations[origin_station];
+    const bool screens = cargo_legality_station_screens(
+        viewer, evaluating_station);
+    const bool tolerates = cargo_legality_station_tolerates_contraband(
+        viewer, evaluating_station);
+    out.legality = legality_base(viewer, evaluating_station);
+    out.origin_station = origin_station;
+    out.legality.origin_station = origin_station;
+    out.local_origin_without_receipt =
+        origin_station == evaluating_station;
+
+    cargo_receipt_origin_proof_t origin = {0};
+    out.trust = empty_chain_trust_result();
+    out.origin_status = cargo_receipt_resolve_local_origin(
+        origin_station_state, unit->pub, &origin);
+    if (out.origin_status !=
+        CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED) {
+        out.local_origin_without_receipt = false;
+        out.trust.status =
+            CARGO_RECEIPT_TRUST_REJECT_MISSING_ORIGIN;
+        out.legality.reasons |=
+            CARGO_LEGALITY_REASON_MISSING_RECEIPT;
+        out.legality.status = CARGO_LEGALITY_CONTRABAND;
+        return out;
+    }
+
+    authority_resolution_t authority = resolve_authority(
+        world, evaluating_station, origin.authority);
+    set_resolved_chainless_trust(&out, &origin, authority);
+    if (!cargo_origin_metadata_matches(
+            &origin, origin_station, unit)) {
+        out.local_origin_without_receipt = false;
+        reject_origin_metadata(&out, false);
+        return out;
+    }
+    mark_craft_provenance(&out, &origin);
+    mark_authority_legality(
+        &out.legality, authority.trust, screens);
+    if (!authority_policy_accepts(
+            authority.trust, screens, tolerates)) {
+        return out;
+    }
+
+    if (cargo_legality_station_tolerates_contraband(
+            origin_station_state, origin_station)) {
+        out.legality.reasons |=
+            CARGO_LEGALITY_REASON_BLACK_MARKET_AUTHORITY;
+        out.legality.black_market_station = origin_station;
+        out.legality.status = CARGO_LEGALITY_CONTRABAND;
+    }
+
+    if (origin_station < 64) {
+        uint64_t forbidden =
+            station_policy_forbidden_origin_mask_for_station(
+                viewer, evaluating_station,
+                (commodity_t)unit->commodity);
+        if ((forbidden & (1ULL << origin_station)) != 0) {
+            out.legality.reasons |=
+                CARGO_LEGALITY_REASON_BANNED_ORIGIN;
+            out.legality.status = CARGO_LEGALITY_CONTRABAND;
+        }
+    }
     out.accepted = cargo_legality_station_accepts(out.legality);
     return out;
 }

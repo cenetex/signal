@@ -536,6 +536,7 @@ static void construction_setup_split_shipyard_materials(station_t *st) {
     add_module_at(st, MODULE_SHIPYARD, 3, 4);
     add_hopper_for(st, 2, 3, COMMODITY_LASER_MODULE);
     add_hopper_for(st, 3, 4, COMMODITY_TRACTOR_MODULE);
+    add_hopper_for(st, 3, 5, COMMODITY_ENGINE_MODULE);
     rebuild_station_services(st);
 }
 
@@ -2686,6 +2687,39 @@ TEST(test_one_shipyard_builds_ships_two_shipyards_build_station_modules) {
     station_cleanup(&st);
 }
 
+TEST(test_shipyard_bill_is_derived_from_hull_cell_graph) {
+    for (int hull = 0; hull < HULL_CLASS_COUNT; hull++) {
+        cell_graph_t graph = {0};
+        ASSERT(cell_graph_authored(
+            ship_cell_layout_kind((hull_class_t)hull), &graph));
+        cell_matter_cost_t matter = cell_graph_matter_cost(&graph);
+        shipyard_bill_t bill = {0};
+        ASSERT(shipyard_hull_bill((hull_class_t)hull, &bill));
+
+        ASSERT_EQ_INT(bill.units[COMMODITY_FRAME], matter.struts);
+        ASSERT_EQ_INT(
+            bill.units[COMMODITY_ENGINE_MODULE],
+            cell_graph_role_count(&graph, CELL_ROLE_ENGINE));
+        ASSERT_EQ_INT(
+            bill.units[COMMODITY_TRACTOR_MODULE],
+            cell_graph_role_count(&graph, CELL_ROLE_TOW));
+        ASSERT_EQ_INT(
+            bill.units[COMMODITY_LASER_MODULE],
+            cell_graph_role_count(&graph, CELL_ROLE_WEAPON));
+        ASSERT(bill.units[COMMODITY_ENGINE_MODULE] > 0);
+
+        for (int commodity = 0; commodity < COMMODITY_COUNT; commodity++) {
+            if (commodity == COMMODITY_FRAME ||
+                commodity == COMMODITY_ENGINE_MODULE ||
+                commodity == COMMODITY_TRACTOR_MODULE ||
+                commodity == COMMODITY_LASER_MODULE) {
+                continue;
+            }
+            ASSERT_EQ_INT(bill.units[commodity], 0);
+        }
+    }
+}
+
 TEST(test_shipyard_commission_completes_onto_docked_player) {
     WORLD_DECL;
     world_reset(&w);
@@ -2696,12 +2730,17 @@ TEST(test_shipyard_commission_completes_onto_docked_player) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    shipyard_bill_t bill = {0};
+    ASSERT(shipyard_hull_bill(HULL_CLASS_MINER, &bill));
+    int engines = bill.units[COMMODITY_ENGINE_MODULE];
     ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
     ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
     ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_ENGINE_MODULE, 0));
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
     ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
     ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+    ASSERT(station_finished_mint(st, COMMODITY_ENGINE_MODULE, engines, NULL) == engines);
     ASSERT(test_anchor_station_legacy_cargo(&w, 1));
 
     server_player_t *sp = &w.players[0];
@@ -3217,12 +3256,17 @@ TEST(test_shipyard_commission_debits_player_ledger) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    shipyard_bill_t bill = {0};
+    ASSERT(shipyard_hull_bill(HULL_CLASS_MINER, &bill));
+    int engines = bill.units[COMMODITY_ENGINE_MODULE];
     ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
     ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
     ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_ENGINE_MODULE, 0));
     ASSERT(station_finished_mint(st, COMMODITY_FRAME, frames, NULL) == frames);
     ASSERT(station_finished_mint(st, COMMODITY_LASER_MODULE, lasers, NULL) == lasers);
     ASSERT(station_finished_mint(st, COMMODITY_TRACTOR_MODULE, tractors, NULL) == tractors);
+    ASSERT(station_finished_mint(st, COMMODITY_ENGINE_MODULE, engines, NULL) == engines);
     ASSERT(test_anchor_station_legacy_cargo(&w, 1));
 
     server_player_t *sp = &w.players[0];
@@ -3237,7 +3281,8 @@ TEST(test_shipyard_commission_debits_player_ledger) {
     float expected =
         (float)frames * station_sell_price(st, COMMODITY_FRAME) +
         (float)lasers * station_sell_price(st, COMMODITY_LASER_MODULE) +
-        (float)tractors * station_sell_price(st, COMMODITY_TRACTOR_MODULE);
+        (float)tractors * station_sell_price(st, COMMODITY_TRACTOR_MODULE) +
+        (float)engines * station_sell_price(st, COMMODITY_ENGINE_MODULE);
     float before = ledger_balance_by_pubkey(st, sp->pubkey);
 
     ASSERT(shipyard_queue_ship_commission(&w, 1, 0, HULL_CLASS_MINER));
@@ -3257,11 +3302,15 @@ TEST(test_shipyard_commission_consumes_towed_material_pods) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    shipyard_bill_t bill = {0};
+    ASSERT(shipyard_hull_bill(HULL_CLASS_MINER, &bill));
+    int engines = bill.units[COMMODITY_ENGINE_MODULE];
     int expected_pods = (frames > 0 ? 1 : 0) + (lasers > 0 ? 1 : 0) +
-                        (tractors > 0 ? 1 : 0);
+                        (tractors > 0 ? 1 : 0) + (engines > 0 ? 1 : 0);
     ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
     ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
     ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_ENGINE_MODULE, 0));
 
     server_player_t *sp = &w.players[0];
     player_init_ship(sp, &w);
@@ -3283,6 +3332,8 @@ TEST(test_shipyard_commission_consumes_towed_material_pods) {
         &w, sp, COMMODITY_LASER_MODULE, lasers, (const uint8_t *)"PODHULL1"));
     ASSERT(construction_spawn_towed_material_pod(
         &w, sp, COMMODITY_TRACTOR_MODULE, tractors, (const uint8_t *)"PODHULT1"));
+    ASSERT(construction_spawn_towed_material_pod(
+        &w, sp, COMMODITY_ENGINE_MODULE, engines, (const uint8_t *)"PODHULE1"));
     ASSERT(sp->ship->towed_pod_count > 0);
     for (int t = 0; t < sp->ship->towed_pod_count; t++)
         ASSERT(test_anchor_pod_legacy_cargo(
@@ -3305,6 +3356,7 @@ TEST(test_shipyard_commission_consumes_towed_material_pods) {
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_ENGINE_MODULE), 0);
     ASSERT(ledger_balance_by_pubkey(st, sp->pubkey) < before - 0.01f);
 }
 
@@ -3319,9 +3371,13 @@ TEST(test_shipyard_station_request_consumes_staged_material_pods) {
 
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    shipyard_bill_t bill = {0};
+    ASSERT(shipyard_hull_bill(HULL_CLASS_MINER, &bill));
+    int engines = bill.units[COMMODITY_ENGINE_MODULE];
     ASSERT(frames > 0 && frames <= CARGO_POD_MANIFEST_CAP);
     ASSERT(lasers > 0 && lasers <= CARGO_POD_MANIFEST_CAP);
     ASSERT(tractors > 0 && tractors <= CARGO_POD_MANIFEST_CAP);
+    ASSERT(engines > 0 && engines <= CARGO_POD_MANIFEST_CAP);
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_exists(&w.stations[s])) continue;
         ASSERT(test_set_station_finished_units(&w.stations[s],
@@ -3330,22 +3386,29 @@ TEST(test_shipyard_station_request_consumes_staged_material_pods) {
                                                COMMODITY_LASER_MODULE, 0));
         ASSERT(test_set_station_finished_units(&w.stations[s],
                                                COMMODITY_TRACTOR_MODULE, 0));
+        ASSERT(test_set_station_finished_units(&w.stations[s],
+                                               COMMODITY_ENGINE_MODULE, 0));
     }
 
     vec2 frame_hopper = st->pos;
     vec2 laser_hopper = st->pos;
     vec2 tractor_hopper = st->pos;
+    vec2 engine_hopper = st->pos;
     ASSERT(construction_hopper_pos_for(st, COMMODITY_FRAME, &frame_hopper));
     ASSERT(construction_hopper_pos_for(st, COMMODITY_LASER_MODULE,
                                        &laser_hopper));
     ASSERT(construction_hopper_pos_for(st, COMMODITY_TRACTOR_MODULE,
                                        &tractor_hopper));
+    ASSERT(construction_hopper_pos_for(st, COMMODITY_ENGINE_MODULE,
+                                       &engine_hopper));
     int frame_hopper_idx = construction_hopper_idx_for(st, COMMODITY_FRAME);
     int laser_hopper_idx = construction_hopper_idx_for(st, COMMODITY_LASER_MODULE);
     int tractor_hopper_idx = construction_hopper_idx_for(st, COMMODITY_TRACTOR_MODULE);
+    int engine_hopper_idx = construction_hopper_idx_for(st, COMMODITY_ENGINE_MODULE);
     ASSERT(frame_hopper_idx >= 0);
     ASSERT(laser_hopper_idx >= 0);
     ASSERT(tractor_hopper_idx >= 0);
+    ASSERT(engine_hopper_idx >= 0);
 
     int frame_pod = construction_spawn_loose_material_pod(
         &w, st->pos, COMMODITY_FRAME, frames - 1,
@@ -3356,9 +3419,13 @@ TEST(test_shipyard_station_request_consumes_staged_material_pods) {
     int tractor_pod = construction_spawn_loose_material_pod(
         &w, st->pos, COMMODITY_TRACTOR_MODULE, tractors,
         (const uint8_t *)"LOOSHULT");
+    int engine_pod = construction_spawn_loose_material_pod(
+        &w, st->pos, COMMODITY_ENGINE_MODULE, engines,
+        (const uint8_t *)"LOOSHULE");
     ASSERT(frame_pod >= 0);
     ASSERT(laser_pod >= 0);
     ASSERT(tractor_pod >= 0);
+    ASSERT(engine_pod >= 0);
     cargo_unit_t frame_shell = {0};
     ASSERT(hash_legacy_migrate_unit(
         (const uint8_t *)"HULLSHL1", COMMODITY_FRAME,
@@ -3368,22 +3435,27 @@ TEST(test_shipyard_station_request_consumes_staged_material_pods) {
     ASSERT(test_anchor_pod_legacy_cargo(&w, 1, frame_pod));
     ASSERT(test_anchor_pod_legacy_cargo(&w, 1, laser_pod));
     ASSERT(test_anchor_pod_legacy_cargo(&w, 1, tractor_pod));
+    ASSERT(test_anchor_pod_legacy_cargo(&w, 1, engine_pod));
 
     ASSERT(!shipyard_queue_station_hull_request(&w, 0, HULL_CLASS_MINER));
     ASSERT_EQ_INT(st->pending_ship_build_count, 0);
     ASSERT(w.cargo_pods[frame_pod].active);
     ASSERT(w.cargo_pods[laser_pod].active);
     ASSERT(w.cargo_pods[tractor_pod].active);
+    ASSERT(w.cargo_pods[engine_pod].active);
 
     w.cargo_pods[frame_pod].pos = frame_hopper;
     w.cargo_pods[laser_pod].pos = laser_hopper;
     w.cargo_pods[tractor_pod].pos = tractor_hopper;
+    w.cargo_pods[engine_pod].pos = engine_hopper;
     ASSERT(world_cargo_pod_set_module_tractor(
         &w, frame_pod, 1, frame_hopper_idx));
     ASSERT(world_cargo_pod_set_module_tractor(
         &w, laser_pod, 1, laser_hopper_idx));
     ASSERT(world_cargo_pod_set_module_tractor(
         &w, tractor_pod, 1, tractor_hopper_idx));
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, engine_pod, 1, engine_hopper_idx));
     vec2 staged_anchor = v2(0.0f, 0.0f);
     ASSERT(cargo_pod_module_tractor_anchor(
         &w, &w.cargo_pods[frame_pod], 1,
@@ -3397,6 +3469,10 @@ TEST(test_shipyard_station_request_consumes_staged_material_pods) {
         &w, &w.cargo_pods[tractor_pod], 1,
         tractor_hopper_idx, &staged_anchor));
     w.cargo_pods[tractor_pod].pos = staged_anchor;
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[engine_pod], 1,
+        engine_hopper_idx, &staged_anchor));
+    w.cargo_pods[engine_pod].pos = staged_anchor;
 
     ASSERT(shipyard_queue_station_hull_request(&w, 0, HULL_CLASS_MINER));
 
@@ -3410,9 +3486,87 @@ TEST(test_shipyard_station_request_consumes_staged_material_pods) {
     ASSERT(!w.cargo_pods[frame_pod].active);
     ASSERT(!w.cargo_pods[laser_pod].active);
     ASSERT(!w.cargo_pods[tractor_pod].active);
+    ASSERT(!w.cargo_pods[engine_pod].active);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_LASER_MODULE), 0);
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_TRACTOR_MODULE), 0);
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_ENGINE_MODULE), 0);
+}
+
+TEST(test_shipyard_station_request_consumes_yard_owned_material_pods) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *st = &w.stations[1];
+    if (!station_has_module(st, MODULE_SHIPYARD))
+        add_module_at(st, MODULE_SHIPYARD, 2, 0);
+    int yard_idx = -1;
+    for (int i = 0; i < st->module_count; i++) {
+        if (!st->modules[i].scaffold &&
+            st->modules[i].type == MODULE_SHIPYARD) {
+            yard_idx = i;
+            break;
+        }
+    }
+    ASSERT(yard_idx >= 0);
+
+    int frames = 0, lasers = 0, tractors = 0;
+    ASSERT(shipyard_hull_cost(
+        HULL_CLASS_MINER, &frames, &lasers, &tractors));
+    shipyard_bill_t bill = {0};
+    ASSERT(shipyard_hull_bill(HULL_CLASS_MINER, &bill));
+    commodity_t materials[4] = {
+        COMMODITY_FRAME,
+        COMMODITY_LASER_MODULE,
+        COMMODITY_TRACTOR_MODULE,
+        COMMODITY_ENGINE_MODULE,
+    };
+    int counts[4] = {
+        frames, lasers, tractors,
+        bill.units[COMMODITY_ENGINE_MODULE],
+    };
+    int pods[4] = {-1, -1, -1, -1};
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_exists(&w.stations[s])) continue;
+        for (int material = 0; material < 4; material++) {
+            ASSERT(test_set_station_finished_units(
+                &w.stations[s], materials[material], 0));
+        }
+    }
+
+    vec2 yard_pos = module_world_pos_ring(
+        st, st->modules[yard_idx].ring,
+        st->modules[yard_idx].slot);
+    for (int i = 0; i < 4; i++) {
+        ASSERT(construction_hopper_idx_for(st, materials[i]) >= 0);
+        pods[i] = construction_spawn_loose_material_pod(
+            &w, yard_pos, materials[i], counts[i],
+            (const uint8_t *)(i == 0 ? "YARDFRM1" :
+                              i == 1 ? "YARDLAS1" :
+                              i == 2 ? "YARDTRC1" :
+                                       "YARDENG1"));
+        ASSERT(pods[i] >= 0);
+        ASSERT(test_anchor_pod_legacy_cargo(&w, 1, pods[i]));
+        ASSERT(world_cargo_pod_set_module_tractor(
+            &w, pods[i], 1, yard_idx));
+        vec2 anchor = v2(0.0f, 0.0f);
+        ASSERT(cargo_pod_module_tractor_anchor(
+            &w, &w.cargo_pods[pods[i]], 1,
+            yard_idx, &anchor));
+        w.cargo_pods[pods[i]].pos = anchor;
+        w.cargo_pods[pods[i]].vel = station_ring_point_velocity(
+            st, st->modules[yard_idx].ring, anchor);
+        ASSERT(cargo_pod_module_tractor_arrived(
+            &w, &w.cargo_pods[pods[i]], 1, yard_idx));
+    }
+
+    ASSERT(shipyard_queue_station_hull_request(
+        &w, 0, HULL_CLASS_MINER));
+
+    ASSERT_EQ_INT(st->pending_ship_build_count, 1);
+    for (int i = 0; i < 4; i++)
+        ASSERT(!w.cargo_pods[pods[i]].active);
 }
 
 TEST(test_shipyard_material_commit_failure_preserves_every_pod) {
@@ -3854,7 +4008,7 @@ TEST(test_world_seed_station_manifests_matches_float) {
     world_reset(&w);
     int expected[MAX_STATIONS][COMMODITY_COUNT] = {{0}};
     for (int i = 0; i < 3; i++) {
-        int expected_count = i == 1 ? 8 : 0;
+        int expected_count = i == 1 ? 16 : (i == 2 ? 8 : 0);
         ASSERT_EQ_INT(w.stations[i].manifest.count, expected_count);
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
             expected[i][c] = station_finished_count(&w.stations[i],
@@ -6137,6 +6291,7 @@ TEST(test_module_schema_basic_kinds) {
     ASSERT_EQ_INT(module_kind(MODULE_FURNACE), MODULE_KIND_PRODUCER);
     ASSERT_EQ_INT(module_kind(MODULE_FRAME_PRESS), MODULE_KIND_PRODUCER);
     ASSERT_EQ_INT(module_kind(MODULE_LASER_FAB), MODULE_KIND_PRODUCER);
+    ASSERT_EQ_INT(module_kind(MODULE_ENGINE_FAB), MODULE_KIND_PRODUCER);
     ASSERT_EQ_INT(module_kind(MODULE_HOPPER), MODULE_KIND_STORAGE);
     ASSERT_EQ_INT(module_kind(MODULE_SHIPYARD), MODULE_KIND_SHIPYARD);
 }
@@ -6154,6 +6309,8 @@ TEST(test_module_schema_producer_io) {
     ASSERT_EQ_INT(module_schema_output(MODULE_LASER_FAB), COMMODITY_LASER_MODULE);
     ASSERT_EQ_INT(module_schema_input(MODULE_TRACTOR_FAB), COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(module_schema_output(MODULE_TRACTOR_FAB), COMMODITY_TRACTOR_MODULE);
+    ASSERT_EQ_INT(module_schema_input(MODULE_ENGINE_FAB), COMMODITY_FRAME);
+    ASSERT_EQ_INT(module_schema_output(MODULE_ENGINE_FAB), COMMODITY_ENGINE_MODULE);
     /* Services have no input/output */
     ASSERT_EQ_INT(module_schema_input(MODULE_DOCK), COMMODITY_COUNT);
     ASSERT_EQ_INT(module_schema_output(MODULE_DOCK), COMMODITY_COUNT);
@@ -6167,6 +6324,7 @@ TEST(test_module_schema_required_output) {
     ASSERT_EQ_INT(module_required_output(MODULE_FRAME_PRESS), COMMODITY_FRAME);
     ASSERT_EQ_INT(module_required_output(MODULE_LASER_FAB),   COMMODITY_LASER_MODULE);
     ASSERT_EQ_INT(module_required_output(MODULE_TRACTOR_FAB), COMMODITY_TRACTOR_MODULE);
+    ASSERT_EQ_INT(module_required_output(MODULE_ENGINE_FAB),  COMMODITY_ENGINE_MODULE);
     ASSERT_EQ_INT(module_required_output(MODULE_SHIPYARD),    COMMODITY_COUNT);
     ASSERT_EQ_INT(module_required_output(MODULE_DOCK),        COMMODITY_COUNT);
     ASSERT_EQ_INT(module_required_output(MODULE_HOPPER),      COMMODITY_COUNT);
@@ -6223,10 +6381,11 @@ TEST(test_station_module_layout_status_missing_output) {
     add_hopper_for(&st, 2, 4, COMMODITY_FRAME);
     add_module_at(&st, MODULE_TRACTOR_FAB, 2, 1);
     add_module_at(&st, MODULE_SHIPYARD,    2, 5);   /* downstream consumer */
-    /* Shipyard also needs FRAME and LASER_MODULE input hoppers to be OK
-     * for itself, but we're testing the TRACTOR_FAB module specifically. */
+    /* Shipyard also needs its other component hoppers to be OK for itself,
+     * but we're testing the TRACTOR_FAB module specifically. */
     add_hopper_for(&st, 3, 0, COMMODITY_FRAME);
     add_hopper_for(&st, 3, 1, COMMODITY_LASER_MODULE);
+    add_hopper_for(&st, 3, 2, COMMODITY_ENGINE_MODULE);
     const station_module_t *fab = &st.modules[2];   /* TRACTOR_FAB */
     ASSERT_EQ_INT(station_module_layout_status(&st, fab),
                   STATION_LAYOUT_MISSING_OUTPUT_HOPPER);
@@ -6393,13 +6552,14 @@ TEST(test_seeded_helios_output_hoppers) {
 
 TEST(test_station_module_layout_status_shipyard_exempt) {
     /* SHIPYARD output is a physical scaffold body, not a commodity —
-     * so it doesn't need an output hopper. With its 3 input hoppers
-     * present (frame, laser, tractor module), layout is OK. */
+     * so it doesn't need an output hopper. With its four input hoppers
+     * present (frame, laser, tractor, engine), layout is OK. */
     station_t st = {0};
     st.signal_range = 1.0f;
     add_hopper_for(&st, 3, 0, COMMODITY_FRAME);
     add_hopper_for(&st, 3, 1, COMMODITY_LASER_MODULE);
     add_hopper_for(&st, 3, 2, COMMODITY_TRACTOR_MODULE);
+    add_hopper_for(&st, 2, 0, COMMODITY_ENGINE_MODULE);
     add_module_at(&st, MODULE_SHIPYARD, 3, 3);
     const station_module_t *sy = &st.modules[st.module_count - 1];
     ASSERT_EQ_INT(station_module_layout_status(&st, sy), STATION_LAYOUT_OK);
@@ -6465,6 +6625,7 @@ TEST(test_module_schema_uses_accepted_rock_cell_balance) {
         [MODULE_LASER_FAB] = 32.0f,
         [MODULE_TRACTOR_FAB] = 32.0f,
         [MODULE_SHIPYARD] = 96.0f,
+        [MODULE_ENGINE_FAB] = 32.0f,
     };
     for (int t = 0; t < MODULE_COUNT; t++) {
         if (module_is_dead((module_type_t)t)) continue;
@@ -6478,6 +6639,8 @@ TEST(test_module_schema_uses_accepted_rock_cell_balance) {
     ASSERT_EQ_INT(module_build_material_lookup(MODULE_LASER_FAB),
                   COMMODITY_CRYSTAL_INGOT);
     ASSERT_EQ_INT(module_build_material_lookup(MODULE_TRACTOR_FAB),
+                  COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(module_build_material_lookup(MODULE_ENGINE_FAB),
                   COMMODITY_CUPRITE_INGOT);
 }
 
@@ -7016,6 +7179,7 @@ void register_construction_modules_tests(void) {
     RUN(test_present_towed_pod_log_failures_are_byte_inert);
     RUN(test_docked_buy_one_unit_per_intent);
     RUN(test_one_shipyard_builds_ships_two_shipyards_build_station_modules);
+    RUN(test_shipyard_bill_is_derived_from_hull_cell_graph);
     RUN(test_shipyard_commission_completes_onto_docked_player);
     RUN(test_shipyard_birth_assembly_consumes_three_fragments);
     RUN(test_shipyard_birth_assembly_roundtrips_and_completes_offline);
@@ -7025,6 +7189,7 @@ void register_construction_modules_tests(void) {
     RUN(test_shipyard_commission_debits_player_ledger);
     RUN(test_shipyard_commission_consumes_towed_material_pods);
     RUN(test_shipyard_station_request_consumes_staged_material_pods);
+    RUN(test_shipyard_station_request_consumes_yard_owned_material_pods);
     RUN(test_shipyard_material_commit_failure_preserves_every_pod);
     RUN(test_shipyard_station_request_rejects_far_staged_hoppers);
     RUN(test_shipyard_station_request_rejects_split_yard_materials);
