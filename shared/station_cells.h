@@ -27,6 +27,7 @@ static inline cell_role_t station_cell_role_for_module(module_type_t type) {
     case MODULE_FRAME_PRESS:
     case MODULE_LASER_FAB:
     case MODULE_TRACTOR_FAB:
+    case MODULE_ENGINE_FAB:
     case MODULE_SHIPYARD:    return CELL_ROLE_SYSTEM;
     default:                 return CELL_ROLE_SYSTEM;
     }

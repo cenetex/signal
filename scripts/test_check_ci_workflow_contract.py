@@ -459,6 +459,28 @@ class WorkflowContractTests(unittest.TestCase):
             "RELEASE_REF:" in failure for failure in failures
         ), failures)
 
+    def test_release_cannot_drop_cargo_trust_caller_audit(self) -> None:
+        failures = self.failures(
+            workflow="release.yml",
+            before="make cargo-trust-audit banned-apis",
+            after="make banned-apis",
+        )
+        self.assertTrue(any(
+            "release.yml" in failure and "cargo trust" in failure
+            for failure in failures
+        ), failures)
+
+    def test_deploy_cannot_drop_cargo_trust_caller_audit(self) -> None:
+        failures = self.failures(
+            workflow="deploy-fly.yml",
+            before="make cargo-trust-audit banned-apis",
+            after="make banned-apis",
+        )
+        self.assertTrue(any(
+            "deploy-fly.yml" in failure and "cargo trust" in failure
+            for failure in failures
+        ), failures)
+
     def test_floating_third_party_action_is_rejected(self) -> None:
         failures = self.failures(
             workflow="deploy-fly.yml",

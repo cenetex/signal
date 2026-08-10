@@ -5261,6 +5261,168 @@ TEST(test_frame_press_accepts_player_towed_ingot_pod_at_press) {
     ASSERT(v2_dot(w.cargo_pods[input_pod].vel, to_hopper) > 0.0f);
 }
 
+TEST(test_kepler_frame_press_consumes_prospect_ingot_pod_after_intake) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *kepler = &w.stations[1];
+    server_player_t *sp = &w.players[0];
+    cargo_unit_t input = {0};
+    cargo_unit_t second_input = {0};
+    cargo_unit_t shell = {0};
+    uint8_t fragment_a[32] = {0};
+    uint8_t fragment_b[32] = {0};
+    const uint8_t shell_origin[8] = {
+        'P','R','O','S','P','O','D','1'
+    };
+    int press_idx = -1;
+    int hopper_idx = station_find_hopper_for(
+        kepler, COMMODITY_FERRITE_INGOT);
+
+    fragment_a[31] = 0x29;
+    for (int i = 0; i < kepler->module_count; i++) {
+        if (kepler->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+    ASSERT(hopper_idx >= 0);
+
+    manifest_clear(&kepler->manifest);
+    memset(kepler->_inventory_cache, 0,
+           sizeof(kepler->_inventory_cache));
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        kepler->modules[m].input_buffer = 0.0f;
+        kepler->modules[m].output_buffer = 0.0f;
+    }
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_a, 0, &input));
+    ASSERT(test_anchor_smelt_unit(&w, 0, &input));
+    ASSERT(hash_legacy_migrate_unit(
+        shell_origin, COMMODITY_FRAME, 0, &shell));
+    ASSERT(test_anchor_legacy_cargo_unit(&w, 0, &shell));
+
+    /* Reproduce the live screenshot: the idle ring has drifted until the
+     * press and its outer ingot hopper are on opposite sides of Kepler. The
+     * physical ingot is beside the press, not beside the remote hopper. */
+    kepler->arm_rotation[1] = 0.0f;
+    kepler->arm_rotation[2] = PI_F;
+    vec2 press_pos = module_world_pos_ring(
+        kepler, kepler->modules[press_idx].ring,
+        kepler->modules[press_idx].slot);
+    vec2 hopper_pos = module_world_pos_ring(
+        kepler, kepler->modules[hopper_idx].ring,
+        kepler->modules[hopper_idx].slot);
+    ASSERT(v2_dist_sq(press_pos, hopper_pos) >
+           HOPPER_PULL_RANGE * HOPPER_PULL_RANGE);
+    int input_pod = spawn_cargo_pod_with_manifest(
+        &w, v2_add(press_pos, v2(24.0f, 0.0f)),
+        v2(0.0f, 0.0f),
+        COMMODITY_FERRITE_INGOT, &input, 1,
+        CARGO_POD_CARGO);
+    ASSERT(input_pod >= 0);
+    cargo_pod_set_shell_frame(&w.cargo_pods[input_pod], &shell);
+
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x29,
+           sizeof(sp->session_token));
+    kepler->base_price[COMMODITY_FERRITE_INGOT] = 10.0f;
+    float balance_before = ledger_balance(
+        kepler, sp->session_token);
+    float earned_before = sp->ship->stat_credits_earned;
+    ASSERT(world_cargo_pod_set_player_tractor(
+        &w, input_pod, 0));
+
+    /* Player ownership and proximity are not enough. The foreign unit has no
+     * station custody until the ordinary intake handoff below completes. */
+    ASSERT_EQ_INT(test_count_exact_pod_units(
+                      &w, COMMODITY_FERRITE_INGOT), 1);
+    ASSERT_EQ_INT(cargo_pod_custody_station(
+                      &w.cargo_pods[input_pod]), -1);
+
+    step_station_cargo_pod_tractors(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(
+                      &w.cargo_pods[input_pod]), -1);
+    ASSERT(cargo_pod_is_tractored_by_module(
+        &w.cargo_pods[input_pod], 1, press_idx));
+    ASSERT_EQ_INT(cargo_pod_custody_station(
+                      &w.cargo_pods[input_pod]), 1);
+    ASSERT(ledger_balance(kepler, sp->session_token) > balance_before);
+    ASSERT(sp->ship->stat_credits_earned > earned_before);
+    ASSERT(w.cargo_pods[input_pod].has_shell_frame);
+    ASSERT(memcmp(w.cargo_pods[input_pod].shell_frame.pub,
+                  shell.pub, 32) == 0);
+
+    vec2 hold = v2(0.0f, 0.0f);
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[input_pod], 1,
+        press_idx, &hold));
+    w.cargo_pods[input_pod].pos = hold;
+    w.cargo_pods[input_pod].vel = station_ring_point_velocity(
+        kepler, kepler->modules[press_idx].ring, hold);
+    kepler->modules[press_idx].craft_progress = 1.0f;
+
+    sim_step_station_production(&w, 0.0f);
+
+    ASSERT_EQ_INT(test_count_exact_pod_units(
+                      &w, COMMODITY_FERRITE_INGOT), 0);
+    const cargo_pod_t *frames = test_first_exact_pod_with_units(
+        &w, COMMODITY_FRAME, CELL_STRUTS_PER_INGOT - 1);
+    ASSERT(frames != NULL);
+    ASSERT(frames->has_shell_frame);
+    ASSERT_EQ_INT(frames->manifest_units[0].origin_station, 1);
+    ASSERT_EQ_INT(frames->manifest_units[0].recipe_id,
+                  RECIPE_FRAME_BASIC);
+
+    /* Emptying the paid Prospect pod unfolds its carrier without laundering
+     * Kepler's custody. That foreign-authored frame remains valid physical
+     * stock and can package the next press batch. */
+    ASSERT(w.cargo_pods[input_pod].active);
+    ASSERT_EQ_INT(w.cargo_pods[input_pod].commodity, COMMODITY_FRAME);
+    ASSERT_EQ_INT(w.cargo_pods[input_pod].manifest_count, 1);
+    ASSERT(!w.cargo_pods[input_pod].has_shell_frame);
+    ASSERT_EQ_INT(cargo_pod_custody_station(
+                      &w.cargo_pods[input_pod]), 1);
+    ASSERT(memcmp(w.cargo_pods[input_pod].manifest_units[0].pub,
+                  shell.pub, 32) == 0);
+
+    int first_output = (int)(frames - w.cargo_pods);
+    ASSERT(first_output >= 0 && first_output < MAX_CARGO_PODS);
+    ASSERT(world_cargo_pod_set_player_tractor(
+        &w, first_output, 0));
+
+    fragment_b[31] = 0x2a;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_b, 0, &second_input));
+    ASSERT(test_anchor_smelt_unit(&w, 1, &second_input));
+    int second_pod = spawn_cargo_pod_with_manifest(
+        &w, hold, station_ring_point_velocity(
+                      kepler, kepler->modules[press_idx].ring, hold),
+        COMMODITY_FERRITE_INGOT, &second_input, 1,
+        CARGO_POD_CARGO);
+    ASSERT(second_pod >= 0);
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, second_pod, 1, press_idx));
+    kepler->modules[press_idx].craft_progress = 1.0f;
+
+    sim_step_station_production(&w, 0.0f);
+
+    ASSERT(!w.cargo_pods[input_pod].active);
+    const cargo_pod_t *reused = test_first_exact_pod_with_units(
+        &w, COMMODITY_FRAME, CELL_STRUTS_PER_INGOT);
+    ASSERT(reused != NULL);
+    ASSERT(reused->has_shell_frame);
+    ASSERT(memcmp(reused->shell_frame.pub, shell.pub, 32) == 0);
+    ASSERT_EQ_INT(cargo_pod_custody_station(reused), 1);
+}
+
 TEST(test_station_hopper_accepts_player_towed_ingot_pod) {
     WORLD_DECL;
     world_reset(&w);
@@ -5864,6 +6026,99 @@ TEST(test_station_production_fills_existing_laser_output_pod) {
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[output_pod],
                                             2, output_hopper));
     ASSERT(test_first_exact_pod_with_units(&w, COMMODITY_LASER_MODULE, 1) == NULL);
+}
+
+TEST(test_engine_fab_consumes_frame_pod_and_both_ingot_pods) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[2];
+    int engine_idx = -1;
+    for (int i = 0; i < st->module_count; i++) {
+        if (!st->modules[i].scaffold &&
+            st->modules[i].type == MODULE_ENGINE_FAB) {
+            engine_idx = i;
+            break;
+        }
+    }
+    ASSERT(engine_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        st->modules[m].input_buffer = 0.0f;
+        st->modules[m].output_buffer = 0.0f;
+        st->modules[m].craft_progress = 0.0f;
+    }
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    const commodity_t inputs[3] = {
+        COMMODITY_FRAME,
+        COMMODITY_CUPRITE_INGOT,
+        COMMODITY_CRYSTAL_INGOT,
+    };
+    int pods[3] = {-1, -1, -1};
+    cargo_unit_t recipe_inputs[3] = {{0}};
+    for (int input = 0; input < 3; input++) {
+        int hopper = station_find_hopper_for(st, inputs[input]);
+        ASSERT(hopper >= 0);
+        vec2 pos = module_world_pos_ring(
+            st, st->modules[hopper].ring, st->modules[hopper].slot);
+        uint16_t count = inputs[input] == COMMODITY_FRAME ? 2u : 1u;
+        pods[input] = test_spawn_exact_pod(&w, pos, inputs[input], count);
+        ASSERT(pods[input] >= 0);
+        ASSERT(test_anchor_pod_legacy_cargo(&w, 2, pods[input]));
+        recipe_inputs[input] =
+            w.cargo_pods[pods[input]].manifest_units[count - 1u];
+        ASSERT(world_cargo_pod_set_module_tractor(
+            &w, pods[input], 2, hopper));
+        ASSERT(cargo_pod_module_tractor_anchor(
+            &w, &w.cargo_pods[pods[input]], 2, hopper, &pos));
+        w.cargo_pods[pods[input]].pos = pos;
+        w.cargo_pods[pods[input]].vel = station_ring_point_velocity(
+            st, st->modules[hopper].ring, pos);
+        ASSERT(cargo_pod_module_tractor_arrived(
+            &w, &w.cargo_pods[pods[input]], 2, hopper));
+    }
+
+    cargo_unit_t expected = {0};
+    ASSERT(hash_product(
+        RECIPE_ENGINE_BASIC, recipe_inputs, 3, 0, &expected));
+    step_station_cargo_pod_tractors(&w, 0.0f);
+    for (int input = 0; input < 3; input++) {
+        ASSERT(cargo_pod_is_tractored_by_module(
+            &w.cargo_pods[pods[input]], 2, engine_idx));
+        vec2 engine_anchor = {0};
+        ASSERT(cargo_pod_module_tractor_anchor(
+            &w, &w.cargo_pods[pods[input]], 2, engine_idx,
+            &engine_anchor));
+        w.cargo_pods[pods[input]].pos = engine_anchor;
+        w.cargo_pods[pods[input]].vel = station_ring_point_velocity(
+            st, st->modules[engine_idx].ring, engine_anchor);
+        ASSERT(cargo_pod_module_tractor_arrived(
+            &w, &w.cargo_pods[pods[input]], 2, engine_idx));
+    }
+    sim_step_station_production(&w, 2.0f);
+    const cargo_pod_t *output = test_first_exact_pod_with_units(
+        &w, COMMODITY_ENGINE_MODULE, 1);
+
+    ASSERT(output != NULL);
+    for (int input = 0; input < 3; input++)
+        ASSERT(!w.cargo_pods[pods[input]].active);
+    ASSERT(output->has_shell_frame);
+    ASSERT_EQ_INT(output->shell_frame.commodity, COMMODITY_FRAME);
+    ASSERT_EQ_INT(output->manifest_units[0].kind, CARGO_KIND_ENGINE);
+    ASSERT_EQ_INT(output->manifest_units[0].recipe_id,
+                  RECIPE_ENGINE_BASIC);
+    ASSERT(memcmp(output->manifest_units[0].pub,
+                  expected.pub, sizeof(expected.pub)) == 0);
+    ASSERT(memcmp(output->manifest_units[0].parent_merkle,
+                  expected.parent_merkle,
+                  sizeof(expected.parent_merkle)) == 0);
+    int output_hopper = station_find_output_hopper_for_module(
+        st, &st->modules[engine_idx]);
+    ASSERT(output_hopper >= 0);
+    ASSERT(cargo_pod_is_tractored_by_module(
+        output, 2, output_hopper));
 }
 
 /* Manifest-as-truth invariant: production refuses to mint orphan
@@ -12040,6 +12295,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_station_physical_stock_counts_payload_and_frame_shell);
     RUN(test_station_physical_craft_append_failure_is_inert);
     RUN(test_frame_press_accepts_player_towed_ingot_pod_at_press);
+    RUN(test_kepler_frame_press_consumes_prospect_ingot_pod_after_intake);
     RUN(test_station_hopper_accepts_player_towed_ingot_pod);
     RUN(test_frame_press_consumes_dock_held_ingot_pod);
     RUN(test_frame_press_reclaims_dock_held_frame_pod_as_output_crate);
@@ -12051,6 +12307,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_furnace_tractor_holds_frame_pod_outside_module);
     RUN(test_station_production_ejects_laser_pod);
     RUN(test_station_production_fills_existing_laser_output_pod);
+    RUN(test_engine_fab_consumes_frame_pod_and_both_ingot_pods);
     RUN(test_station_production_without_manifest_inputs_refuses_to_mint);
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
