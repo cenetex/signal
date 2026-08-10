@@ -33,6 +33,7 @@
 #include "public_actor_resolver.h"
 #include "legacy_save_recovery.h"
 #include "persistence_generation.h"
+#include "persistence_writer.h"
 #include "ws_outbox.h"
 #include <math.h>       /* lroundf */
 
@@ -64,11 +65,14 @@
 /* ------------------------------------------------------------------ */
 
 static world_t world;
-static bool running = true;
+static volatile sig_atomic_t running = 1;
+static persistence_writer_t *persistence_writer = NULL;
 static const char *allowed_origin = NULL;
 static const char *internal_token = NULL;
 
 static void server_sensitive_state_cleanup(void) {
+    persistence_writer_destroy(persistence_writer);
+    persistence_writer = NULL;
     world_cleanup(&world);
     station_authority_clear_secret();
 }
@@ -1004,7 +1008,7 @@ static uint32_t signal_build_id_u32(void) {
 
 static void signal_handler(int sig) {
     (void)sig;
-    running = false;
+    running = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3660,6 +3664,7 @@ static bool ws_rate_bucket_allow(ws_rate_bucket_t *bucket, uint64_t now,
 
 static void select_generation_players(
     bool save_player_slot[MAX_PLAYERS]);
+static void wait_for_persistence_writer_result(uint64_t now);
 static void reject_ws_authentication(
     struct mg_connection *c, int pid, const char *reason);
 static bool complete_ws_session_bootstrap_if_ready(
@@ -3719,7 +3724,7 @@ static void abort_legacy_recovery_session(
                 "[FATAL] recovery claimant %d acquired authoritative state "
                 "before commit\n", pid);
         persistence_recovery_invariant_failed = true;
-        running = false;
+        running = 0;
         return;
     }
     persistence_save_requested = true;
@@ -3800,6 +3805,7 @@ static void handle_verified_legacy_recovery(
     }
 
     bool save_player_slot[MAX_PLAYERS];
+    wait_for_persistence_writer_result(now);
     select_generation_players(save_player_slot);
     save_player_slot[pid] = true;
     persistence_generation_paths_t published = {0};
@@ -3820,7 +3826,7 @@ static void handle_verified_legacy_recovery(
             (size_t)n >= sizeof(active_player_save_dir)) {
             fprintf(stderr,
                     "[FATAL] recovered player generation path is too long\n");
-            running = false;
+            running = 0;
         }
         for (int p = 0; p < MAX_PLAYERS; p++) {
             server_player_t *player = &world.players[p];
@@ -8223,7 +8229,6 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
         steps++;
     }
     flush_pending_input_acks(pending_input_acks);
-    if (*sim_accum > SIM_DT) *sim_accum = 0.0f; /* prevent spiral */
     return false;
 }
 
@@ -8421,7 +8426,8 @@ static int server_poll_timeout_ms(uint64_t now,
     next = min_due_ms(next, last_world, WORLD_TICK_MS);
     next = min_due_ms(next, last_ship, SHIP_TICK_MS);
     next = min_due_ms(next, last_analytics, ANALYTICS_EMF_INTERVAL_MS);
-    if (!legacy_recovery_offer_active(now)) {
+    if (!legacy_recovery_offer_active(now) &&
+        !persistence_writer_active(persistence_writer)) {
         if (persistence_save_requested) {
             if (persistence_retry_not_before_ms < next)
                 next = persistence_retry_not_before_ms;
@@ -8453,6 +8459,72 @@ static void select_generation_players(
     }
 }
 
+static bool adopt_published_generation(
+    const persistence_generation_paths_t *published
+) {
+    if (!published) return false;
+    int n = snprintf(active_player_save_dir,
+                     sizeof(active_player_save_dir), "%s",
+                     published->player_dir);
+    if (n <= 0 || (size_t)n >= sizeof(active_player_save_dir)) {
+        fprintf(stderr,
+                "[FATAL] published player generation path is too long\n");
+        running = 0;
+        return false;
+    }
+    printf("[save] published persistence generation %" PRIu64 "\n",
+           published->generation);
+    return true;
+}
+
+static void apply_persistence_writer_result(
+    persistence_writer_state_t state,
+    const persistence_generation_paths_t *published,
+    uint64_t now,
+    uint64_t *last_save
+) {
+    if (state == PERSISTENCE_WRITER_SUCCEEDED) {
+        if (adopt_published_generation(published)) {
+            persistence_retry_not_before_ms = 0;
+            if (last_save) *last_save = now;
+        } else {
+            persistence_save_requested = true;
+            persistence_retry_not_before_ms = now + PERSISTENCE_RETRY_MS;
+        }
+    } else if (state == PERSISTENCE_WRITER_FAILED) {
+        fprintf(stderr,
+                "[save] background generation was not published\n");
+        persistence_save_requested = true;
+        persistence_retry_not_before_ms = now + PERSISTENCE_RETRY_MS;
+    }
+}
+
+static void wait_for_persistence_writer_result(uint64_t now) {
+    if (!persistence_writer) return;
+    persistence_generation_paths_t published = {0};
+    persistence_writer_state_t state =
+        persistence_writer_wait(persistence_writer, &published);
+    apply_persistence_writer_result(state, &published, now, NULL);
+}
+
+static bool start_persistent_state_save(void) {
+    if (!persistence_writer || persistence_recovery_invariant_failed)
+        return false;
+    bool save_player_slot[MAX_PLAYERS];
+    select_generation_players(save_player_slot);
+    if (!persistence_writer_start(
+            persistence_writer,
+            PERSISTENCE_GENERATION_DIR,
+            PLAYER_SAVE_DIR,
+            &world,
+            save_player_slot)) {
+        return false;
+    }
+    /* New mutations may set this again while the immutable snapshot saves. */
+    persistence_save_requested = false;
+    return true;
+}
+
 static bool save_persistent_state(void) {
     if (persistence_recovery_invariant_failed) {
         fprintf(stderr,
@@ -8474,18 +8546,7 @@ static bool save_persistent_state(void) {
                 strerror(errno));
         return false;
     }
-    int n = snprintf(active_player_save_dir,
-                     sizeof(active_player_save_dir), "%s",
-                     published.player_dir);
-    if (n <= 0 || (size_t)n >= sizeof(active_player_save_dir)) {
-        fprintf(stderr,
-                "[FATAL] published player generation path is too long\n");
-        running = false;
-        return false;
-    }
-    printf("[save] published persistence generation %" PRIu64 "\n",
-           published.generation);
-    return true;
+    return adopt_published_generation(&published);
 }
 
 /* ------------------------------------------------------------------ */
@@ -8515,6 +8576,12 @@ int main(void) {
     if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
     if (!load_world_state()) return 1;
+    persistence_writer = persistence_writer_create();
+    if (!persistence_writer) {
+        fprintf(stderr,
+                "[FATAL] failed to create background persistence writer\n");
+        return 1;
+    }
     if (!server_apply_npc_worker_trace_fixture()) return 1;
     if (!server_apply_ws_backpressure_fixture()) return 1;
     frontier_virtual_pilots_set(&world, frontier_virtual_pilot_target);
@@ -8651,6 +8718,12 @@ int main(void) {
             last_analytics, last_save));
         uint64_t now = mg_millis();
         service_legacy_recovery_offers(now);
+        persistence_generation_paths_t background_published = {0};
+        persistence_writer_state_t background_state =
+            persistence_writer_poll(
+                persistence_writer, &background_published);
+        apply_persistence_writer_result(
+            background_state, &background_published, now, &last_save);
 
         if (now - last_sim >= SIM_TICK_MS) {
             float elapsed = (float)(now - last_sim) / 1000.0f;
@@ -8706,14 +8779,11 @@ int main(void) {
             !recovery_offer_in_flight &&
             persistence_save_requested &&
             now >= persistence_retry_not_before_ms;
-        if (autosave_due || requested_save_due) {
-            if (save_persistent_state()) {
-                persistence_save_requested = false;
-                persistence_retry_not_before_ms = 0;
-                last_save = now;
-            } else {
-                /* Keep disconnect/auth dirty intent and retry at a bounded
-                 * cadence instead of either losing it or fsync-spinning. */
+        if (!persistence_writer_active(persistence_writer) &&
+            (autosave_due || requested_save_due)) {
+            if (!start_persistent_state_save()) {
+                /* Keep dirty intent and retry at a bounded cadence instead
+                 * of either losing it or fsync-spinning. */
                 persistence_save_requested = true;
                 persistence_retry_not_before_ms =
                     now + PERSISTENCE_RETRY_MS;
@@ -8722,6 +8792,7 @@ int main(void) {
     }
 
     mg_mgr_free(&mgr);
+    wait_for_persistence_writer_result(mg_millis());
     if (save_persistent_state()) {
         printf("[server] world saved\n");
     } else {

@@ -2,6 +2,7 @@
 
 #include "cargo_receipt_issue.h"
 #include "persistence_generation.h"
+#include "persistence_writer.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -607,7 +608,50 @@ TEST(test_persistence_generation_rejects_symlinked_legacy_namespace) {
 }
 #endif
 
+TEST(test_persistence_writer_commits_immutable_snapshot) {
+    char root[PERSISTENCE_GENERATION_PATH_MAX];
+    char legacy[PERSISTENCE_GENERATION_PATH_MAX];
+    ASSERT(snprintf(root, sizeof(root), "%s/%s",
+                    test_tmp_dir(), "generation_async_snapshot") > 0);
+    ASSERT(snprintf(legacy, sizeof(legacy), "%s/%s",
+                    test_tmp_dir(), "generation_async_legacy") > 0);
+    static const uint8_t token[8] =
+        {0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38};
+    WORLD_HEAP world = calloc(1, sizeof(*world));
+    ASSERT(world != NULL);
+    ASSERT(test_prepare_generation_world(
+        world, token, 12.0f, 44.0f, 75.0f));
+    bool save_slots[MAX_PLAYERS] = {0};
+    save_slots[0] = true;
+
+    persistence_writer_t *writer = persistence_writer_create();
+    ASSERT(writer != NULL);
+    ASSERT(persistence_writer_start(
+        writer, root, legacy, world, save_slots));
+    ASSERT(!persistence_writer_start(
+        writer, root, legacy, world, save_slots));
+
+    /* These changes happen after snapshot capture and must not leak into the
+     * generation being serialized by the worker. */
+    world->time = 99.0f;
+    world->players[0].ship->hull = 9.0f;
+    persistence_generation_paths_t published = {0};
+    ASSERT_EQ_INT(
+        persistence_writer_wait(writer, &published),
+        PERSISTENCE_WRITER_SUCCEEDED);
+    ASSERT(!persistence_writer_active(writer));
+    persistence_writer_destroy(writer);
+
+    WORLD_HEAP loaded = calloc(1, sizeof(*loaded));
+    ASSERT(loaded != NULL);
+    ASSERT(test_load_generation_world(&published, loaded));
+    ASSERT_EQ_FLOAT(loaded->time, 12.0f, 0.001f);
+    ASSERT(test_load_generation_player(&published, loaded, token));
+    ASSERT_EQ_FLOAT(loaded->players[0].ship->hull, 44.0f, 0.001f);
+}
+
 void register_persistence_generation_tests(void) {
+    RUN(test_persistence_writer_commits_immutable_snapshot);
     RUN(test_persistence_generation_publish_boundaries_and_player_carry);
     RUN(test_persistence_generation_prunes_bounded_history_after_publish);
     RUN(test_persistence_generation_recovery_follows_published_lineage);

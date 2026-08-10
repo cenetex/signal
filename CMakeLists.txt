@@ -261,6 +261,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
         server/mongoose.c
         server/highscore.c
         server/ws_outbox.c
+        server/persistence_writer.c
         ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
@@ -278,13 +279,14 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
     )
     signal_apply_sim_profile(signal_server)
     if(NOT MSVC)
-        target_link_libraries(signal_server PRIVATE m)
+        target_link_libraries(signal_server PRIVATE m Threads::Threads)
         target_compile_options(signal_server PRIVATE
             -Wall -Wextra -Wpedantic -Werror -fstack-protector-strong -ffp-contract=off -fno-fast-math)
         # _FORTIFY_SOURCE requires optimization; only set for Release-ish.
         target_compile_definitions(signal_server PRIVATE
             $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
     else()
+        target_link_libraries(signal_server PRIVATE Threads::Threads)
         # Mirror GCC/Clang -Werror so Windows CI fails on regressions.
         # Selective /wd* mirror the -Wno-* we accept on GCC/Clang:
         #   4127 = constant conditional (common in ASSERT/while(true))
@@ -376,6 +378,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_ws_outbox.c
         server/mongoose.c
         server/ws_outbox.c
+        server/persistence_writer.c
         tests/c/test_signal_field.c
         tests/c/test_state_digest.c
         tests/c/test_reconciliation_diagnostics.c
