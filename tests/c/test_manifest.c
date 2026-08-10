@@ -221,6 +221,26 @@ TEST(test_station_copy_clones_manifest_storage) {
     station_cleanup(&src);
 }
 
+TEST(test_manifest_reset_helpers_release_storage_and_wipe_secret) {
+    ship_t ship = {0};
+    station_t station = {0};
+    const ship_t zero_ship = {0};
+    const station_t zero_station = {0};
+
+    ASSERT(ship_manifest_bootstrap(&ship));
+    ASSERT(station_manifest_bootstrap(&station));
+    memset(station.station_secret, 0xA5,
+           sizeof(station.station_secret));
+    ASSERT(ship.cargo_store.receipts_opaque != NULL);
+    ASSERT(station.cargo_store.receipts_opaque != NULL);
+
+    ship_reset(&ship);
+    station_reset(&station);
+
+    ASSERT(memcmp(&ship, &zero_ship, sizeof(ship)) == 0);
+    ASSERT(memcmp(&station, &zero_station, sizeof(station)) == 0);
+}
+
 TEST(test_manifest_rarity_tint_blends_grade_average) {
     manifest_t manifest = {0};
     cargo_unit_t fine = {0};
@@ -430,6 +450,7 @@ TEST(test_recipe_ratios_match_economy_ladder) {
     const recipe_def_t *frame = recipe_get(RECIPE_FRAME_BASIC);
     const recipe_def_t *laser = recipe_get(RECIPE_LASER_BASIC);
     const recipe_def_t *tractor = recipe_get(RECIPE_TRACTOR_COIL);
+    const recipe_def_t *engine = recipe_get(RECIPE_ENGINE_BASIC);
     const recipe_def_t *kits = recipe_get(RECIPE_REPAIR_KIT_FAB);
 
     ASSERT(frame != NULL);
@@ -448,6 +469,14 @@ TEST(test_recipe_ratios_match_economy_ladder) {
     ASSERT_EQ_INT(tractor->input_commodities[0], COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(tractor->input_commodities[1], COMMODITY_FRAME);
     ASSERT_EQ_INT(tractor->output_count, 1);
+
+    ASSERT(engine != NULL);
+    ASSERT_EQ_INT(engine->input_count, 3);
+    ASSERT_EQ_INT(engine->input_commodities[0], COMMODITY_FRAME);
+    ASSERT_EQ_INT(engine->input_commodities[1], COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(engine->input_commodities[2], COMMODITY_CRYSTAL_INGOT);
+    ASSERT_EQ_INT(engine->output_commodity, COMMODITY_ENGINE_MODULE);
+    ASSERT_EQ_INT(engine->output_count, 1);
 
     ASSERT(kits != NULL);
     ASSERT_EQ_INT(kits->input_count, 3);
@@ -545,9 +574,20 @@ TEST(test_hash_merkle_root_sorts_and_duplicates_odd_leaf) {
     ASSERT_HEX32_EQ(root, "4337e6c1b1f6b3728eef23890f0f41379ae574d390ebc3211d14d7a451d28ecd");
 }
 
+TEST(test_hash_merkle_root_rejects_allocation_size_overflow) {
+    uint8_t one_pub[1][32] = {{0}};
+    uint8_t root[32] = {0};
+    const size_t impossible_count = SIZE_MAX / 32u + 1u;
+
+    ASSERT(!hash_merkle_root(
+        (const uint8_t (*)[32])one_pub, impossible_count, root));
+}
+
 TEST(test_hash_ingot_matches_known_vector) {
     uint8_t fragment_pub[32];
     cargo_unit_t ingot = {0};
+    cargo_unit_t other_commodity = {0};
+    cargo_unit_t other_grade = {0};
 
     for (int i = 0; i < 32; i++) fragment_pub[i] = (uint8_t)i;
     ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
@@ -558,7 +598,17 @@ TEST(test_hash_ingot_matches_known_vector) {
     ASSERT_EQ_INT(ingot.grade, MINING_GRADE_RARE);
     ASSERT_EQ_INT(ingot.recipe_id, RECIPE_SMELT);
     ASSERT(memcmp(ingot.parent_merkle, fragment_pub, 32) == 0);
-    ASSERT_HEX32_EQ(ingot.pub, "d869450f3625b4c095dabb2e60a7be66abc67c706a13d362496770890d21d725");
+    ASSERT_HEX32_EQ(ingot.pub, "b8c2aa86b979ea8152ee44b96436403fd284fb8c0a2b66283318fccf063ac63d");
+
+    ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_RARE,
+                      fragment_pub, 0, &other_commodity));
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_FINE,
+                      fragment_pub, 0, &other_grade));
+    ASSERT(memcmp(ingot.pub, other_commodity.pub, 32) != 0);
+    ASSERT(memcmp(ingot.pub, other_grade.pub, 32) != 0);
+    ASSERT(!hash_ingot(
+        COMMODITY_FERRITE_INGOT, MINING_GRADE_COUNT,
+        fragment_pub, 0, &other_grade));
 }
 
 TEST(test_hash_product_matches_known_vector_and_min_grade) {
@@ -568,6 +618,7 @@ TEST(test_hash_product_matches_known_vector_and_min_grade) {
     inputs[0].kind = (uint8_t)CARGO_KIND_INGOT;
     inputs[0].commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
     inputs[0].grade = (uint8_t)MINING_GRADE_RARE;
+    inputs[0].quantity = 1u;
     for (int i = 0; i < 32; i++) inputs[0].pub[i] = (uint8_t)(0x20 + i);
 
     ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 1, 0, &frame));
@@ -576,7 +627,57 @@ TEST(test_hash_product_matches_known_vector_and_min_grade) {
     ASSERT_EQ_INT(frame.grade, MINING_GRADE_RARE);
     ASSERT_EQ_INT(frame.recipe_id, RECIPE_FRAME_BASIC);
     ASSERT_HEX32_EQ(frame.parent_merkle, "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
-    ASSERT_HEX32_EQ(frame.pub, "70d2a849d9c7d9371b612afb7c6818a08d30fd9a34ba7dd44416ba8acabdec5f");
+    ASSERT_HEX32_EQ(frame.pub, "4d3b2cd33c1efcfbebe98345fde1492453c727b65dc6dd285ad6aadf7db4472a");
+
+    uint8_t input_pubs[1][32];
+    uint8_t parent[32];
+    uint8_t pub[32];
+    memcpy(input_pubs[0], inputs[0].pub, 32);
+    ASSERT(hash_product_identity_from_pubs(
+        RECIPE_FRAME_BASIC,
+        (const uint8_t (*)[32])input_pubs,
+        1, MINING_GRADE_RARE, 0, parent, pub));
+    ASSERT(memcmp(parent, frame.parent_merkle, 32) == 0);
+    ASSERT(memcmp(pub, frame.pub, 32) == 0);
+    ASSERT(hash_product_identity_from_pubs(
+        RECIPE_FRAME_BASIC,
+        (const uint8_t (*)[32])input_pubs,
+        1, MINING_GRADE_RARE, 1, parent, pub));
+    ASSERT(memcmp(pub, frame.pub, 32) != 0);
+    ASSERT(hash_product_identity_from_pubs(
+        RECIPE_FRAME_BASIC,
+        (const uint8_t (*)[32])input_pubs,
+        1, MINING_GRADE_FINE, 0, parent, pub));
+    ASSERT(memcmp(pub, frame.pub, 32) != 0);
+    ASSERT(!hash_product_identity_from_pubs(
+        RECIPE_FRAME_BASIC,
+        (const uint8_t (*)[32])input_pubs,
+        1, MINING_GRADE_COUNT, 0, parent, pub));
+    uint8_t duplicate_input_pubs[2][32];
+    memcpy(duplicate_input_pubs[0], inputs[0].pub, 32);
+    memcpy(duplicate_input_pubs[1], inputs[0].pub, 32);
+    ASSERT(!hash_product_identity_from_pubs(
+        RECIPE_LASER_BASIC,
+        (const uint8_t (*)[32])duplicate_input_pubs,
+        2, MINING_GRADE_RARE, 0, parent, pub));
+    memset(input_pubs[0], 0, 32);
+    ASSERT(!hash_product_identity_from_pubs(
+        RECIPE_FRAME_BASIC,
+        (const uint8_t (*)[32])input_pubs,
+        1, MINING_GRADE_RARE, 0, parent, pub));
+
+    cargo_unit_t invalid_input = inputs[0];
+    invalid_input.grade = (uint8_t)MINING_GRADE_COUNT;
+    ASSERT(!hash_product(
+        RECIPE_FRAME_BASIC, &invalid_input, 1, 0, &frame));
+    invalid_input = inputs[0];
+    invalid_input.quantity = 0u;
+    ASSERT(!hash_product(
+        RECIPE_FRAME_BASIC, &invalid_input, 1, 0, &frame));
+    invalid_input = inputs[0];
+    memset(invalid_input.pub, 0, sizeof(invalid_input.pub));
+    ASSERT(!hash_product(
+        RECIPE_FRAME_BASIC, &invalid_input, 1, 0, &frame));
 }
 
 TEST(test_hash_product_accepts_repair_kit_three_finished_inputs) {
@@ -586,16 +687,19 @@ TEST(test_hash_product_accepts_repair_kit_three_finished_inputs) {
     inputs[0].kind = (uint8_t)CARGO_KIND_FRAME;
     inputs[0].commodity = (uint8_t)COMMODITY_FRAME;
     inputs[0].grade = (uint8_t)MINING_GRADE_FINE;
+    inputs[0].quantity = 1u;
     for (int i = 0; i < 32; i++) inputs[0].pub[i] = (uint8_t)(0x10 + i);
 
     inputs[1].kind = (uint8_t)CARGO_KIND_LASER;
     inputs[1].commodity = (uint8_t)COMMODITY_LASER_MODULE;
     inputs[1].grade = (uint8_t)MINING_GRADE_RARE;
+    inputs[1].quantity = 1u;
     for (int i = 0; i < 32; i++) inputs[1].pub[i] = (uint8_t)(0x40 + i);
 
     inputs[2].kind = (uint8_t)CARGO_KIND_TRACTOR;
     inputs[2].commodity = (uint8_t)COMMODITY_TRACTOR_MODULE;
     inputs[2].grade = (uint8_t)MINING_GRADE_COMMON;
+    inputs[2].quantity = 1u;
     for (int i = 0; i < 32; i++) inputs[2].pub[i] = (uint8_t)(0x70 + i);
 
     ASSERT(hash_product(RECIPE_REPAIR_KIT_FAB, inputs, 3, 17, &kit));
@@ -604,6 +708,37 @@ TEST(test_hash_product_accepts_repair_kit_three_finished_inputs) {
     ASSERT_EQ_INT(kit.grade, MINING_GRADE_COMMON);
     ASSERT_EQ_INT(kit.recipe_id, RECIPE_REPAIR_KIT_FAB);
     ASSERT(!hash_product(RECIPE_REPAIR_KIT_FAB, inputs, 2, 0, &kit));
+}
+
+TEST(test_hash_product_accepts_engine_three_material_inputs) {
+    cargo_unit_t inputs[RECIPE_INPUT_MAX] = {0};
+    cargo_unit_t engine = {0};
+    const commodity_t commodities[3] = {
+        COMMODITY_FRAME,
+        COMMODITY_CUPRITE_INGOT,
+        COMMODITY_CRYSTAL_INGOT,
+    };
+    const cargo_kind_t kinds[3] = {
+        CARGO_KIND_FRAME,
+        CARGO_KIND_INGOT,
+        CARGO_KIND_INGOT,
+    };
+    for (int i = 0; i < 3; i++) {
+        inputs[i].kind = (uint8_t)kinds[i];
+        inputs[i].commodity = (uint8_t)commodities[i];
+        inputs[i].grade = (uint8_t)(i == 2
+            ? MINING_GRADE_RARE : MINING_GRADE_FINE);
+        inputs[i].quantity = 1u;
+        for (int b = 0; b < 32; b++)
+            inputs[i].pub[b] = (uint8_t)(0x20 * (i + 1) + b);
+    }
+
+    ASSERT(hash_product(RECIPE_ENGINE_BASIC, inputs, 3, 0, &engine));
+    ASSERT_EQ_INT(engine.kind, CARGO_KIND_ENGINE);
+    ASSERT_EQ_INT(engine.commodity, COMMODITY_ENGINE_MODULE);
+    ASSERT_EQ_INT(engine.grade, MINING_GRADE_FINE);
+    ASSERT_EQ_INT(engine.recipe_id, RECIPE_ENGINE_BASIC);
+    ASSERT(!hash_product(RECIPE_ENGINE_BASIC, inputs, 2, 0, &engine));
 }
 
 TEST(test_fracture_claim_resolves_best_verified_grade) {
@@ -720,6 +855,7 @@ TEST(test_smelt_manifest_uses_resolved_fragment_pub) {
 
     ASSERT(w != NULL);
     world_reset(w);
+    ASSERT(test_anchor_station_legacy_cargo(w, 0));
     for (int m = 0; m < w->stations[0].module_count; m++) {
         if (w->stations[0].modules[m].type == MODULE_FURNACE) furnace_idx = m;
     }
@@ -1133,7 +1269,9 @@ TEST(test_smelt_credit_ignores_claim_winner_identity) {
     memcpy(a->last_fractured_token, w->players[worker].session_token, 8);
     a->last_fractured_by = (int8_t)worker;
 
-    ASSERT(station_finished_mint(&w->stations[0], COMMODITY_FRAME, 1, NULL) == 1);
+    ASSERT(station_finished_mint(&w->stations[0],
+                                 COMMODITY_FRAME, 1, NULL) == 1);
+    ASSERT(test_anchor_station_legacy_cargo(w, 0));
     initial_bystander = ledger_balance(&w->stations[0],
                                        w->players[bystander].session_token);
     initial_worker    = ledger_balance(&w->stations[0],
@@ -1180,13 +1318,16 @@ void register_manifest_tests(void) {
     RUN(test_manifest_migrate_quantity_rewrites_zero_to_one);
     RUN(test_ship_copy_clones_manifest_storage);
     RUN(test_station_copy_clones_manifest_storage);
+    RUN(test_manifest_reset_helpers_release_storage_and_wipe_secret);
     RUN(test_manifest_rarity_tint_blends_grade_average);
     RUN(test_station_manifest_receipts_track_push_remove);
     RUN(test_station_manifest_rejects_unverified_receipt_chain);
     RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);
+    RUN(test_hash_merkle_root_rejects_allocation_size_overflow);
     RUN(test_hash_ingot_matches_known_vector);
     RUN(test_hash_product_matches_known_vector_and_min_grade);
     RUN(test_hash_product_accepts_repair_kit_three_finished_inputs);
+    RUN(test_hash_product_accepts_engine_three_material_inputs);
     RUN(test_fracture_claim_resolves_best_verified_grade);
     RUN(test_fracture_claim_fallback_resolves_without_claims);
     RUN(test_fracture_claim_rejects_past_deadline);

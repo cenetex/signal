@@ -304,7 +304,8 @@ bool input_intent_has_network_action(const input_intent_t *intent) {
         intent->service_repair || intent->upgrade_mining ||
         intent->upgrade_hold || intent->upgrade_tractor ||
         intent->place_outpost || intent->buy_scaffold_kit ||
-        intent->commission_ship || intent->buy_product || intent->hail ||
+        intent->commission_ship || intent->buy_product ||
+        intent->present_pod || intent->hail ||
         intent->release_tow || intent->reset || intent->add_plan ||
         intent->create_planned_outpost || intent->cancel_planned_outpost ||
         intent->cancel_plan_slot || intent->toggle_autopilot;
@@ -852,6 +853,20 @@ static void sample_trade_picker(input_intent_t *intent) {
     const trade_row_t *row = &rows[target];
     if (row->kind == 0) {
         trade_apply_buy_row(intent, st, ship, row);
+    } else if (row->kind == 2) {
+        if (!row->is_towed_pod ||
+            row->towed_pod_index >= MAX_CARGO_PODS) {
+            set_notice("Selected pod is no longer available.");
+            return;
+        }
+        intent->present_pod = true;
+        intent->present_pod_index =
+            (uint8_t)row->towed_pod_index;
+        memcpy(intent->present_pod_token,
+               row->pod_selection_token,
+               sizeof(intent->present_pod_token));
+        set_notice("Presenting %s crate for receipt-backed unpack...",
+                   commodity_short_name(row->commodity));
     } else if (row->kind == 1) {
         /* Per-row sell — mirror of the buy click. One press sells one
          * matching towed pod. Legacy manifest-held cargo is no longer
@@ -992,6 +1007,7 @@ static void plan_mode_handle_cycle_type(input_intent_t *intent) {
     static const module_type_t plannable[] = {
         MODULE_FURNACE,
         MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+        MODULE_ENGINE_FAB,
         /* MODULE_ORE_SILO + MODULE_CARGO_BAY were dropped — HOPPER
          * absorbs the storage role. */
         MODULE_HOPPER,
@@ -1312,7 +1328,7 @@ void submit_input(const input_intent_t *intent, float dt) {
     /* Networked authority: plan intents ride a dedicated message — they
      * carry richer payloads (target station/ring/slot/type or world
      * position) that don't fit in the 1-byte action slot. */
-    if (g.net_authority_enabled && net_is_connected()) {
+    if (g.net_authority_enabled && net_is_gameplay_ready()) {
         bool plan_send_failed = false;
         if (intent->create_planned_outpost && intent->add_plan &&
             intent->plan_station == -2) {
@@ -1364,8 +1380,15 @@ void submit_input(const input_intent_t *intent, float dt) {
     }
 
     /* Networked authority: encode the action and queue for send. */
-    if (has_action && g.net_authority_enabled && net_is_connected()) {
-        if (intent->interact) {
+    if (has_action && g.net_authority_enabled &&
+        net_is_gameplay_ready()) {
+        if (intent->present_pod) {
+            g.pending_net_action = NET_ACTION_PRESENT_POD;
+            g.pending_net_pod_index = intent->present_pod_index;
+            memcpy(g.pending_net_pod_token,
+                   intent->present_pod_token,
+                   sizeof(g.pending_net_pod_token));
+        } else if (intent->interact) {
             g.pending_net_action = LOCAL_PLAYER.docked
                 ? NET_ACTION_LAUNCH
                 : NET_ACTION_DOCK;

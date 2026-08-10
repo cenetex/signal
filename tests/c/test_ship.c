@@ -84,11 +84,11 @@ TEST(test_ship_cell_graph_derives_capacity_mass_and_thrust) {
     ASSERT_EQ_INT(ship_cell_layout_kind(ship.hull_class),
                   CELL_LAYOUT_LIGHT_FREIGHTER);
     ASSERT(ship_cell_graph(&ship, &graph));
-    ASSERT_EQ_INT(graph.count, 4);
+    ASSERT_EQ_INT(graph.count, 5);
     ship_cell_totals(&ship, &totals);
-    ASSERT_EQ_INT(totals.struts, 21);
+    ASSERT_EQ_INT(totals.struts, 24);
     ASSERT_EQ_INT(totals.cargo_capacity, 72);
-    ASSERT_EQ_FLOAT(totals.shell_mass, 21.0f, 0.001f);
+    ASSERT_EQ_FLOAT(totals.shell_mass, 24.0f, 0.001f);
     ASSERT_EQ_FLOAT(totals.thrust_units, 1.0f, 0.001f);
     ASSERT_EQ_FLOAT(ship_cargo_capacity(&ship), 72.0f, 0.001f);
     vec2 empty_center = ship_cell_center_of_mass(&ship);
@@ -99,7 +99,7 @@ TEST(test_ship_cell_graph_derives_capacity_mass_and_thrust) {
 
     ship.hull_class = HULL_CLASS_DRONE_TRACTOR;
     ASSERT_EQ_INT(ship_cell_layout_kind(ship.hull_class), CELL_LAYOUT_TUG);
-    ASSERT_EQ_FLOAT(ship_cell_shell_mass(&ship), 9.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ship_cell_shell_mass(&ship), 12.0f, 0.001f);
     ASSERT_EQ_FLOAT(ship_cell_thrust_units(&ship), 1.0f, 0.001f);
 }
 

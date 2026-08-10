@@ -67,6 +67,50 @@ static inline const char *motd_json_skip_ws(const char *p, const char *end) {
     return p;
 }
 
+/* Return the byte after a valid JSON string literal, or NULL on a
+ * malformed/truncated string. JSON forbids unescaped control bytes in
+ * strings; escaped controls such as \n and \u000a remain valid. */
+static inline const char *motd_json_skip_string(const char *p,
+                                                const char *end) {
+    if (p >= end || *p != '"') return NULL;
+    p++;
+    while (p < end) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"') return p + 1;
+        if (c < 0x20u) return NULL;
+        if (c == '\\') {
+            if (p + 1 >= end) return NULL;
+            switch (p[1]) {
+            case '"':
+            case '\\':
+            case '/':
+            case 'b':
+            case 'f':
+            case 'n':
+            case 'r':
+            case 't':
+                p += 2;
+                continue;
+            case 'u':
+                if (end - p < 6) return NULL;
+                for (int i = 2; i < 6; i++) {
+                    char hx = p[i];
+                    if (!((hx >= '0' && hx <= '9') ||
+                          (hx >= 'a' && hx <= 'f') ||
+                          (hx >= 'A' && hx <= 'F')))
+                        return NULL;
+                }
+                p += 6;
+                continue;
+            default:
+                return NULL;
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
 /* Skip a JSON value starting at *p — string / number / array / object /
  * true / false / null. Returns pointer past the value, or NULL on parse
  * error. Used to step past values whose key didn't match the target. */
@@ -74,17 +118,7 @@ static inline const char *motd_json_skip_value(const char *p, const char *end) {
     p = motd_json_skip_ws(p, end);
     if (p >= end) return NULL;
     if (*p == '"') {
-        p++;
-        while (p < end) {
-            if (*p == '\\') {
-                if (p + 1 >= end) return NULL;
-                p += 2;
-                continue;
-            }
-            if (*p == '"') return p + 1;
-            p++;
-        }
-        return NULL;
+        return motd_json_skip_string(p, end);
     }
     if (*p == '{' || *p == '[') {
         char open = *p;
@@ -93,16 +127,8 @@ static inline const char *motd_json_skip_value(const char *p, const char *end) {
         p++;
         while (p < end && depth > 0) {
             if (*p == '"') {
-                p++;
-                while (p < end) {
-                    if (*p == '\\') {
-                        if (p + 1 >= end) return NULL;
-                        p += 2;
-                        continue;
-                    }
-                    if (*p == '"') { p++; break; }
-                    p++;
-                }
+                p = motd_json_skip_string(p, end);
+                if (!p) return NULL;
                 continue;
             }
             if (*p == open) depth++;
@@ -190,6 +216,7 @@ static inline bool motd_json_parse_string(const char **p, const char *end,
             q += 2;
             continue;
         }
+        if ((unsigned char)c < 0x20u) return false;
         if (out_len + 1 >= cap) return false;
         out[out_len++] = c;
         q++;
@@ -212,20 +239,11 @@ static inline bool motd_json_find_key(const char **p, const char *end,
         if (*q == '}') return false;
         if (*q != '"') return false;
         const char *k_start = q + 1;
-        const char *k_end = NULL;
-        const char *r = k_start;
-        while (r < end) {
-            if (*r == '\\') {
-                if (r + 1 >= end) return false;
-                r += 2;
-                continue;
-            }
-            if (*r == '"') { k_end = r; break; }
-            r++;
-        }
-        if (!k_end) return false;
+        const char *after_key = motd_json_skip_string(q, end);
+        if (!after_key) return false;
+        const char *k_end = after_key - 1;
         size_t this_key_len = (size_t)(k_end - k_start);
-        q = k_end + 1;
+        q = after_key;
         q = motd_json_skip_ws(q, end);
         if (q >= end || *q != ':') return false;
         q++;

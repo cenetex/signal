@@ -2894,6 +2894,11 @@ size_t mg_iobuf_del(struct mg_iobuf *io, size_t ofs, size_t len) {
   return len;
 }
 
+static bool mg_send_queue_fits(const struct mg_connection *c, size_t len) {
+  if (c == NULL || c->send_limit == 0) return c != NULL;
+  return c->send.len <= c->send_limit && len <= c->send_limit - c->send.len;
+}
+
 void mg_iobuf_free(struct mg_iobuf *io) {
   mg_iobuf_resize(io, 0);
 }
@@ -7071,7 +7076,12 @@ void mg_mgr_poll(struct mg_mgr *mgr, int ms) {
 bool mg_send(struct mg_connection *c, const void *buf, size_t len) {
   struct mg_tcpip_if *ifp = c->mgr->ifp;
   bool res = false;
-  if (!c->loc.is_ip6 && (ifp->ip == 0 || ifp->state != MG_TCPIP_STATE_READY)) {
+  if (!c->is_udp && !mg_send_queue_fits(c, len)) {
+    MG_ERROR(("%lu send queue limit %lu + %lu > %lu", c->id,
+              (unsigned long) c->send.len, (unsigned long) len,
+              (unsigned long) c->send_limit));
+  } else if (!c->loc.is_ip6 &&
+             (ifp->ip == 0 || ifp->state != MG_TCPIP_STATE_READY)) {
     mg_error(c, "net down");
 #if MG_ENABLE_IPV6
   } else if (c->loc.is_ip6 && ifp->state6 != MG_TCPIP_STATE_READY) {
@@ -10533,6 +10543,12 @@ bool mg_send(struct mg_connection *c, const void *buf, size_t len) {
     iolog(c, (char *) buf, n, false);
     return n > 0;
   } else {
+    if (!mg_send_queue_fits(c, len)) {
+      MG_ERROR(("%lu send queue limit %lu + %lu > %lu", c->id,
+                (unsigned long) c->send.len, (unsigned long) len,
+                (unsigned long) c->send_limit));
+      return false;
+    }
     return len == 0 || mg_iobuf_add(&c->send, c->send.len, buf, len) > 0;
     // returning 0 means an OOM condition (iobuf couldn't resize), yet this is
     // so far recoverable, let the caller decide
@@ -22705,8 +22721,8 @@ size_t mg_ws_vprintf(struct mg_connection *c, int op, const char *fmt,
                      va_list *ap) {
   size_t len = c->send.len;
   size_t n = mg_vxprintf(mg_pfn_iobuf, &c->send, fmt, ap);
-  mg_ws_wrap(c, c->send.len - len, op);
-  return n;
+  size_t wrapped = mg_ws_wrap(c, c->send.len - len, op);
+  return wrapped == len ? 0 : n;
 }
 
 size_t mg_ws_printf(struct mg_connection *c, int op, const char *fmt, ...) {
@@ -22815,15 +22831,29 @@ static void mg_ws_mask(struct mg_connection *c, size_t len) {
   }
 }
 
+bool mg_ws_control_frame_valid(unsigned flags, size_t payload_len) {
+  unsigned op = flags & 15u;
+  if ((op & 8u) == 0u) return true;
+  if (op != WEBSOCKET_OP_CLOSE && op != WEBSOCKET_OP_PING &&
+      op != WEBSOCKET_OP_PONG) return false;
+  if ((flags & 128u) == 0u || payload_len > 125u) return false;
+  return op != WEBSOCKET_OP_CLOSE || payload_len != 1u;
+}
+
 size_t mg_ws_send(struct mg_connection *c, const void *buf, size_t len,
                   int op) {
   uint8_t header[14];
+  if (c == NULL || (buf == NULL && len > 0)) return 0;
   size_t header_len = mkhdr(len, op, c->is_client, header);
-  if (!mg_send(c, header, header_len)) return 0;
-  if (!mg_send(c, buf, len)) return header_len;
+  if (header_len > SIZE_MAX - len) return 0;
+  size_t total_len = header_len + len;
+  size_t old_len = c->send.len;
+  if (!mg_send(c, NULL, total_len)) return 0;
+  memcpy(c->send.buf + old_len, header, header_len);
+  if (len > 0) memcpy(c->send.buf + old_len + header_len, buf, len);
   MG_VERBOSE(("WS out: %d [%.*s]", (int) len, (int) len, buf));
   mg_ws_mask(c, len);
-  return header_len + len;
+  return total_len;
 }
 
 static bool mg_ws_client_handshake(struct mg_connection *c) {
@@ -22866,6 +22896,11 @@ static void mg_ws_cb(struct mg_connection *c, int ev, void *ev_data) {
       len = msg.header_len + msg.data_len;
       final = msg.flags & 128;
       op = msg.flags & 15;
+      if (!mg_ws_control_frame_valid(msg.flags, msg.data_len)) {
+        mg_error(c, "invalid WS control frame op %u len %lu", op,
+                 (unsigned long) msg.data_len);
+        return;
+      }
       // MG_VERBOSE ("fin %d op %d len %d [%.*s]", final, op,
       //                       (int) m.data.len, (int) m.data.len, m.data.buf));
       switch (op) {
@@ -22874,7 +22909,10 @@ static void mg_ws_cb(struct mg_connection *c, int ev, void *ev_data) {
           break;
         case WEBSOCKET_OP_PING:
           MG_DEBUG(("%s", "WS PONG"));
-          mg_ws_send(c, s, msg.data_len, WEBSOCKET_OP_PONG);
+          if (mg_ws_send(c, s, msg.data_len, WEBSOCKET_OP_PONG) == 0) {
+            mg_error(c, "WS PONG send queue full");
+            return;
+          }
           mg_call(c, MG_EV_WS_CTL, &m);
           break;
         case WEBSOCKET_OP_PONG:
@@ -22888,7 +22926,10 @@ static void mg_ws_cb(struct mg_connection *c, int ev, void *ev_data) {
           MG_DEBUG(("%lu WS CLOSE", c->id));
           mg_call(c, MG_EV_WS_CTL, &m);
           // Echo the payload of the received CLOSE message back to the sender
-          mg_ws_send(c, m.data.buf, m.data.len, WEBSOCKET_OP_CLOSE);
+          if (mg_ws_send(c, m.data.buf, m.data.len, WEBSOCKET_OP_CLOSE) == 0) {
+            mg_error(c, "WS CLOSE send queue full");
+            return;
+          }
           c->is_draining = 1;
           break;
         default:
@@ -22974,16 +23015,22 @@ void mg_ws_upgrade(struct mg_connection *c, struct mg_http_message *hm,
 
 size_t mg_ws_wrap(struct mg_connection *c, size_t len, int op) {
   uint8_t header[14], *p;
+  if (c == NULL || len > c->send.len) return 0;
+  size_t old_len = c->send.len - len;
   size_t header_len = mkhdr(len, op, c->is_client, header);
 
   // NOTE: order of operations is important!
-  if (mg_iobuf_add(&c->send, c->send.len, NULL, header_len) != 0) {
+  if (mg_send_queue_fits(c, header_len) &&
+      mg_iobuf_add(&c->send, c->send.len, NULL, header_len) != 0) {
     p = &c->send.buf[c->send.len - len];         // p points to data
     memmove(p, p - header_len, len);             // Shift data
     memcpy(p - header_len, header, header_len);  // Prepend header
     mg_ws_mask(c, len);                          // Mask data
-  }  // returning 0 means an OOM condition (iobuf couldn't resize), yet this is
-  return c->send.len;  // so far recoverable, let the caller decide
+  } else {
+    // Never leave an unframed printf payload behind on OOM/limit failure.
+    mg_iobuf_del(&c->send, old_len, c->send.len - old_len);
+  }
+  return c->send.len;
 }
 
 #ifdef MG_ENABLE_LINES

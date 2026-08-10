@@ -10,11 +10,14 @@
  *     thrown_by_token becomes the temporary combat attribution.
  *   - Self-damage prevented: your own thrown rock can't hurt you.
  *   - Damage scales with rock radius (size_mult 0.5..2.5).
- *   - SIM_EVENT_DEATH carries killer_token + cause.
- *   - SIM_EVENT_NPC_KILL fires when a player's thrown rock kills an NPC.
+ *   - Internal events retain killer_token for legacy authority bookkeeping,
+ *     while public subject/source IDs come only from verified pubkeys.
+ *   - SIM_EVENT_NPC_KILL fires when a player's thrown rock kills an NPC,
+ *     with the NPC explicitly unattributed until it has a public birth ID.
  */
 
 #include "test_harness.h"
+#include "public_actor_resolver.h"
 #include "sim_physics.h"
 
 /* Helpers ---------------------------------------------------------- */
@@ -72,8 +75,9 @@ static const sim_event_t *find_npc_kill_event(const world_t *w) {
     return NULL;
 }
 
-/* Minimal two-player setup. Both connected, both undocked, both with
- * unique session tokens. */
+/* Minimal two-player setup. Both connected, proof-finalized, and undocked.
+ * Their callsigns deliberately collide: display text must never merge actor
+ * identity, while distinct pubkeys must produce distinct public IDs. */
 static void setup_two_players(world_t *w) {
     world_reset(w);
     player_init_ship(&w->players[0], w);
@@ -83,6 +87,17 @@ static void setup_two_players(world_t *w) {
     /* Session tokens — avoid all-zero so attribution checks see them. */
     memcpy(w->players[0].session_token, "PLAYER_A", 8);
     memcpy(w->players[1].session_token, "PLAYER_B", 8);
+    for (int i = 0; i < 2; i++) {
+        server_player_t *player = &w->players[i];
+        player->session_ready = true;
+        memset(player->pubkey, i == 0 ? 0x31 : 0x72,
+               sizeof(player->pubkey));
+        player->pubkey_set = true;
+        player->pubkey_proof_ok = true;
+        player->pubkey_challenge_consumed = true;
+        player->pubkey_identity_finalized = true;
+        memcpy(player->callsign, "TWIN", 5);
+    }
     /* Pull both off-dock so collisions actually fire. */
     w->players[0].docked = false;
     w->players[1].docked = false;
@@ -227,6 +242,18 @@ TEST(test_kill_attribution_via_thrown_by_token) {
     ASSERT(death != NULL);
     ASSERT_EQ_INT(death->death.cause, DEATH_CAUSE_THROWN_ROCK);
     ASSERT(memcmp(death->death.killer_token, thrower->session_token, 8) == 0);
+    public_actor_id_t thrower_actor = public_actor_id_none();
+    public_actor_id_t target_actor = public_actor_id_none();
+    ASSERT(public_actor_id_from_verified_player(
+        thrower, &thrower_actor));
+    ASSERT(public_actor_id_from_verified_player(
+        target, &target_actor));
+    ASSERT(public_actor_id_equal(
+        &death->source_actor, &thrower_actor));
+    ASSERT(public_actor_id_equal(
+        &death->subject_actor, &target_actor));
+    ASSERT(!public_actor_id_equal(
+        &death->source_actor, &death->subject_actor));
     ASSERT(!asteroid_is_ballistic(a));
 }
 
@@ -261,6 +288,13 @@ TEST(test_stale_last_towed_token_does_not_credit_kill) {
     ASSERT(death != NULL);
     ASSERT_EQ_INT(death->death.cause, DEATH_CAUSE_ASTEROID);
     ASSERT(memcmp(death->death.killer_token, "\0\0\0\0\0\0\0\0", 8) == 0);
+    ASSERT_EQ_INT(
+        death->source_actor.kind, PUBLIC_ACTOR_ID_UNATTRIBUTED);
+    public_actor_id_t target_actor = public_actor_id_none();
+    ASSERT(public_actor_id_from_verified_player(
+        target, &target_actor));
+    ASSERT(public_actor_id_equal(
+        &death->subject_actor, &target_actor));
 }
 
 TEST(test_thrown_timer_expiry_clears_ballistic_state) {
@@ -304,6 +338,16 @@ TEST(test_ramming_attributes_kill) {
     ASSERT(death != NULL);
     ASSERT_EQ_INT(death->death.cause, DEATH_CAUSE_RAM);
     ASSERT(memcmp(death->death.killer_token, rammer->session_token, 8) == 0);
+    public_actor_id_t rammer_actor = public_actor_id_none();
+    public_actor_id_t target_actor = public_actor_id_none();
+    ASSERT(public_actor_id_from_verified_player(
+        rammer, &rammer_actor));
+    ASSERT(public_actor_id_from_verified_player(
+        target, &target_actor));
+    ASSERT(public_actor_id_equal(
+        &death->source_actor, &rammer_actor));
+    ASSERT(public_actor_id_equal(
+        &death->subject_actor, &target_actor));
 }
 
 TEST(test_thrown_rock_kills_npc_emits_event) {
@@ -381,6 +425,14 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     ASSERT(kill != NULL);
     ASSERT_EQ_INT(kill->npc_kill.cause, DEATH_CAUSE_THROWN_ROCK);
     ASSERT(memcmp(kill->npc_kill.killer_token, thrower->session_token, 8) == 0);
+    ASSERT_EQ_INT(
+        kill->subject_actor.kind, PUBLIC_ACTOR_ID_UNATTRIBUTED);
+    public_actor_id_t thrower_actor = public_actor_id_none();
+    ASSERT(public_actor_id_from_verified_player(
+        thrower, &thrower_actor));
+    ASSERT(public_actor_id_equal(
+        &kill->source_actor, &thrower_actor));
+    ASSERT_EQ_INT(kill->player_id, 0);
 }
 
 /* Small collectible-tier fragments must damage ships too — the previous

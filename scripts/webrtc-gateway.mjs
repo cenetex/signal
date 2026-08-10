@@ -472,6 +472,7 @@ const CONTENT_TYPES = new Map([
   ['.svg', 'image/svg+xml'],
   ['.ico', 'image/x-icon'],
   ['.mp3', 'audio/mpeg'],
+  ['.mpg', 'video/mpeg'],
   ['.ogg', 'audio/ogg'],
   ['.wav', 'audio/wav'],
 ]);

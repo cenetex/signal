@@ -9,6 +9,7 @@
 #include "chain_log.h"
 
 #include "game_sim.h"          /* world_t, SIM_LOG */
+#include "manifest.h"          /* recipe + canonical cargo semantics */
 #include "station_authority.h" /* station_sign / station_verify */
 #include "sha256.h"
 #include "base58.h"
@@ -48,38 +49,473 @@ _Static_assert(CHAIN_UNSIGNED_HEADER_SIZE ==
                "unsigned-header span must equal sizeof header minus the "
                "64-byte trailing signature");
 
+/*
+ * Trust-evidence readers need two passes (verify, then interpret). A single
+ * path-backed descriptor blocks pathname replacement but can still change
+ * under in-place mutation. Freeze it once into an anonymous, bounded file so
+ * both passes consume exactly the same bytes.
+ */
+bool chain_log_snapshot_evidence_file(
+    FILE *source,
+    FILE **out_snapshot) {
+    if (out_snapshot) *out_snapshot = NULL;
+    if (!source || !out_snapshot ||
+        fseek(source, 0, SEEK_SET) != 0) {
+        return false;
+    }
+    FILE *snapshot = tmpfile();
+    if (!snapshot) return false;
+    uint8_t buffer[64 * 1024];
+    size_t total = 0;
+    for (;;) {
+        size_t got = fread(buffer, 1, sizeof(buffer), source);
+        if (got > 0u) {
+            if (got >
+                (size_t)CHAIN_LOG_EVIDENCE_SNAPSHOT_MAX_BYTES -
+                    total ||
+                fwrite(buffer, 1, got, snapshot) != got) {
+                fclose(snapshot);
+                return false;
+            }
+            total += got;
+        }
+        if (got < sizeof(buffer)) {
+            if (ferror(source)) {
+                fclose(snapshot);
+                return false;
+            }
+            break;
+        }
+    }
+    if (fflush(snapshot) != 0 ||
+        fseek(snapshot, 0, SEEK_SET) != 0) {
+        fclose(snapshot);
+        return false;
+    }
+    *out_snapshot = snapshot;
+    return true;
+}
+
+static bool chain_cargo_pub_is_zero(const uint8_t pub[32]) {
+    static const uint8_t zero[32] = {0};
+    return !pub || memcmp(pub, zero, sizeof(zero)) == 0;
+}
+
+static bool chain_cargo_matches_ignoring_origin(
+    const cargo_unit_t *actual,
+    const cargo_unit_t *expected) {
+    cargo_unit_t actual_normalized;
+    cargo_unit_t expected_normalized;
+    uint8_t actual_wire[CARGO_UNIT_WIRE_SIZE];
+    uint8_t expected_wire[CARGO_UNIT_WIRE_SIZE];
+
+    if (!actual || !expected) return false;
+    actual_normalized = *actual;
+    expected_normalized = *expected;
+    actual_normalized.origin_station = 0;
+    expected_normalized.origin_station = 0;
+    cargo_unit_wire_pack(&actual_normalized, actual_wire);
+    cargo_unit_wire_pack(&expected_normalized, expected_wire);
+    return memcmp(actual_wire, expected_wire,
+                  sizeof(actual_wire)) == 0;
+}
+
+bool chain_payload_smelt_bind_output(
+    chain_payload_smelt_t *payload,
+    const uint8_t fragment_pub[32],
+    uint16_t output_index,
+    const cargo_unit_t *output) {
+    cargo_unit_t canonical;
+    if (!payload || !fragment_pub || !output ||
+        chain_cargo_pub_is_zero(fragment_pub) ||
+        !hash_ingot((commodity_t)output->commodity,
+                    (mining_grade_t)output->grade,
+                    fragment_pub, output_index, &canonical)) {
+        return false;
+    }
+    /* mined_block is refinery context rather than hash input, but it is
+     * still copied into and authenticated by the SMELT payload. */
+    canonical.mined_block = output->mined_block;
+    if (!chain_cargo_matches_ignoring_origin(output, &canonical))
+        return false;
+
+    memset(payload, 0, sizeof(*payload));
+    memcpy(payload->fragment_pub, fragment_pub, 32);
+    memcpy(payload->ingot_pub, output->pub, 32);
+    payload->prefix_class = output->prefix_class;
+    payload->semantics_version = CHAIN_CARGO_SEMANTICS_V1;
+    payload->commodity = output->commodity;
+    payload->grade = output->grade;
+    payload->output_index = output_index;
+    payload->mined_block = output->mined_block;
+    return true;
+}
+
+bool chain_payload_craft_bind_output(
+    chain_payload_craft_t *payload,
+    const cargo_unit_t *inputs,
+    size_t input_count,
+    const cargo_unit_t *output) {
+    cargo_kind_t expected_kind;
+    if (!payload || !output ||
+        input_count > RECIPE_INPUT_MAX ||
+        (input_count > 0 && !inputs) ||
+        chain_cargo_pub_is_zero(output->pub) ||
+        (unsigned)output->grade >= (unsigned)MINING_GRADE_COUNT ||
+        output->quantity != 1u ||
+        !cargo_kind_for_commodity(
+            (commodity_t)output->commodity, &expected_kind) ||
+        expected_kind != (cargo_kind_t)output->kind ||
+        output->recipe_id == (uint16_t)RECIPE_SMELT ||
+        output->prefix_class != (uint8_t)INGOT_PREFIX_ANONYMOUS ||
+        output->mined_block != 0u) {
+        return false;
+    }
+
+    if (output->recipe_id == (uint16_t)RECIPE_LEGACY_MIGRATE) {
+        static const uint8_t zero_parent[32] = {0};
+        if (input_count != 0 ||
+            memcmp(output->parent_merkle, zero_parent, 32) != 0) {
+            return false;
+        }
+    } else {
+        const recipe_def_t *recipe =
+            recipe_get((recipe_id_t)output->recipe_id);
+        if (!recipe ||
+            input_count != recipe->input_count ||
+            output->kind != (uint8_t)recipe->output_kind ||
+            output->commodity != (uint8_t)recipe->output_commodity) {
+            return false;
+        }
+        bool canonical_match = false;
+        for (uint32_t output_index = 0;
+             output_index < (uint32_t)recipe->output_count;
+             output_index++) {
+            cargo_unit_t canonical;
+            if (!hash_product(
+                    (recipe_id_t)output->recipe_id, inputs,
+                    input_count, (uint16_t)output_index,
+                    &canonical)) {
+                return false;
+            }
+            if (chain_cargo_matches_ignoring_origin(
+                    output, &canonical)) {
+                canonical_match = true;
+                break;
+            }
+        }
+        if (!canonical_match) {
+            return false;
+        }
+    }
+
+    memset(payload, 0, sizeof(*payload));
+    payload->recipe_id = output->recipe_id;
+    payload->input_count = (uint8_t)input_count;
+    payload->semantics_version = CHAIN_CARGO_SEMANTICS_V1;
+    payload->output_kind = output->kind;
+    payload->output_commodity = output->commodity;
+    payload->output_grade = output->grade;
+    payload->output_quantity = output->quantity;
+    memcpy(payload->output_pub, output->pub, 32);
+    for (size_t i = 0; i < input_count; i++)
+        memcpy(payload->input_pubs[i], inputs[i].pub, 32);
+    return true;
+}
+
+static void chain_cargo_transform_decode_output(
+    chain_cargo_transform_t *transform) {
+    if (!transform) return;
+    memset(&transform->output_cargo, 0,
+           sizeof(transform->output_cargo));
+    transform->output_semantics_version =
+        CHAIN_CARGO_SEMANTICS_UNBOUND;
+
+    if (transform->type == CHAIN_EVT_SMELT) {
+        const chain_payload_smelt_t *payload = &transform->smelt;
+        /*
+         * Live lineage ignores V0 rather than paying its bounded but
+         * deliberately expensive uint16 identity-recovery scan for every
+         * historical row. Offline audit tooling evaluates V0 explicitly.
+         */
+        if (payload->semantics_version != CHAIN_CARGO_SEMANTICS_V1)
+            return;
+        cargo_smelt_provenance_status_t status =
+            cargo_smelt_provenance_evaluate(
+                (const uint8_t *)payload, sizeof(*payload),
+                true, &transform->smelt_provenance);
+        if (status !=
+            CARGO_SMELT_PROVENANCE_STATION_ATTESTED_V1)
+            return;
+        transform->output_cargo =
+            transform->smelt_provenance.output_cargo;
+        transform->output_semantics_version =
+            transform->smelt_provenance.semantics_version;
+        return;
+    }
+
+    if (transform->type == CHAIN_EVT_CRAFT) {
+        const chain_payload_craft_t *payload = &transform->craft;
+        cargo_craft_provenance_status_t status =
+            cargo_craft_provenance_evaluate(
+                (const uint8_t *)payload, sizeof(*payload),
+                true, &transform->craft_provenance);
+        if (status !=
+            CARGO_CRAFT_PROVENANCE_STATION_ATTESTED_V1) {
+            return;
+        }
+        memcpy(transform->output_cargo.parent_merkle,
+               transform->craft_provenance.parent_merkle,
+               sizeof(transform->output_cargo.parent_merkle));
+        cargo_unit_t *output = &transform->output_cargo;
+        output->kind = payload->output_kind;
+        output->commodity = payload->output_commodity;
+        output->grade = payload->output_grade;
+        output->prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+        output->recipe_id = payload->recipe_id;
+        output->quantity = payload->output_quantity;
+        output->mined_block = 0u;
+        memcpy(output->pub, payload->output_pub, 32);
+        transform->output_semantics_version =
+            payload->semantics_version;
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Configurable on-disk root                                           */
 /* ------------------------------------------------------------------ */
 
 static char g_chain_dir[256] = "chain";
 static bool g_chain_log_disk_enabled = true;
+static uint64_t g_chain_log_configuration_generation = 1;
 
 #define chain_log_flush_durable persistence_flush_durable
 
-static void chain_log_rollback_append(const char *path, long length) {
-    if (!path || length < 0) return;
+static void chain_log_bump_configuration_generation(void) {
+    g_chain_log_configuration_generation++;
+    if (g_chain_log_configuration_generation == 0)
+        g_chain_log_configuration_generation = 1;
+}
+
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+typedef struct {
+    chain_log_test_fault_point_t point;
+    chain_event_type_t event_type;
+    uint32_t remaining;
+} chain_log_test_fault_state_t;
+
+static chain_log_test_fault_state_t g_chain_log_test_fault;
+
+void chain_log_test_fault_clear(void) {
+    memset(&g_chain_log_test_fault, 0, sizeof(g_chain_log_test_fault));
+}
+
+void chain_log_test_fault_inject(chain_log_test_fault_point_t point,
+                                 chain_event_type_t event_type,
+                                 uint32_t occurrence) {
+    chain_log_test_fault_clear();
+    if (point <= CHAIN_LOG_TEST_FAULT_NONE ||
+        point > CHAIN_LOG_TEST_FAULT_PARENT_DIR_SYNC ||
+        event_type < CHAIN_EVT_NONE ||
+        event_type >= CHAIN_EVT_TYPE_COUNT ||
+        occurrence == 0) {
+        return;
+    }
+    g_chain_log_test_fault.point = point;
+    g_chain_log_test_fault.event_type = event_type;
+    g_chain_log_test_fault.remaining = occurrence;
+}
+
+static bool chain_log_test_fault_select(
+    const chain_log_batch_event_t *events,
+    size_t event_count,
+    chain_log_test_fault_point_t *out_point,
+    size_t *out_event_index) {
+    if (!events || !out_point || !out_event_index ||
+        g_chain_log_test_fault.point == CHAIN_LOG_TEST_FAULT_NONE ||
+        g_chain_log_test_fault.remaining == 0) {
+        return false;
+    }
+    for (size_t i = 0; i < event_count; i++) {
+        if (g_chain_log_test_fault.event_type != CHAIN_EVT_NONE &&
+            events[i].type != g_chain_log_test_fault.event_type) {
+            continue;
+        }
+        g_chain_log_test_fault.remaining--;
+        if (g_chain_log_test_fault.remaining != 0) continue;
+        *out_point = g_chain_log_test_fault.point;
+        *out_event_index = i;
+        chain_log_test_fault_clear();
+        return true;
+    }
+    return false;
+}
+#endif
+
+static bool chain_log_rollback_append(const char *path, long length) {
+    if (!path || length < 0) return false;
+    bool ok = true;
 #if defined(_WIN32)
     int fd = _open(path, _O_RDWR | _O_BINARY);
-    if (fd >= 0) {
-        (void)_chsize_s(fd, (long long)length);
-        (void)_close(fd);
+    if (fd < 0) {
+        SIM_LOG("[chain] rollback open(%s) failed: %s\n",
+                path, strerror(errno));
+        return false;
     }
-#else
-    /* Fortified glibc marks truncate() warn_unused_result; checking it also
-     * keeps a failed durability rollback visible in production logs. */
-    if (truncate(path, (off_t)length) != 0) {
+    if (_chsize_s(fd, (long long)length) != 0) {
         SIM_LOG("[chain] rollback truncate(%s) failed: %s\n",
                 path, strerror(errno));
+        ok = false;
     }
+    if (_commit(fd) != 0) {
+        SIM_LOG("[chain] rollback sync(%s) failed: %s\n",
+                path, strerror(errno));
+        ok = false;
+    }
+    if (_close(fd) != 0) {
+        SIM_LOG("[chain] rollback close(%s) failed: %s\n",
+                path, strerror(errno));
+        ok = false;
+    }
+#else
+    int fd = open(path, O_RDWR);
+    if (fd < 0) {
+        SIM_LOG("[chain] rollback open(%s) failed: %s\n",
+                path, strerror(errno));
+        return false;
+    }
+    if (ftruncate(fd, (off_t)length) != 0) {
+        SIM_LOG("[chain] rollback truncate(%s) failed: %s\n",
+                path, strerror(errno));
+        ok = false;
+    }
+    if (fsync(fd) != 0) {
+        SIM_LOG("[chain] rollback sync(%s) failed: %s\n",
+                path, strerror(errno));
+        ok = false;
+    }
+    if (close(fd) != 0) {
+        SIM_LOG("[chain] rollback close(%s) failed: %s\n",
+                path, strerror(errno));
+        ok = false;
+    }
+#endif
+    return ok;
+}
+
+/* POSIX exposes directory fsync directly. Win32 has no portable equivalent
+ * for directory handles, so _commit() on the file remains the strongest
+ * supported flush there and these steps are documented no-ops. */
+static bool chain_log_sync_directory(const char *path) {
+#if defined(_WIN32)
+    (void)path;
+    return true;
+#else
+    if (!path || path[0] == '\0') return false;
+    int flags = O_RDONLY;
+#  if defined(O_DIRECTORY)
+    flags |= O_DIRECTORY;
+#  endif
+    int fd = open(path, flags);
+    if (fd < 0) {
+        SIM_LOG("[chain] open directory(%s) failed: %s\n",
+                path, strerror(errno));
+        return false;
+    }
+    bool ok = true;
+    if (fsync(fd) != 0) {
+        SIM_LOG("[chain] sync directory(%s) failed: %s\n",
+                path, strerror(errno));
+        ok = false;
+    }
+    if (close(fd) != 0) {
+        SIM_LOG("[chain] close directory(%s) failed: %s\n",
+                path, strerror(errno));
+        ok = false;
+    }
+    return ok;
 #endif
 }
 
+static bool chain_log_parent_directory(
+    const char *path, char *out, size_t cap) {
+    if (!path || !out || cap < 2) return false;
+    size_t len = strlen(path);
+    while (len > 1 && path[len - 1] == '/') len--;
+    size_t separator = len;
+    while (separator > 0 && path[separator - 1] != '/')
+        separator--;
+    if (separator == 0) {
+        return snprintf(out, cap, ".") > 0;
+    }
+    if (separator == 1) {
+        return snprintf(out, cap, "/") > 0;
+    }
+    size_t parent_len = separator - 1;
+    if (parent_len + 1 > cap) return false;
+    memcpy(out, path, parent_len);
+    out[parent_len] = '\0';
+    return true;
+}
+
+static bool chain_log_sync_chain_dir(void) {
+    return chain_log_sync_directory(g_chain_dir);
+}
+
+static bool chain_log_sync_chain_dir_parent(void) {
+    char parent[sizeof(g_chain_dir)];
+    if (!chain_log_parent_directory(
+            g_chain_dir, parent, sizeof(parent))) {
+        return false;
+    }
+    return chain_log_sync_directory(parent);
+}
+
+static bool chain_log_remove_created_dir(void) {
+#if defined(_WIN32)
+    int removed = _rmdir(g_chain_dir);
+#else
+    int removed = rmdir(g_chain_dir);
+#endif
+    if (removed != 0 && errno != ENOENT) {
+        SIM_LOG("[chain] rollback rmdir(%s) failed: %s\n",
+                g_chain_dir, strerror(errno));
+        return false;
+    }
+    return chain_log_sync_chain_dir_parent();
+}
+
+static bool chain_log_rollback_created_file(
+    const char *path,
+    bool remove_owned_chain_dir,
+    bool sync_chain_dir_parent) {
+    if (!path) return false;
+    bool ok = true;
+    if (remove(path) != 0 && errno != ENOENT) {
+        SIM_LOG("[chain] rollback remove(%s) failed: %s\n",
+                path, strerror(errno));
+        return false;
+    }
+    if (!chain_log_sync_chain_dir()) ok = false;
+    if (remove_owned_chain_dir) {
+        if (!chain_log_remove_created_dir()) ok = false;
+    } else if (sync_chain_dir_parent &&
+               !chain_log_sync_chain_dir_parent()) {
+        ok = false;
+    }
+    return ok;
+}
+
 void chain_log_set_dir(const char *dir) {
+    char next[sizeof(g_chain_dir)];
     if (!dir || dir[0] == '\0') {
-        snprintf(g_chain_dir, sizeof(g_chain_dir), "chain");
+        snprintf(next, sizeof(next), "chain");
     } else {
-        snprintf(g_chain_dir, sizeof(g_chain_dir), "%s", dir);
+        snprintf(next, sizeof(next), "%s", dir);
+    }
+    if (strcmp(next, g_chain_dir) != 0) {
+        snprintf(g_chain_dir, sizeof(g_chain_dir), "%s", next);
+        chain_log_bump_configuration_generation();
     }
 }
 
@@ -88,17 +524,74 @@ const char *chain_log_get_dir(void) {
 }
 
 void chain_log_set_disk_enabled(bool enabled) {
+    if (g_chain_log_disk_enabled != enabled)
+        chain_log_bump_configuration_generation();
     g_chain_log_disk_enabled = enabled;
 }
 
-/* mkdir -p the chain dir. Best-effort — collisions / permission
- * failures are logged once and emits then fail at fopen time. */
-static void ensure_chain_dir(void) {
+bool chain_log_disk_enabled(void) {
+    return g_chain_log_disk_enabled;
+}
+
+uint64_t chain_log_configuration_generation(void) {
+    return g_chain_log_configuration_generation;
+}
+
+typedef struct {
+    bool owned_creation;
+    bool needs_parent_sync;
+} chain_log_dir_prepare_t;
+
+/* Create the configured leaf chain directory. Its parent must already exist.
+ * `owned_creation` is true only when this process's mkdir succeeded, while
+ * `needs_parent_sync` is also true for the EEXIST-after-stat race. That race
+ * still receives the first-boot durability sync, but rollback never removes
+ * a directory created by another process. */
+static bool ensure_chain_dir(chain_log_dir_prepare_t *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
     struct stat st;
-    if (stat(g_chain_dir, &st) == 0) return;
-    if (MKDIR(g_chain_dir) != 0 && errno != EEXIST) {
-        SIM_LOG("[chain] mkdir(%s) failed: %s\n", g_chain_dir, strerror(errno));
+    if (stat(g_chain_dir, &st) == 0) {
+        if (
+#if defined(_WIN32)
+            (st.st_mode & _S_IFDIR) != 0
+#else
+            S_ISDIR(st.st_mode)
+#endif
+        ) {
+            return true;
+        }
+        errno = ENOTDIR;
+        SIM_LOG("[chain] configured chain path is not a directory: %s\n",
+                g_chain_dir);
+        return false;
     }
+    if (errno != ENOENT) {
+        SIM_LOG("[chain] stat(%s) failed: %s\n",
+                g_chain_dir, strerror(errno));
+        return false;
+    }
+    if (MKDIR(g_chain_dir) == 0) {
+        out->owned_creation = true;
+        out->needs_parent_sync = true;
+        return true;
+    }
+    if (errno == EEXIST && stat(g_chain_dir, &st) == 0) {
+#if defined(_WIN32)
+        bool is_dir = (st.st_mode & _S_IFDIR) != 0;
+#else
+        bool is_dir = S_ISDIR(st.st_mode);
+#endif
+        if (is_dir) {
+            /* It appeared after our failed stat. Conservatively sync its
+             * parent as a newly-created entry, without claiming ownership. */
+            out->needs_parent_sync = true;
+            return true;
+        }
+    }
+    SIM_LOG("[chain] mkdir(%s) failed: %s\n",
+            g_chain_dir, strerror(errno));
+    return false;
 }
 
 bool chain_log_path_for(const uint8_t pubkey[32], char *out, size_t cap) {
@@ -248,22 +741,73 @@ void chain_log_health_set(station_t *s, chain_health_status_t status,
     }
 }
 
-uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
-                        const void *payload, uint16_t payload_len) {
-    static const uint8_t zero_pub[32] = {0};
+const char *chain_log_append_status_name(chain_log_append_status_t status) {
+    switch (status) {
+    case CHAIN_LOG_APPEND_OK:                return "ok";
+    case CHAIN_LOG_APPEND_BAD_ARGUMENTS:     return "bad_arguments";
+    case CHAIN_LOG_APPEND_BATCH_TOO_LARGE:   return "batch_too_large";
+    case CHAIN_LOG_APPEND_EVENT_ID_OVERFLOW: return "event_id_overflow";
+    case CHAIN_LOG_APPEND_UNKEYED:           return "unkeyed";
+    case CHAIN_LOG_APPEND_BLOCKED:           return "blocked";
+    case CHAIN_LOG_APPEND_SIGNING_FAILED:    return "signing_failed";
+    case CHAIN_LOG_APPEND_NO_MEMORY:         return "no_memory";
+    case CHAIN_LOG_APPEND_PATH_FAILED:       return "path_failed";
+    case CHAIN_LOG_APPEND_OPEN_FAILED:       return "open_failed";
+    case CHAIN_LOG_APPEND_SEEK_FAILED:       return "seek_failed";
+    case CHAIN_LOG_APPEND_TELL_FAILED:       return "tell_failed";
+    case CHAIN_LOG_APPEND_WRITE_FAILED:      return "write_failed";
+    case CHAIN_LOG_APPEND_FLUSH_FAILED:      return "flush_failed";
+    case CHAIN_LOG_APPEND_CLOSE_FAILED:      return "close_failed";
+    case CHAIN_LOG_APPEND_DIR_SYNC_FAILED:   return "dir_sync_failed";
+    case CHAIN_LOG_APPEND_ROLLBACK_FAILED:   return "rollback_failed";
+    default:                                 return "unknown";
+    }
+}
 
-    if (!s) return 0;
-    if (type <= CHAIN_EVT_NONE || type >= CHAIN_EVT_TYPE_COUNT) return 0;
-    if (payload_len > 0 && !payload) return 0;
-    /* Stations that haven't been keyed up yet (catalog-less test
-     * scenarios, freshly-seeded slots before world_init runs the
-     * authority bootstrap) must not emit — their signatures would
-     * verify against zero. */
-    if (memcmp(s->station_pubkey, zero_pub, 32) == 0) return 0;
-    /* If the secret slot is all-zero the keypair was never derived;
-     * skip rather than emit a forgery-friendly all-zero signature. */
+static chain_log_append_result_t chain_log_append_result(
+    chain_log_append_status_t status) {
+    chain_log_append_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.status = status;
+    return result;
+}
+
+static void chain_log_mark_durable_failure(
+    station_t *s,
+    chain_log_append_status_t status,
+    uint64_t first_event_id,
+    uint64_t last_event_id) {
+    if (!s) return;
+    s->chain_append_blocked = true;
+    s->chain_append_block_warned = false;
+    s->chain_health_status = CHAIN_HEALTH_FAILED;
+    snprintf(s->chain_health_message, sizeof(s->chain_health_message),
+             "durable batch %s for events %llu..%llu",
+             chain_log_append_status_name(status),
+             (unsigned long long)first_event_id,
+             (unsigned long long)last_event_id);
+}
+
+chain_log_append_result_t chain_log_emit_batch(
+    world_t *w,
+    station_t *s,
+    const chain_log_batch_event_t *events,
+    size_t event_count) {
+    static const uint8_t zero_pub[32] = {0};
     static const uint8_t zero_secret[64] = {0};
-    if (memcmp(s->station_secret, zero_secret, 64) == 0) return 0;
+    chain_log_append_result_t result =
+        chain_log_append_result(CHAIN_LOG_APPEND_BAD_ARGUMENTS);
+
+    if (!s || !events || event_count == 0) return result;
+    if (event_count > CHAIN_LOG_BATCH_MAX_EVENTS) {
+        result.status = CHAIN_LOG_APPEND_BATCH_TOO_LARGE;
+        return result;
+    }
+    if (memcmp(s->station_pubkey, zero_pub, sizeof(zero_pub)) == 0 ||
+        memcmp(s->station_secret, zero_secret, sizeof(zero_secret)) == 0) {
+        result.status = CHAIN_LOG_APPEND_UNKEYED;
+        return result;
+    }
     if (s->chain_append_blocked) {
         if (!s->chain_append_block_warned) {
             SIM_LOG("[chain] append blocked for station %s: %s\n",
@@ -274,89 +818,332 @@ uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
                               (chain_health_status_t)s->chain_health_status));
             s->chain_append_block_warned = true;
         }
-        return 0;
+        result.status = CHAIN_LOG_APPEND_BLOCKED;
+        return result;
+    }
+    if (s->chain_event_count >
+        UINT64_MAX - (uint64_t)event_count) {
+        result.status = CHAIN_LOG_APPEND_EVENT_ID_OVERFLOW;
+        return result;
     }
 
-    chain_event_header_t hdr;
-    memset(&hdr, 0, sizeof(hdr));
-    /* epoch = sim tick. world.time is in seconds at 120 Hz; we
-     * round to ticks for stability across save/load reboots that
-     * stamp world.time as a float. */
+    size_t serialized_size = 0;
+    for (size_t i = 0; i < event_count; i++) {
+        if (events[i].type <= CHAIN_EVT_NONE ||
+            events[i].type >= CHAIN_EVT_TYPE_COUNT ||
+            (events[i].payload_len > 0 && !events[i].payload)) {
+            result.status = CHAIN_LOG_APPEND_BAD_ARGUMENTS;
+            return result;
+        }
+        size_t entry_size = CHAIN_EVENT_HEADER_SIZE +
+                            sizeof(events[i].payload_len) +
+                            (size_t)events[i].payload_len;
+        if (serialized_size > SIZE_MAX - entry_size) {
+            result.status = CHAIN_LOG_APPEND_BATCH_TOO_LARGE;
+            return result;
+        }
+        serialized_size += entry_size;
+    }
+
+    uint8_t *serialized = malloc(serialized_size);
+    size_t *entry_offsets = NULL;
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+    entry_offsets =
+        malloc((event_count + 1u) * sizeof(*entry_offsets));
+#endif
+    if (!serialized
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+        || !entry_offsets
+#endif
+    ) {
+        free(entry_offsets);
+        free(serialized);
+        result.status = CHAIN_LOG_APPEND_NO_MEMORY;
+        return result;
+    }
+
+    uint64_t first_event_id = s->chain_event_count + 1u;
+    uint64_t last_event_id =
+        s->chain_event_count + (uint64_t)event_count;
     uint64_t epoch_ticks = w ? (uint64_t)(w->time * 120.0) : 0;
-    hdr.epoch = epoch_ticks;
-    hdr.event_id = s->chain_event_count + 1;
-    hdr.type = (uint8_t)type;
-    memcpy(hdr.authority, s->station_pubkey, 32);
-    sha256_bytes(payload_len > 0 ? payload : (const void *)"", payload_len, hdr.payload_hash);
-    memcpy(hdr.prev_hash, s->chain_last_hash, 32);
+    uint8_t staged_last_hash[32];
+    memcpy(staged_last_hash, s->chain_last_hash, sizeof(staged_last_hash));
 
-    uint8_t unsigned_blob[CHAIN_UNSIGNED_HEADER_SIZE];
-    chain_event_unsigned_pack(&hdr, unsigned_blob);
-    station_sign(s, unsigned_blob, CHAIN_UNSIGNED_HEADER_SIZE, hdr.signature);
+    size_t serialized_offset = 0;
+    for (size_t i = 0; i < event_count; i++) {
+        chain_event_header_t header;
+        memset(&header, 0, sizeof(header));
+        header.epoch = epoch_ticks;
+        header.event_id = first_event_id + (uint64_t)i;
+        header.type = (uint8_t)events[i].type;
+        memcpy(header.authority, s->station_pubkey,
+               sizeof(header.authority));
+        sha256_bytes(events[i].payload_len > 0
+                         ? events[i].payload
+                         : (const void *)"",
+                     events[i].payload_len, header.payload_hash);
+        memcpy(header.prev_hash, staged_last_hash,
+               sizeof(header.prev_hash));
 
-    /* Self-verify before persisting — paranoia, but cheap and catches
-     * a corrupt key situation where rederive failed silently. */
-    if (!station_verify(s, unsigned_blob, CHAIN_UNSIGNED_HEADER_SIZE, hdr.signature)) {
-        SIM_LOG("[chain] self-verify failed for station; skipping emit\n");
-        return 0;
+        uint8_t unsigned_blob[CHAIN_UNSIGNED_HEADER_SIZE];
+        chain_event_unsigned_pack(&header, unsigned_blob);
+        station_sign(s, unsigned_blob, sizeof(unsigned_blob),
+                     header.signature);
+        if (!station_verify(s, unsigned_blob, sizeof(unsigned_blob),
+                            header.signature)) {
+            SIM_LOG("[chain] self-verify failed while staging batch\n");
+            free(entry_offsets);
+            free(serialized);
+            result.status = CHAIN_LOG_APPEND_SIGNING_FAILED;
+            return result;
+        }
+
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+        entry_offsets[i] = serialized_offset;
+#endif
+        chain_event_header_pack(
+            &header, &serialized[serialized_offset]);
+        serialized_offset += CHAIN_EVENT_HEADER_SIZE;
+        memcpy(&serialized[serialized_offset], &events[i].payload_len,
+               sizeof(events[i].payload_len));
+        serialized_offset += sizeof(events[i].payload_len);
+        if (events[i].payload_len > 0) {
+            memcpy(&serialized[serialized_offset], events[i].payload,
+                   events[i].payload_len);
+            serialized_offset += events[i].payload_len;
+        }
+        chain_event_header_hash(&header, staged_last_hash);
     }
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+    entry_offsets[event_count] = serialized_offset;
+#endif
+    assert(serialized_offset == serialized_size);
 
     if (!g_chain_log_disk_enabled) {
-        chain_event_header_hash(&hdr, s->chain_last_hash);
-        s->chain_event_count = hdr.event_id;
-        return hdr.event_id;
+        memcpy(s->chain_last_hash, staged_last_hash,
+               sizeof(s->chain_last_hash));
+        s->chain_event_count = last_event_id;
+        result.status = CHAIN_LOG_APPEND_OK;
+        result.event_count = (uint16_t)event_count;
+        result.first_event_id = first_event_id;
+        result.last_event_id = last_event_id;
+        memcpy(result.last_hash, staged_last_hash,
+               sizeof(result.last_hash));
+        free(entry_offsets);
+        free(serialized);
+        return result;
     }
 
-    /* Open the log in append mode; create dir on first emit. */
     char path[256];
     if (!chain_log_path_for(s->station_pubkey, path, sizeof(path))) {
-        SIM_LOG("[chain] could not build log path\n");
-        return 0;
+        free(entry_offsets);
+        free(serialized);
+        result.status = CHAIN_LOG_APPEND_PATH_FAILED;
+        return result;
     }
-    ensure_chain_dir();
-    FILE *f = fopen(path, "r+b");
-    if (!f && errno == ENOENT) f = fopen(path, "w+b");
-    if (!f) {
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+    chain_log_test_fault_point_t fault_point =
+        CHAIN_LOG_TEST_FAULT_NONE;
+    size_t fault_event_index = 0;
+    (void)chain_log_test_fault_select(
+        events, event_count, &fault_point, &fault_event_index);
+#endif
+
+    chain_log_dir_prepare_t prepared_dir;
+    if (!ensure_chain_dir(&prepared_dir)) {
+        free(entry_offsets);
+        free(serialized);
+        result.status = CHAIN_LOG_APPEND_OPEN_FAILED;
+        return result;
+    }
+    bool created_file = false;
+    FILE *log = fopen(path, "r+b");
+    if (!log && errno == ENOENT) {
+        log = fopen(path, "w+b");
+        created_file = log != NULL;
+    }
+    if (!log) {
         SIM_LOG("[chain] fopen(%s) failed: %s\n", path, strerror(errno));
-        return 0;
+        if (prepared_dir.owned_creation &&
+            !chain_log_remove_created_dir()) {
+            result.status = CHAIN_LOG_APPEND_ROLLBACK_FAILED;
+        } else {
+            result.status = CHAIN_LOG_APPEND_OPEN_FAILED;
+        }
+        chain_log_mark_durable_failure(
+            s, result.status, first_event_id, last_event_id);
+        free(entry_offsets);
+        free(serialized);
+        return result;
     }
-    if (fseek(f, 0, SEEK_END) != 0) {
+    if (
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+        fault_point == CHAIN_LOG_TEST_FAULT_SEEK ||
+#endif
+        fseek(log, 0, SEEK_END) != 0) {
         SIM_LOG("[chain] seek(%s) failed: %s\n", path, strerror(errno));
-        fclose(f);
-        return 0;
+        (void)fclose(log);
+        bool rollback_ok = !created_file ||
+            chain_log_rollback_created_file(
+                path, prepared_dir.owned_creation,
+                prepared_dir.needs_parent_sync);
+        chain_log_append_status_t reported_status = rollback_ok
+            ? CHAIN_LOG_APPEND_SEEK_FAILED
+            : CHAIN_LOG_APPEND_ROLLBACK_FAILED;
+        chain_log_mark_durable_failure(
+            s, reported_status, first_event_id, last_event_id);
+        free(entry_offsets);
+        free(serialized);
+        result.status = reported_status;
+        return result;
     }
-    long append_start = ftell(f);
+    long append_start =
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+        fault_point == CHAIN_LOG_TEST_FAULT_TELL
+            ? -1 :
+#endif
+            ftell(log);
     if (append_start < 0) {
         SIM_LOG("[chain] tell(%s) failed: %s\n", path, strerror(errno));
-        fclose(f);
-        return 0;
-    }
-    uint8_t packed[CHAIN_EVENT_HEADER_SIZE];
-    chain_event_header_pack(&hdr, packed);
-    bool write_ok = fwrite(packed, CHAIN_EVENT_HEADER_SIZE, 1, f) == 1 &&
-                    fwrite(&payload_len, sizeof(payload_len), 1, f) == 1 &&
-                    (payload_len == 0 ||
-                     fwrite(payload, payload_len, 1, f) == 1);
-    if (write_ok) write_ok = chain_log_flush_durable(f);
-    if (fclose(f) != 0) write_ok = false;
-    if (!write_ok) {
-        int saved_errno = errno;
-        (void)saved_errno;
-        chain_log_rollback_append(path, append_start);
-        s->chain_append_blocked = true;
-        s->chain_health_status = CHAIN_HEALTH_FAILED;
-        snprintf(s->chain_health_message, sizeof(s->chain_health_message),
-                 "durable append failed at event %llu",
-                 (unsigned long long)hdr.event_id);
-        SIM_LOG("[chain] durable append failed for %s: %s; appends blocked\n",
-                path, strerror(saved_errno));
-        return 0;
+        (void)fclose(log);
+        bool rollback_ok = !created_file ||
+            chain_log_rollback_created_file(
+                path, prepared_dir.owned_creation,
+                prepared_dir.needs_parent_sync);
+        chain_log_append_status_t reported_status = rollback_ok
+            ? CHAIN_LOG_APPEND_TELL_FAILED
+            : CHAIN_LOG_APPEND_ROLLBACK_FAILED;
+        chain_log_mark_durable_failure(
+            s, reported_status, first_event_id, last_event_id);
+        free(entry_offsets);
+        free(serialized);
+        result.status = reported_status;
+        return result;
     }
 
-    /* Update in-memory chain state — the next event's prev_hash. */
-    chain_event_header_hash(&hdr, s->chain_last_hash);
-    s->chain_event_count = hdr.event_id;
-    return hdr.event_id;
+    chain_log_append_status_t io_status = CHAIN_LOG_APPEND_OK;
+    int failure_errno = 0;
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+    if (fault_point == CHAIN_LOG_TEST_FAULT_WRITE) {
+        size_t prefix_len = entry_offsets[fault_event_index];
+        if (prefix_len > 0 &&
+            fwrite(serialized, 1, prefix_len, log) != prefix_len) {
+            failure_errno = errno;
+        } else {
+            failure_errno = ENOSPC;
+        }
+        io_status = CHAIN_LOG_APPEND_WRITE_FAILED;
+    } else
+#endif
+    if (fwrite(serialized, 1, serialized_size, log) !=
+               serialized_size) {
+        failure_errno = errno;
+        io_status = CHAIN_LOG_APPEND_WRITE_FAILED;
+    }
+
+    if (io_status == CHAIN_LOG_APPEND_OK) {
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+        if (fault_point == CHAIN_LOG_TEST_FAULT_FLUSH) {
+            if (fflush(log) != 0) {
+                failure_errno = errno;
+            } else {
+                failure_errno = EIO;
+            }
+            io_status = CHAIN_LOG_APPEND_FLUSH_FAILED;
+        } else
+#endif
+        if (!chain_log_flush_durable(log)) {
+            failure_errno = errno;
+            io_status = CHAIN_LOG_APPEND_FLUSH_FAILED;
+        }
+    }
+
+    int close_result = fclose(log);
+    if (io_status == CHAIN_LOG_APPEND_OK &&
+        (close_result != 0
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+         ||
+         fault_point == CHAIN_LOG_TEST_FAULT_CLOSE)) {
+#else
+        )) {
+#endif
+        failure_errno = close_result != 0 ? errno : EIO;
+        io_status = CHAIN_LOG_APPEND_CLOSE_FAILED;
+    }
+
+    if (io_status == CHAIN_LOG_APPEND_OK && created_file) {
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+        if (fault_point == CHAIN_LOG_TEST_FAULT_DIR_SYNC) {
+            failure_errno = EIO;
+            io_status = CHAIN_LOG_APPEND_DIR_SYNC_FAILED;
+        } else
+#endif
+        if (!chain_log_sync_chain_dir()) {
+            failure_errno = errno;
+            io_status = CHAIN_LOG_APPEND_DIR_SYNC_FAILED;
+        }
+    }
+    if (io_status == CHAIN_LOG_APPEND_OK &&
+        prepared_dir.needs_parent_sync) {
+#if defined(SIGNAL_CHAIN_LOG_TESTING)
+        if (fault_point ==
+            CHAIN_LOG_TEST_FAULT_PARENT_DIR_SYNC) {
+            failure_errno = EIO;
+            io_status = CHAIN_LOG_APPEND_DIR_SYNC_FAILED;
+        } else
+#endif
+        if (!chain_log_sync_chain_dir_parent()) {
+            failure_errno = errno;
+            io_status = CHAIN_LOG_APPEND_DIR_SYNC_FAILED;
+        }
+    }
+
+    if (io_status != CHAIN_LOG_APPEND_OK) {
+        if (failure_errno == 0) failure_errno = EIO;
+        bool rollback_ok = created_file
+            ? chain_log_rollback_created_file(
+                  path, prepared_dir.owned_creation,
+                  prepared_dir.needs_parent_sync)
+            : chain_log_rollback_append(path, append_start);
+        chain_log_append_status_t reported_status = rollback_ok
+            ? io_status : CHAIN_LOG_APPEND_ROLLBACK_FAILED;
+        chain_log_mark_durable_failure(
+            s, reported_status, first_event_id, last_event_id);
+        SIM_LOG("[chain] durable batch append failed for %s: %s (%s); "
+                "appends blocked\n",
+                path, strerror(failure_errno),
+                chain_log_append_status_name(reported_status));
+        free(entry_offsets);
+        free(serialized);
+        result.status = reported_status;
+        return result;
+    }
+
+    memcpy(s->chain_last_hash, staged_last_hash,
+           sizeof(s->chain_last_hash));
+    s->chain_event_count = last_event_id;
+    result.status = CHAIN_LOG_APPEND_OK;
+    result.event_count = (uint16_t)event_count;
+    result.first_event_id = first_event_id;
+    result.last_event_id = last_event_id;
+    memcpy(result.last_hash, staged_last_hash,
+           sizeof(result.last_hash));
+    free(entry_offsets);
+    free(serialized);
+    return result;
+}
+
+uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
+                        const void *payload, uint16_t payload_len) {
+    const chain_log_batch_event_t event = {
+        .type = type,
+        .payload = payload,
+        .payload_len = payload_len,
+    };
+    chain_log_append_result_t result =
+        chain_log_emit_batch(w, s, &event, 1);
+    return result.status == CHAIN_LOG_APPEND_OK
+        ? result.last_event_id : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -368,21 +1155,19 @@ uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
  * tool can link it without pulling in the world_t / SIM_LOG / station
  * authority dependencies that chain_log_emit needs. */
 
-bool chain_log_verify_station(const station_t *s,
-                              uint64_t *out_event_count,
-                              uint8_t out_last_hash[32],
-                              chain_log_verify_report_t *out_report) {
+bool chain_log_verify_identity(
+    const uint8_t station_pubkey[32],
+    uint64_t *out_event_count,
+    uint8_t out_last_hash[32],
+    chain_log_verify_report_t *out_report) {
     static const uint8_t zero_pub[32] = {0};
     if (out_event_count) *out_event_count = 0;
     if (out_last_hash) memset(out_last_hash, 0, 32);
     if (out_report) memset(out_report, 0, sizeof(*out_report));
-    if (!s) return false;
-    if (memcmp(s->station_pubkey, zero_pub, 32) == 0) {
-        /* Unkeyed station — log is trivially empty. */
-        return true;
-    }
+    if (!station_pubkey ||
+        memcmp(station_pubkey, zero_pub, 32) == 0) return false;
     char path[256];
-    if (!chain_log_path_for(s->station_pubkey, path, sizeof(path))) return false;
+    if (!chain_log_path_for(station_pubkey, path, sizeof(path))) return false;
     FILE *f = fopen(path, "rb");
     if (!f) {
         /* No log on disk = no events authored = trivially valid. */
@@ -390,7 +1175,7 @@ bool chain_log_verify_station(const station_t *s,
     }
 
     chain_log_verify_report_t report;
-    bool ok = chain_log_verify_with_pubkey(f, s->station_pubkey, &report);
+    bool ok = chain_log_verify_with_pubkey(f, station_pubkey, &report);
     if (out_report) memcpy(out_report, &report, sizeof(report));
 
     /* Recompute last_hash by re-reading just the last valid header,
@@ -415,6 +1200,25 @@ bool chain_log_verify_station(const station_t *s,
     fclose(f);
     if (out_event_count) *out_event_count = report.tail_event_id;
     return ok;
+}
+
+bool chain_log_verify_station(const station_t *s,
+                              uint64_t *out_event_count,
+                              uint8_t out_last_hash[32],
+                              chain_log_verify_report_t *out_report) {
+    static const uint8_t zero_pub[32] = {0};
+    if (out_event_count) *out_event_count = 0;
+    if (out_last_hash) memset(out_last_hash, 0, 32);
+    if (out_report) memset(out_report, 0, sizeof(*out_report));
+    if (!s) return false;
+    if (memcmp(s->station_pubkey, zero_pub, 32) == 0) {
+        /* Unkeyed station — log is trivially empty. */
+        return true;
+    }
+    return chain_log_verify_identity(s->station_pubkey,
+                                     out_event_count,
+                                     out_last_hash,
+                                     out_report);
 }
 
 bool chain_log_verify(const station_t *s,
@@ -477,61 +1281,342 @@ int chain_log_read_route_history_tail(const station_t *s,
     return n;
 }
 
-bool chain_log_find_cargo_transform(const station_t *s,
-                                    const uint8_t cargo_pub[32],
-                                    chain_cargo_transform_t *out) {
-    if (!s || !cargo_pub || !out) return false;
+chain_cargo_transform_find_status_t
+chain_log_find_cargo_transform_for_identity_pinned(
+    const uint8_t station_pubkey[32],
+    const uint8_t cargo_pub[32],
+    const uint8_t event_hash_pin[32],
+    chain_cargo_transform_t *out) {
+    static const uint8_t zero_hash[32] = {0};
+    if (!station_pubkey || !cargo_pub || !out)
+        return CHAIN_CARGO_TRANSFORM_READ_INVALID;
     memset(out, 0, sizeof(*out));
+    bool pinned = event_hash_pin &&
+        memcmp(event_hash_pin, zero_hash, sizeof(zero_hash)) != 0;
 
     char path[256];
-    if (!chain_log_path_for(s->station_pubkey, path, sizeof(path))) return false;
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!chain_log_path_for(station_pubkey, path, sizeof(path)))
+        return CHAIN_CARGO_TRANSFORM_READ_INVALID;
+    FILE *source = fopen(path, "rb");
+    if (!source) return CHAIN_CARGO_TRANSFORM_NOT_FOUND;
+    FILE *f = NULL;
+    bool snapshot_ok =
+        chain_log_snapshot_evidence_file(source, &f);
+    bool source_close_ok = fclose(source) == 0;
+    if (!snapshot_ok || !source_close_ok) {
+        if (f) fclose(f);
+        return CHAIN_CARGO_TRANSFORM_READ_INVALID;
+    }
+
+    chain_log_verify_report_t verified = {0};
+    if (!chain_log_verify_with_pubkey(
+            f, station_pubkey, &verified) ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return CHAIN_CARGO_TRANSFORM_READ_INVALID;
+    }
 
     bool found = false;
-    for (;;) {
+    bool invalid = false;
+    for (uint64_t event_index = 0;
+         event_index < verified.valid_events;
+         event_index++) {
         uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
         size_t got = fread(hdr_bytes, 1, sizeof(hdr_bytes), f);
-        if (got == 0 && feof(f)) break;
-        if (got != sizeof(hdr_bytes)) break;
+        if (got != sizeof(hdr_bytes)) {
+            invalid = true;
+            break;
+        }
 
         chain_event_header_t hdr;
-        if (!chain_event_header_unpack(hdr_bytes, &hdr)) break;
+        if (!chain_event_header_unpack(hdr_bytes, &hdr)) {
+            invalid = true;
+            break;
+        }
 
         uint16_t plen = 0;
-        if (fread(&plen, sizeof(plen), 1, f) != 1) break;
+        if (fread(&plen, sizeof(plen), 1, f) != 1) {
+            invalid = true;
+            break;
+        }
 
         if (hdr.type == CHAIN_EVT_SMELT &&
             plen == sizeof(chain_payload_smelt_t)) {
             chain_payload_smelt_t payload;
-            if (fread(&payload, 1, sizeof(payload), f) != sizeof(payload)) break;
+            if (fread(&payload, 1, sizeof(payload), f) != sizeof(payload)) {
+                invalid = true;
+                break;
+            }
             if (memcmp(payload.ingot_pub, cargo_pub, 32) == 0) {
+                uint8_t header_hash[32];
+                chain_event_header_hash(&hdr, header_hash);
+                if (pinned &&
+                    memcmp(header_hash, event_hash_pin, 32) != 0) {
+                    continue;
+                }
+                if (found) {
+                    memset(out, 0, sizeof(*out));
+                    fclose(f);
+                    return CHAIN_CARGO_TRANSFORM_AMBIGUOUS;
+                }
                 memset(out, 0, sizeof(*out));
                 out->type = CHAIN_EVT_SMELT;
                 out->event_id = hdr.event_id;
                 out->epoch = hdr.epoch;
+                memcpy(out->header_hash, header_hash, 32);
+                memcpy(out->authority, hdr.authority,
+                       sizeof(out->authority));
                 out->smelt = payload;
+                chain_cargo_transform_decode_output(out);
                 found = true;
             }
         } else if (hdr.type == CHAIN_EVT_CRAFT &&
                    plen == sizeof(chain_payload_craft_t)) {
             chain_payload_craft_t payload;
-            if (fread(&payload, 1, sizeof(payload), f) != sizeof(payload)) break;
+            if (fread(&payload, 1, sizeof(payload), f) != sizeof(payload)) {
+                invalid = true;
+                break;
+            }
             if (memcmp(payload.output_pub, cargo_pub, 32) == 0) {
+                uint8_t header_hash[32];
+                chain_event_header_hash(&hdr, header_hash);
+                if (pinned &&
+                    memcmp(header_hash, event_hash_pin, 32) != 0) {
+                    continue;
+                }
+                if (found) {
+                    memset(out, 0, sizeof(*out));
+                    fclose(f);
+                    return CHAIN_CARGO_TRANSFORM_AMBIGUOUS;
+                }
                 memset(out, 0, sizeof(*out));
                 out->type = CHAIN_EVT_CRAFT;
                 out->event_id = hdr.event_id;
                 out->epoch = hdr.epoch;
+                memcpy(out->header_hash, header_hash, 32);
+                memcpy(out->authority, hdr.authority,
+                       sizeof(out->authority));
                 out->craft = payload;
+                chain_cargo_transform_decode_output(out);
                 found = true;
             }
         } else if (fseek(f, plen, SEEK_CUR) != 0) {
+            invalid = true;
             break;
         }
     }
 
-    fclose(f);
-    return found;
+    if (fclose(f) != 0) invalid = true;
+    if (invalid) {
+        memset(out, 0, sizeof(*out));
+        return CHAIN_CARGO_TRANSFORM_READ_INVALID;
+    }
+    return found ? CHAIN_CARGO_TRANSFORM_FOUND
+                 : CHAIN_CARGO_TRANSFORM_NOT_FOUND;
+}
+
+static bool chain_log_visit_cargo_evidence_open(
+    FILE *f,
+    bool bounded,
+    uint64_t event_limit,
+    chain_cargo_transform_visitor_t transform_visitor,
+    void *transform_user,
+    chain_cargo_transfer_visitor_t transfer_visitor,
+    void *transfer_user,
+    size_t *out_transform_count,
+    size_t *out_transfer_count,
+    uint8_t out_last_hash[32]) {
+    if (out_transform_count) *out_transform_count = 0;
+    if (out_transfer_count) *out_transfer_count = 0;
+    if (out_last_hash) memset(out_last_hash, 0, 32);
+    if (!f || (!transform_visitor && !transfer_visitor) ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        return false;
+    }
+
+    size_t transform_count = 0;
+    size_t transfer_count = 0;
+    uint64_t visited_events = 0;
+    uint8_t last_hash[32] = {0};
+    bool ok = true;
+    for (;;) {
+        if (bounded && visited_events == event_limit) break;
+        uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
+        size_t got = fread(hdr_bytes, 1, sizeof(hdr_bytes), f);
+        if (got == 0 && feof(f)) break;
+        if (got != sizeof(hdr_bytes)) {
+            ok = false;
+            break;
+        }
+        chain_event_header_t hdr;
+        if (!chain_event_header_unpack(hdr_bytes, &hdr)) {
+            ok = false;
+            break;
+        }
+        uint16_t plen = 0;
+        if (fread(&plen, sizeof(plen), 1, f) != 1) {
+            ok = false;
+            break;
+        }
+
+        chain_cargo_transform_t transform = {0};
+        chain_payload_transfer_t transfer = {0};
+        bool is_transform = false;
+        bool is_transfer = false;
+        if (hdr.type == CHAIN_EVT_SMELT &&
+            plen == sizeof(chain_payload_smelt_t)) {
+            if (fread(&transform.smelt, 1,
+                      sizeof(transform.smelt), f) !=
+                sizeof(transform.smelt)) {
+                ok = false;
+                break;
+            }
+            transform.type = CHAIN_EVT_SMELT;
+            is_transform = true;
+        } else if (hdr.type == CHAIN_EVT_CRAFT &&
+                   plen == sizeof(chain_payload_craft_t)) {
+            if (fread(&transform.craft, 1,
+                      sizeof(transform.craft), f) !=
+                sizeof(transform.craft)) {
+                ok = false;
+                break;
+            }
+            transform.type = CHAIN_EVT_CRAFT;
+            is_transform = true;
+        } else if (hdr.type == CHAIN_EVT_TRANSFER &&
+                   transfer_visitor) {
+            if (plen != sizeof(transfer) ||
+                fread(&transfer, 1, sizeof(transfer), f) !=
+                    sizeof(transfer)) {
+                ok = false;
+                break;
+            }
+            is_transfer = true;
+        } else if (fseek(f, plen, SEEK_CUR) != 0) {
+            ok = false;
+            break;
+        }
+        visited_events++;
+        chain_event_header_hash(&hdr, last_hash);
+        if (is_transform && transform_visitor) {
+            transform.event_id = hdr.event_id;
+            transform.epoch = hdr.epoch;
+            chain_event_header_hash(&hdr, transform.header_hash);
+            memcpy(transform.authority, hdr.authority,
+                   sizeof(transform.authority));
+            chain_cargo_transform_decode_output(&transform);
+            if (transform_count == SIZE_MAX) {
+                ok = false;
+                break;
+            }
+            transform_count++;
+            if (!transform_visitor(&transform, transform_user)) {
+                ok = false;
+                break;
+            }
+        }
+        if (is_transfer) {
+            if (transfer_count == SIZE_MAX) {
+                ok = false;
+                break;
+            }
+            transfer_count++;
+            if (!transfer_visitor(&transfer, transfer_user)) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    if (bounded && visited_events != event_limit) ok = false;
+    if (out_transform_count) *out_transform_count = transform_count;
+    if (out_transfer_count) *out_transfer_count = transfer_count;
+    if (ok && out_last_hash)
+        memcpy(out_last_hash, last_hash, sizeof(last_hash));
+    return ok;
+}
+
+bool chain_log_visit_cargo_transforms_from_verified_file(
+    FILE *log,
+    uint64_t verified_event_count,
+    chain_cargo_transform_visitor_t visitor,
+    void *user,
+    size_t *out_transform_count,
+    uint8_t out_last_hash[32]) {
+    return chain_log_visit_cargo_evidence_open(
+        log, true, verified_event_count,
+        visitor, user, NULL, NULL,
+        out_transform_count, NULL, out_last_hash);
+}
+
+bool chain_log_visit_cargo_evidence_from_verified_file(
+    FILE *log,
+    uint64_t verified_event_count,
+    chain_cargo_transform_visitor_t transform_visitor,
+    void *transform_user,
+    chain_cargo_transfer_visitor_t transfer_visitor,
+    void *transfer_user,
+    size_t *out_transform_count,
+    size_t *out_transfer_count,
+    uint8_t out_last_hash[32]) {
+    return chain_log_visit_cargo_evidence_open(
+        log, true, verified_event_count,
+        transform_visitor, transform_user,
+        transfer_visitor, transfer_user,
+        out_transform_count, out_transfer_count, out_last_hash);
+}
+
+bool chain_log_visit_cargo_transforms_for_identity(
+    const uint8_t station_pubkey[32],
+    chain_cargo_transform_visitor_t visitor,
+    void *user,
+    size_t *out_transform_count) {
+    if (out_transform_count) *out_transform_count = 0;
+    if (!station_pubkey || !visitor) return false;
+    char path[256];
+    if (!chain_log_path_for(station_pubkey, path, sizeof(path)))
+        return false;
+    FILE *source = fopen(path, "rb");
+    if (!source) return false;
+    FILE *f = NULL;
+    bool snapshot_ok =
+        chain_log_snapshot_evidence_file(source, &f);
+    bool source_close_ok = fclose(source) == 0;
+    if (!snapshot_ok || !source_close_ok) {
+        if (f) fclose(f);
+        return false;
+    }
+    chain_log_verify_report_t verified = {0};
+    if (!chain_log_verify_with_pubkey(
+            f, station_pubkey, &verified)) {
+        fclose(f);
+        return false;
+    }
+    bool ok = chain_log_visit_cargo_evidence_open(
+        f, true, verified.valid_events,
+        visitor, user, NULL, NULL,
+        out_transform_count, NULL, NULL);
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+bool chain_log_find_cargo_transform_for_identity(
+    const uint8_t station_pubkey[32],
+    const uint8_t cargo_pub[32],
+    chain_cargo_transform_t *out) {
+    return chain_log_find_cargo_transform_for_identity_pinned(
+        station_pubkey, cargo_pub, NULL, out) ==
+        CHAIN_CARGO_TRANSFORM_FOUND;
+}
+
+bool chain_log_find_cargo_transform(const station_t *s,
+                                    const uint8_t cargo_pub[32],
+                                    chain_cargo_transform_t *out) {
+    if (!s) {
+        if (out) memset(out, 0, sizeof(*out));
+        return false;
+    }
+    return chain_log_find_cargo_transform_for_identity(
+        s->station_pubkey, cargo_pub, out);
 }
 
 void chain_log_reset(const station_t *s) {
@@ -540,5 +1625,6 @@ void chain_log_reset(const station_t *s) {
     if (memcmp(s->station_pubkey, zero_pub, 32) == 0) return;
     char path[256];
     if (!chain_log_path_for(s->station_pubkey, path, sizeof(path))) return;
-    (void)remove(path);
+    if (remove(path) == 0) (void)chain_log_sync_chain_dir();
+    chain_log_bump_configuration_generation();
 }

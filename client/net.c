@@ -10,7 +10,9 @@
 #include "manifest.h"
 #include "pubkey_proof.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 #include "net_clock.h"
+#include "net_message_gate.h"
 #include "wire_codec.h"
 
 #include <string.h>
@@ -47,8 +49,17 @@ static struct {
     char server_hash[12];
     NetProtocolInfo protocol_info;
     bool protocol_info_ready;
+    bool protocol_incompatible;
+    bool gameplay_ready;
+    uint8_t legacy_recovery_offer_id[LEGACY_RECOVERY_OFFER_ID_SIZE];
+    uint32_t legacy_recovery_offer_expires_at_ms;
+    bool legacy_recovery_offer_ready;
+    bool legacy_recovery_in_flight;
     uint8_t session_token[8];
     bool session_token_ready;
+    uint8_t pubkey_challenge[PUBKEY_PROOF_CHALLENGE_SIZE];
+    bool pubkey_challenge_ready;
+    pubkey_proof_client_state_t pubkey_proof;
     char callsign[8];
     bool callsign_ready;
     char server_url[256];
@@ -82,6 +93,34 @@ static struct {
 static bool net_loopback_active = false;
 static net_loopback_send_fn net_loopback_send = NULL;
 static void *net_loopback_user = NULL;
+static uint32_t net_auth_transport_closes = 0;
+
+static void clear_legacy_recovery_state(void) {
+    memset(net_state.legacy_recovery_offer_id, 0,
+           sizeof(net_state.legacy_recovery_offer_id));
+    net_state.legacy_recovery_offer_expires_at_ms = 0;
+    net_state.legacy_recovery_offer_ready = false;
+    net_state.legacy_recovery_in_flight = false;
+}
+
+static void clear_available_legacy_recovery_offer(void) {
+    memset(net_state.legacy_recovery_offer_id, 0,
+           sizeof(net_state.legacy_recovery_offer_id));
+    net_state.legacy_recovery_offer_expires_at_ms = 0;
+    net_state.legacy_recovery_offer_ready = false;
+}
+
+static bool legacy_recovery_offer_active(void) {
+    if (!net_state.legacy_recovery_offer_ready)
+        return false;
+    uint32_t now_ms = net_now_ms32();
+    if ((int32_t)(net_state.legacy_recovery_offer_expires_at_ms -
+                  now_ms) <= 0) {
+        clear_available_legacy_recovery_offer();
+        return false;
+    }
+    return true;
+}
 
 static void net_player_state_clear_ack_transport(NetPlayerState *ps) {
     if (!ps) return;
@@ -331,8 +370,8 @@ static bool decode_station_identity_q(NetStationIdentity *si,
     for (int p = 0; p < si->pending_ship_build_count; p++) {
         if (off + STATION_PENDING_SHIP_RECORD_SIZE > len) return false;
         si->pending_ship_builds[p].hull_class = (hull_class_t)data[off + 0];
-        si->pending_ship_builds[p].owner =
-            (data[off + 1] == 0xFF) ? -1 : (int8_t)data[off + 1];
+        /* Byte 1 is the retired runtime-owner field. It remains reserved so
+         * old and new peers agree on the fixed six-byte record size. */
         si->pending_ship_builds[p].build_progress = read_f32_le(&data[off + 2]);
         off += STATION_PENDING_SHIP_RECORD_SIZE;
     }
@@ -383,13 +422,14 @@ static bool decode_station_identity_q(NetStationIdentity *si,
     return true;
 }
 
-/* Forward declaration — implemented per platform below. */
-static void ws_send_binary(const uint8_t* data, int len);
-static void ensure_session_token(void);
+/* Forward declarations — implemented per platform below. */
+static bool ws_send_binary(const uint8_t* data, int len);
+static void ws_close_authentication_failure(void);
+static bool ensure_session_token(void);
 static void ensure_callsign(void);
-static void send_register_pubkey(void);
+static bool send_register_pubkey(void);
 static void send_pubkey_proof(void);
-static void send_session_token(void);
+static bool send_session_token(void);
 static void handle_message(const uint8_t* data, int len);
 
 static void preserve_identity(uint8_t pubkey[32], uint8_t secret[64],
@@ -408,17 +448,155 @@ static void restore_identity(const uint8_t pubkey[32], const uint8_t secret[64],
     net_state.identity_secret_ready = secret_ready;
 }
 
-static void transport_connected(const char *label) {
+static void clear_pubkey_challenge_state(bool clear_proof_latch) {
+    memset(net_state.pubkey_challenge, 0,
+           sizeof(net_state.pubkey_challenge));
+    net_state.pubkey_challenge_ready = false;
+    if (clear_proof_latch) {
+        pubkey_proof_client_state_reset(&net_state.pubkey_proof);
+        clear_legacy_recovery_state();
+    }
+}
+
+static void reject_protocol_info(const NetProtocolInfo *observed,
+                                 const char *reason) {
+    if (net_state.protocol_incompatible) return;
+    net_state.protocol_incompatible = true;
+    net_state.protocol_info_ready = false;
+    net_state.gameplay_ready = false;
+    memset(&net_state.protocol_info, 0,
+           sizeof(net_state.protocol_info));
+    if (observed)
+        net_state.protocol_info = *observed;
+    net_state.protocol_info.compatible = false;
+    fprintf(stderr, "[net] incompatible protocol: %s\n",
+            reason ? reason : "invalid negotiation");
+    if (net_state.callbacks.on_protocol_info)
+        net_state.callbacks.on_protocol_info(
+            &net_state.protocol_info);
+    ws_close_authentication_failure();
+}
+
+static bool net_protocol_info_has_exact_pod_streams(
+    const NetProtocolInfo *info) {
+    if (!info) return false;
+    const uint16_t expected_flags =
+        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER;
+    int full_count = 0;
+    int compact_count = 0;
+    for (int i = 0; i < info->stream_count; i++) {
+        const NetProtocolStreamInfo *stream = &info->streams[i];
+        bool full = stream->msg_type == NET_MSG_WORLD_CARGO_PODS;
+        bool compact =
+            stream->msg_type == NET_MSG_WORLD_CARGO_PODS_Q;
+        if (!full && !compact) continue;
+        if (stream->stream_class != PROTOCOL_STREAM_CLASS_LIVE ||
+            stream->flags != expected_flags ||
+            stream->header_size != 2u ||
+            stream->max_records != MAX_CARGO_PODS ||
+            stream->cadence_ms == 0u) {
+            return false;
+        }
+        if (full) {
+            full_count++;
+            if (stream->record_size != CARGO_POD_RECORD_SIZE)
+                return false;
+        } else {
+            compact_count++;
+            if (stream->record_size != CARGO_POD_Q_RECORD_SIZE)
+                return false;
+        }
+    }
+    return full_count == 1 && compact_count == 1;
+}
+
+static bool net_protocol_info_equal(
+    const NetProtocolInfo *a,
+    const NetProtocolInfo *b) {
+    if (!a || !b ||
+        a->version != b->version ||
+        a->capabilities != b->capabilities ||
+        a->stream_count != b->stream_count) {
+        return false;
+    }
+    for (int i = 0; i < a->stream_count; i++) {
+        const NetProtocolStreamInfo *left = &a->streams[i];
+        const NetProtocolStreamInfo *right = &b->streams[i];
+        if (left->msg_type != right->msg_type ||
+            left->stream_class != right->stream_class ||
+            left->flags != right->flags ||
+            left->header_size != right->header_size ||
+            left->record_size != right->record_size ||
+            left->max_records != right->max_records ||
+            left->cadence_ms != right->cadence_ms) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool net_protocol_ready_internal(void) {
+    return net_state.connected &&
+        net_state.protocol_info_ready &&
+        !net_state.protocol_incompatible;
+}
+
+static bool net_gameplay_ready_internal(void) {
+    return net_protocol_ready_internal() &&
+        net_state.gameplay_ready;
+}
+
+static bool net_message_send_ready(const uint8_t *data, int len) {
+    net_client_message_gate_state_t state = {
+        .protocol_ready = net_protocol_ready_internal(),
+        .gameplay_ready = net_state.gameplay_ready,
+        .proof_admitted = net_state.pubkey_proof.proof_admitted,
+        .proof_scheme = net_state.pubkey_proof.admitted_scheme,
+        .legacy_recovery_offer_ready =
+            legacy_recovery_offer_active(),
+    };
+    memcpy(state.legacy_recovery_offer_id,
+           net_state.legacy_recovery_offer_id,
+           sizeof(state.legacy_recovery_offer_id));
+    return net_client_message_gate_allows(&state, data, len);
+}
+
+static void reset_protocol_negotiation_state(void) {
+    net_state.protocol_info_ready = false;
+    net_state.protocol_incompatible = false;
+    net_state.gameplay_ready = false;
+    memset(&net_state.protocol_info, 0,
+           sizeof(net_state.protocol_info));
+}
+
+static bool transport_connected(const char *label) {
     net_state.connected = true;
+    if (!net_loopback_active)
+        net_state.local_id = 0xFF;
+    reset_protocol_negotiation_state();
     printf("[net] connected to %s\n", label ? label : "transport");
-    /* Layer A.2 of #479 — pubkey registration MUST precede the session
-     * handshake so the server can fold the pubkey into reconnect
-     * resolution. */
-    send_register_pubkey();
-    ensure_session_token();
+    clear_pubkey_challenge_state(true);
+    if (!net_state.identity_pubkey_ready ||
+        !net_state.identity_secret_ready ||
+        !ensure_session_token()) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        net_state.connected = false;
+        fprintf(stderr,
+                "[net] secure identity entropy unavailable; "
+                "refusing authentication\n");
+        return false;
+    }
     ensure_callsign();
-    send_session_token();
+    /*
+     * Do not disclose or apply authentication state to an unknown protocol.
+     * The exact compatible PROTOCOL_INFO handler sends REGISTER then SESSION;
+     * proof still waits for its one-time server challenge.
+     */
     mining_client_set_session_token(net_state.session_token);
+    return true;
 }
 
 static void transport_message(const uint8_t *data, int len) {
@@ -428,6 +606,8 @@ static void transport_message(const uint8_t *data, int len) {
 static void transport_disconnected(const char *label) {
     printf("[net] disconnected from %s\n", label ? label : "transport");
     net_state.connected = false;
+    net_state.gameplay_ready = false;
+    clear_pubkey_challenge_state(true);
 }
 
 void net_set_loopback_send(net_loopback_send_fn send_fn, void *user) {
@@ -446,6 +626,7 @@ bool net_init_loopback(const NetCallbacks* callbacks, uint8_t local_id) {
     memset(&net_state, 0, sizeof(net_state));
     restore_identity(saved_pubkey, saved_secret,
                      saved_pub_ready, saved_secret_ready);
+    signal_memzero_explicit(saved_secret, sizeof(saved_secret));
     if (callbacks) net_state.callbacks = *callbacks;
     net_state.local_id = local_id;
     net_state.connected = true;
@@ -456,7 +637,10 @@ bool net_init_loopback(const NetCallbacks* callbacks, uint8_t local_id) {
         net_state.players[local_id].active = true;
     }
 
-    transport_connected("local server loopback");
+    if (!transport_connected("local server loopback")) {
+        net_loopback_active = false;
+        return false;
+    }
     return true;
 }
 
@@ -481,7 +665,8 @@ void net_send_present_receipt_chain(const uint8_t cargo_pub[32],
     buf[34] = 0;
     for (uint8_t i = 0; i < chain->len; i++)
         cargo_receipt_pack(&chain->links[i], &buf[35 + i * CARGO_RECEIPT_SIZE]);
-    ws_send_binary(buf, 35 + (int)chain->len * CARGO_RECEIPT_SIZE);
+    (void)ws_send_binary(
+        buf, 35 + (int)chain->len * CARGO_RECEIPT_SIZE);
 }
 
 void net_send_handoff_request(uint8_t source_station, uint8_t dest_station,
@@ -492,7 +677,7 @@ void net_send_handoff_request(uint8_t source_station, uint8_t dest_station,
     buf[1] = source_station;
     buf[2] = dest_station;
     write_u32_le(&buf[3], ttl_ticks);
-    ws_send_binary(buf, NET_HANDOFF_REQUEST_SIZE);
+    (void)ws_send_binary(buf, NET_HANDOFF_REQUEST_SIZE);
 }
 
 void net_send_handoff_present(const handoff_ticket_t *ticket,
@@ -513,7 +698,7 @@ void net_send_handoff_present(const handoff_ticket_t *ticket,
         free(buf);
         return;
     }
-    ws_send_binary(buf, (int)len);
+    (void)ws_send_binary(buf, (int)len);
     free(buf);
 }
 
@@ -530,7 +715,10 @@ void net_send_latency_ping(void) {
     buf[0] = NET_MSG_LATENCY_PING;
     write_u32_le(&buf[1], seq);
     write_u32_le(&buf[5], sent_ms);
-    ws_send_binary(buf, NET_LATENCY_PING_SIZE);
+    if (!ws_send_binary(buf, NET_LATENCY_PING_SIZE)) {
+        slot->seq = 0;
+        slot->sent_ms = 0;
+    }
 }
 
 static uint16_t metric_ms_u16(float ms) {
@@ -562,13 +750,15 @@ void net_send_client_metrics(uint32_t seq,
     write_u16_le(&buf[17], replay_depth);
     buf[19] = action_queue_depth;
     buf[20] = recovery_flags;
-    ws_send_binary(buf, NET_CLIENT_METRICS_SIZE);
+    (void)ws_send_binary(buf, NET_CLIENT_METRICS_SIZE);
 }
 
 #ifdef __EMSCRIPTEN__
 static void transport_error(const char *label) {
     printf("[net] %s error\n", label ? label : "transport");
     net_state.connected = false;
+    net_state.gameplay_ready = false;
+    clear_pubkey_challenge_state(true);
 }
 #endif
 
@@ -579,8 +769,11 @@ static void send_fracture_claim(uint32_t fracture_id, uint32_t burst_nonce,
     write_u32_le(&payload[0], fracture_id);
     write_u32_le(&payload[4], burst_nonce);
     payload[8] = (uint8_t)claimed_grade;
-    if (net_send_signed_action(SIGNED_ACTION_FRACTURE_CLAIM,
-                               payload, sizeof(payload))) {
+    if (net_has_identity_pubkey()) {
+        /* An admission failure on the signed path must not downgrade an
+         * identity-backed claim to the unsigned legacy packet. */
+        (void)net_send_signed_action(
+            SIGNED_ACTION_FRACTURE_CLAIM, payload, sizeof(payload));
         return;
     }
     buf[0] = NET_MSG_FRACTURE_CLAIM;
@@ -593,41 +786,127 @@ static void send_fracture_claim(uint32_t fracture_id, uint32_t burst_nonce,
     buf[7] = (uint8_t)(burst_nonce >> 16);
     buf[8] = (uint8_t)(burst_nonce >> 24);
     buf[9] = (uint8_t)claimed_grade;
-    ws_send_binary(buf, sizeof(buf));
+    (void)ws_send_binary(buf, sizeof(buf));
 }
 
 #ifdef __EMSCRIPTEN__
-static uint8_t hex_nibble(char c) {
-    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
-    if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
-    if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
-    return 0;
+EM_JS(int, signal_session_token_load, (char *out, int cap), {
+    try {
+        var s = globalThis.localStorage.getItem('signal_session_token');
+        if (!s) return 0;
+        if (s.length !== 16 || s.length + 1 > cap) return -1;
+        for (var i = 0; i < s.length; i++) {
+            var code = s.charCodeAt(i);
+            var isDigit = code >= 48 && code <= 57;
+            var isUpper = code >= 65 && code <= 70;
+            var isLower = code >= 97 && code <= 102;
+            if (!isDigit && !isUpper && !isLower) return -1;
+        }
+        stringToUTF8(s, out, cap);
+        return 1;
+    } catch (e) {
+        return -2;
+    }
+})
+
+EM_JS(int, signal_session_token_save, (const char *value), {
+    try {
+        globalThis.localStorage.setItem(
+            'signal_session_token', UTF8ToString(value));
+        return 1;
+    } catch (e) {
+        return 0;
+    }
+})
+
+static bool hex_nibble(char c, uint8_t *out) {
+    if (!out) return false;
+    if (c >= '0' && c <= '9') {
+        *out = (uint8_t)(c - '0');
+        return true;
+    }
+    if (c >= 'a' && c <= 'f') {
+        *out = (uint8_t)(c - 'a' + 10);
+        return true;
+    }
+    if (c >= 'A' && c <= 'F') {
+        *out = (uint8_t)(c - 'A' + 10);
+        return true;
+    }
+    *out = 0;
+    return false;
 }
 #endif
 
-static void ensure_session_token(void) {
-    if (net_state.session_token_ready) return;
+static bool session_token_nonzero(const uint8_t token[8]) {
+    if (!token) return false;
+    uint8_t any = 0;
+    for (int i = 0; i < 8; i++) any |= token[i];
+    return any != 0;
+}
+
+static bool ensure_session_token(void) {
+    if (net_state.session_token_ready)
+        return session_token_nonzero(net_state.session_token);
+    memset(net_state.session_token, 0, sizeof(net_state.session_token));
 #ifdef __EMSCRIPTEN__
-    /* Try to load from localStorage, generate if missing.
-     * Returns 16-char hex string or generates + stores a new one. */
-    const char *hex = emscripten_run_script_string(
-        "(function(){"
-        "var k='signal_session_token',s=localStorage.getItem(k);"
-        "if(s&&s.length===16)return s;"
-        "var a=new Uint8Array(8);crypto.getRandomValues(a);"
-        "var h='';for(var i=0;i<8;i++)h+=('0'+a[i].toString(16)).slice(-2);"
-        "localStorage.setItem(k,h);return h;"
-        "})()"
-    );
-    if (hex && strlen(hex) == 16) {
-        for (int i = 0; i < 8; i++)
-            net_state.session_token[i] = (hex_nibble(hex[i*2]) << 4) | hex_nibble(hex[i*2+1]);
+    char hex[17] = {0};
+    int loaded = signal_session_token_load(hex, sizeof(hex));
+    if (loaded == 1) {
+        for (int i = 0; i < 8; i++) {
+            uint8_t high = 0;
+            uint8_t low = 0;
+            if (!hex_nibble(hex[i * 2], &high) ||
+                !hex_nibble(hex[i * 2 + 1], &low)) {
+                memset(net_state.session_token, 0,
+                       sizeof(net_state.session_token));
+                return false;
+            }
+            net_state.session_token[i] = (uint8_t)((high << 4) | low);
+        }
+        if (!session_token_nonzero(net_state.session_token)) {
+            memset(net_state.session_token, 0,
+                   sizeof(net_state.session_token));
+            /* Treat a persisted all-zero token as malformed. Generate a
+             * replacement below, but do not overwrite storage unless the
+             * CSPRNG succeeds. */
+            loaded = -1;
+        } else {
+            net_state.session_token_ready = true;
+            return true;
+        }
     }
-#else
-    signal_crypto_random_bytes(net_state.session_token,
-                               sizeof(net_state.session_token));
+    /* A malformed entry may be replaced, but only after fresh entropy
+     * succeeds. Storage access failure itself remains a hard failure. */
+    if (loaded == -2) return false;
+#endif
+
+    if (!signal_crypto_random_bytes(net_state.session_token,
+                                    sizeof(net_state.session_token)) ||
+        !session_token_nonzero(net_state.session_token)) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        return false;
+    }
+
+#ifdef __EMSCRIPTEN__
+    static const char digits[] = "0123456789abcdef";
+    char encoded[17];
+    for (int i = 0; i < 8; i++) {
+        encoded[i * 2] = digits[net_state.session_token[i] >> 4];
+        encoded[i * 2 + 1] = digits[net_state.session_token[i] & 0x0Fu];
+    }
+    encoded[16] = '\0';
+    if (!signal_session_token_save(encoded)) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        return false;
+    }
 #endif
     net_state.session_token_ready = true;
+    return true;
 }
 
 static void ensure_callsign(void) {
@@ -647,19 +926,21 @@ static void ensure_callsign(void) {
     printf("[net] callsign: %s\n", net_state.callsign);
 }
 
-/* Layer A.2 of #479 — send the persistent Ed25519 pubkey to the server
- * immediately on connect, BEFORE the SESSION handshake, so the server
- * can stage the pubkey assertion. Registry/persistence binding waits for
- * send_pubkey_proof() after the SESSION token is known. */
-static void send_register_pubkey(void) {
-    if (!net_state.identity_pubkey_ready) return;
+/* Layer A.2 of #479 — send the persistent Ed25519 pubkey immediately after
+ * compatible protocol discovery and BEFORE the SESSION handshake, so the
+ * server can stage the pubkey assertion. Registry/persistence binding waits
+ * for send_pubkey_proof() after the SESSION token is known. */
+static bool send_register_pubkey(void) {
+    if (!net_state.identity_pubkey_ready) return false;
     uint8_t buf[REGISTER_PUBKEY_MSG_SIZE];
     buf[0] = NET_MSG_REGISTER_PUBKEY;
     memcpy(&buf[1], net_state.identity_pubkey, 32);
-    ws_send_binary(buf, REGISTER_PUBKEY_MSG_SIZE);
+    if (!ws_send_binary(buf, REGISTER_PUBKEY_MSG_SIZE))
+        return false;
     printf("[net] sent pubkey registration (%02x%02x%02x%02x...)\n",
            net_state.identity_pubkey[0], net_state.identity_pubkey[1],
            net_state.identity_pubkey[2], net_state.identity_pubkey[3]);
+    return true;
 }
 
 static void send_pubkey_proof_for_token(const uint8_t token[8]) {
@@ -668,19 +949,55 @@ static void send_pubkey_proof_for_token(const uint8_t token[8]) {
         !net_state.identity_secret_ready) {
         return;
     }
+    pubkey_proof_scheme_t scheme =
+        pubkey_proof_client_next_scheme(&net_state.pubkey_proof);
+    if (scheme == PUBKEY_PROOF_SCHEME_NONE)
+        return;
+    if (scheme == PUBKEY_PROOF_SCHEME_CHALLENGE_V2 &&
+        !net_state.pubkey_challenge_ready) {
+        return;
+    }
+
     uint8_t buf[PROVE_PUBKEY_MSG_SIZE];
     buf[0] = NET_MSG_PROVE_PUBKEY;
     memcpy(&buf[PROVE_PUBKEY_PUBKEY_OFFSET],
            net_state.identity_pubkey, SIGNAL_CRYPTO_PUBKEY_BYTES);
     memcpy(&buf[PROVE_PUBKEY_TOKEN_OFFSET], token, 8);
-    if (!pubkey_proof_sign(&buf[PROVE_PUBKEY_SIG_OFFSET],
-                           net_state.identity_pubkey,
-                           net_state.identity_secret,
-                           token)) {
+    bool signed_ok = scheme == PUBKEY_PROOF_SCHEME_CHALLENGE_V2
+        ? pubkey_proof_sign(
+              &buf[PROVE_PUBKEY_SIG_OFFSET],
+              net_state.identity_pubkey,
+              net_state.identity_secret,
+              token,
+              net_state.pubkey_challenge)
+        : pubkey_proof_v1_sign(
+              &buf[PROVE_PUBKEY_SIG_OFFSET],
+              net_state.identity_pubkey,
+              net_state.identity_secret,
+              token);
+    if (!signed_ok)
+        return;
+
+    bool admitted = ws_send_binary(buf, PROVE_PUBKEY_MSG_SIZE);
+    pubkey_proof_client_record_send(
+        &net_state.pubkey_proof, scheme, admitted);
+    if (!admitted) {
+        /* Do not consume the challenge or latch an attempted proof. A failed
+         * auth write has no guaranteed future trigger, so fail the transport
+         * closed and let the normal reconnect path obtain a fresh challenge. */
+        fprintf(stderr,
+                "[net] pubkey proof send rejected; closing transport\n");
+        ws_close_authentication_failure();
         return;
     }
-    ws_send_binary(buf, PROVE_PUBKEY_MSG_SIZE);
-    printf("[net] sent pubkey proof\n");
+    if (scheme == PUBKEY_PROOF_SCHEME_CHALLENGE_V2) {
+        memset(net_state.pubkey_challenge, 0,
+               sizeof(net_state.pubkey_challenge));
+        net_state.pubkey_challenge_ready = false;
+    }
+    printf("[net] sent %s pubkey proof\n",
+           scheme == PUBKEY_PROOF_SCHEME_CHALLENGE_V2
+               ? "challenge-bound" : "legacy-v1");
 }
 
 static void send_pubkey_proof(void) {
@@ -690,7 +1007,11 @@ static void send_pubkey_proof(void) {
 
 void net_set_identity_pubkey(const uint8_t pubkey[32]) {
     if (!pubkey) {
+        memset(net_state.identity_pubkey, 0,
+               sizeof(net_state.identity_pubkey));
         net_state.identity_pubkey_ready = false;
+        memset(net_state.callsign, 0, sizeof(net_state.callsign));
+        net_state.callsign_ready = false;
         return;
     }
     memcpy(net_state.identity_pubkey, pubkey, 32);
@@ -704,12 +1025,24 @@ void net_set_identity_pubkey(const uint8_t pubkey[32]) {
 
 void net_set_identity_secret(const uint8_t secret[64]) {
     if (!secret) {
-        memset(net_state.identity_secret, 0, sizeof(net_state.identity_secret));
+        signal_memzero_explicit(net_state.identity_secret,
+                                sizeof(net_state.identity_secret));
         net_state.identity_secret_ready = false;
         return;
     }
     memcpy(net_state.identity_secret, secret, 64);
     net_state.identity_secret_ready = true;
+}
+
+void net_clear_identity(void) {
+    signal_memzero_explicit(net_state.identity_secret,
+                            sizeof(net_state.identity_secret));
+    memset(net_state.identity_pubkey, 0,
+           sizeof(net_state.identity_pubkey));
+    memset(net_state.callsign, 0, sizeof(net_state.callsign));
+    net_state.identity_secret_ready = false;
+    net_state.identity_pubkey_ready = false;
+    net_state.callsign_ready = false;
 }
 
 bool net_has_identity_secret(void) {
@@ -763,6 +1096,16 @@ bool net_send_signed_action(uint8_t action_type,
                             const uint8_t *payload, uint16_t payload_len) {
     if (!net_state.identity_secret_ready) return false;
     if (payload_len > SIGNED_ACTION_MAX_PAYLOAD) return false;
+    bool recovery_confirmation =
+        action_type == SIGNED_ACTION_RECOVER_LEGACY_SAVE;
+    if (recovery_confirmation &&
+        (!payload ||
+         payload_len != LEGACY_RECOVERY_OFFER_ID_SIZE ||
+         !legacy_recovery_offer_active() ||
+         memcmp(payload, net_state.legacy_recovery_offer_id,
+                LEGACY_RECOVERY_OFFER_ID_SIZE) != 0)) {
+        return false;
+    }
 
     /* On-stack scratch is fine: max-sized message is 12 + 256 + 64 = 332. */
     uint8_t buf[SIGNED_ACTION_HEADER_SIZE + SIGNED_ACTION_MAX_PAYLOAD +
@@ -782,48 +1125,267 @@ bool net_send_signed_action(uint8_t action_type,
                        net_state.identity_secret);
     int total = SIGNED_ACTION_HEADER_SIZE + (int)payload_len +
                 (int)SIGNED_ACTION_SIG_SIZE;
-    ws_send_binary(buf, total);
-    return true;
+    bool admitted = ws_send_binary(buf, total);
+    /*
+     * A loopback send may synchronously deliver the result and clear this
+     * state before returning. Only advance to in-flight if the same offer is
+     * still latched after transport admission.
+     */
+    if (admitted && recovery_confirmation &&
+        net_state.legacy_recovery_offer_ready &&
+        memcmp(payload, net_state.legacy_recovery_offer_id,
+               LEGACY_RECOVERY_OFFER_ID_SIZE) == 0) {
+        clear_available_legacy_recovery_offer();
+        net_state.legacy_recovery_in_flight = true;
+    }
+    return admitted;
+}
+
+bool net_send_confirm_legacy_recovery(
+    const uint8_t offer_id[LEGACY_RECOVERY_OFFER_ID_SIZE]) {
+    if (!offer_id) return false;
+    uint8_t any = 0;
+    for (size_t i = 0; i < LEGACY_RECOVERY_OFFER_ID_SIZE; i++)
+        any |= offer_id[i];
+    if (any == 0) return false;
+    return net_send_signed_action(
+        SIGNED_ACTION_RECOVER_LEGACY_SAVE,
+        offer_id, LEGACY_RECOVERY_OFFER_ID_SIZE);
+}
+
+bool net_send_latched_legacy_recovery(void) {
+    if (!legacy_recovery_offer_active())
+        return false;
+    return net_send_signed_action(
+        SIGNED_ACTION_RECOVER_LEGACY_SAVE,
+        net_state.legacy_recovery_offer_id,
+        LEGACY_RECOVERY_OFFER_ID_SIZE);
 }
 
 bool net_send_claim_legacy_save(const char *token_basename) {
-    if (!token_basename || !net_state.identity_secret_ready) return false;
-    size_t hex_len = strlen(token_basename);
-    if (hex_len == 0 || hex_len > 64) return false;
-    /* Sign domain || token_hex with the persistent identity. */
-    const char *domain = CLAIM_LEGACY_SAVE_DOMAIN;
-    size_t dlen = strlen(domain);
-    uint8_t msg[64 + 64];
-    if (dlen + hex_len > sizeof(msg)) return false;
-    memcpy(msg, domain, dlen);
-    memcpy(msg + dlen, token_basename, hex_len);
-    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
-    signal_crypto_sign(sig, msg, dlen + hex_len, net_state.identity_secret);
+    /*
+     * Retained as a source-compatible tombstone for old operator tooling.
+     * The claimant-chosen basename protocol cannot prove ownership of the
+     * named save. Never inspect, sign, log, or put the caller's value on a
+     * transport. Recovery will return through an opaque server offer plus a
+     * nonce-bearing signed action once the atomic migration is implemented.
+     */
+    (void)token_basename;
+    return false;
+}
 
-    uint8_t buf[2 + 64 + SIGNAL_CRYPTO_SIG_BYTES];
-    buf[0] = NET_MSG_CLAIM_LEGACY_SAVE;
-    buf[1] = (uint8_t)hex_len;
-    memcpy(&buf[2], token_basename, hex_len);
-    memcpy(&buf[2 + hex_len], sig, SIGNAL_CRYPTO_SIG_BYTES);
-    ws_send_binary(buf, (int)(2 + hex_len + SIGNAL_CRYPTO_SIG_BYTES));
-    printf("[net] sent legacy-save claim for %s\n", token_basename);
+static bool send_session_token(void) {
+    uint8_t buf[SESSION_MSG_SIZE] = {0};
+    buf[0] = NET_MSG_SESSION;
+    memcpy(&buf[SESSION_MSG_TOKEN_OFFSET],
+           net_state.session_token, 8);
+    memcpy(&buf[SESSION_MSG_CALLSIGN_OFFSET],
+           net_state.callsign, 7);
+    write_u16_le(&buf[SESSION_MSG_PROTOCOL_OFFSET],
+                 SIGNAL_PROTOCOL_VERSION);
+    if (!ws_send_binary(buf, sizeof(buf)))
+        return false;
+    send_pubkey_proof();
+    if (!net_state.connected)
+        return false;
+    printf("[net] sent session token + callsign %s\n", net_state.callsign);
     return true;
 }
 
-static void send_session_token(void) {
-    uint8_t buf[16]; /* type(1) + token(8) + callsign(7) */
-    buf[0] = NET_MSG_SESSION;
-    memcpy(&buf[1], net_state.session_token, 8);
-    memcpy(&buf[9], net_state.callsign, 7);
-    ws_send_binary(buf, 16);
-    send_pubkey_proof();
-    printf("[net] sent session token + callsign %s\n", net_state.callsign);
+static void decode_event_payload(sim_event_t *ev,
+                                 const uint8_t payload[16]) {
+    if (!ev || !payload) return;
+    switch (ev->type) {
+    case SIM_EVENT_FRACTURE:
+        ev->fracture.tier = (asteroid_tier_t)payload[0];
+        break;
+    case SIM_EVENT_PICKUP:
+        ev->pickup.ore = read_f32_le(&payload[0]);
+        ev->pickup.fragments = (int)payload[4];
+        break;
+    case SIM_EVENT_UPGRADE:
+        ev->upgrade.upgrade = (ship_upgrade_t)payload[0];
+        break;
+    case SIM_EVENT_DAMAGE:
+        ev->damage.amount = read_f32_le(&payload[0]);
+        ev->damage.source_x = read_f32_le(&payload[4]);
+        ev->damage.source_y = read_f32_le(&payload[8]);
+        break;
+    case SIM_EVENT_NPC_KILL:
+        ev->npc_kill.cause = payload[0];
+        ev->npc_kill.npc_role = payload[1];
+        break;
+    case SIM_EVENT_DEATH:
+        ev->death.cause = payload[0];
+        break;
+    case SIM_EVENT_OUTPOST_PLACED:
+        ev->outpost_placed.slot = (int)payload[0];
+        break;
+    case SIM_EVENT_OUTPOST_ACTIVATED:
+        ev->outpost_activated.slot = (int)payload[0];
+        break;
+    case SIM_EVENT_MODULE_ACTIVATED:
+        ev->module_activated.station = (int)payload[0];
+        ev->module_activated.module_idx = (int)payload[1];
+        ev->module_activated.module_type = (int)payload[2];
+        break;
+    case SIM_EVENT_NPC_SPAWNED:
+        ev->npc_spawned.slot = (int)payload[0];
+        ev->npc_spawned.role = (npc_role_t)payload[1];
+        ev->npc_spawned.home_station = (int)payload[2];
+        break;
+    case SIM_EVENT_STATION_CONNECTED:
+        ev->station_connected.connected_count = (int)payload[0];
+        break;
+    case SIM_EVENT_CONTRACT_COMPLETE:
+        ev->contract_complete.action =
+            (contract_action_t)payload[0];
+        break;
+    case SIM_EVENT_SCAFFOLD_READY:
+        ev->scaffold_ready.station = (int)payload[0];
+        ev->scaffold_ready.module_type = (int)payload[1];
+        break;
+    case SIM_EVENT_SELL:
+        ev->sell.station = (int)payload[0];
+        ev->sell.grade = payload[1];
+        ev->sell.base_cr = (int)read_u32_le(&payload[2]);
+        ev->sell.bonus_cr = (int)read_u32_le(&payload[6]);
+        ev->sell.by_contract = payload[10];
+        break;
+    case SIM_EVENT_BUY:
+        ev->buy.station = (int)payload[0];
+        ev->buy.commodity = payload[1];
+        ev->buy.grade = payload[2];
+        ev->buy.cost = (int)read_u32_le(&payload[3]);
+        ev->buy.quantity = read_u16_le(&payload[7]);
+        break;
+    case SIM_EVENT_ORDER_REJECTED:
+        ev->order_rejected.reason = payload[0];
+        break;
+    default:
+        break;
+    }
 }
 
 static void handle_message(const uint8_t* data, int len) {
-    if (len < 1) return;
+    if (net_state.protocol_incompatible) return;
+    if (!data || len < 1) {
+        if (!net_state.protocol_info_ready) {
+            reject_protocol_info(
+                NULL, "empty traffic before protocol info");
+        }
+        return;
+    }
+    if (data[0] == NET_MSG_JOIN &&
+        (len != 2 || data[1] >= NET_MAX_PLAYERS)) {
+        reject_protocol_info(NULL, "invalid join assignment");
+        return;
+    }
+    if (!net_state.protocol_info_ready &&
+        data[0] == NET_MSG_PROTOCOL_INFO &&
+        !net_loopback_active &&
+        net_state.local_id == 0xFF) {
+        reject_protocol_info(
+            NULL, "protocol info before join assignment");
+        return;
+    }
+    if (!net_state.protocol_info_ready &&
+        data[0] != NET_MSG_PROTOCOL_INFO) {
+        bool initial_join =
+            data[0] == NET_MSG_JOIN &&
+            net_state.local_id == 0xFF;
+        if (!initial_join) {
+            reject_protocol_info(
+                NULL,
+                data[0] == NET_MSG_PUBKEY_CHALLENGE
+                    ? "challenge before protocol info"
+                    : "traffic before protocol info");
+            return;
+        }
+    }
 
     switch (data[0]) {
+    case NET_MSG_LEGACY_RECOVERY_OFFER:
+        if (len != NET_LEGACY_RECOVERY_OFFER_SIZE)
+            break;
+        {
+            uint8_t any = 0;
+            for (size_t i = 0;
+                 i < LEGACY_RECOVERY_OFFER_ID_SIZE; i++) {
+                any |= data[1 + i];
+            }
+            uint16_t expires = read_u16_le(
+                &data[1 + LEGACY_RECOVERY_OFFER_ID_SIZE]);
+            bool challenge_v2_proof_admitted =
+                net_state.pubkey_proof.proof_admitted &&
+                net_state.pubkey_proof.admitted_scheme ==
+                    PUBKEY_PROOF_SCHEME_CHALLENGE_V2;
+            if (any == 0 || expires == 0 ||
+                !challenge_v2_proof_admitted ||
+                net_state.gameplay_ready ||
+                legacy_recovery_offer_active() ||
+                net_state.legacy_recovery_in_flight) {
+                break;
+            }
+            memcpy(net_state.legacy_recovery_offer_id, &data[1],
+                   sizeof(net_state.legacy_recovery_offer_id));
+            net_state.legacy_recovery_offer_expires_at_ms =
+                net_now_ms32() + (uint32_t)expires * 1000u;
+            net_state.legacy_recovery_offer_ready = true;
+            if (net_state.callbacks.on_legacy_recovery_offer) {
+                net_state.callbacks.on_legacy_recovery_offer(
+                    &data[1], expires);
+            }
+        }
+        break;
+
+    case NET_MSG_LEGACY_RECOVERY_RESULT:
+        if (len != NET_LEGACY_RECOVERY_RESULT_SIZE)
+            break;
+        if (data[1] < LEGACY_RECOVERY_RESULT_NO_MATCH ||
+            data[1] > LEGACY_RECOVERY_RESULT_SUCCESS) {
+            break;
+        }
+        if (!net_state.legacy_recovery_offer_ready &&
+            !net_state.legacy_recovery_in_flight) {
+            break;
+        }
+        clear_legacy_recovery_state();
+        if (net_state.callbacks.on_legacy_recovery_result) {
+            net_state.callbacks.on_legacy_recovery_result(
+                (legacy_recovery_result_status_t)data[1]);
+        }
+        break;
+
+    case NET_MSG_PUBKEY_CHALLENGE:
+        if (len != PUBKEY_CHALLENGE_MSG_SIZE ||
+            net_state.pubkey_challenge_ready ||
+            (net_state.pubkey_proof.proof_admitted &&
+             net_state.pubkey_proof.admitted_scheme ==
+                 PUBKEY_PROOF_SCHEME_CHALLENGE_V2)) {
+            break;
+        }
+        {
+            uint8_t any = 0;
+            for (int i = 1; i < PUBKEY_CHALLENGE_MSG_SIZE; i++)
+                any |= data[i];
+            if (any == 0) {
+                memset(net_state.pubkey_challenge, 0,
+                       sizeof(net_state.pubkey_challenge));
+                net_state.pubkey_challenge_ready = false;
+                break;
+            }
+            memcpy(net_state.pubkey_challenge, &data[1],
+                   sizeof(net_state.pubkey_challenge));
+            net_state.pubkey_challenge_ready = true;
+            /* Challenge receipt wins over an earlier legacy fallback. A
+             * protocol-v3 proof is sent even if PROTOCOL_INFO is delayed or
+             * (incorrectly) advertises an older version. */
+            pubkey_proof_client_note_challenge(&net_state.pubkey_proof);
+            send_pubkey_proof();
+        }
+        break;
+
     case NET_MSG_JOIN:
         if (len < 2) break;
         {
@@ -1019,6 +1581,21 @@ static void handle_message(const uint8_t* data, int len) {
             }
             ps->active = true;
             net_player_motion_q_note_float(id, ps->x, ps->y);
+
+            /*
+             * A compatible PROTOCOL_INFO only admits the authentication
+             * bootstrap. The dedicated server emits this exact authoritative
+             * local state after challenge-v2 proof verification/finalization;
+             * shorter legacy states and pre-proof traffic cannot unlock
+             * gameplay writes.
+             */
+            if (id == net_state.local_id &&
+                len == NET_STATE_AUTH_SIZE &&
+                net_state.pubkey_proof.proof_admitted &&
+                net_state.pubkey_proof.admitted_scheme ==
+                    PUBKEY_PROOF_SCHEME_CHALLENGE_V2) {
+                net_state.gameplay_ready = true;
+            }
 
             if (net_state.callbacks.on_state) {
                 net_state.callbacks.on_state(ps);
@@ -1715,6 +2292,7 @@ static void handle_message(const uint8_t* data, int len) {
             if (len < expected) break;
             if (net_state.callbacks.on_npcs) {
                 NetNpcState arr[MAX_NPC_SHIPS];
+                memset(arr, 0, sizeof(arr));
                 int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
                 for (int i = 0; i < decoded; i++) {
                     const uint8_t* p = &data[2 + i * NPC_RECORD_SIZE];
@@ -1732,7 +2310,8 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].tint_r           = p[26];
                     arr[i].tint_g           = p[27];
                     arr[i].tint_b           = p[28];
-                    memcpy(arr[i].session_token, &p[29], sizeof(arr[i].session_token));
+                    /* Protocol-v6 bytes 29..36 are legacy-reserved. Ignore
+                     * them even if a peer sends token-looking data. */
                     arr[i].home_station     = p[37];
                 }
                 net_state.callbacks.on_npcs(arr, decoded);
@@ -2142,8 +2721,7 @@ static void handle_message(const uint8_t* data, int len) {
             moff++;
             for (int p = 0; p < STATION_PENDING_SHIP_RECORD_COUNT; p++) {
                 si.pending_ship_builds[p].hull_class = (hull_class_t)data[moff + 0];
-                int8_t owner = (int8_t)data[moff + 1];
-                si.pending_ship_builds[p].owner = (data[moff + 1] == 0xFF) ? -1 : owner;
+                /* moff + 1 is the retired runtime-owner byte. */
                 si.pending_ship_builds[p].build_progress = read_f32_le(&data[moff + 2]);
                 moff += STATION_PENDING_SHIP_RECORD_SIZE;
             }
@@ -2312,6 +2890,8 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].tractor_station = p[36];
                 pods[i].tractor_module = p[37];
                 pods[i].tow_hardpoint_tag = p[38];
+                pods[i].custody_station = p[39];
+                memcpy(pods[i].selection_token, &p[40], 32);
             }
             net_state.callbacks.on_cargo_pods(pods, max);
         }
@@ -2351,6 +2931,8 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].tractor_station = p[26];
                 pods[i].tractor_module = p[27];
                 pods[i].tow_hardpoint_tag = p[28];
+                pods[i].custody_station = p[29];
+                memcpy(pods[i].selection_token, &p[30], 32);
             }
             net_state.callbacks.on_cargo_pods(pods, max);
         }
@@ -2559,6 +3141,59 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_WORLD_TOW_LINKS:
+        if (len >= TOW_LINKS_MSG_HEADER_SIZE &&
+            net_state.callbacks.on_tow_links) {
+            int count = (int)read_u16_le(&data[1]);
+            if (count > MAX_TOW_LINKS) break;
+            int expected = TOW_LINKS_MSG_HEADER_SIZE +
+                count * TOW_LINK_RECORD_SIZE;
+            if (len < expected) break;
+            tow_link_t links[MAX_TOW_LINKS];
+            memset(links, 0, sizeof(links));
+            bool valid = true;
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p =
+                    &data[TOW_LINKS_MSG_HEADER_SIZE +
+                          i * TOW_LINK_RECORD_SIZE];
+                tow_link_t *link = &links[i];
+                link->active = true;
+                link->source = (entity_ref_t){
+                    .kind = p[0],
+                    .index = (int16_t)read_u16_le(&p[1]),
+                    .part = (int16_t)read_u16_le(&p[3]),
+                    .generation = read_u16_le(&p[5]),
+                };
+                link->target = (entity_ref_t){
+                    .kind = p[7],
+                    .index = (int16_t)read_u16_le(&p[8]),
+                    .part = (int16_t)read_u16_le(&p[10]),
+                    .generation = read_u16_le(&p[12]),
+                };
+                link->profile = p[14];
+                link->slot = p[15];
+                link->state = p[16];
+                link->attached_tick = read_u32_le(&p[18]);
+                link->revision = read_u32_le(&p[22]);
+                if (p[17] != 0 || entity_ref_is_none(link->source) ||
+                    entity_ref_is_none(link->target) ||
+                    link->profile <= TOW_PROFILE_NONE ||
+                    link->profile > TOW_PROFILE_MODULE_POD ||
+                    link->state <= TOW_LINK_INACTIVE ||
+                    link->state > TOW_LINK_RELEASING ||
+                    link->revision == 0) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) {
+                net_state.callbacks.on_tow_links(
+                    links, count, read_u32_le(&data[3]),
+                    read_u32_le(&data[7]));
+            }
+        }
+        break;
+
     case NET_MSG_HAIL_RESPONSE:
         if (len >= 6 && net_state.callbacks.on_hail_response) {
             uint8_t station = data[1];
@@ -2591,70 +3226,54 @@ static void handle_message(const uint8_t* data, int len) {
                 memset(ev, 0, sizeof(*ev));
                 ev->type = (sim_event_type_t)p[0];
                 ev->player_id = (int)p[1];
-                switch (ev->type) {
-                case SIM_EVENT_FRACTURE:
-                    ev->fracture.tier = (asteroid_tier_t)p[2]; break;
-                case SIM_EVENT_PICKUP:
-                    ev->pickup.ore = read_f32_le(&p[2]);
-                    ev->pickup.fragments = (int)p[6]; break;
-                case SIM_EVENT_UPGRADE:
-                    ev->upgrade.upgrade = (ship_upgrade_t)p[2]; break;
-                case SIM_EVENT_DAMAGE:
-                    ev->damage.amount   = read_f32_le(&p[2]);
-                    ev->damage.source_x = read_f32_le(&p[6]);
-                    ev->damage.source_y = read_f32_le(&p[10]); break;
-                case SIM_EVENT_NPC_KILL:
-                    ev->npc_kill.cause    = p[2];
-                    ev->npc_kill.npc_role = p[3];
-                    memcpy(ev->npc_kill.killer_token, &p[4], 8); break;
-                case SIM_EVENT_DEATH:
-                    /* Broadcast slice only (cinematic fields stay
-                     * zero — the victim gets the full payload via
-                     * NET_MSG_DEATH; non-victims just need to know a
-                     * death happened so they can render a kill
-                     * confirm + scoreboard tally). */
-                    ev->death.cause = p[2];
-                    memcpy(ev->death.killer_token, &p[3], 8); break;
-                case SIM_EVENT_OUTPOST_PLACED:
-                    ev->outpost_placed.slot = (int)p[2]; break;
-                case SIM_EVENT_OUTPOST_ACTIVATED:
-                    ev->outpost_activated.slot = (int)p[2]; break;
-                case SIM_EVENT_MODULE_ACTIVATED:
-                    ev->module_activated.station = (int)p[2];
-                    ev->module_activated.module_idx = (int)p[3];
-                    ev->module_activated.module_type = (int)p[4]; break;
-                case SIM_EVENT_NPC_SPAWNED:
-                    ev->npc_spawned.slot = (int)p[2];
-                    ev->npc_spawned.role = (npc_role_t)p[3];
-                    ev->npc_spawned.home_station = (int)p[4]; break;
-                case SIM_EVENT_STATION_CONNECTED:
-                    ev->station_connected.connected_count = (int)p[2]; break;
-                case SIM_EVENT_CONTRACT_COMPLETE:
-                    ev->contract_complete.action = (contract_action_t)p[2]; break;
-                case SIM_EVENT_SCAFFOLD_READY:
-                    ev->scaffold_ready.station = (int)p[2];
-                    ev->scaffold_ready.module_type = (int)p[3]; break;
-                case SIM_EVENT_SELL:
-                    ev->sell.station     = (int)p[2];
-                    ev->sell.grade       = p[3];
-                    ev->sell.base_cr     = (int)read_u32_le(&p[4]);
-                    ev->sell.bonus_cr    = (int)read_u32_le(&p[8]);
-                    ev->sell.by_contract = p[12];
-                    break;
-                case SIM_EVENT_BUY:
-                    ev->buy.station   = (int)p[2];
-                    ev->buy.commodity = p[3];
-                    ev->buy.grade     = p[4];
-                    ev->buy.cost      = (int)read_u32_le(&p[5]);
-                    ev->buy.quantity  = read_u16_le(&p[9]);
-                    break;
-                case SIM_EVENT_ORDER_REJECTED:
-                    ev->order_rejected.reason = p[2];
-                    break;
-                default: break;
+                if (ev->type == SIM_EVENT_DEATH ||
+                    ev->type == SIM_EVENT_NPC_KILL) {
+                    /*
+                     * Never reinterpret the v5 reserved bytes. A legacy
+                     * record has no stable public proof, even if a malicious
+                     * sender places token-looking data in that area.
+                     */
+                    net_event_decode_legacy_actor_fields(p, ev);
                 }
+                decode_event_payload(ev, &p[2]);
             }
             net_state.callbacks.on_events(evbuf, ecount);
+        }
+        break;
+
+    case NET_MSG_EVENTS_V2:
+        if (len >= NET_EVENT_V2_HEADER_SIZE &&
+            net_state.callbacks.on_events) {
+            int ecount = data[1];
+            if (ecount > SIM_MAX_EVENTS) ecount = SIM_MAX_EVENTS;
+            if ((int)len <
+                NET_EVENT_V2_HEADER_SIZE +
+                    ecount * NET_EVENT_V2_RECORD_SIZE) {
+                break;
+            }
+            sim_event_t evbuf[SIM_MAX_EVENTS];
+            bool valid = true;
+            for (int i = 0; i < ecount; i++) {
+                const uint8_t *p =
+                    &data[NET_EVENT_V2_HEADER_SIZE +
+                          i * NET_EVENT_V2_RECORD_SIZE];
+                sim_event_t *ev = &evbuf[i];
+                memset(ev, 0, sizeof(*ev));
+                if (p[0] >= (uint8_t)SIM_EVENT_COUNT) {
+                    valid = false;
+                    break;
+                }
+                ev->type = (sim_event_type_t)p[0];
+                ev->player_id = (int)p[1];
+                if (!net_event_v2_decode_actor_fields(p, ev)) {
+                    valid = false;
+                    break;
+                }
+                decode_event_payload(
+                    ev, &p[NET_EVENT_V2_PAYLOAD_OFFSET]);
+            }
+            if (valid)
+                net_state.callbacks.on_events(evbuf, ecount);
         }
         break;
 
@@ -2838,35 +3457,72 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_PROTOCOL_INFO:
-        if (len >= PROTOCOL_INFO_HEADER_SIZE) {
-            NetProtocolInfo info;
-            memset(&info, 0, sizeof(info));
+    {
+        NetProtocolInfo info;
+        memset(&info, 0, sizeof(info));
+        if (len >= 3)
             info.version = read_u16_le(&data[1]);
-            info.capabilities = read_u32_le(&data[3]);
-            int count = data[7];
-            int max_by_len = (len - PROTOCOL_INFO_HEADER_SIZE) /
-                             PROTOCOL_INFO_STREAM_RECORD_SIZE;
-            if (count > max_by_len) count = max_by_len;
-            if (count > PROTOCOL_INFO_STREAM_CAPACITY)
-                count = PROTOCOL_INFO_STREAM_CAPACITY;
-            info.stream_count = count;
-            for (int i = 0; i < count; i++) {
-                const uint8_t *p = &data[PROTOCOL_INFO_HEADER_SIZE +
-                                         i * PROTOCOL_INFO_STREAM_RECORD_SIZE];
-                info.streams[i].msg_type = p[0];
-                info.streams[i].stream_class = p[1];
-                info.streams[i].flags = read_u16_le(&p[2]);
-                info.streams[i].header_size = read_u16_le(&p[4]);
-                info.streams[i].record_size = read_u16_le(&p[6]);
-                info.streams[i].max_records = read_u16_le(&p[8]);
-                info.streams[i].cadence_ms = read_u16_le(&p[10]);
-            }
-            net_state.protocol_info = info;
-            net_state.protocol_info_ready = true;
-            if (net_state.callbacks.on_protocol_info)
-                net_state.callbacks.on_protocol_info(&net_state.protocol_info);
+        if (len < PROTOCOL_INFO_HEADER_SIZE) {
+            reject_protocol_info(&info, "truncated protocol info");
+            break;
         }
+        info.capabilities = read_u32_le(&data[3]);
+        int count = data[7];
+        if (count > PROTOCOL_INFO_STREAM_CAPACITY ||
+            len != PROTOCOL_INFO_HEADER_SIZE +
+                       count * PROTOCOL_INFO_STREAM_RECORD_SIZE) {
+            reject_protocol_info(
+                &info, "invalid protocol info count/length");
+            break;
+        }
+        info.stream_count = count;
+        for (int i = 0; i < count; i++) {
+            const uint8_t *p = &data[PROTOCOL_INFO_HEADER_SIZE +
+                                     i * PROTOCOL_INFO_STREAM_RECORD_SIZE];
+            info.streams[i].msg_type = p[0];
+            info.streams[i].stream_class = p[1];
+            info.streams[i].flags = read_u16_le(&p[2]);
+            info.streams[i].header_size = read_u16_le(&p[4]);
+            info.streams[i].record_size = read_u16_le(&p[6]);
+            info.streams[i].max_records = read_u16_le(&p[8]);
+            info.streams[i].cadence_ms = read_u16_le(&p[10]);
+        }
+        if (info.version != SIGNAL_PROTOCOL_VERSION) {
+            reject_protocol_info(&info, "protocol version mismatch");
+            break;
+        }
+        if ((info.capabilities &
+             SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO) == 0u ||
+            !net_protocol_info_has_exact_pod_streams(&info)) {
+            reject_protocol_info(&info, "required schema mismatch");
+            break;
+        }
+        info.compatible = true;
+        if (net_state.protocol_info_ready) {
+            if (!net_protocol_info_equal(
+                    &net_state.protocol_info, &info)) {
+                reject_protocol_info(
+                    &info, "protocol renegotiation mismatch");
+            }
+            break;
+        }
+
+        net_state.protocol_info = info;
+        net_state.protocol_info_ready = true;
+        pubkey_proof_client_note_protocol(
+            &net_state.pubkey_proof, info.version);
+        if (!send_register_pubkey() ||
+            !send_session_token()) {
+            fprintf(stderr,
+                    "[net] authentication bootstrap send rejected\n");
+            ws_close_authentication_failure();
+            break;
+        }
+        if (net_state.callbacks.on_protocol_info)
+            net_state.callbacks.on_protocol_info(
+                &net_state.protocol_info);
         break;
+    }
 
     case NET_MSG_DEATH:
         if (len >= NET_DEATH_MSG_SIZE && net_state.callbacks.on_death) {
@@ -3108,28 +3764,8 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_LEGACY_SAVES_AVAILABLE:
-        /* Layer A.4 of #479 — server reports legacy saves the player
-         * could claim. For now we just log; a docked-UI integration is
-         * a follow-up issue. Operators can trigger
-         * net_send_claim_legacy_save() manually for a stranded player. */
-        if (len >= LEGACY_SAVES_HEADER) {
-            int count = data[1];
-            int max = (len - LEGACY_SAVES_HEADER) / LEGACY_SAVES_PREFIX_LEN;
-            if (count > max) count = max;
-            if (count > LEGACY_SAVES_MAX_LIST) count = LEGACY_SAVES_MAX_LIST;
-            printf("[net] %d legacy save(s) available — import via "
-                   "net_send_claim_legacy_save():\n", count);
-            for (int i = 0; i < count; i++) {
-                char prefix[LEGACY_SAVES_PREFIX_LEN + 1];
-                memcpy(prefix,
-                       &data[LEGACY_SAVES_HEADER + i * LEGACY_SAVES_PREFIX_LEN],
-                       LEGACY_SAVES_PREFIX_LEN);
-                prefix[LEGACY_SAVES_PREFIX_LEN] = '\0';
-                printf("[net]   [%d] %s...\n", i, prefix);
-            }
-            /* TODO(#479-A.5): surface this in the docked HUD as a one-tap
-             * import prompt. Today the operator drives the claim. */
-        }
+        /* Retired disclosure message. Do not parse or log payload bytes from
+         * stale or malicious peers. Current servers never emit this type. */
         break;
 
     default:
@@ -3153,13 +3789,64 @@ static void handle_message(const uint8_t* data, int len) {
 static EMSCRIPTEN_WEBSOCKET_T ws_socket = 0;
 static bool wasm_use_webrtc = false;
 
+/* emscripten_websocket_send_binary currently reports success immediately
+ * after calling WebSocket.send() and does not catch a send exception. Keep the
+ * admission boundary explicit so auth state advances only when an OPEN socket
+ * accepted the bytes without throwing. */
+EM_JS(int, signal_websocket_send_checked_js,
+      (EMSCRIPTEN_WEBSOCKET_T socket_id, const uint8_t *data, int len), {
+    const socket = WS.getSocket(socket_id);
+    if (!socket || socket.readyState !== WebSocket.OPEN) return 0;
+    // Browser smoke fault injection is intentionally scoped to an explicit
+    // test global plus ?smoke=1. It can only reject this page's own auth write.
+    const smokeFault =
+        globalThis.SIGNAL_TEST_REJECT_AUTH_PROOF_SEND === true &&
+        globalThis.location &&
+        new URLSearchParams(globalThis.location.search).has('smoke') &&
+        len > 0 && HEAPU8[data] === 0x3f;
+    if (smokeFault) {
+        globalThis.SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES =
+            (globalThis.SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES || 0) + 1;
+        return 0;
+    }
+    try {
+        socket.send(HEAPU8.slice(data, data + len));
+        return 1;
+    } catch (e) {
+        console.error('[net/websocket] send rejected', e);
+        return 0;
+    }
+})
+
+EM_JS(void, signal_webrtc_close_js, (), {
+    const t = Module.signalWebRTCTransport;
+    if (!t) return;
+    if (t.dc) t.dc.close();
+    if (t.pc) t.pc.close();
+    if (t.ws) t.ws.close();
+    Module.signalWebRTCTransport = null;
+})
+
 EMSCRIPTEN_KEEPALIVE void signal_net_transport_open(void) {
-    transport_connected("webrtc datachannel");
+    if (!transport_connected("webrtc datachannel")) {
+        transport_error("WebRTC authentication bootstrap");
+        /* A live data channel with authentication disabled is ambiguous to
+         * both peers. Tear down the rendezvous and transport immediately so
+         * failure is final and observable. */
+        signal_webrtc_close_js();
+    }
 }
 
 EMSCRIPTEN_KEEPALIVE void signal_net_transport_message(uintptr_t ptr, int len) {
-    if (!ptr || len <= 0) return;
+    if (!ptr && len > 0) {
+        reject_protocol_info(NULL, "invalid datachannel traffic");
+        return;
+    }
     transport_message((const uint8_t *)ptr, len);
+}
+
+EMSCRIPTEN_KEEPALIVE void signal_net_transport_non_binary(void) {
+    reject_protocol_info(NULL, "non-binary datachannel traffic");
 }
 
 EMSCRIPTEN_KEEPALIVE void signal_net_transport_close(void) {
@@ -3172,11 +3859,27 @@ EMSCRIPTEN_KEEPALIVE void signal_net_transport_error(void) {
 
 EM_JS(int, signal_webrtc_connect_js, (const char *url_ptr), {
     const rawUrl = UTF8ToString(url_ptr);
+    // This peer id is rendezvous routing metadata, not an authentication
+    // credential. Identity, session tokens, and challenges are generated by
+    // the checked C crypto wrapper. Still refuse WebRTC setup rather than
+    // silently falling back to a predictable peer id if WebCrypto fails.
     function randomId() {
-        if (globalThis.crypto && crypto.randomUUID) return crypto.randomUUID();
-        const a = new Uint8Array(16);
-        crypto.getRandomValues(a);
-        return Array.from(a, x => x.toString(16).padStart(2, '0')).join("");
+        const source = globalThis.crypto;
+        if (!source) return null;
+        if (typeof source.randomUUID === 'function') {
+            try {
+                return source.randomUUID();
+            } catch (e) {}
+        }
+        if (typeof source.getRandomValues !== 'function') return null;
+        try {
+            const a = new Uint8Array(16);
+            source.getRandomValues(a);
+            return Array.from(
+                a, x => x.toString(16).padStart(2, '0')).join("");
+        } catch (e) {
+            return null;
+        }
     }
     function signalingUrl(raw) {
         if (raw.startsWith('rtc://')) return 'ws://' + raw.slice('rtc://'.length);
@@ -3198,10 +3901,22 @@ EM_JS(int, signal_webrtc_connect_js, (const char *url_ptr), {
         ? parsed.pathname.replace(new RegExp("^/+"), "")
         : "";
     const room = roomFromQuery || roomFromPath || 'signal-main';
-    let nodeId = localStorage.getItem('signal_node_id');
+    let nodeId = null;
+    try {
+        nodeId = localStorage.getItem('signal_node_id');
+    } catch (e) {}
     if (!nodeId) {
         nodeId = randomId();
-        localStorage.setItem('signal_node_id', nodeId);
+        if (!nodeId) {
+            console.error(
+                '[net/webrtc] secure rendezvous peer id unavailable');
+            return 0;
+        }
+        try {
+            localStorage.setItem('signal_node_id', nodeId);
+        } catch (e) {
+            // An ephemeral routing id is sufficient; it is not auth state.
+        }
     }
 
     const state = {
@@ -3242,6 +3957,7 @@ EM_JS(int, signal_webrtc_connect_js, (const char *url_ptr), {
                 ev.data.arrayBuffer().then((buf) => dc.onmessage({ data: buf }));
                 return;
             } else {
+                Module.ccall('signal_net_transport_non_binary');
                 return;
             }
             const ptr = Module._malloc(bytes.length);
@@ -3337,28 +4053,29 @@ EM_JS(int, signal_webrtc_send_js, (const uint8_t *data, int len), {
     const t = Module.signalWebRTCTransport;
     if (!t || !t.dc || t.dc.readyState !== 'open') return 0;
     const bytes = HEAPU8.slice(data, data + len);
-    t.dc.send(bytes);
-    return 1;
-})
-
-EM_JS(void, signal_webrtc_close_js, (), {
-    const t = Module.signalWebRTCTransport;
-    if (!t) return;
-    if (t.dc) t.dc.close();
-    if (t.pc) t.pc.close();
-    if (t.ws) t.ws.close();
-    Module.signalWebRTCTransport = null;
+    try {
+        t.dc.send(bytes);
+        return 1;
+    } catch (e) {
+        console.error('[net/webrtc] datachannel send rejected', e);
+        return 0;
+    }
 })
 
 static EM_BOOL on_ws_open(int eventType, const EmscriptenWebSocketOpenEvent* event, void* userData) {
     (void)eventType; (void)event; (void)userData;
-    transport_connected("websocket relay");
+    if (!transport_connected("websocket relay") && ws_socket > 0)
+        emscripten_websocket_close(ws_socket, 1011,
+                                   "secure entropy unavailable");
     return EM_TRUE;
 }
 
 static EM_BOOL on_ws_message(int eventType, const EmscriptenWebSocketMessageEvent* event, void* userData) {
     (void)eventType; (void)userData;
-    if (event->isText) return EM_TRUE;
+    if (event->isText) {
+        reject_protocol_info(NULL, "non-binary websocket traffic");
+        return EM_TRUE;
+    }
     transport_message((const uint8_t*)event->data, (int)event->numBytes);
     return EM_TRUE;
 }
@@ -3396,11 +4113,22 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
 
     memcpy(net_state.identity_pubkey, saved_pubkey, sizeof(saved_pubkey));
     memcpy(net_state.identity_secret, saved_secret, sizeof(saved_secret));
+    signal_memzero_explicit(saved_secret, sizeof(saved_secret));
     net_state.identity_pubkey_ready = saved_pub_ready;
     net_state.identity_secret_ready = saved_secret_ready;
 
     if (!url || url[0] == '\0') {
         printf("[net] no server URL provided, multiplayer disabled\n");
+        return false;
+    }
+    if (!net_state.identity_pubkey_ready ||
+        !net_state.identity_secret_ready ||
+        !ensure_session_token()) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        fprintf(stderr,
+                "[net] secure authentication bootstrap unavailable\n");
         return false;
     }
     snprintf(net_state.server_url, sizeof(net_state.server_url), "%s", url);
@@ -3450,7 +4178,8 @@ bool net_reconnect(void) {
         net_state.connected = false;
         net_state.local_id = 0xFF;
         net_state.server_hash[0] = '\0';
-        net_state.protocol_info_ready = false;
+        reset_protocol_negotiation_state();
+        clear_pubkey_challenge_state(true);
         memset(net_state.players, 0, sizeof(net_state.players));
         printf("[net] reconnecting via WebRTC rendezvous %s\n", net_state.server_url);
         return signal_webrtc_connect_js(net_state.server_url) != 0;
@@ -3463,7 +4192,8 @@ bool net_reconnect(void) {
     net_state.connected = false;
     net_state.local_id = 0xFF;
     net_state.server_hash[0] = '\0';
-    net_state.protocol_info_ready = false;
+    reset_protocol_negotiation_state();
+    clear_pubkey_challenge_state(true);
     memset(net_state.players, 0, sizeof(net_state.players));
 
     EmscriptenWebSocketCreateAttributes attr;
@@ -3487,9 +4217,11 @@ bool net_reconnect(void) {
 
 void net_shutdown(void) {
     net_loopback_active = false;
+    clear_pubkey_challenge_state(true);
     if (wasm_use_webrtc) {
         signal_webrtc_close_js();
         net_state.connected = false;
+        net_state.gameplay_ready = false;
         wasm_use_webrtc = false;
         return;
     }
@@ -3499,20 +4231,41 @@ void net_shutdown(void) {
         ws_socket = 0;
     }
     net_state.connected = false;
+    net_state.gameplay_ready = false;
 }
 
-static void ws_send_binary(const uint8_t* data, int len) {
+static bool ws_send_binary(const uint8_t* data, int len) {
+    if (!net_message_send_ready(data, len)) return false;
     if (net_loopback_active) {
-        if (net_loopback_send) (void)net_loopback_send(data, len, net_loopback_user);
+        return net_loopback_send
+            ? net_loopback_send(data, len, net_loopback_user)
+            : false;
+    }
+    if (wasm_use_webrtc) {
+        if (!net_state.connected) return false;
+        return signal_webrtc_send_js(data, len) != 0;
+    }
+    if (!net_state.connected || ws_socket <= 0) return false;
+    return signal_websocket_send_checked_js(
+               ws_socket, data, len) != 0;
+}
+
+static void ws_close_authentication_failure(void) {
+    net_auth_transport_closes++;
+    if (net_loopback_active) {
+        net_loopback_active = false;
+        transport_disconnected("local authentication failure");
         return;
     }
     if (wasm_use_webrtc) {
-        if (!net_state.connected) return;
-        (void)signal_webrtc_send_js(data, len);
+        signal_webrtc_close_js();
+        transport_disconnected("WebRTC authentication failure");
         return;
     }
-    if (!net_state.connected || ws_socket <= 0) return;
-    emscripten_websocket_send_binary(ws_socket, (void*)data, (unsigned int)len);
+    if (ws_socket > 0)
+        emscripten_websocket_close(
+            ws_socket, 1011, "authentication send rejected");
+    transport_disconnected("websocket authentication failure");
 }
 
 void net_poll(void) {
@@ -3531,25 +4284,51 @@ static struct mg_mgr net_mgr;
 static struct mg_connection *ws_conn = NULL;
 static bool mgr_initialized = false;
 
-static void ws_send_binary(const uint8_t* data, int len) {
+static bool ws_send_binary(const uint8_t* data, int len) {
+    if (!net_message_send_ready(data, len)) return false;
     if (net_loopback_active) {
-        if (net_loopback_send) (void)net_loopback_send(data, len, net_loopback_user);
+        return net_loopback_send
+            ? net_loopback_send(data, len, net_loopback_user)
+            : false;
+    }
+    if (!net_state.connected || !ws_conn ||
+        ws_conn->is_closing || ws_conn->is_draining) {
+        return false;
+    }
+    return mg_ws_send(
+               ws_conn, data, (size_t)len, WEBSOCKET_OP_BINARY) != 0;
+}
+
+static void ws_close_authentication_failure(void) {
+    net_auth_transport_closes++;
+    if (net_loopback_active) {
+        net_loopback_active = false;
+        transport_disconnected("local authentication failure");
         return;
     }
-    if (!net_state.connected || !ws_conn) return;
-    mg_ws_send(ws_conn, data, (size_t)len, WEBSOCKET_OP_BINARY);
+    if (ws_conn) ws_conn->is_closing = 1;
+    transport_disconnected("websocket authentication failure");
 }
 
 static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_WS_OPEN) {
         ws_conn = c;
-        transport_connected("websocket server");
+        if (!transport_connected("websocket server")) {
+            mg_ws_send(c, NULL, 0, WEBSOCKET_OP_CLOSE);
+            c->is_closing = 1;
+        }
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
+        if ((wm->flags & 0x0Fu) != WEBSOCKET_OP_BINARY) {
+            reject_protocol_info(NULL, "non-binary websocket traffic");
+            return;
+        }
         transport_message((const uint8_t *)wm->data.buf, (int)wm->data.len);
     } else if (ev == MG_EV_ERROR) {
         printf("[net] connection error: %s\n", (char *)ev_data);
         net_state.connected = false;
+        net_state.gameplay_ready = false;
+        clear_pubkey_challenge_state(true);
         ws_conn = NULL;
     } else if (ev == MG_EV_CLOSE) {
         transport_disconnected("websocket server");
@@ -3577,11 +4356,22 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
 
     memcpy(net_state.identity_pubkey, saved_pubkey, sizeof(saved_pubkey));
     memcpy(net_state.identity_secret, saved_secret, sizeof(saved_secret));
+    signal_memzero_explicit(saved_secret, sizeof(saved_secret));
     net_state.identity_pubkey_ready = saved_pub_ready;
     net_state.identity_secret_ready = saved_secret_ready;
 
     if (!url || url[0] == '\0') {
         printf("[net] no server URL provided, multiplayer disabled\n");
+        return false;
+    }
+    if (!net_state.identity_pubkey_ready ||
+        !net_state.identity_secret_ready ||
+        !ensure_session_token()) {
+        memset(net_state.session_token, 0,
+               sizeof(net_state.session_token));
+        net_state.session_token_ready = false;
+        fprintf(stderr,
+                "[net] secure authentication bootstrap unavailable\n");
         return false;
     }
     if (strncmp(url, "rtc://", 6) == 0 ||
@@ -3610,6 +4400,7 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
 
 void net_shutdown(void) {
     net_loopback_active = false;
+    clear_pubkey_challenge_state(true);
     if (ws_conn) {
         mg_ws_send(ws_conn, "", 0, WEBSOCKET_OP_CLOSE);
         ws_conn = NULL;
@@ -3619,6 +4410,7 @@ void net_shutdown(void) {
         mgr_initialized = false;
     }
     net_state.connected = false;
+    net_state.gameplay_ready = false;
 }
 
 bool net_reconnect(void) {
@@ -3628,7 +4420,8 @@ bool net_reconnect(void) {
     net_state.connected = false;
     net_state.local_id = 0xFF;
     net_state.server_hash[0] = '\0';
-    net_state.protocol_info_ready = false;
+    reset_protocol_negotiation_state();
+    clear_pubkey_challenge_state(true);
     memset(net_state.players, 0, sizeof(net_state.players));
     ws_conn = mg_ws_connect(&net_mgr, net_state.server_url, net_ev_handler, NULL, NULL);
     printf("[net] reconnecting to %s\n", net_state.server_url);
@@ -3667,7 +4460,7 @@ uint32_t net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
     buf[13] = (uint8_t)(action_id >> 8);
     write_u32_le(&buf[14], input_tick);
     write_u32_le(&buf[18], sent_ms);
-    ws_send_binary(buf, NET_INPUT_MSG_SIZE);
+    (void)ws_send_binary(buf, NET_INPUT_MSG_SIZE);
     return sent_ms;
 }
 
@@ -3698,14 +4491,21 @@ bool net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                 (unsigned)op);
         return false;
     }
-    ws_send_binary(buf, NET_PLAN_MSG_SIZE);
-    return true;
+    return ws_send_binary(buf, NET_PLAN_MSG_SIZE);
 }
 
 /* ---------- Common accessors --------------------------------------------- */
 
 bool net_is_connected(void) {
     return net_state.connected;
+}
+
+bool net_is_protocol_ready(void) {
+    return net_protocol_ready_internal();
+}
+
+bool net_is_gameplay_ready(void) {
+    return net_gameplay_ready_internal();
 }
 
 uint8_t net_local_id(void) {
@@ -3728,3 +4528,9 @@ const char* net_server_hash(void) {
 const NetProtocolInfo *net_protocol_info(void) {
     return net_state.protocol_info_ready ? &net_state.protocol_info : NULL;
 }
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE uint32_t signal_debug_auth_transport_closes(void) {
+    return net_auth_transport_closes;
+}
+#endif

@@ -130,8 +130,14 @@ persists it under a platform-appropriate path (POSIX:
 `$XDG_DATA_HOME/signal/identity.key` at mode 0600 inside a 0700 directory; macOS:
 `~/Library/Application Support/signal/identity.key`; web: `localStorage`), and
 sends the pubkey on connect. The server validates state-changing actions
-against the player's signature, keys the save file by pubkey, and offers a
-"claim my legacy save" handshake for pre-A.4 anonymous saves.
+against the player's signature and keys the canonical save file by pubkey.
+The former arbitrary-basename "claim my legacy save" handshake is disabled:
+servers do not enumerate legacy names and reject the retired packet without
+mutation. Its replacement derives only the authenticated token's canonical
+source and uses an opaque, transport/proof-bound signed offer plus a complete
+no-replace generation commit. Unattributable v81 ownership-quarantine rows
+fail closed, so #672 remains open on that historical reconciliation limit; see
+[`legacy-save-recovery.md`](legacy-save-recovery.md).
 
 See [`client/identity.h`](../client/identity.h) for the load/save surface and
 [`client/identity.c`](../client/identity.c) for the platform-path resolution.

@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "sim_physics.h"
+#include <time.h>
 
 static void setup_autopilot_world(world_t *w) {
     world_reset(w);
@@ -173,10 +174,874 @@ TEST(test_spatial_grid_retains_dense_cell_asteroids) {
     const spatial_cell_t *cell = spatial_grid_lookup(&w.asteroid_grid, cx, cy);
     ASSERT(cell != NULL);
     ASSERT_EQ_INT((int)cell->count, target_count);
-    ASSERT((int)cell->count > (int)ASTEROID_PHYSICS_CELL_BUDGET);
+    ASSERT((int)cell->count >
+           (int)ASTEROID_PAIR_EXHAUSTIVE_CELL_LIMIT);
     ASSERT_EQ_INT((int)w.asteroid_grid.overflow_count, 0);
     for (int i = 0; i < target_count; i++)
         ASSERT_EQ_INT((int)cell->indices[i], i);
+}
+
+enum { DENSE_PAIR_TEST_MAX = 64 };
+
+static void dense_pair_seed(
+    asteroid_t *asteroid, uint16_t logical_id, vec2 pos) {
+    seed_test_asteroid(
+        asteroid,
+        (logical_id % 2u) ? ASTEROID_TIER_L : ASTEROID_TIER_M,
+        pos, 24.0f + (float)(logical_id % 3u));
+    asteroid->vel = v2(
+        (float)((int)(logical_id % 5u) - 2) * 0.1f,
+        (float)((int)(logical_id % 7u) - 3) * 0.1f);
+    asteroid->rock_pub[0] = 0xa5;
+    uint16_t encoded = (uint16_t)(logical_id + 1u);
+    asteroid->rock_pub[30] = (uint8_t)(encoded >> 8);
+    asteroid->rock_pub[31] = (uint8_t)encoded;
+}
+
+static int dense_pair_logical_id(const asteroid_t *asteroid) {
+    if (!asteroid || asteroid->rock_pub[0] != 0xa5) return -1;
+    uint16_t encoded = (uint16_t)(
+        ((uint16_t)asteroid->rock_pub[30] << 8) |
+        asteroid->rock_pub[31]);
+    return encoded == 0u ? -1 : (int)encoded - 1;
+}
+
+typedef struct {
+    const world_t *world;
+    uint16_t total;
+    uint16_t cross_split;
+    bool cross_only;
+    bool invalid;
+    bool duplicate_in_epoch;
+    bool duplicate_in_window;
+    uint32_t visited;
+    uint8_t epoch_seen[DENSE_PAIR_TEST_MAX][DENSE_PAIR_TEST_MAX];
+    uint8_t window_seen[DENSE_PAIR_TEST_MAX][DENSE_PAIR_TEST_MAX];
+} dense_pair_coverage_t;
+
+static void dense_pair_record_coverage(
+    int asteroid_a, int asteroid_b, void *opaque) {
+    dense_pair_coverage_t *coverage = opaque;
+    int a = dense_pair_logical_id(&coverage->world->asteroids[asteroid_a]);
+    int b = dense_pair_logical_id(&coverage->world->asteroids[asteroid_b]);
+    if (a < 0 || b < 0 || a >= coverage->total ||
+        b >= coverage->total || a == b) {
+        coverage->invalid = true;
+        return;
+    }
+    if (a > b) {
+        int swap = a;
+        a = b;
+        b = swap;
+    }
+    if (coverage->epoch_seen[a][b])
+        coverage->duplicate_in_epoch = true;
+    coverage->epoch_seen[a][b] = 1;
+    coverage->visited++;
+
+    bool target = !coverage->cross_only ||
+        (a < coverage->cross_split && b >= coverage->cross_split);
+    if (!target) return;
+    if (coverage->window_seen[a][b])
+        coverage->duplicate_in_window = true;
+    coverage->window_seen[a][b] = 1;
+}
+
+typedef struct {
+    uint8_t seen[DENSE_PAIR_TEST_MAX][DENSE_PAIR_TEST_MAX];
+    uint32_t count;
+    uint16_t body_count;
+    bool invalid;
+    bool duplicate;
+} allocation_failure_pair_snapshot_t;
+
+static void allocation_failure_pair_record(
+    int asteroid_a, int asteroid_b, void *opaque) {
+    allocation_failure_pair_snapshot_t *snapshot = opaque;
+    if (asteroid_a < 0 || asteroid_b < 0 ||
+        asteroid_a >= snapshot->body_count ||
+        asteroid_b >= snapshot->body_count ||
+        asteroid_a == asteroid_b) {
+        snapshot->invalid = true;
+        return;
+    }
+    if (asteroid_a > asteroid_b) {
+        int swap = asteroid_a;
+        asteroid_a = asteroid_b;
+        asteroid_b = swap;
+    }
+    if (snapshot->seen[asteroid_a][asteroid_b])
+        snapshot->duplicate = true;
+    snapshot->seen[asteroid_a][asteroid_b] = 1u;
+    snapshot->count++;
+}
+
+static void seed_allocation_failure_pair_fixture(
+    world_t *w, uint16_t body_count) {
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w->asteroids[i].active = false;
+    for (uint16_t i = 0; i < body_count; i++) {
+        vec2 pos = i < 18u
+            ? v2(100.0f + (float)i, 100.0f)
+            : v2(900.0f + (float)i, 100.0f);
+        dense_pair_seed(&w->asteroids[i], i, pos);
+    }
+    w->tick = ASTEROID_PAIR_TICKS_PER_EPOCH * 3u;
+}
+
+TEST(test_asteroid_pair_plan_recovers_from_cell_allocation_failure) {
+    enum { BODY_COUNT = 23 };
+    WORLD_DECL;
+
+    seed_allocation_failure_pair_fixture(&w, BODY_COUNT);
+    spatial_grid_build(&w);
+    ASSERT_EQ_INT((int)w.asteroid_grid.overflow_count, 0);
+    asteroid_pair_plan_t normal_plan;
+    ASSERT(asteroid_pair_plan_build(&w, &normal_plan));
+    allocation_failure_pair_snapshot_t normal = {
+        .body_count = BODY_COUNT,
+    };
+    ASSERT_EQ_INT(
+        asteroid_pair_plan_visit(
+            &normal_plan, allocation_failure_pair_record, &normal),
+        normal_plan.candidate_pair_count);
+    ASSERT(!normal.invalid);
+    ASSERT(!normal.duplicate);
+
+    seed_allocation_failure_pair_fixture(&w, BODY_COUNT);
+    /* The sparse hash allocation succeeds, then the first cell-index
+     * allocation fails exactly once. Body 0 is therefore absent from the
+     * acceleration grid and must come from the bounded pair-plan fallback. */
+    spatial_grid_test_fail_allocation_after(1u);
+    spatial_grid_build(&w);
+    spatial_grid_test_clear_allocation_failure();
+    ASSERT_EQ_INT((int)w.asteroid_grid.overflow_count, 1);
+    const spatial_cell_t *partial_cell =
+        spatial_grid_lookup(&w.asteroid_grid, 0, 0);
+    ASSERT(partial_cell != NULL);
+    bool omitted_body_found = false;
+    for (uint16_t i = 0; i < partial_cell->count; i++) {
+        if (partial_cell->indices[i] == 0)
+            omitted_body_found = true;
+    }
+    ASSERT(!omitted_body_found);
+
+    asteroid_pair_plan_t recovered_plan;
+    ASSERT(asteroid_pair_plan_build(&w, &recovered_plan));
+    ASSERT_EQ_INT(recovered_plan.active_count, BODY_COUNT);
+    ASSERT_EQ_INT(recovered_plan.active_count, normal_plan.active_count);
+    ASSERT_EQ_INT(recovered_plan.cell_count, normal_plan.cell_count);
+    ASSERT_EQ_INT(recovered_plan.max_cell_count, normal_plan.max_cell_count);
+    ASSERT_EQ_INT(
+        recovered_plan.candidate_pair_count,
+        normal_plan.candidate_pair_count);
+    ASSERT_EQ_INT(recovered_plan.epoch, normal_plan.epoch);
+    for (uint16_t i = 0; i < normal_plan.active_count; i++)
+        ASSERT_EQ_INT(recovered_plan.indices[i], normal_plan.indices[i]);
+    for (uint16_t i = 0; i < normal_plan.cell_count; i++) {
+        ASSERT_EQ_INT(
+            recovered_plan.cells[i].cell_x,
+            normal_plan.cells[i].cell_x);
+        ASSERT_EQ_INT(
+            recovered_plan.cells[i].cell_y,
+            normal_plan.cells[i].cell_y);
+        ASSERT_EQ_INT(
+            recovered_plan.cells[i].begin,
+            normal_plan.cells[i].begin);
+        ASSERT_EQ_INT(
+            recovered_plan.cells[i].count,
+            normal_plan.cells[i].count);
+    }
+
+    allocation_failure_pair_snapshot_t recovered = {
+        .body_count = BODY_COUNT,
+    };
+    ASSERT_EQ_INT(
+        asteroid_pair_plan_visit(
+            &recovered_plan, allocation_failure_pair_record, &recovered),
+        recovered_plan.candidate_pair_count);
+    ASSERT(!recovered.invalid);
+    ASSERT(!recovered.duplicate);
+    ASSERT_EQ_INT(recovered.count, normal.count);
+    ASSERT(memcmp(recovered.seen, normal.seen, sizeof(normal.seen)) == 0);
+    ASSERT(recovered.seen[0][1]);
+}
+
+static bool dense_pair_verify_self_window(world_t *w, uint16_t count) {
+    if (!w || count > DENSE_PAIR_TEST_MAX) return false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w->asteroids[i].active = false;
+    for (uint16_t i = 0; i < count; i++)
+        dense_pair_seed(&w->asteroids[i], i, v2(100.0f, 100.0f));
+
+    dense_pair_coverage_t coverage = {
+        .world = w,
+        .total = count,
+    };
+    uint32_t epochs = asteroid_pair_self_revisit_epochs(count);
+    for (uint32_t epoch = 0; epoch < epochs; epoch++) {
+        memset(coverage.epoch_seen, 0, sizeof(coverage.epoch_seen));
+        coverage.visited = 0;
+        w->tick = epoch * ASTEROID_PAIR_TICKS_PER_EPOCH;
+        spatial_grid_build(w);
+        asteroid_pair_plan_t plan;
+        if (!asteroid_pair_plan_build(w, &plan)) return false;
+        uint32_t visited = asteroid_pair_plan_visit(
+            &plan, dense_pair_record_coverage, &coverage);
+        if (visited != plan.candidate_pair_count ||
+            visited != coverage.visited) {
+            return false;
+        }
+    }
+    if (coverage.invalid || coverage.duplicate_in_epoch ||
+        coverage.duplicate_in_window) {
+        return false;
+    }
+    for (uint16_t i = 0; i < count; i++) {
+        for (uint16_t j = (uint16_t)(i + 1u); j < count; j++) {
+            if (!coverage.window_seen[i][j]) return false;
+        }
+    }
+    return true;
+}
+
+TEST(test_asteroid_pair_plan_self_window_covers_odd_and_even_dense_cells) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    ASSERT_EQ_INT(asteroid_pair_self_revisit_epochs(17), 2);
+    ASSERT(dense_pair_verify_self_window(&w, 17));
+    ASSERT_EQ_INT(asteroid_pair_self_revisit_epochs(18), 3);
+    ASSERT(dense_pair_verify_self_window(&w, 18));
+}
+
+TEST(test_asteroid_pair_plan_cross_window_covers_unequal_dense_cells) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w.asteroids[i].active = false;
+
+    const uint16_t left_count = 17;
+    const uint16_t right_count = 29;
+    const uint16_t total = left_count + right_count;
+    for (uint16_t i = 0; i < left_count; i++)
+        dense_pair_seed(&w.asteroids[i], i, v2(100.0f, 100.0f));
+    for (uint16_t i = 0; i < right_count; i++) {
+        uint16_t logical = (uint16_t)(left_count + i);
+        dense_pair_seed(
+            &w.asteroids[logical], logical, v2(900.0f, 100.0f));
+    }
+
+    dense_pair_coverage_t coverage = {
+        .world = &w,
+        .total = total,
+        .cross_split = left_count,
+        .cross_only = true,
+    };
+    uint32_t epochs = asteroid_pair_cross_revisit_epochs(
+        left_count, right_count);
+    ASSERT_EQ_INT(epochs, 5);
+    for (uint32_t epoch = 0; epoch < epochs; epoch++) {
+        memset(coverage.epoch_seen, 0, sizeof(coverage.epoch_seen));
+        coverage.visited = 0;
+        w.tick = epoch * ASTEROID_PAIR_TICKS_PER_EPOCH;
+        spatial_grid_build(&w);
+        asteroid_pair_plan_t plan;
+        ASSERT(asteroid_pair_plan_build(&w, &plan));
+        uint32_t visited = asteroid_pair_plan_visit(
+            &plan, dense_pair_record_coverage, &coverage);
+        ASSERT_EQ_INT(visited, plan.candidate_pair_count);
+        ASSERT_EQ_INT(visited, coverage.visited);
+    }
+    ASSERT(!coverage.invalid);
+    ASSERT(!coverage.duplicate_in_epoch);
+    ASSERT(!coverage.duplicate_in_window);
+    for (uint16_t i = 0; i < left_count; i++) {
+        for (uint16_t j = left_count; j < total; j++)
+            ASSERT(coverage.window_seen[i][j]);
+    }
+}
+
+TEST(test_asteroid_pair_plan_static_bound_at_full_adjacent_grid) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w->asteroids[i].active = false;
+
+    int next = 0;
+    for (int cell_y = -1; cell_y <= 1; cell_y++) {
+        for (int cell_x = -1; cell_x <= 1; cell_x++) {
+            int remaining = MAX_ASTEROIDS - next;
+            int cells_left = 9 - ((cell_y + 1) * 3 + (cell_x + 1));
+            int count = cells_left > 0 ? remaining / cells_left : remaining;
+            for (int local = 0; local < count; local++, next++) {
+                vec2 pos = v2(
+                    ((float)cell_x + 0.25f) * SPATIAL_CELL_SIZE +
+                        (float)(local % 16) * 0.01f,
+                    ((float)cell_y + 0.25f) * SPATIAL_CELL_SIZE +
+                        (float)(local / 16) * 0.01f);
+                dense_pair_seed(
+                    &w->asteroids[next], (uint16_t)next, pos);
+            }
+        }
+    }
+    ASSERT_EQ_INT(next, MAX_ASTEROIDS);
+    spatial_grid_build(w);
+    asteroid_pair_plan_t plan;
+    ASSERT(asteroid_pair_plan_build(w, &plan));
+    ASSERT_EQ_INT(plan.active_count, MAX_ASTEROIDS);
+    ASSERT_EQ_INT(plan.cell_count, 9);
+    ASSERT(plan.candidate_pair_count <= ASTEROID_PAIR_MAX_CANDIDATES);
+    ASSERT_EQ_INT(
+        asteroid_pair_plan_visit(&plan, NULL, NULL),
+        plan.candidate_pair_count);
+}
+
+TEST(test_asteroid_physics_density_benchmark) {
+    static const uint16_t COUNTS[] = {16, 32, 64, 128};
+    static const uint32_t EXPECTED[] = {120, 128, 256, 512};
+    WORLD_DECL;
+    world_reset(&w);
+    bool timed = getenv("SIGNAL_RUN_ASTEROID_PHYSICS_BENCH") != NULL;
+    int iterations = timed ? 2000 : 1;
+    volatile uint32_t observed = 0;
+
+    for (size_t size_index = 0;
+         size_index < sizeof(COUNTS) / sizeof(COUNTS[0]);
+         size_index++) {
+        uint16_t count = COUNTS[size_index];
+        for (int i = 0; i < MAX_ASTEROIDS; i++)
+            w.asteroids[i].active = false;
+        for (uint16_t i = 0; i < count; i++)
+            dense_pair_seed(&w.asteroids[i], i, v2(100.0f, 100.0f));
+        w.tick = 0;
+        spatial_grid_build(&w);
+
+        clock_t start = clock();
+        for (int iteration = 0; iteration < iterations; iteration++) {
+            asteroid_pair_plan_t plan;
+            ASSERT(asteroid_pair_plan_build(&w, &plan));
+            ASSERT_EQ_INT(
+                plan.candidate_pair_count, EXPECTED[size_index]);
+            observed += asteroid_pair_plan_visit(&plan, NULL, NULL);
+            observed += asteroid_pair_plan_visit(&plan, NULL, NULL);
+        }
+        clock_t finish = clock();
+        if (timed && !g_quiet) {
+            double micros = (double)(finish - start) * 1000000.0 /
+                ((double)CLOCKS_PER_SEC * (double)iterations);
+            printf(
+                "\n      %3u bodies: %3u pairs/path, "
+                "%.2f us plan+dual-walk",
+                (unsigned)count, (unsigned)EXPECTED[size_index], micros);
+        }
+    }
+    ASSERT(observed != 0u);
+}
+
+TEST(test_asteroid_collision_includes_body_beyond_legacy_slot_budget) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w.asteroids[i].active = false;
+    for (uint16_t i = 0; i < 17; i++) {
+        vec2 pos = i == 0
+            ? v2(100.0f, 100.0f)
+            : v2(400.0f + (float)i * 8.0f, 100.0f);
+        dense_pair_seed(&w.asteroids[i], i, pos);
+    }
+    /* The dense distance-1 band owns (logical 16, logical 0). Slot 16 was
+     * completely omitted by the former first-16 cell clamp. */
+    w.asteroids[16].pos = v2(110.0f, 100.0f);
+
+    spatial_grid_build(&w);
+    asteroid_pair_plan_t plan;
+    ASSERT(asteroid_pair_plan_build(&w, &plan));
+    vec2 before = w.asteroids[16].pos;
+    resolve_asteroid_collisions(&w, &plan);
+    ASSERT(v2_dist_sq(before, w.asteroids[16].pos) > 0.0001f);
+}
+
+enum { DENSE_PERMUTATION_COUNT = 33 };
+
+static int dense_permutation_slot(int logical_id, int count) {
+    return (logical_id * 13 + 7) % count;
+}
+
+static int dense_identity_slot(const world_t *w, int logical_id) {
+    for (int slot = 0; slot < MAX_ASTEROIDS; slot++) {
+        if (!w->asteroids[slot].active) continue;
+        if (dense_pair_logical_id(&w->asteroids[slot]) == logical_id)
+            return slot;
+    }
+    return -1;
+}
+
+static int dense_identity_for_ref(const world_t *w, int slot) {
+    if (slot < 0 || slot >= MAX_ASTEROIDS ||
+        !w->asteroids[slot].active) {
+        return -1;
+    }
+    return dense_pair_logical_id(&w->asteroids[slot]);
+}
+
+static void dense_clear_external_asteroid_refs(world_t *w) {
+    for (int player = 0; player < MAX_PLAYERS; player++) {
+        server_player_t *sp = &w->players[player];
+        sp->hover_asteroid = -1;
+        sp->autopilot_target = -1;
+        sp->input.mining_target_hint = -1;
+        if (sp->ship) {
+            sp->ship->towed_count = 0;
+            for (size_t i = 0;
+                 i < sizeof(sp->ship->towed_fragments) /
+                     sizeof(sp->ship->towed_fragments[0]);
+                 i++) {
+                sp->ship->towed_fragments[i] = -1;
+            }
+        }
+    }
+    for (int npc_index = 0; npc_index < MAX_NPC_SHIPS; npc_index++) {
+        npc_ship_t *npc = &w->npc_ships[npc_index];
+        npc->target_asteroid = -1;
+        npc->input.mining_target_hint = -1;
+        if (npc->ship) {
+            npc->ship->towed_count = 0;
+            for (size_t i = 0;
+                 i < sizeof(npc->ship->towed_fragments) /
+                     sizeof(npc->ship->towed_fragments[0]);
+                 i++) {
+                npc->ship->towed_fragments[i] = -1;
+            }
+        }
+    }
+    memset(w->contracts, 0, sizeof(w->contracts));
+    memset(w->ship_birth_assemblies, 0, sizeof(w->ship_birth_assemblies));
+    memset(w->tow_links, 0, sizeof(w->tow_links));
+}
+
+static void dense_prepare_permutation_world(world_t *w, bool permuted) {
+    world_reset(w);
+    test_world_bind_ship_slots(w);
+    memset(w->asteroids, 0, sizeof(w->asteroids));
+    memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
+    memset(w->asteroid_origin, 0, sizeof(w->asteroid_origin));
+    memset(w->asteroid_generation, 0, sizeof(w->asteroid_generation));
+    memset(w->asteroid_generation_live, 0,
+           sizeof(w->asteroid_generation_live));
+    dense_clear_external_asteroid_refs(w);
+
+    for (int logical = 0; logical < DENSE_PERMUTATION_COUNT; logical++) {
+        int slot = permuted
+            ? dense_permutation_slot(logical, DENSE_PERMUTATION_COUNT)
+            : logical;
+        vec2 pos = v2(
+            100.0f + (float)(logical % 8) * 18.0f,
+            100.0f + (float)(logical / 8) * 18.0f);
+        dense_pair_seed(&w->asteroids[slot], (uint16_t)logical, pos);
+        w->asteroids[slot].radius = 22.0f + (float)(logical % 4);
+        w->fracture_claims[slot].fracture_id =
+            (uint32_t)(1000 + logical);
+        w->fracture_claims[slot].best_nonce =
+            (uint32_t)(2000 + logical);
+        w->asteroid_origin[slot].chunk_x = logical - 17;
+        w->asteroid_origin[slot].chunk_y = 31 - logical;
+        w->asteroid_origin[slot].from_chunk = (logical % 2) == 0;
+        w->asteroid_generation[slot] = (uint16_t)(logical + 11);
+        w->asteroid_generation_live[slot] = true;
+        for (int player = 0; player < MAX_PLAYERS; player++) {
+            server_replication_t *replication = &w->replications[player];
+            replication->asteroid_sent[slot] =
+                ((logical + player) % 2) != 0;
+            replication->asteroid_motion_sent_tick[slot] =
+                (uint32_t)(logical * 10 + player);
+            replication->asteroid_motion_sent_pos[slot] =
+                v2((float)logical, (float)-player);
+            replication->asteroid_motion_sent_vel[slot] =
+                v2((float)player, (float)-logical);
+            replication->asteroid_identity_sent_sig[slot] =
+                (uint32_t)(3000 + logical + player);
+            replication->asteroid_state_sent_tick[slot] =
+                (uint32_t)(4000 + logical + player);
+            replication->asteroid_state_sent_sig[slot] =
+                (uint32_t)(5000 + logical + player);
+            replication->asteroid_state_sent_semantic_sig[slot] =
+                (uint32_t)(6000 + logical + player);
+            replication->fracture_challenge_sent_id[slot] =
+                (uint32_t)(7000 + logical + player);
+        }
+    }
+
+#define DENSE_REF(logical) \
+    (permuted ? dense_permutation_slot( \
+        (logical), DENSE_PERMUTATION_COUNT) : (logical))
+    w->players[0].hover_asteroid = DENSE_REF(2);
+    w->players[0].autopilot_target = DENSE_REF(7);
+    w->players[0].input.mining_target_hint = DENSE_REF(11);
+    w->players[0].ship->towed_count = 1;
+    w->players[0].ship->towed_fragments[0] = (int16_t)DENSE_REF(13);
+    w->npc_ships[0].target_asteroid = DENSE_REF(17);
+    w->npc_ships[0].input.mining_target_hint = DENSE_REF(19);
+    w->npc_ships[0].ship->towed_count = 1;
+    w->npc_ships[0].ship->towed_fragments[0] =
+        (int16_t)DENSE_REF(23);
+    w->contracts[0].active = true;
+    w->contracts[0].action = CONTRACT_FRACTURE;
+    w->contracts[0].target_index = DENSE_REF(29);
+    w->ship_birth_assemblies[0][0].active = true;
+    w->ship_birth_assemblies[0][0].fragment_slots[0] =
+        (int16_t)DENSE_REF(3);
+    w->ship_birth_assemblies[0][0].fragment_slots[1] =
+        (int16_t)DENSE_REF(5);
+    w->ship_birth_assemblies[0][0].fragment_slots[2] =
+        (int16_t)DENSE_REF(9);
+    w->tow_links[0].active = true;
+    w->tow_links[0].target = (entity_ref_t) {
+        .kind = ENTITY_KIND_ASTEROID,
+        .index = (int16_t)DENSE_REF(27),
+        .part = -1,
+        .generation =
+            w->asteroid_generation[DENSE_REF(27)],
+    };
+#undef DENSE_REF
+}
+
+static void dense_hash_i32(sha256_ctx_t *hash, int value) {
+    int32_t fixed = (int32_t)value;
+    sha256_update(hash, &fixed, sizeof(fixed));
+}
+
+static void dense_permutation_state_root(
+    const world_t *w, uint8_t root[32]) {
+    sha256_ctx_t hash;
+    sha256_init(&hash);
+    uint32_t count = DENSE_PERMUTATION_COUNT;
+    sha256_update(&hash, &count, sizeof(count));
+    for (int logical = 0; logical < DENSE_PERMUTATION_COUNT; logical++) {
+        int slot = dense_identity_slot(w, logical);
+        if (slot < 0) {
+            memset(root, 0, 32);
+            return;
+        }
+        sha256_update(
+            &hash, &w->asteroids[slot], sizeof(w->asteroids[slot]));
+        sha256_update(
+            &hash, &w->fracture_claims[slot],
+            sizeof(w->fracture_claims[slot]));
+        sha256_update(
+            &hash, &w->asteroid_origin[slot].chunk_x,
+            sizeof(w->asteroid_origin[slot].chunk_x));
+        sha256_update(
+            &hash, &w->asteroid_origin[slot].chunk_y,
+            sizeof(w->asteroid_origin[slot].chunk_y));
+        sha256_update(
+            &hash, &w->asteroid_origin[slot].from_chunk,
+            sizeof(w->asteroid_origin[slot].from_chunk));
+        sha256_update(
+            &hash, &w->asteroid_generation[slot],
+            sizeof(w->asteroid_generation[slot]));
+        sha256_update(
+            &hash, &w->asteroid_generation_live[slot],
+            sizeof(w->asteroid_generation_live[slot]));
+        for (int player = 0; player < MAX_PLAYERS; player++) {
+            const server_replication_t *replication =
+                &w->replications[player];
+            sha256_update(
+                &hash, &replication->asteroid_sent[slot],
+                sizeof(replication->asteroid_sent[slot]));
+            sha256_update(
+                &hash, &replication->asteroid_motion_sent_tick[slot],
+                sizeof(replication->asteroid_motion_sent_tick[slot]));
+            sha256_update(
+                &hash, &replication->asteroid_motion_sent_pos[slot],
+                sizeof(replication->asteroid_motion_sent_pos[slot]));
+            sha256_update(
+                &hash, &replication->asteroid_motion_sent_vel[slot],
+                sizeof(replication->asteroid_motion_sent_vel[slot]));
+            sha256_update(
+                &hash, &replication->asteroid_identity_sent_sig[slot],
+                sizeof(replication->asteroid_identity_sent_sig[slot]));
+            sha256_update(
+                &hash, &replication->asteroid_state_sent_tick[slot],
+                sizeof(replication->asteroid_state_sent_tick[slot]));
+            sha256_update(
+                &hash, &replication->asteroid_state_sent_sig[slot],
+                sizeof(replication->asteroid_state_sent_sig[slot]));
+            sha256_update(
+                &hash,
+                &replication->asteroid_state_sent_semantic_sig[slot],
+                sizeof(
+                    replication->asteroid_state_sent_semantic_sig[slot]));
+            sha256_update(
+                &hash, &replication->fracture_challenge_sent_id[slot],
+                sizeof(replication->fracture_challenge_sent_id[slot]));
+        }
+    }
+
+    /* Normalize every deliberately populated external asteroid-slot
+     * reference to its stable identity before hashing. */
+    dense_hash_i32(
+        &hash, dense_identity_for_ref(w, w->players[0].hover_asteroid));
+    dense_hash_i32(
+        &hash, dense_identity_for_ref(w, w->players[0].autopilot_target));
+    dense_hash_i32(
+        &hash,
+        dense_identity_for_ref(
+            w, w->players[0].input.mining_target_hint));
+    dense_hash_i32(
+        &hash,
+        dense_identity_for_ref(
+            w, w->players[0].ship->towed_fragments[0]));
+    dense_hash_i32(
+        &hash,
+        dense_identity_for_ref(w, w->npc_ships[0].target_asteroid));
+    dense_hash_i32(
+        &hash,
+        dense_identity_for_ref(
+            w, w->npc_ships[0].input.mining_target_hint));
+    dense_hash_i32(
+        &hash,
+        dense_identity_for_ref(
+            w, w->npc_ships[0].ship->towed_fragments[0]));
+    dense_hash_i32(
+        &hash, dense_identity_for_ref(w, w->contracts[0].target_index));
+    for (int i = 0; i < 3; i++) {
+        dense_hash_i32(
+            &hash,
+            dense_identity_for_ref(
+                w, w->ship_birth_assemblies[0][0].fragment_slots[i]));
+    }
+    dense_hash_i32(
+        &hash,
+        dense_identity_for_ref(w, w->tow_links[0].target.index));
+    sha256_final(&hash, root);
+}
+
+static bool dense_run_pair_epochs(world_t *w, uint32_t epochs) {
+    for (uint32_t epoch = 0; epoch < epochs; epoch++) {
+        for (uint32_t tick = 0;
+             tick < ASTEROID_PAIR_TICKS_PER_EPOCH;
+             tick++) {
+            sim_world_integrate_bodies(
+                w, SIM_BODY_PHASE_ASTEROIDS, SIM_DT);
+        }
+        w->tick =
+            (epoch + 1u) * ASTEROID_PAIR_TICKS_PER_EPOCH;
+        spatial_grid_build(w);
+        asteroid_pair_plan_t plan;
+        if (!asteroid_pair_plan_build(w, &plan)) return false;
+        step_asteroid_gravity(
+            w, SIM_DT * ASTEROID_PAIR_TICKS_PER_EPOCH, &plan);
+        resolve_asteroid_collisions(w, &plan);
+    }
+    return true;
+}
+
+TEST(test_asteroid_pair_plan_slot_permutation_preserves_complete_state) {
+    WORLD_HEAP ordered = calloc(1, sizeof(world_t));
+    WORLD_HEAP permuted = calloc(1, sizeof(world_t));
+    ASSERT(ordered != NULL);
+    ASSERT(permuted != NULL);
+    dense_prepare_permutation_world(ordered, false);
+    dense_prepare_permutation_world(permuted, true);
+
+    ASSERT(dense_run_pair_epochs(ordered, 8));
+    ASSERT(dense_run_pair_epochs(permuted, 8));
+    uint8_t ordered_root[32];
+    uint8_t permuted_root[32];
+    dense_permutation_state_root(ordered, ordered_root);
+    dense_permutation_state_root(permuted, permuted_root);
+    ASSERT(memcmp(ordered_root, permuted_root, sizeof(ordered_root)) == 0);
+}
+
+static bool dense_slot_has_external_reference(
+    const world_t *w, int asteroid_slot) {
+    for (int player = 0; player < MAX_PLAYERS; player++) {
+        const server_player_t *sp = &w->players[player];
+        if (sp->hover_asteroid == asteroid_slot ||
+            sp->autopilot_target == asteroid_slot ||
+            sp->input.mining_target_hint == asteroid_slot) {
+            return true;
+        }
+        if (sp->ship) {
+            for (size_t i = 0;
+                 i < sizeof(sp->ship->towed_fragments) /
+                     sizeof(sp->ship->towed_fragments[0]);
+                 i++) {
+                if (sp->ship->towed_fragments[i] == asteroid_slot)
+                    return true;
+            }
+        }
+    }
+    for (int npc_index = 0; npc_index < MAX_NPC_SHIPS; npc_index++) {
+        const npc_ship_t *npc = &w->npc_ships[npc_index];
+        if (npc->target_asteroid == asteroid_slot ||
+            npc->input.mining_target_hint == asteroid_slot) {
+            return true;
+        }
+        if (npc->ship) {
+            for (size_t i = 0;
+                 i < sizeof(npc->ship->towed_fragments) /
+                     sizeof(npc->ship->towed_fragments[0]);
+                 i++) {
+                if (npc->ship->towed_fragments[i] == asteroid_slot)
+                    return true;
+            }
+        }
+    }
+    for (int contract_index = 0;
+         contract_index < MAX_CONTRACTS;
+         contract_index++) {
+        const contract_t *contract = &w->contracts[contract_index];
+        if (contract->active && contract->action == CONTRACT_FRACTURE &&
+            contract->target_index == asteroid_slot) {
+            return true;
+        }
+    }
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        for (size_t assembly_index = 0;
+             assembly_index <
+                 sizeof(w->ship_birth_assemblies[station]) /
+                 sizeof(w->ship_birth_assemblies[station][0]);
+             assembly_index++) {
+            const ship_birth_assembly_t *assembly =
+                &w->ship_birth_assemblies[station][assembly_index];
+            if (!assembly->active) continue;
+            for (int fragment = 0; fragment < 3; fragment++) {
+                if (assembly->fragment_slots[fragment] == asteroid_slot)
+                    return true;
+            }
+        }
+    }
+    for (int link = 0; link < MAX_TOW_LINKS; link++) {
+        if (w->tow_links[link].active &&
+            w->tow_links[link].target.kind == ENTITY_KIND_ASTEROID &&
+            w->tow_links[link].target.index == asteroid_slot) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void dense_prepare_anonymous_tie_world(
+    world_t *w, bool permuted) {
+    enum { BODY_COUNT = 18, IDENTIFIED_COUNT = 16 };
+    world_reset(w);
+    test_world_bind_ship_slots(w);
+    memset(w->asteroids, 0, sizeof(w->asteroids));
+    memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
+    memset(w->asteroid_origin, 0, sizeof(w->asteroid_origin));
+    memset(w->asteroid_generation, 0, sizeof(w->asteroid_generation));
+    memset(w->asteroid_generation_live, 0,
+           sizeof(w->asteroid_generation_live));
+    dense_clear_external_asteroid_refs(w);
+
+    for (int logical = 0; logical < IDENTIFIED_COUNT; logical++) {
+        int slot = permuted ? (logical * 5 + 3) % BODY_COUNT : logical;
+        dense_pair_seed(
+            &w->asteroids[slot], (uint16_t)logical,
+            v2(
+                100.0f + (float)(logical % 5) * 20.0f,
+                100.0f + (float)(logical / 5) * 20.0f));
+    }
+    asteroid_t anonymous;
+    seed_test_asteroid(
+        &anonymous, ASTEROID_TIER_M, v2(140.0f, 140.0f), 24.0f);
+    anonymous.vel = v2(0.25f, -0.5f);
+    for (int logical = IDENTIFIED_COUNT; logical < BODY_COUNT; logical++) {
+        int slot = permuted ? (logical * 5 + 3) % BODY_COUNT : logical;
+        w->asteroids[slot] = anonymous;
+    }
+}
+
+static int dense_raw_asteroid_compare(const void *left, const void *right) {
+    return memcmp(left, right, sizeof(asteroid_t));
+}
+
+static bool dense_anonymous_state_root(
+    const world_t *w, uint8_t root[32]) {
+    enum { BODY_COUNT = 18 };
+    asteroid_t records[BODY_COUNT];
+    int count = 0;
+    bool anonymous_metadata_seen = false;
+    fracture_claim_state_t anonymous_claim = {0};
+    int32_t anonymous_chunk_x = 0;
+    int32_t anonymous_chunk_y = 0;
+    bool anonymous_from_chunk = false;
+    uint16_t anonymous_generation = 0;
+    bool anonymous_generation_live = false;
+    for (int slot = 0; slot < MAX_ASTEROIDS; slot++) {
+        const asteroid_t *asteroid = &w->asteroids[slot];
+        if (!asteroid->active) continue;
+        if (count >= BODY_COUNT) return false;
+        records[count++] = *asteroid;
+        if (dense_pair_logical_id(asteroid) < 0) {
+            /* This is the explicit exchangeability boundary for the final
+             * slot tie-break: no unequal slot metadata and no live external
+             * reference may distinguish an anonymous record. */
+            if (dense_slot_has_external_reference(w, slot)) {
+                return false;
+            }
+            if (!anonymous_metadata_seen) {
+                anonymous_claim = w->fracture_claims[slot];
+                anonymous_chunk_x = w->asteroid_origin[slot].chunk_x;
+                anonymous_chunk_y = w->asteroid_origin[slot].chunk_y;
+                anonymous_from_chunk =
+                    w->asteroid_origin[slot].from_chunk;
+                anonymous_generation = w->asteroid_generation[slot];
+                anonymous_generation_live =
+                    w->asteroid_generation_live[slot];
+                anonymous_metadata_seen = true;
+            } else if (memcmp(
+                           &w->fracture_claims[slot],
+                           &anonymous_claim,
+                           sizeof(anonymous_claim)) != 0 ||
+                       w->asteroid_origin[slot].chunk_x !=
+                           anonymous_chunk_x ||
+                       w->asteroid_origin[slot].chunk_y !=
+                           anonymous_chunk_y ||
+                       w->asteroid_origin[slot].from_chunk !=
+                           anonymous_from_chunk ||
+                       w->asteroid_generation[slot] !=
+                           anonymous_generation ||
+                       w->asteroid_generation_live[slot] !=
+                           anonymous_generation_live) {
+                return false;
+            }
+        }
+    }
+    if (count != BODY_COUNT) return false;
+    qsort(
+        records, BODY_COUNT, sizeof(records[0]),
+        dense_raw_asteroid_compare);
+    sha256_bytes(records, sizeof(records), root);
+    return true;
+}
+
+TEST(test_asteroid_pair_plan_anonymous_exact_ties_are_exchangeable) {
+    WORLD_HEAP ordered = calloc(1, sizeof(world_t));
+    WORLD_HEAP permuted = calloc(1, sizeof(world_t));
+    ASSERT(ordered != NULL);
+    ASSERT(permuted != NULL);
+    dense_prepare_anonymous_tie_world(ordered, false);
+    dense_prepare_anonymous_tie_world(permuted, true);
+
+    uint8_t ordered_before[32];
+    uint8_t permuted_before[32];
+    ASSERT(dense_anonymous_state_root(ordered, ordered_before));
+    ASSERT(dense_anonymous_state_root(permuted, permuted_before));
+    ASSERT(memcmp(
+        ordered_before, permuted_before, sizeof(ordered_before)) == 0);
+    ASSERT(dense_run_pair_epochs(ordered, 8));
+    ASSERT(dense_run_pair_epochs(permuted, 8));
+    uint8_t ordered_after[32];
+    uint8_t permuted_after[32];
+    ASSERT(dense_anonymous_state_root(ordered, ordered_after));
+    ASSERT(dense_anonymous_state_root(permuted, permuted_after));
+    ASSERT(memcmp(
+        ordered_after, permuted_after, sizeof(ordered_after)) == 0);
 }
 
 TEST(test_flight_steer_to_brakes_for_intermediate_waypoint) {
@@ -639,6 +1504,10 @@ TEST(test_autopilot_completes_mining_cycle) {
      * with margin for path replanning and gravity drift. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
+    /* Fresh production boot anchors the seeded Prospect shell pod before
+     * simulation starts.  This direct world_reset fixture must mirror that
+     * trust transition or the furnace correctly refuses the legacy frames. */
+    ASSERT(test_anchor_station_legacy_cargo(w, 0));
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
     w->players[0].autopilot_mode = 1;
@@ -710,6 +1579,7 @@ TEST(test_autopilot_multiple_players) {
      * (earn credits) and none should crash into each other fatally. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
+    ASSERT(test_anchor_station_legacy_cargo(w, 0));
     float earned_start[3];
     for (int p = 0; p < 3; p++) {
         player_init_ship(&w->players[p], w);
@@ -870,6 +1740,14 @@ void register_navigation_nav_tests(void) {
     RUN(test_nav_speed_control_deadband);
     RUN(test_spatial_grid_grows_past_initial_hash_capacity);
     RUN(test_spatial_grid_retains_dense_cell_asteroids);
+    RUN(test_asteroid_pair_plan_self_window_covers_odd_and_even_dense_cells);
+    RUN(test_asteroid_pair_plan_cross_window_covers_unequal_dense_cells);
+    RUN(test_asteroid_pair_plan_recovers_from_cell_allocation_failure);
+    RUN(test_asteroid_pair_plan_static_bound_at_full_adjacent_grid);
+    RUN(test_asteroid_physics_density_benchmark);
+    RUN(test_asteroid_collision_includes_body_beyond_legacy_slot_budget);
+    RUN(test_asteroid_pair_plan_slot_permutation_preserves_complete_state);
+    RUN(test_asteroid_pair_plan_anonymous_exact_ties_are_exchangeable);
     RUN(test_flight_steer_to_brakes_for_intermediate_waypoint);
     RUN(test_flight_steer_to_reverses_from_low_speed_obstacle);
     RUN(test_flight_brake_uses_deterministic_velocity_heading);

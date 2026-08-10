@@ -24,6 +24,11 @@ hydrate a destination ship after verifying those roots. The remaining work is
 automatic boundary routing, persistent replay logs, chain compaction/backfill,
 and player-facing lineage display — not a cargo data-model rewrite.
 
+Resume-time treatment of pre-V1 cargo is documented in
+`docs/legacy-cargo-inventory-v1.md`. A valid save is no longer used to mint a
+new V1 legacy/migrate attestation: startup reports bounded aggregate candidates
+and leaves missing-origin rows under the normal fail-closed trust policy.
+
 ## The conceptual model
 
 Matter moves through Signal in three states. Each has a different
@@ -126,8 +131,10 @@ Crates are **created** at one of three boundaries:
   is born here.
 - `hash_product(recipe_id, inputs[], idx)` — fab/craft consumes
   multiple input crates and produces a new output crate whose
-  `parent_merkle = merkle_root(sorted_input_pubs)`. Identity
-  inherits from inputs.
+  `parent_merkle = merkle_root(sorted_input_pubs)`. V1 identity commits to
+  those station-asserted input identifiers; it does not prove their origin,
+  custody, or consumption. See
+  [CRAFT V1 provenance truthfulness](craft-provenance-v1.md).
 - `hash_legacy_migrate_unit(origin, commodity, idx)` — synthesizes
   a placeholder crate for finished goods loaded from pre-manifest
   saves. `parent_merkle` is zero (no provable parents).
@@ -150,7 +157,7 @@ that. They're matter waiting to become a thing.
 **At the smelt boundary**: the furnace performs an irreversible
 transformation. Input matter (a fragment, or units of bulk float)
 becomes output matter (an ingot crate). The crate's `parent_merkle`
-captures *what was consumed*. From this moment forward the matter is
+commits to the station's asserted parent identifier. From this moment forward the matter is
 crate-form: it has a name, a provenance graph, and a chain-log
 trail.
 
@@ -158,8 +165,9 @@ trail.
 crate. Frames are crates whose parents are ingot crates. Lasers are
 crates whose parents are ingot crates. Repair kits are crates whose
 parents are frames + lasers (which are themselves crates). The
-provenance DAG can be walked backward from any leaf to its
-fragment-shaped roots.
+station-attested provenance graph can be walked backward from any leaf to its
+locally observed roots. For CRAFT V1, that walk is not input-lineage or
+conservation proof.
 
 This is the right factoring because it matches the real-world
 intuition: a ferrite ingot has a specific shape, a specific weight, a

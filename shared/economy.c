@@ -8,44 +8,41 @@ bool producer_recipe_for_module(module_type_t mt,
                                 producer_recipe_t *out_recipe) {
     recipe_id_t recipe_id;
     const recipe_def_t *recipe;
-    commodity_t primary;
 
     if (!out_recipe) return false;
     memset(out_recipe, 0, sizeof(*out_recipe));
-    out_recipe->secondary_input = COMMODITY_COUNT;
+    for (size_t i = 0; i < RECIPE_INPUT_MAX; i++)
+        out_recipe->inputs[i] = COMMODITY_COUNT;
 
     switch (mt) {
         case MODULE_FRAME_PRESS: recipe_id = RECIPE_FRAME_BASIC; break;
         case MODULE_LASER_FAB:   recipe_id = RECIPE_LASER_BASIC; break;
         case MODULE_TRACTOR_FAB: recipe_id = RECIPE_TRACTOR_COIL; break;
+        case MODULE_ENGINE_FAB:  recipe_id = RECIPE_ENGINE_BASIC; break;
         default: return false;
     }
 
     recipe = recipe_get(recipe_id);
     if (!recipe) return false;
     out_recipe->recipe_id = recipe_id;
-    primary = module_schema_input(mt);
-    out_recipe->primary_input = primary;
     out_recipe->output = recipe->output_commodity;
     out_recipe->output_units_per_batch =
         recipe->output_count > 0 ? (float)recipe->output_count : 1.0f;
 
     for (size_t i = 0; i < recipe->input_count; i++) {
         commodity_t input = recipe->input_commodities[i];
-        if (input == primary) {
-            out_recipe->primary_units_per_batch += 1.0f;
-            continue;
+        size_t slot = 0;
+        while (slot < out_recipe->input_count &&
+               out_recipe->inputs[slot] != input) slot++;
+        if (slot == out_recipe->input_count) {
+            if (slot >= RECIPE_INPUT_MAX) return false;
+            out_recipe->inputs[slot] = input;
+            out_recipe->input_count++;
         }
-        if (out_recipe->secondary_input == COMMODITY_COUNT ||
-            out_recipe->secondary_input == input) {
-            out_recipe->secondary_input = input;
-            out_recipe->secondary_units_per_batch += 1.0f;
-            continue;
-        }
-        return false;
+        out_recipe->input_units_per_batch[slot] += 1.0f;
     }
 
-    return out_recipe->primary_units_per_batch > 0.0f &&
+    return out_recipe->input_count > 0 &&
            out_recipe->output == module_schema_output(mt);
 }
 
@@ -58,8 +55,7 @@ void step_station_production(station_t* stations, int count, float dt) {
             const module_schema_t *schema;
             producer_recipe_t recipe;
             float room, produce, rate;
-            float primary_avail, secondary_avail;
-            float primary_use, secondary_use, output_made;
+            float output_made;
 
             if (station->modules[m].scaffold) continue;
             if (!producer_recipe_for_module(mt, &recipe)) continue;
@@ -72,24 +68,18 @@ void step_station_production(station_t* stations, int count, float dt) {
             rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
             produce = fminf(rate * dt, room);
 
-            primary_avail = station_inventory_amount(station, recipe.primary_input) /
-                            recipe.primary_units_per_batch;
-            produce = fminf(produce, primary_avail);
-            if (recipe.secondary_input < COMMODITY_COUNT) {
-                secondary_avail =
-                    station_inventory_amount(station, recipe.secondary_input) /
-                    recipe.secondary_units_per_batch;
-                produce = fminf(produce, secondary_avail);
+            for (size_t i = 0; i < recipe.input_count; i++) {
+                float available = station_stored_inventory_amount(
+                    station, recipe.inputs[i]) /
+                    recipe.input_units_per_batch[i];
+                produce = fminf(produce, available);
             }
             if (produce <= FLOAT_EPSILON) continue;
 
-            primary_use = produce * recipe.primary_units_per_batch;
-            station_finished_consume(station, recipe.primary_input, primary_use);
-            if (recipe.secondary_input < COMMODITY_COUNT) {
-                secondary_use = produce * recipe.secondary_units_per_batch;
-                station_finished_consume(station, recipe.secondary_input,
-                                        secondary_use);
-            }
+            for (size_t i = 0; i < recipe.input_count; i++)
+                station_finished_consume(
+                    station, recipe.inputs[i],
+                    produce * recipe.input_units_per_batch[i]);
             output_made = produce * recipe.output_units_per_batch;
             station_finished_accumulate(station, recipe.output, output_made,
                                         NULL);
@@ -133,19 +123,6 @@ bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgra
     return true;
 }
 
-bool upgrade_uses_starter_refit_subsidy(const station_t* station,
-                                        const ship_t* ship,
-                                        ship_upgrade_t upgrade,
-                                        int station_units) {
-    if (!station || !ship || station_units <= 0) return false;
-    if (upgrade != SHIP_UPGRADE_MINING || ship->mining_level != 0)
-        return false;
-    if (strcmp(station->station_slug, "kepler") != 0)
-        return false;
-    return station_finished_count(station, COMMODITY_LASER_MODULE) >=
-           station_units;
-}
-
 float upgrade_station_credit_cost(const station_t* station,
                                   const ship_t* ship,
                                   ship_upgrade_t upgrade,
@@ -153,9 +130,59 @@ float upgrade_station_credit_cost(const station_t* station,
     if (!station || !ship || station_units <= 0) return 0.0f;
     commodity_t comm =
         (commodity_t)(COMMODITY_FRAME + upgrade_required_product(upgrade));
-    if (upgrade_uses_starter_refit_subsidy(station, ship, upgrade,
-                                           station_units)) {
-        return 0.0f;
-    }
     return (float)station_units * station_sell_price(station, comm);
+}
+
+/*
+ * target_pub is otherwise unused for quota TRACTOR work
+ * (target_index == -1), so a domain-separated marker gives the finite
+ * onboarding order a durable identity without adding a save/wire field.
+ */
+static const uint8_t STARTER_REFIT_WORK_ORDER_MARKER[32] =
+    "signal/starter-refit-work/v1";
+
+bool starter_refit_work_order_init(contract_t *out, int quantity,
+                                   float unit_price) {
+    if (!out || quantity <= 0 ||
+        !isfinite(unit_price) || unit_price <= 0.0f)
+        return false;
+    *out = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .proof_flags = (uint8_t)(
+            CONTRACT_PROOF_REQUIRE_PROOF |
+            CONTRACT_PROOF_REQUIRE_RECIPE),
+        .required_recipe_id = RECIPE_SMELT,
+        .quantity_needed = (float)quantity,
+        .base_price = unit_price,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    memcpy(out->target_pub, STARTER_REFIT_WORK_ORDER_MARKER,
+           sizeof(out->target_pub));
+    return true;
+}
+
+bool starter_refit_work_order_matches(const contract_t *contract) {
+    return contract &&
+           contract->action == CONTRACT_TRACTOR &&
+           contract->station_index == 1 &&
+           contract->commodity == COMMODITY_FERRITE_INGOT &&
+           (contract->proof_flags &
+            (CONTRACT_PROOF_REQUIRE_PROOF |
+             CONTRACT_PROOF_REQUIRE_RECIPE)) ==
+               (CONTRACT_PROOF_REQUIRE_PROOF |
+                CONTRACT_PROOF_REQUIRE_RECIPE) &&
+           contract->required_recipe_id == RECIPE_SMELT &&
+           contract->target_index == -1 &&
+           memcmp(contract->target_pub,
+                  STARTER_REFIT_WORK_ORDER_MARKER,
+                  sizeof(contract->target_pub)) == 0;
+}
+
+bool contract_slot_available_for_post(const contract_t *contract) {
+    return contract && !contract->active &&
+           !starter_refit_work_order_matches(contract);
 }

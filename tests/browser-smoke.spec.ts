@@ -1,5 +1,23 @@
 import { test, expect, type Page, type Locator, type TestInfo } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
+
+const episodeSmokeMpeg = Buffer.from(
+  readFileSync(join(__dirname, 'fixtures', 'episode-smoke.mpg.b64'), 'utf8').trim(),
+  'base64',
+);
+const protocolHeader = readFileSync(
+  join(__dirname, '..', 'shared', 'protocol.h'),
+  'utf8',
+);
+const protocolVersionMatch = protocolHeader.match(
+  /^#define SIGNAL_PROTOCOL_VERSION ([0-9]+)u$/m,
+);
+if (!protocolVersionMatch) {
+  throw new Error('SIGNAL_PROTOCOL_VERSION is missing from shared/protocol.h');
+}
+const currentProtocolVersion = Number(protocolVersionMatch[1]);
 
 const fatalPattern =
   /abort|unreachable|RuntimeError|LinkError|compile failed|Cannot enlarge memory|exception thrown|websocket error|WebSocket is already in CLOSING|WebSocket connection .* failed/i;
@@ -269,6 +287,34 @@ async function wasmNumber(page: Page, name: string): Promise<number | null> {
   }, name);
 }
 
+async function wasmNumberArg(page: Page, name: string, value: number): Promise<number | null> {
+  return page.evaluate(({ fnName, arg }) => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return null;
+    try {
+      const result = mod.ccall(fnName, 'number', ['number'], [arg]);
+      return Number.isFinite(result) ? result : null;
+    } catch {
+      return null;
+    }
+  }, { fnName: name, arg: value });
+}
+
+async function wasmMemoryPages(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { HEAPU8?: Uint8Array };
+    }).Module;
+    return mod?.HEAPU8
+      ? mod.HEAPU8.buffer.byteLength / 65536
+      : 0;
+  });
+}
+
 async function signalStrength(page: Page): Promise<number | null> {
   return wasmNumber(page, 'get_signal_strength');
 }
@@ -440,6 +486,66 @@ async function resetNetMotionTelemetry(page: Page): Promise<void> {
   });
 }
 
+async function zeroLatencyGateReport(page: Page): Promise<{
+  status: number;
+  failure_stage: string;
+  scenario_mask: number;
+  required_mask: number;
+  ticks: number;
+  mining: {
+    hp_before: number;
+    hp_after: number;
+    signal: number;
+    hover: number;
+    beam: number;
+    input: number;
+  };
+  normal: {
+    samples: number;
+    exact: number;
+    input_frontier: number;
+    semantic: number;
+    numeric_drift: number;
+    asteroid_motion: number;
+    npc_motion: number;
+    death_respawn: number;
+  };
+  current_numeric_drift: number;
+  first_drift: {
+    class?: string;
+    server_tick?: number;
+    prediction_tick?: number;
+    predicted_input_seq?: number;
+    authoritative_input_seq?: number;
+    domain?: string;
+    predicted_bits?: string;
+    authoritative_bits?: string;
+    input_cause_mask?: number;
+    semantic_cause_mask?: number;
+    transport_cause_mask?: number;
+    root_schema?: string;
+    authoritative_root?: string;
+  };
+}> {
+  const json = await page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (
+          name: string,
+          returnType: string,
+          argTypes: unknown[],
+          args: unknown[],
+        ) => string;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '{}';
+    return mod.ccall(
+      'signal_zero_latency_gate_report_json', 'string', [], [],
+    ) || '{}';
+  });
+  return JSON.parse(json);
+}
+
 async function hudHintText(page: Page): Promise<string> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -518,6 +624,26 @@ async function remoteTowableInterpCheck(page: Page): Promise<number> {
     }).Module;
     if (!mod || typeof mod.ccall !== 'function') return 0;
     return mod.ccall('signal_smoke_remote_towable_interp_check', 'number', [], []);
+  });
+}
+
+async function adverseTowableGate(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_adverse_towable_gate', 'number', [], []);
+  });
+}
+
+async function adverseTowableReport(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_smoke_adverse_towable_report', 'string', [], []) || '';
   });
 }
 
@@ -608,6 +734,101 @@ async function mobileControlFlags(page: Page): Promise<number> {
     if (!mod || typeof mod.ccall !== 'function') return 0;
     return mod.ccall('signal_mobile_control_flags', 'number', [], []) | 0;
   });
+}
+
+async function legacyRecoveryFlags(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_legacy_recovery_ui_flags', 'number', [], []) | 0;
+  });
+}
+
+async function legacyRecoverySemantic(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_legacy_recovery_ui_semantic', 'string', [], []) || '';
+  });
+}
+
+async function legacyRecoveryCopy(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_legacy_recovery_ui_copy', 'string', [], []) || '';
+  });
+}
+
+async function smokeLegacyRecoveryOffer(page: Page, seconds = 30): Promise<number> {
+  return page.evaluate((ttl) => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall(
+      'signal_smoke_legacy_recovery_offer', 'number', ['number'], [ttl],
+    );
+  }, seconds);
+}
+
+async function smokeLegacyRecoveryResult(page: Page, status: number): Promise<number> {
+  return page.evaluate((wireStatus) => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall(
+      'signal_smoke_legacy_recovery_result',
+      'number', ['number'], [wireStatus],
+    );
+  }, status);
+}
+
+async function smokeLegacyRecoveryReset(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: null, argTypes: unknown[], args: unknown[]) => void };
+    }).Module;
+    mod?.ccall?.('signal_smoke_legacy_recovery_reset', null, [], []);
+  });
+}
+
+async function smokeLegacyRecoverySetSendAdmitted(
+  page: Page,
+  admitted: boolean,
+): Promise<void> {
+  await page.evaluate((value) => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: null, argTypes: unknown[], args: unknown[]) => void };
+    }).Module;
+    mod?.ccall?.(
+      'signal_smoke_legacy_recovery_set_send_admitted',
+      null, ['number'], [value ? 1 : 0],
+    );
+  }, admitted);
+}
+
+async function smokeLegacyRecoveryCount(
+  page: Page,
+  kind: 'confirm' | 'cancel' | 'expire',
+): Promise<number> {
+  return page.evaluate((counter) => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall(
+      `signal_smoke_legacy_recovery_${counter}_count`,
+      'number', [], [],
+    ) | 0;
+  }, kind);
 }
 
 async function mobileDigitMask(page: Page): Promise<number> {
@@ -909,6 +1130,9 @@ const smokeLoopState = {
   rememberedWorkDegraded: 35,
   constructionConsequence: 36,
   stationFragmentTractor: 37,
+  refitSupplyActive: 38,
+  refitSupplyInactive: 39,
+  refitWorkAged: 40,
 } as const;
 
 const mobileFlag = {
@@ -920,6 +1144,15 @@ const mobileFlag = {
   canPage: 1 << 23,
   canSell: 1 << 24,
   canDigits: 1 << 25,
+} as const;
+
+const legacyRecoveryFlag = {
+  visible: 1 << 0,
+  canConfirm: 1 << 1,
+  canCancel: 1 << 2,
+  confirming: 1 << 3,
+  result: 1 << 4,
+  success: 1 << 5,
 } as const;
 
 async function waitForRenderedGame(
@@ -1057,8 +1290,166 @@ async function driveCoreControls(page: Page, canvas: Locator): Promise<void> {
   await tap(page, 'O');        // autopilot toggle
 }
 
+const authFixtureIdentity =
+  'nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2DXWpgBgrEKt9VL/tPJZAc6DuFy89qmIyWvAhpo9wdRGg==';
+const authFixtureToken = '0102030405060708';
+
+async function installAuthFixture(page: Page): Promise<void> {
+  await page.addInitScript(({ identity, token }) => {
+    window.localStorage.setItem('signal:identity', identity);
+    window.localStorage.setItem('signal_session_token', token);
+  }, { identity: authFixtureIdentity, token: authFixtureToken });
+}
+
+function protocolInfoPacket(version: number): Buffer {
+  const packet = Buffer.alloc(8 + 2 * 12);
+  packet[0] = 0x41;
+  packet.writeUInt16LE(version, 1);
+  packet.writeUInt32LE(1, 3); // SIGNAL_PROTOCOL_CAP_PROTOCOL_INFO
+  packet[7] = 2;
+
+  // WORLD_CARGO_PODS: live, server→client, relevance-filtered,
+  // header=2, record=72, max=64, non-zero cadence.
+  packet[8] = 0x46;
+  packet[9] = 2;
+  packet.writeUInt16LE(0x0009, 10);
+  packet.writeUInt16LE(2, 12);
+  packet.writeUInt16LE(72, 14);
+  packet.writeUInt16LE(64, 16);
+  packet.writeUInt16LE(100, 18);
+
+  // WORLD_CARGO_PODS_Q: the exact compact v4 companion schema.
+  packet[20] = 0x62;
+  packet[21] = 2;
+  packet.writeUInt16LE(0x0009, 22);
+  packet.writeUInt16LE(2, 24);
+  packet.writeUInt16LE(62, 26);
+  packet.writeUInt16LE(64, 28);
+  packet.writeUInt16LE(100, 30);
+  return packet;
+}
+
+function authoritativeLocalStatePacket(playerId = 0): Buffer {
+  const packet = Buffer.alloc(67);
+  packet[0] = 0x03; // NET_MSG_STATE
+  packet[1] = playerId;
+  return packet;
+}
+
+function isAuthBootstrapPacket(packet: Buffer): boolean {
+  return packet[0] === 0x32 || packet[0] === 0x20 || packet[0] === 0x3f;
+}
+
+async function expectProtocolRejectionWithoutAuth(
+  page: Page,
+  serverUrl: string,
+  serverPacket: Buffer | string,
+  sendInitialJoin = true,
+): Promise<void> {
+  const authPackets: Buffer[] = [];
+  await page.routeWebSocket(serverUrl, ws => {
+    ws.onMessage(message => {
+      const packet = typeof message === 'string'
+        ? Buffer.from(message)
+        : Buffer.from(message);
+      if (isAuthBootstrapPacket(packet)) authPackets.push(packet);
+    });
+    if (sendInitialJoin) ws.send(Buffer.from([0x01, 0x00]));
+    ws.send(serverPacket);
+  });
+
+  await page.goto(
+    `/play.html?smoke=1&pv=${currentProtocolVersion}&server=${encodeURIComponent(serverUrl)}`,
+  );
+  await expect.poll(
+    () => wasmNumber(page, 'signal_debug_auth_transport_closes'),
+    { timeout: 10_000 },
+  ).toBe(1);
+  expect(authPackets).toEqual([]);
+}
+
+async function verifyCapturedPubkeyProof(
+  page: Page,
+  packet: Buffer,
+  domain: 'prove-pubkey-v1' | 'prove-pubkey-v2',
+  challenge: number[] = [],
+): Promise<boolean> {
+  return page.evaluate(async ({ wireBytes, proofDomain, challengeBytes }) => {
+    const wire = Uint8Array.from(wireBytes);
+    const pubkey = wire.slice(1, 33);
+    const token = wire.slice(33, 41);
+    const signature = wire.slice(41, 105);
+    const domainBytes = new TextEncoder().encode(proofDomain);
+    const signed = new Uint8Array(
+      domainBytes.length + pubkey.length + token.length + challengeBytes.length,
+    );
+    signed.set(domainBytes);
+    signed.set(pubkey, domainBytes.length);
+    signed.set(token, domainBytes.length + pubkey.length);
+    signed.set(
+      Uint8Array.from(challengeBytes),
+      domainBytes.length + pubkey.length + token.length,
+    );
+    const key = await crypto.subtle.importKey(
+      'raw', pubkey, { name: 'Ed25519' }, false, ['verify'],
+    );
+    return crypto.subtle.verify(
+      { name: 'Ed25519' }, key, signature, signed,
+    );
+  }, {
+    wireBytes: Array.from(packet),
+    proofDomain: domain,
+    challengeBytes: challenge,
+  });
+}
+
 test.describe('Browser smoke tests', () => {
   const rootBundleSmokeTest = process.env.SIGNAL_PRE_PROMOTION_SMOKE === '1' ? test.skip : test;
+
+  test('local authority memory is lazy remotely and restart-safe locally', async ({ page }) => {
+    test.skip(
+      usesLiveSmokeUrl() && process.env.SIGNAL_LOCAL_MEMORY_SMOKE !== '1',
+      'mode-specific memory checks require the local browser bundle',
+    );
+
+    const remoteUrl = 'ws://signal-memory-budget.invalid/ws';
+    await page.routeWebSocket(remoteUrl, ws => {
+      ws.onMessage(() => {
+        // Holding the synthetic transport open is enough to prove startup
+        // mode selection; this test deliberately sends no world snapshot.
+      });
+    });
+
+    const logs = installFatalCollectors(page);
+    await page.goto(
+      `/play.html?smoke=1&server=${encodeURIComponent(remoteUrl)}`,
+    );
+    await waitForRuntime(page);
+
+    expect(await wasmNumber(page, 'signal_debug_local_authority_state'))
+      .toBe(1 << 3);
+    expect(await wasmNumber(page, 'signal_debug_local_authority_generation'))
+      .toBe(0);
+    expect(await wasmMemoryPages(page)).toBeLessThanOrEqual(896);
+
+    await page.goto('/play.html?singleplayer=1&smoke=1');
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    expect(await wasmNumber(page, 'signal_debug_local_authority_state'))
+      .toBe(0x0f);
+    const firstGeneration =
+      await wasmNumber(page, 'signal_debug_local_authority_generation');
+    expect(firstGeneration).toBe(1);
+
+    expect(await wasmNumber(page, 'signal_debug_restart_local_authority'))
+      .toBe(1);
+    await expect.poll(
+      () => wasmNumber(page, 'signal_debug_local_authority_state'),
+    ).toBe(0x0f);
+    expect(await wasmNumber(page, 'signal_debug_local_authority_generation'))
+      .toBe(2);
+    expect(await wasmMemoryPages(page)).toBeLessThanOrEqual(1280);
+    expectNoFatalErrors(logs);
+  });
 
   test('online mode prefers WebSocket while preserving an RTC opt-in', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'transport selection is covered against the local bundle');
@@ -1070,6 +1461,358 @@ test.describe('Browser smoke tests', () => {
     await page.goto('/play.html?online=1&transport=rtc', { waitUntil: 'domcontentloaded' });
     expect(await page.evaluate(() => (window as unknown as { SIGNAL_SERVER?: string }).SIGNAL_SERVER))
       .toBe(`rtc://${new URL(page.url()).host}/rtc/signal-main`);
+  });
+
+  test(`v${currentProtocolVersion} auth waits for exact discovery and then sends one challenged proof`, async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+    await installAuthFixture(page);
+
+    const messageTypes: number[] = [];
+    const messageTypesBeforeAdvertisement: number[] = [];
+    let protocolAdvertised = false;
+    let authBeforeAdvertisement = false;
+    let challengeSent = false;
+    let registerPacket: Buffer | undefined;
+    let sessionPacket: Buffer | undefined;
+    let proofPacket: Buffer | undefined;
+    const challenge = Array.from({ length: 32 }, (_, i) => 0x40 + i);
+    await page.routeWebSocket('ws://signal-auth-current.invalid/ws', ws => {
+      ws.onMessage(message => {
+        const packet = typeof message === 'string'
+          ? Buffer.from(message)
+          : Buffer.from(message);
+        messageTypes.push(packet[0]);
+        if (!protocolAdvertised) {
+          messageTypesBeforeAdvertisement.push(packet[0]);
+        }
+        if (isAuthBootstrapPacket(packet) && !protocolAdvertised) {
+          authBeforeAdvertisement = true;
+        }
+        if (packet[0] === 0x3f) {
+          proofPacket = packet;
+        } else if (packet[0] === 0x32) {
+          registerPacket = packet;
+        } else if (packet[0] === 0x20) {
+          sessionPacket = packet;
+          if (!challengeSent) {
+            challengeSent = true;
+            ws.send(Buffer.from([0x70, ...challenge]));
+          }
+        }
+      });
+      ws.send(Buffer.from([0x01, 0x00]));
+      setTimeout(() => {
+        if (!protocolAdvertised) {
+          protocolAdvertised = true;
+          ws.send(protocolInfoPacket(currentProtocolVersion));
+        }
+      }, 75);
+    });
+
+    await page.goto(
+      `/play.html?smoke=1&server=${encodeURIComponent('ws://signal-auth-current.invalid/ws')}`,
+    );
+    await expect.poll(() => proofPacket?.length ?? 0, { timeout: 10_000 })
+      .toBe(105);
+
+    expect(authBeforeAdvertisement).toBe(false);
+    expect(messageTypesBeforeAdvertisement).toEqual([]);
+    expect(registerPacket?.length).toBe(33);
+    expect(sessionPacket?.length).toBe(18);
+    expect(sessionPacket?.readUInt16LE(16)).toBe(currentProtocolVersion);
+    expect(challengeSent).toBe(true);
+    expect(messageTypes.indexOf(0x32)).toBeLessThan(messageTypes.indexOf(0x20));
+    expect(messageTypes.indexOf(0x20)).toBeLessThan(messageTypes.indexOf(0x3f));
+    expect(await verifyCapturedPubkeyProof(
+      page, proofPacket!, 'prove-pubkey-v2', challenge,
+    )).toBe(true);
+    expect(await verifyCapturedPubkeyProof(
+      page, proofPacket!, 'prove-pubkey-v1',
+    )).toBe(false);
+  });
+
+  test(`v${currentProtocolVersion} blocks gameplay until proof receives authoritative admission`, async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+    await installAuthFixture(page);
+
+    const authTypes: number[] = [];
+    const preAdmissionGameplayTypes: number[] = [];
+    const postAdmissionGameplayTypes: number[] = [];
+    const challenge = Array.from({ length: 32 }, (_, i) => 0xa0 + i);
+    let challengeScheduled = false;
+    let authoritativeStateSent = false;
+
+    await page.routeWebSocket('ws://signal-auth-current-admission.invalid/ws', ws => {
+      ws.onMessage(message => {
+        const packet = typeof message === 'string'
+          ? Buffer.from(message)
+          : Buffer.from(message);
+        if (isAuthBootstrapPacket(packet)) {
+          authTypes.push(packet[0]);
+        } else if (authoritativeStateSent) {
+          postAdmissionGameplayTypes.push(packet[0]);
+        } else {
+          preAdmissionGameplayTypes.push(packet[0]);
+        }
+
+        if (packet[0] === 0x20 && !challengeScheduled) {
+          challengeScheduled = true;
+          setTimeout(() => {
+            ws.send(Buffer.from([0x70, ...challenge]));
+          }, 250);
+        } else if (packet[0] === 0x3f && !authoritativeStateSent) {
+          setTimeout(() => {
+            authoritativeStateSent = true;
+            ws.send(authoritativeLocalStatePacket());
+          }, 25);
+        }
+      });
+      ws.send(Buffer.from([0x01, 0x00]));
+      ws.send(protocolInfoPacket(currentProtocolVersion));
+    });
+
+    await page.goto(
+      `/play.html?smoke=1&pv=${currentProtocolVersion}&server=${encodeURIComponent('ws://signal-auth-current-admission.invalid/ws')}`,
+    );
+    await expect.poll(
+      () => authTypes.filter(type => type === 0x3f).length,
+      { timeout: 10_000 },
+    ).toBe(1);
+    await expect.poll(
+      () => postAdmissionGameplayTypes.includes(0x04),
+      { timeout: 10_000 },
+    ).toBe(true);
+
+    expect(preAdmissionGameplayTypes).toEqual([]);
+    expect(authTypes.filter(type => type === 0x32)).toHaveLength(1);
+    expect(authTypes.filter(type => type === 0x20)).toHaveLength(1);
+    expect(authTypes.filter(type => type === 0x3f)).toHaveLength(1);
+    expect(await wasmNumber(page, 'signal_debug_auth_transport_closes'))
+      .toBe(0);
+  });
+
+  test(`v${currentProtocolVersion} identical duplicate discovery does not resend authentication`, async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+    await installAuthFixture(page);
+
+    const authTypes: number[] = [];
+    let duplicateSent = false;
+    const challenge = Array.from({ length: 32 }, (_, i) => 0x20 + i);
+    await page.routeWebSocket('ws://signal-auth-current-duplicate.invalid/ws', ws => {
+      ws.onMessage(message => {
+        const packet = typeof message === 'string'
+          ? Buffer.from(message)
+          : Buffer.from(message);
+        if (isAuthBootstrapPacket(packet)) authTypes.push(packet[0]);
+        if (packet[0] === 0x20 && !duplicateSent) {
+          duplicateSent = true;
+          ws.send(protocolInfoPacket(currentProtocolVersion));
+          ws.send(Buffer.from([0x70, ...challenge]));
+        }
+      });
+      ws.send(Buffer.from([0x01, 0x00]));
+      ws.send(protocolInfoPacket(currentProtocolVersion));
+    });
+
+    await page.goto(
+      `/play.html?smoke=1&pv=${currentProtocolVersion}&server=${encodeURIComponent('ws://signal-auth-current-duplicate.invalid/ws')}`,
+    );
+    await expect.poll(
+      () => authTypes.filter(type => type === 0x3f).length,
+      { timeout: 10_000 },
+    ).toBe(1);
+    expect(authTypes.filter(type => type === 0x32)).toHaveLength(1);
+    expect(authTypes.filter(type => type === 0x20)).toHaveLength(1);
+    expect(await wasmNumber(page, 'signal_debug_auth_transport_closes'))
+      .toBe(0);
+  });
+
+  test(`v${currentProtocolVersion} changed duplicate discovery closes without reauthentication`, async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+    await installAuthFixture(page);
+
+    const authTypes: number[] = [];
+    let changedDuplicateSent = false;
+    await page.routeWebSocket('ws://signal-auth-current-renegotiate.invalid/ws', ws => {
+      ws.onMessage(message => {
+        const packet = typeof message === 'string'
+          ? Buffer.from(message)
+          : Buffer.from(message);
+        if (isAuthBootstrapPacket(packet)) authTypes.push(packet[0]);
+        if (packet[0] === 0x20 && !changedDuplicateSent) {
+          changedDuplicateSent = true;
+          const changed = protocolInfoPacket(currentProtocolVersion);
+          changed.writeUInt16LE(101, 18);
+          ws.send(changed);
+        }
+      });
+      ws.send(Buffer.from([0x01, 0x00]));
+      ws.send(protocolInfoPacket(currentProtocolVersion));
+    });
+
+    await page.goto(
+      `/play.html?smoke=1&pv=${currentProtocolVersion}&server=${encodeURIComponent('ws://signal-auth-current-renegotiate.invalid/ws')}`,
+    );
+    await expect.poll(
+      () => wasmNumber(page, 'signal_debug_auth_transport_closes'),
+      { timeout: 10_000 },
+    ).toBe(1);
+    expect(authTypes.filter(type => type === 0x32)).toHaveLength(1);
+    expect(authTypes.filter(type => type === 0x20)).toHaveLength(1);
+    expect(authTypes.filter(type => type === 0x3f)).toHaveLength(0);
+  });
+
+  const incompatibleProtocolVersions = [
+    ...Array.from(
+      { length: Math.max(0, currentProtocolVersion - 2) },
+      (_, index) => index + 2,
+    ),
+    currentProtocolVersion + 1,
+  ];
+  for (const version of incompatibleProtocolVersions) {
+    test(`v${currentProtocolVersion} client rejects protocol v${version} without sending auth`, async ({ page }) => {
+      test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+      await installAuthFixture(page);
+      await expectProtocolRejectionWithoutAuth(
+        page,
+        `ws://signal-auth-version-${version}.invalid/ws`,
+        protocolInfoPacket(version),
+      );
+    });
+  }
+
+  const malformedProtocolCases: Array<{
+    name: string;
+    packet: () => Buffer | string;
+  }> = [
+    {
+      name: 'empty binary traffic before discovery',
+      packet: () => Buffer.alloc(0),
+    },
+    {
+      name: 'text traffic before discovery',
+      packet: () => 'protocol-noise',
+    },
+    {
+      name: 'challenge before discovery',
+      packet: () => Buffer.from([
+        0x70,
+        ...Array.from({ length: 32 }, (_, i) => 0x60 + i),
+      ]),
+    },
+    {
+      name: 'truncated protocol info',
+      packet: () => Buffer.from([0x41, currentProtocolVersion & 0xff]),
+    },
+    {
+      name: 'protocol info with a trailing partial record',
+      packet: () => Buffer.concat([
+        protocolInfoPacket(currentProtocolVersion),
+        Buffer.from([0x00]),
+      ]),
+    },
+    {
+      name: 'protocol info with the wrong pod stride',
+      packet: () => {
+        const packet = protocolInfoPacket(currentProtocolVersion);
+        packet.writeUInt16LE(71, 14);
+        return packet;
+      },
+    },
+  ];
+  for (const protocolCase of malformedProtocolCases) {
+    test(`v${currentProtocolVersion} client rejects ${protocolCase.name} without sending auth`, async ({ page }) => {
+      test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+      await installAuthFixture(page);
+      const slug = protocolCase.name.replaceAll(' ', '-');
+      await expectProtocolRejectionWithoutAuth(
+        page,
+        `ws://signal-auth-${slug}.invalid/ws`,
+        protocolCase.packet(),
+      );
+    });
+  }
+
+  const invalidJoinCases: Array<{
+    name: string;
+    packet: () => Buffer;
+  }> = [
+    {
+      name: 'protocol discovery before remote join',
+      packet: () => protocolInfoPacket(currentProtocolVersion),
+    },
+    {
+      name: 'reserved remote join id',
+      packet: () => Buffer.from([0x01, 0xff]),
+    },
+    {
+      name: 'out of range remote join id',
+      packet: () => Buffer.from([0x01, 0x20]),
+    },
+  ];
+  for (const joinCase of invalidJoinCases) {
+    test(`v${currentProtocolVersion} client rejects ${joinCase.name} without sending auth`, async ({ page }) => {
+      test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+      await installAuthFixture(page);
+      const slug = joinCase.name.replaceAll(' ', '-');
+      await expectProtocolRejectionWithoutAuth(
+        page,
+        `ws://signal-auth-${slug}.invalid/ws`,
+        joinCase.packet(),
+        false,
+      );
+    });
+  }
+
+  test('rejected proof send closes authentication transport', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
+    await installAuthFixture(page);
+    await page.addInitScript(() => {
+      (globalThis as unknown as {
+        SIGNAL_TEST_REJECT_AUTH_PROOF_SEND: boolean;
+        SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES: number;
+      }).SIGNAL_TEST_REJECT_AUTH_PROOF_SEND = true;
+      (globalThis as unknown as {
+        SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES: number;
+      }).SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES = 0;
+    });
+
+    let challengeSent = false;
+    let proofPacketsReceived = 0;
+    await page.routeWebSocket('ws://signal-auth-send-fail.invalid/ws', ws => {
+      ws.onMessage(message => {
+        const packet = typeof message === 'string'
+          ? Buffer.from(message)
+          : Buffer.from(message);
+        if (packet[0] === 0x3f) proofPacketsReceived++;
+        if (packet[0] === 0x20 && !challengeSent) {
+          challengeSent = true;
+          ws.send(Buffer.from([
+            0x70,
+            ...Array.from({ length: 32 }, (_, i) => 0x90 + i),
+          ]));
+        }
+      });
+      ws.send(Buffer.from([0x01, 0x00]));
+      ws.send(protocolInfoPacket(currentProtocolVersion));
+    });
+
+    await page.goto(
+      `/play.html?smoke=1&pv=${currentProtocolVersion}&server=${encodeURIComponent('ws://signal-auth-send-fail.invalid/ws')}`,
+    );
+    await expect.poll(
+      () => page.evaluate(() => (
+        globalThis as unknown as {
+          SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES: number;
+        }
+      ).SIGNAL_TEST_AUTH_PROOF_SEND_FAILURES),
+      { timeout: 10_000 },
+    ).toBe(1);
+    await expect.poll(
+      () => wasmNumber(page, 'signal_debug_auth_transport_closes'),
+    ).toBe(1);
+    expect(challengeSent).toBe(true);
+    expect(proofPacketsReceived).toBe(0);
   });
 
   test('boots, renders, and persists browser identity across reload', async ({ page }) => {
@@ -1102,6 +1845,198 @@ test.describe('Browser smoke tests', () => {
     const secondIdentity = await page.evaluate(() => window.localStorage.getItem('signal:identity'));
     expect(secondIdentity).toBe(firstIdentity);
 
+    expectNoFatalErrors(logs);
+  });
+
+  test('WebCrypto failure leaves identity and authentication unpersisted', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
+
+    await page.addInitScript(() => {
+      window.localStorage.removeItem('signal:identity');
+      window.localStorage.removeItem('signal:identity.bad');
+      window.localStorage.removeItem('signal_session_token');
+      Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+        configurable: true,
+        value: () => {
+          throw new DOMException('injected entropy failure', 'OperationError');
+        },
+      });
+    });
+
+    const logs = installFatalCollectors(page);
+    await page.goto('/play.html?singleplayer=1&smoke=1');
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    expect(await wasmNumber(page, 'signal_debug_identity_available')).toBe(0);
+    expect(await wasmNumber(page, 'signal_debug_auth_available')).toBe(0);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal:identity')),
+    ).toBeNull();
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal:identity.bad')),
+    ).toBeNull();
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal_session_token')),
+    ).toBeNull();
+    expectNoFatalErrors(logs);
+  });
+
+  test('WebCrypto failure refuses token creation with an existing identity', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
+
+    const persistedIdentity =
+      'nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2DXWpgBgrEKt9VL/tPJZAc6DuFy89qmIyWvAhpo9wdRGg==';
+    await page.addInitScript((identity) => {
+      window.localStorage.setItem('signal:identity', identity);
+      window.localStorage.removeItem('signal_session_token');
+      Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+        configurable: true,
+        value: () => {
+          throw new DOMException('injected token entropy failure', 'OperationError');
+        },
+      });
+    }, persistedIdentity);
+
+    const logs = installFatalCollectors(page);
+    await page.goto('/play.html?singleplayer=1&smoke=1');
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    expect(await wasmNumber(page, 'signal_debug_identity_available')).toBe(1);
+    expect(await wasmNumber(page, 'signal_debug_auth_available')).toBe(0);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal:identity')),
+    ).toBe(persistedIdentity);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal_session_token')),
+    ).toBeNull();
+    expectNoFatalErrors(logs);
+  });
+
+  test('WebCrypto failure refuses a loopback challenge with persisted auth', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
+
+    const persistedIdentity =
+      'nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2DXWpgBgrEKt9VL/tPJZAc6DuFy89qmIyWvAhpo9wdRGg==';
+    const persistedToken = '0102030405060708';
+    await page.addInitScript(({ identity, token }) => {
+      window.localStorage.setItem('signal:identity', identity);
+      window.localStorage.setItem('signal_session_token', token);
+      Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+        configurable: true,
+        value: () => {
+          throw new DOMException('injected challenge entropy failure', 'OperationError');
+        },
+      });
+    }, { identity: persistedIdentity, token: persistedToken });
+
+    const logs = installFatalCollectors(page);
+    await page.goto('/play.html?singleplayer=1&smoke=1');
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    expect(await wasmNumber(page, 'signal_debug_identity_available')).toBe(1);
+    expect(await wasmNumber(page, 'signal_debug_auth_available')).toBe(0);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal:identity')),
+    ).toBe(persistedIdentity);
+    expect(
+      await page.evaluate(() => window.localStorage.getItem('signal_session_token')),
+    ).toBe(persistedToken);
+    expectNoFatalErrors(logs);
+  });
+
+  test('episode fetch 404 stays unwatched and a successful retry commits once', async ({ page }) => {
+    test.skip(
+      usesLiveSmokeUrl() && process.env.SIGNAL_EPISODE_RETRY_SMOKE !== '1',
+      'fault injection requires the local browser bundle',
+    );
+
+    const episodeIndex = 2;
+    const watchedMask = 1 << 0;
+    const pendingMask = 1 << 1;
+    const failureShift = 8;
+    let fetches = 0;
+    let releaseFirstResponse: (() => void) | undefined;
+    const firstResponseGate = new Promise<void>(resolve => {
+      releaseFirstResponse = resolve;
+    });
+    await page.route('**/anime/ep2-furnace.mpg', async route => {
+      fetches++;
+      if (fetches === 1) {
+        await firstResponseGate;
+        await route.fulfill({
+          status: 404,
+          contentType: 'text/plain',
+          body: 'injected episode miss',
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'video/mpeg',
+        body: episodeSmokeMpeg,
+      });
+    });
+
+    const logs = installFatalCollectors(page);
+    await loadGame(page, false, { singleplayer: true });
+    expect(await wasmNumberArg(
+      page, 'signal_smoke_episode_prepare', episodeIndex,
+    )).toBe(1);
+    expect(
+      (Number(await page.evaluate(() => window.localStorage.getItem('signal_episodes'))) || 0) &
+        (1 << episodeIndex),
+    ).toBe(0);
+
+    expect(await wasmNumberArg(
+      page, 'signal_smoke_episode_trigger', episodeIndex,
+    )).toBe(1);
+    await expect.poll(() => fetches).toBe(1);
+    expect(
+      ((await wasmNumberArg(
+        page, 'signal_smoke_episode_state', episodeIndex,
+      )) ?? 0) & pendingMask,
+    ).toBe(pendingMask);
+    expect(
+      (Number(await page.evaluate(() => window.localStorage.getItem('signal_episodes'))) || 0) &
+        (1 << episodeIndex),
+    ).toBe(0);
+    releaseFirstResponse!();
+
+    await expect.poll(async () => {
+      const state = (await wasmNumberArg(
+        page, 'signal_smoke_episode_state', episodeIndex,
+      )) ?? 0;
+      return {
+        watched: state & watchedMask,
+        pending: state & pendingMask,
+        failure: state >> failureShift,
+      };
+    }).toEqual({ watched: 0, pending: 0, failure: 1 });
+
+    expect(await wasmNumberArg(
+      page, 'signal_smoke_episode_trigger', episodeIndex,
+    )).toBe(1);
+    await expect.poll(() => fetches).toBe(2);
+    await expect.poll(async () => {
+      const state = (await wasmNumberArg(
+        page, 'signal_smoke_episode_state', episodeIndex,
+      )) ?? 0;
+      return state & watchedMask;
+    }, {
+      timeout: 10_000,
+      message: 'first decoded frame should commit watched state',
+    }).toBe(watchedMask);
+    expect(
+      (Number(await page.evaluate(() => window.localStorage.getItem('signal_episodes'))) || 0) &
+        (1 << episodeIndex),
+    ).toBe(1 << episodeIndex);
+
+    expect(await wasmNumberArg(
+      page, 'signal_smoke_episode_trigger', episodeIndex,
+    )).toBe(1);
+    await page.waitForTimeout(250);
+    expect(fetches).toBe(2);
+    expect(await wasmMemoryPages(page)).toBeLessThanOrEqual(1280);
     expectNoFatalErrors(logs);
   });
 
@@ -1203,6 +2138,120 @@ test.describe('Browser smoke tests', () => {
     expect(motion.maxRenderOffset).toBeLessThan(40);
     expect(motion.snapSamples).toBe(0);
     expect(motion.maxTickSkewAbs).toBeLessThan(12);
+
+    expectNoFatalErrors(logs);
+  });
+
+  test('fixed-tick loopback gate rejects one-bit numeric drift', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires local singleplayer loopback');
+    test.setTimeout(30_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, false, { singleplayer: true });
+    await expect.poll(
+      () => wasmNumber(page, 'signal_zero_latency_gate_ready'),
+      {
+        timeout: 10_000,
+        message: 'local loopback authority should finish authentication',
+      },
+    ).toBe(1);
+
+    const normalResult = await wasmNumber(
+      page, 'signal_zero_latency_gate_run',
+    );
+    const normal = await zeroLatencyGateReport(page);
+    expect(normalResult, JSON.stringify(normal)).toBe(1);
+    expect(normal.status).toBe(1);
+    expect(normal.failure_stage).toBe('');
+    expect(normal.required_mask).toBe(1023);
+    expect(normal.scenario_mask).toBe(normal.required_mask);
+    expect(normal.ticks).toBeGreaterThan(0);
+    expect(normal.mining.beam).toBe(1);
+    expect(normal.mining.input).toBe(1);
+    expect(normal.mining.signal).toBeGreaterThan(0);
+    expect(normal.mining.hover).toBeGreaterThanOrEqual(0);
+    expect(normal.mining.hp_after).toBeLessThan(normal.mining.hp_before);
+    expect(normal.normal.samples).toBeGreaterThan(0);
+    expect(normal.normal.exact).toBeGreaterThan(0);
+    expect(normal.normal.numeric_drift).toBe(0);
+    expect(normal.normal.asteroid_motion).toBeGreaterThan(0);
+    expect(normal.normal.npc_motion).toBeGreaterThan(0);
+    expect(normal.normal.death_respawn).toBe(1);
+
+    expect(await wasmNumber(page, 'signal_zero_latency_gate_perturb')).toBe(1);
+    const perturbed = await zeroLatencyGateReport(page);
+    expect(perturbed.status).toBe(2);
+    expect(perturbed.current_numeric_drift).toBe(1);
+    expect(perturbed.first_drift.class).toBe('numeric-drift');
+    expect(perturbed.first_drift.server_tick)
+      .toBe(perturbed.first_drift.prediction_tick);
+    expect(perturbed.first_drift.predicted_input_seq)
+      .toBe(perturbed.first_drift.authoritative_input_seq);
+    expect(perturbed.first_drift.domain).toBe('player.ship.pos.x');
+    expect(perturbed.first_drift.predicted_bits)
+      .not.toBe(perturbed.first_drift.authoritative_bits);
+    expect(perturbed.first_drift.input_cause_mask).toBe(0);
+    expect(perturbed.first_drift.semantic_cause_mask).toBe(0);
+    expect(perturbed.first_drift.transport_cause_mask).toBe(0);
+    expect(perturbed.first_drift.root_schema)
+      .toBe('signal.authoritative_state.v3');
+    expect(perturbed.first_drift.authoritative_root)
+      .toMatch(/^[0-9a-f]{64}$/);
+
+    expectNoFatalErrors(logs);
+  });
+
+  test('local asteroid presentation removes the 10 Hz correction rhythm', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires local singleplayer authority');
+    test.setTimeout(45_000);
+
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(smokeUrl({ singleplayer: true }));
+    await waitForRuntime(page);
+    const canvas = page.locator('canvas');
+    await expect(canvas).toBeVisible({ timeout: 20_000 });
+    await canvas.click();
+    await tap(page, 'Escape');
+    await tap(page, 'E');
+    await expect
+      .poll(async () => (await playerStateSnapshot(page))?.docked ?? 1, {
+        timeout: 8_000,
+        message: 'asteroid motion gate should launch into local flight',
+      })
+      .toBe(0);
+    await expect.poll(
+      () => wasmNumber(page, 'get_local_asteroid_motion_feed_active'),
+      {
+        timeout: 10_000,
+        message: 'local authority asteroid pose feed should become active',
+      },
+    ).toBe(1);
+
+    await wasmNumber(page, 'reset_local_asteroid_motion_telemetry');
+    await expect.poll(
+      () => wasmNumber(page, 'get_local_asteroid_motion_presented_samples'),
+      { timeout: 8_000 },
+    ).toBeGreaterThan(30);
+
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_frame_samples'))
+      .toBeGreaterThan(0);
+    expect(await wasmNumberArg(page, 'get_local_asteroid_motion_class_samples', 0))
+      .toBeGreaterThan(0); // loose drift
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_starvation_events'))
+      .toBe(0);
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_correction'))
+      .toBeLessThanOrEqual(0.01);
+    expect(await wasmNumber(
+      page, 'get_local_asteroid_motion_max_velocity_discontinuity',
+    )).toBeLessThanOrEqual(0.01);
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_screen_jerk'))
+      .toBeLessThanOrEqual(500_000);
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_avoided_correction'))
+      .toBeGreaterThan(0);
+    expect(await wasmNumber(page, 'local_asteroid_motion_within_thresholds'))
+      .toBe(1);
 
     expectNoFatalErrors(logs);
   });
@@ -1594,6 +2643,32 @@ test.describe('Browser smoke tests', () => {
     const refitSummary = await laserRefitSummary(page);
     expect(refitSummary).toContain('Laser Modules: Crystal Ingots + Frames');
     expect(refitSummary).toContain('Crystal source requires L3 laser');
+    expect(refitSummary).toContain('Kepler has 8');
+    expect(refitSummary).toContain('local cr');
+    expect(refitSummary).toContain(
+      'WORK: haul all 8 FE Ingots from Prospect together',
+    );
+    expect(refitSummary).toContain('dock + [M]');
+    expect(refitSummary).not.toContain('0 cr');
+
+    await setSmokeLoopState(page, smokeLoopState.refitWorkAged);
+    const agedRefitSummary = await laserRefitSummary(page);
+    expect(agedRefitSummary).toContain(
+      'WORK: haul all 8 FE Ingots from Prospect together',
+    );
+    expect(agedRefitSummary).not.toContain(
+      'WORK: haul all 7 FE Ingots',
+    );
+
+    await setSmokeLoopState(page, smokeLoopState.refitSupplyActive);
+    const activeSupply = await laserRefitSummary(page);
+    expect(activeSupply).toContain('Helios production pending');
+    expect(activeSupply).toContain('check WORK / haul');
+
+    await setSmokeLoopState(page, smokeLoopState.refitSupplyInactive);
+    const inactiveSupply = await laserRefitSummary(page);
+    expect(inactiveSupply).not.toContain('Helios');
+    expect(inactiveSupply).toContain('need 8 Laser Modules');
 
     const productionSummary = await stationProductionSummary(page);
     expect(productionSummary).toContain('Ferrite Ore -> Ferrite Ingots');
@@ -1767,6 +2842,44 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  rootBundleSmokeTest('bounds player-to-cargo-pod presentation under deterministic adverse delivery', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, false, { singleplayer: true });
+
+    expect(await adverseTowableGate(page)).toBe(1);
+    const reportText = await adverseTowableReport(page);
+    expect(reportText).not.toBe('');
+    const report = JSON.parse(reportText) as {
+      status: number;
+      scope: string;
+      profiles: Array<{
+        latency_ms: number;
+        pass: number;
+        dropped: number;
+        duplicated: number;
+        reordered: number;
+        lifecycle: number;
+        stale: number;
+        post_reentry_relation: number;
+      }>;
+    };
+    expect(report.status).toBe(1);
+    expect(report.scope).toBe('player_ship_to_cargo_pod');
+    expect(report.profiles.map((profile) => profile.latency_ms)).toEqual([50, 125, 250]);
+    for (const profile of report.profiles) {
+      expect(profile.pass).toBe(1);
+      expect(profile.dropped).toBeGreaterThan(0);
+      expect(profile.duplicated).toBeGreaterThan(0);
+      expect(profile.reordered).toBeGreaterThan(0);
+      expect(profile.lifecycle).toBe(0x1ff);
+      expect(profile.stale).toBe(0);
+      expect(profile.post_reentry_relation).toBe(0);
+    }
+
+    expectNoFatalErrors(logs);
+  });
+
   rootBundleSmokeTest('hooks, holds, and releases a towable through the real loopback lifecycle', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
@@ -1789,6 +2902,12 @@ test.describe('Browser smoke tests', () => {
           message: 'Space hold should activate both tractors and project both authoritative tow links to the client',
         })
         .toBe(0b111110001111100);
+      await expect
+        .poll(async () => (await towLifecycleState(page)) & 0b11000000000000000, {
+          timeout: 3_000,
+          message: 'the atomic tow snapshot revision should converge with loopback authority',
+        })
+        .toBe(0b11000000000000000);
       await page.waitForTimeout(300);
     } finally {
       await page.keyboard.up('Space');
@@ -1894,6 +3013,7 @@ test.describe('Browser smoke tests', () => {
   });
 
   rootBundleSmokeTest('perception acceptance answers all six player questions on desktop and narrow layouts', async ({ page }, testInfo) => {
+    test.setTimeout(90_000);
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     const canvas = await loadGame(page, false, { singleplayer: true });
@@ -2102,6 +3222,241 @@ test.describe('Browser smoke tests', () => {
       .toBeGreaterThan(0.05);
 
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
+  });
+
+  rootBundleSmokeTest('secure legacy recovery console is bounded, opaque, and one-shot on touch and keyboard', async ({ page }) => {
+    test.setTimeout(60_000);
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 390, height: 760 });
+    await page.goto(addQueryParam(smokeUrl({ singleplayer: true }), 'touch', '1'));
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+
+    expect(await smokeLegacyRecoveryOffer(page, 30)).toBe(1);
+    await expect
+      .poll(async () => await legacyRecoveryFlags(page), { timeout: 5_000 })
+      .toEqual(
+        legacyRecoveryFlag.visible |
+        legacyRecoveryFlag.canConfirm |
+        legacyRecoveryFlag.canCancel,
+      );
+
+    const recoveryCopy = await legacyRecoveryCopy(page);
+    expect(recoveryCopy).toContain('IDENTITY RECOVERY // SECURE DOCK');
+    expect(recoveryCopy).toContain('OPAQUE CANDIDATE AUTHORIZED');
+    expect(recoveryCopy).toContain('Import is atomic and one-time.');
+    expect(recoveryCopy).not.toMatch(
+      /(?:\.sav\b|\/Users\/|[A-Za-z]:\\|player_[0-9a-f]{8,}|[0-9a-f]{64})/i,
+    );
+
+    const confirm = page.locator('[data-control="recoveryConfirm"]');
+    const cancel = page.locator('[data-control="recoveryCancel"]');
+    await expect(confirm).toBeVisible();
+    await expect(confirm).toBeEnabled();
+    await expect(confirm).toHaveText('Recover');
+    await expect(cancel).toBeVisible();
+    await expect(cancel).toBeEnabled();
+    await expect(cancel).toHaveText('Leave Untouched');
+    for (const name of ['left', 'right', 'thrust', 'use', 'tab', 'plan']) {
+      await expect(page.locator(`[data-control="${name}"]`)).toBeHidden();
+    }
+    await expectTouchControlsFit(page);
+
+    const beforeGameplayFlags = await mobileControlFlags(page);
+    const beforeActionDepth =
+      (await wasmNumber(page, 'get_net_motion_action_queue_depth')) ?? -1;
+    await hold(page, 'W', 180);
+    for (const key of ['B', 'Tab', 'E', 'F', 'S', 'Digit1']) {
+      await tap(page, key);
+    }
+    expect(await mobileControlFlags(page)).toBe(beforeGameplayFlags);
+    expect(await wasmNumber(page, 'get_net_motion_action_queue_depth'))
+      .toBe(beforeActionDepth);
+    expect(await legacyRecoverySemantic(page)).toBe('offer');
+
+    await confirm.click();
+    await expect
+      .poll(async () => await smokeLegacyRecoveryCount(page, 'confirm'))
+      .toBe(1);
+    await expect
+      .poll(async () => await legacyRecoveryFlags(page))
+      .toEqual(
+        legacyRecoveryFlag.visible |
+        legacyRecoveryFlag.confirming,
+      );
+    await tap(page, 'Enter');
+    expect(await smokeLegacyRecoveryCount(page, 'confirm')).toBe(1);
+
+    expect(await smokeLegacyRecoveryResult(page, 7)).toBe(1);
+    expect(await legacyRecoverySemantic(page)).toBe('success');
+    expect(await legacyRecoveryFlags(page)).toEqual(
+      legacyRecoveryFlag.visible |
+      legacyRecoveryFlag.result |
+      legacyRecoveryFlag.success,
+    );
+    expect(await legacyRecoveryCopy(page)).toContain(
+      'Authoritative ship, economy, and ownership state refreshed.',
+    );
+
+    expect(await smokeLegacyRecoveryOffer(page, 30)).toBe(1);
+    await expect
+      .poll(async () => (await legacyRecoveryFlags(page)) &
+        legacyRecoveryFlag.canConfirm)
+      .toBe(legacyRecoveryFlag.canConfirm);
+    await smokeLegacyRecoverySetSendAdmitted(page, false);
+    await tap(page, 'Enter');
+    await expect.poll(async () => legacyRecoverySemantic(page))
+      .toBe('retryable-send');
+    expect(await smokeLegacyRecoveryCount(page, 'confirm')).toBe(1);
+    await expect
+      .poll(async () => (await legacyRecoveryFlags(page)) &
+        legacyRecoveryFlag.canConfirm)
+      .toBe(legacyRecoveryFlag.canConfirm);
+    await smokeLegacyRecoverySetSendAdmitted(page, true);
+    await confirm.click();
+    await expect
+      .poll(async () => await smokeLegacyRecoveryCount(page, 'confirm'))
+      .toBe(2);
+
+    const rejectionCases = [
+      [1, 'no-match', 'No matching legacy save remained.'],
+      [2, 'stale-offer', 'Reconnect to retry.'],
+      [3, 'replay', 'already used'],
+      [4, 'invalid-source', 'corrupt or unsupported'],
+      [5, 'destination-conflict', 'was not overwritten'],
+      [6, 'migration-failure', 'atomic import could not be completed'],
+    ] as const;
+    for (const [status, semantic, copyFragment] of rejectionCases) {
+      expect(await smokeLegacyRecoveryOffer(page, 30)).toBe(1);
+      expect(await smokeLegacyRecoveryResult(page, status)).toBe(1);
+      expect(await legacyRecoverySemantic(page)).toBe(semantic);
+      expect(await legacyRecoveryCopy(page)).toContain(copyFragment);
+    }
+
+    expect(await smokeLegacyRecoveryOffer(page, 30)).toBe(1);
+    await expect
+      .poll(async () => (await legacyRecoveryFlags(page)) &
+        legacyRecoveryFlag.canCancel)
+      .toBe(legacyRecoveryFlag.canCancel);
+    await cancel.click();
+    await expect
+      .poll(async () => await smokeLegacyRecoveryCount(page, 'cancel'))
+      .toBe(1);
+    expect(await legacyRecoverySemantic(page)).toBe('cancelled');
+    expect(await legacyRecoveryCopy(page)).toContain(
+      'legacy save was left untouched',
+    );
+
+    expect(await smokeLegacyRecoveryOffer(page, 1)).toBe(1);
+    await expect
+      .poll(async () => await smokeLegacyRecoveryCount(page, 'expire'), {
+        timeout: 4_000,
+      })
+      .toBe(1);
+    expect(await legacyRecoverySemantic(page)).toBe('stale-offer');
+
+    await smokeLegacyRecoveryReset(page);
+    expect(await legacyRecoveryFlags(page)).toBe(0);
+    expect(await smokeLegacyRecoveryOffer(page, 30)).toBe(1);
+    await expect
+      .poll(async () => (await legacyRecoveryFlags(page)) &
+        legacyRecoveryFlag.canConfirm)
+      .toBe(legacyRecoveryFlag.canConfirm);
+    expectNoFatalErrors(logs);
+  });
+
+  rootBundleSmokeTest('gamepad recovery requires release and a rising edge without exposing touch chrome', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.addInitScript(() => {
+      const state = { confirm: false, cancel: false };
+      const buttons = [
+        { pressed: false, touched: false, value: 0 },
+        { pressed: false, touched: false, value: 0 },
+      ];
+      const pad = {
+        axes: [],
+        buttons,
+        connected: true,
+        id: 'signal-recovery-smoke-pad',
+        index: 0,
+        mapping: 'standard',
+        timestamp: 0,
+        vibrationActuator: null,
+      };
+      Object.defineProperty(navigator, 'getGamepads', {
+        configurable: true,
+        value: () => {
+          buttons[0].pressed = state.confirm;
+          buttons[0].touched = state.confirm;
+          buttons[0].value = state.confirm ? 1 : 0;
+          buttons[1].pressed = state.cancel;
+          buttons[1].touched = state.cancel;
+          buttons[1].value = state.cancel ? 1 : 0;
+          return [pad];
+        },
+      });
+      (window as unknown as {
+        __setRecoveryGamepad: (confirm: boolean, cancel: boolean) => void;
+      }).__setRecoveryGamepad = (confirm, cancel) => {
+        state.confirm = confirm;
+        state.cancel = cancel;
+      };
+    });
+    const setPad = async (confirm: boolean, cancel: boolean) => {
+      await page.evaluate(({ a, b }) => {
+        (window as unknown as {
+          __setRecoveryGamepad: (confirm: boolean, cancel: boolean) => void;
+        }).__setRecoveryGamepad(a, b);
+      }, { a: confirm, b: cancel });
+    };
+
+    await page.setViewportSize({ width: 520, height: 720 });
+    await page.goto(smokeUrl({ singleplayer: true }));
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    await expect(page.locator('.signal-touch-controls')).toHaveCount(0);
+
+    await setPad(true, false);
+    await page.waitForTimeout(150);
+    expect(await smokeLegacyRecoveryOffer(page, 30)).toBe(1);
+    await expect
+      .poll(async () => (await legacyRecoveryFlags(page)) &
+        legacyRecoveryFlag.canConfirm)
+      .toBe(legacyRecoveryFlag.canConfirm);
+    await page.waitForTimeout(250);
+    expect(await smokeLegacyRecoveryCount(page, 'confirm')).toBe(0);
+
+    await setPad(false, false);
+    await page.waitForTimeout(100);
+    await setPad(true, false);
+    await expect
+      .poll(async () => await smokeLegacyRecoveryCount(page, 'confirm'))
+      .toBe(1);
+    expect(await legacyRecoverySemantic(page)).toBe('confirming');
+    await page.waitForTimeout(250);
+    expect(await smokeLegacyRecoveryCount(page, 'confirm')).toBe(1);
+
+    await setPad(false, false);
+    await page.waitForTimeout(100);
+    expect(await smokeLegacyRecoveryOffer(page, 30)).toBe(1);
+    await expect
+      .poll(async () => (await legacyRecoveryFlags(page)) &
+        legacyRecoveryFlag.canCancel)
+      .toBe(legacyRecoveryFlag.canCancel);
+    await setPad(true, true);
+    await expect
+      .poll(async () => await smokeLegacyRecoveryCount(page, 'cancel'))
+      .toBe(1);
+    expect(await smokeLegacyRecoveryCount(page, 'confirm')).toBe(0);
+    expect(await legacyRecoverySemantic(page)).toBe('cancelled');
+
+    await smokeLegacyRecoveryReset(page);
+    expect(await legacyRecoveryFlags(page)).toBe(0);
+    await setPad(false, false);
+    expect(await smokeLegacyRecoveryOffer(page, 30)).toBe(1);
+    await expect
+      .poll(async () => (await legacyRecoveryFlags(page)) &
+        legacyRecoveryFlag.canConfirm)
+      .toBe(legacyRecoveryFlag.canConfirm);
+    expectNoFatalErrors(logs);
   });
 
   rootBundleSmokeTest('touch controls keep stable slots while enabling contextual mobile actions', async ({ page }) => {

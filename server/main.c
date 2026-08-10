@@ -12,12 +12,14 @@
 #include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
 #include "signal_crypto.h"
+#include "signal_memzero.h"
 #include "sim_ai.h"
 #include "sim_asteroid.h"
 #include "sim_autopilot.h"
 #include "signal_intelligence.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
+#include "cargo_legacy_inventory.h"
 #include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
 #include "fixpoint.h"
 #include "handoff_flow.h"
@@ -27,6 +29,12 @@
 #include "route_history_labels.h"
 #include "station_policy.h"
 #include "station_util.h"
+#include "actor_principal_resolver.h"
+#include "public_actor_resolver.h"
+#include "legacy_save_recovery.h"
+#include "persistence_generation.h"
+#include "persistence_writer.h"
+#include "ws_outbox.h"
 #include <math.h>       /* lroundf */
 
 #include <stdio.h>
@@ -36,6 +44,7 @@
 #include <errno.h>
 #include <float.h>
 #include <ctype.h>
+#include <inttypes.h>
 #include <sys/stat.h>
 #include <time.h>       /* time() for fresh-boot belt_seed rotation */
 
@@ -56,9 +65,17 @@
 /* ------------------------------------------------------------------ */
 
 static world_t world;
-static bool running = true;
+static volatile sig_atomic_t running = 1;
+static persistence_writer_t *persistence_writer = NULL;
 static const char *allowed_origin = NULL;
 static const char *internal_token = NULL;
+
+static void server_sensitive_state_cleanup(void) {
+    persistence_writer_destroy(persistence_writer);
+    persistence_writer = NULL;
+    world_cleanup(&world);
+    station_authority_clear_secret();
+}
 
 
 static const char *persistence_data_dir = ".";
@@ -122,10 +139,13 @@ typedef struct {
     uint32_t magic;
     uint32_t flags;
     uint64_t client_addr_key;
+    uint16_t player_slot;
+    uint16_t reserved;
 } server_conn_meta_t;
 
 #define SERVER_CONN_META_MAGIC 0x53494743u /* SIGC */
 #define SERVER_CONN_META_HAS_CLIENT_ADDR 0x01u
+#define SERVER_CONN_META_HAS_PLAYER_SLOT 0x02u
 
 _Static_assert(sizeof(server_conn_meta_t) <= MG_DATA_SIZE,
                "server connection metadata must fit in mg_connection.data");
@@ -214,6 +234,7 @@ static void server_note_ws_client_addr(struct mg_connection *c,
     server_conn_meta_t *meta = (server_conn_meta_t *)c->data;
     memset(meta, 0, sizeof(*meta));
     meta->magic = SERVER_CONN_META_MAGIC;
+    meta->player_slot = UINT16_MAX;
     if (!trust_proxy_headers || !hm) return;
 
     char token[96];
@@ -234,6 +255,30 @@ static uint64_t server_connection_limit_key(const struct mg_connection *c) {
     return server_peer_addr_key(c);
 }
 
+static void server_connection_assign_player(struct mg_connection *c, int pid) {
+    if (!c || pid < 0 || pid >= MAX_PLAYERS) return;
+    server_conn_meta_t *meta = (server_conn_meta_t *)c->data;
+    if (meta->magic != SERVER_CONN_META_MAGIC) {
+        memset(meta, 0, sizeof(*meta));
+        meta->magic = SERVER_CONN_META_MAGIC;
+    }
+    meta->player_slot = (uint16_t)pid;
+    meta->flags |= SERVER_CONN_META_HAS_PLAYER_SLOT;
+}
+
+static int server_connection_player_slot(const struct mg_connection *c) {
+    if (!c) return -1;
+    const server_conn_meta_t *meta =
+        (const server_conn_meta_t *)c->data;
+    if (meta->magic != SERVER_CONN_META_MAGIC ||
+        !(meta->flags & SERVER_CONN_META_HAS_PLAYER_SLOT) ||
+        meta->player_slot >= MAX_PLAYERS) {
+        return -1;
+    }
+    int pid = (int)meta->player_slot;
+    return world.players[pid].connection->conn == c ? pid : -1;
+}
+
 static uint64_t server_http_client_key(const struct mg_connection *c,
                                        struct mg_http_message *hm) {
     if (trust_proxy_headers && hm) {
@@ -251,6 +296,10 @@ static uint8_t station_hull_inventory_last[MAX_STATIONS][HULL_CLASS_COUNT];
 static bool station_diag_valid[MAX_STATIONS];
 static uint64_t station_diag_last_sent_ms[MAX_STATIONS];
 static uint8_t station_diag_last[MAX_STATIONS][MAX_MODULES_PER_STATION];
+static uint64_t station_identity_generation[MAX_STATIONS];
+static uint64_t station_diag_generation[MAX_STATIONS];
+static uint64_t station_manifest_generation[MAX_STATIONS];
+static uint64_t station_snapshot_generation;
 static bool station_price_anchor_valid[MAX_STATIONS][COMMODITY_COUNT];
 static uint32_t station_price_anchor_station_id[MAX_STATIONS];
 static float station_price_anchor[MAX_STATIONS][COMMODITY_COUNT];
@@ -261,6 +310,69 @@ static bool highscores_dirty = true;      /* broadcast + persist pending */
 static server_world_snapshot_scratch_t world_snapshot_scratch;
 static server_private_snapshot_scratch_t private_snapshot_scratch;
 static server_station_snapshot_scratch_t station_snapshot_scratch;
+
+typedef struct {
+    bool sent[MAX_ASTEROIDS];
+    uint32_t motion_sent_tick[MAX_ASTEROIDS];
+    vec2 motion_sent_pos[MAX_ASTEROIDS];
+    vec2 motion_sent_vel[MAX_ASTEROIDS];
+    uint32_t identity_sent_sig[MAX_ASTEROIDS];
+} ws_asteroid_sync_baseline_scratch_t;
+
+static ws_asteroid_sync_baseline_scratch_t
+    ws_asteroid_sync_baseline_scratch;
+
+typedef struct {
+    ws_outbox_t outbox;
+    ws_initial_sync_t initial_sync;
+    uint64_t observed_coalesced_packets;
+    uint64_t observed_suppressed_packets;
+    uint64_t observed_warning_events;
+    uint64_t observed_disconnect_events;
+    uint64_t observed_recovery_events;
+    uint64_t initial_started_ms;
+    uint64_t backpressure_close_deadline_ms;
+    uint64_t initial_station_identity_generation[MAX_STATIONS];
+    uint64_t initial_station_diag_generation[MAX_STATIONS];
+    uint64_t initial_station_manifest_generation[MAX_STATIONS];
+    server_receipt_resend_state_t receipt_resend;
+    legacy_recovery_offer_t legacy_recovery_offer;
+    uint64_t connection_generation;
+    bool active;
+    bool warning_logged;
+    bool session_bootstrap_complete;
+    bool pubkey_upgrade_from_published_token;
+} ws_client_runtime_t;
+
+static ws_client_runtime_t ws_clients[MAX_PLAYERS];
+static uint64_t ws_connection_generation = 0;
+static uint8_t ws_pump_scratch[WS_OUTBOX_MAX_FRAME_BYTES];
+static uint64_t ws_queue_coalesced_packets_total = 0;
+static uint64_t ws_queue_suppressed_packets_total = 0;
+static uint64_t ws_queue_warning_events_total = 0;
+static uint64_t ws_queue_disconnect_events_total = 0;
+static uint64_t ws_queue_recovery_events_total = 0;
+static uint64_t ws_queue_disconnect_reason_total[
+    WS_OUTBOX_CLOSE_TRANSPORT_REJECTED + 1];
+static uint64_t ws_initial_sync_completed_total = 0;
+static uint64_t ws_initial_sync_duration_ms_total = 0;
+static size_t ws_queue_high_water_bytes = 0;
+
+typedef struct {
+    size_t current_bytes;
+    size_t max_connection_bytes;
+    size_t high_water_bytes;
+    uint64_t coalesced_packets;
+    uint64_t suppressed_packets;
+    uint64_t warning_events;
+    uint64_t disconnect_events;
+    uint64_t recovery_events;
+    uint64_t initial_completed;
+    uint64_t initial_duration_ms_total;
+    unsigned initial_active;
+} ws_backpressure_snapshot_t;
+
+static void ws_backpressure_snapshot(ws_backpressure_snapshot_t *snapshot);
 static uint64_t net_tx_packets_total = 0;
 static uint64_t net_tx_bytes_total = 0;
 static uint64_t net_tx_packets_by_msg[256];
@@ -290,18 +402,34 @@ static uint64_t net_tx_last_emf_ms = 0;
 /* Defined further down; forward-declared so the highscore helpers can
  * use the same send wrapper as every other broadcast in this file
  * (consistent with future send-queue / rate-limiting changes). */
-static void ws_send(struct mg_connection *c, const void *data, size_t len);
+static bool ws_send(struct mg_connection *c, const void *data, size_t len);
+static ws_client_runtime_t *ws_runtime_for_connection(
+    struct mg_connection *c,
+    int *out_pid);
 
-static void send_cargo_receipt_chain(struct mg_connection *c,
+static bool send_cargo_receipt_chain(struct mg_connection *c,
                                      const cargo_receipt_chain_t *chain) {
     uint8_t buf[3 + CARGO_RECEIPT_CHAIN_MAX_LEN * CARGO_RECEIPT_SIZE];
     int len = serialize_cargo_receipt_bundle(buf, chain);
-    if (c && len > 0) ws_send(c, buf, (size_t)len);
+    ws_client_runtime_t *runtime =
+        ws_runtime_for_connection(c, NULL);
+    return c && runtime && len > 0 &&
+        ws_outbox_can_admit_control_frame(
+            &runtime->outbox, buf, (size_t)len, c->send.len) &&
+        ws_send(c, buf, (size_t)len);
 }
 
 static void ws_cargo_receipt_chain_sink(void *user,
                                         const cargo_receipt_chain_t *chain) {
-    send_cargo_receipt_chain((struct mg_connection *)user, chain);
+    struct mg_connection *c = (struct mg_connection *)user;
+    ws_client_runtime_t *runtime =
+        ws_runtime_for_connection(c, NULL);
+    if (!runtime || !c ||
+        ws_outbox_should_suppress(
+            &runtime->outbox, c->send.len)) {
+        return;
+    }
+    (void)send_cargo_receipt_chain(c, chain);
 }
 
 static void send_handoff_ticket_msg(struct mg_connection *c, uint8_t status,
@@ -356,7 +484,14 @@ static const char *cargo_receipt_present_result_name(
 #define ANALYTICS_ACTIVE_WINDOW_MS 60000ull
 #define ANALYTICS_METRIC_STALE_MS 120000ull
 #define ANALYTICS_EMF_INTERVAL_MS 60000ull
-#define ANALYTICS_USER_KEY_LEN 24
+#define ANALYTICS_PUBLIC_ACTOR_BYTES 16
+#define ANALYTICS_USER_KEY_LEN 40
+_Static_assert(ANALYTICS_PUBLIC_ACTOR_BYTES >= 16,
+               "analytics actor keys need at least 128 bits");
+_Static_assert(
+    ANALYTICS_USER_KEY_LEN >=
+        3 + ANALYTICS_PUBLIC_ACTOR_BYTES * 2 + 1,
+    "analytics public actor key buffer is too small");
 
 static const char *analytics_build_hash(void) {
 #ifdef GIT_HASH
@@ -370,31 +505,34 @@ static uint64_t analytics_epoch_ms(void) {
     return (uint64_t)time(NULL) * 1000ull;
 }
 
-static void analytics_hash_key(const char *prefix, const uint8_t *data,
-                               size_t len, char out[ANALYTICS_USER_KEY_LEN]) {
+static void analytics_public_actor_key(
+    const public_actor_id_t *actor,
+    char out[ANALYTICS_USER_KEY_LEN]) {
     static const char hex[] = "0123456789abcdef";
-    uint8_t digest[32];
-    sha256_bytes(data, len, digest);
-    out[0] = prefix[0];
-    out[1] = prefix[1];
-    out[2] = '_';
-    for (int i = 0; i < 8; i++) {
-        out[3 + i * 2] = hex[digest[i] >> 4];
-        out[4 + i * 2] = hex[digest[i] & 0x0Fu];
+    if (!actor ||
+        actor->kind != (uint8_t)PUBLIC_ACTOR_ID_DERIVED ||
+        !public_actor_id_is_canonical(actor)) {
+        snprintf(out, ANALYTICS_USER_KEY_LEN, "anon");
+        return;
     }
-    out[19] = '\0';
+    out[0] = 'p';
+    out[1] = 'a';
+    out[2] = '_';
+    for (int i = 0; i < ANALYTICS_PUBLIC_ACTOR_BYTES; i++) {
+        out[3 + i * 2] = hex[actor->id[i] >> 4];
+        out[4 + i * 2] = hex[actor->id[i] & 0x0Fu];
+    }
+    out[3 + ANALYTICS_PUBLIC_ACTOR_BYTES * 2] = '\0';
 }
 
 static void analytics_user_key(const server_player_t *sp,
                                char out[ANALYTICS_USER_KEY_LEN]) {
-    if (server_player_can_use_pubkey_persistence(sp)) {
-        analytics_hash_key("pk", sp->pubkey, sizeof(sp->pubkey), out);
+    public_actor_id_t actor = public_actor_id_none();
+    if (public_actor_id_from_verified_player(sp, &actor)) {
+        analytics_public_actor_key(&actor, out);
         return;
     }
-    if (sp && sp->session_ready) {
-        analytics_hash_key("st", sp->session_token, sizeof(sp->session_token), out);
-        return;
-    }
+    /* Never hash a 64-bit session bearer into an offline verifier. */
     snprintf(out, ANALYTICS_USER_KEY_LEN, "anon");
 }
 
@@ -744,6 +882,34 @@ static void analytics_emit_emf(uint64_t now_ms) {
            (unsigned long long)tx_world_cargo_pods_suppressed_bytes,
            (unsigned long long)tx_world_interactions_suppressed_bytes);
 
+    ws_backpressure_snapshot_t ws_metrics;
+    ws_backpressure_snapshot(&ws_metrics);
+    printf("{\"_aws\":{\"Timestamp\":%llu,"
+           "\"CloudWatchMetrics\":[{\"Namespace\":\"Signal\","
+           "\"Dimensions\":[[\"Service\",\"Build\"]],\"Metrics\":["
+           "{\"Name\":\"WsQueueBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"WsQueueHighWaterBytes\",\"Unit\":\"Bytes\"},"
+           "{\"Name\":\"WsQueueWarnings\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"WsQueueDisconnects\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"WsQueueCoalescedPackets\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"WsQueueSuppressedPackets\",\"Unit\":\"Count\"},"
+           "{\"Name\":\"WsInitialSyncActive\",\"Unit\":\"Count\"}]}]},"
+           "\"Service\":\"signal-relay\",\"Build\":\"%s\","
+           "\"WsQueueBytes\":%llu,\"WsQueueHighWaterBytes\":%llu,"
+           "\"WsQueueWarnings\":%llu,\"WsQueueDisconnects\":%llu,"
+           "\"WsQueueCoalescedPackets\":%llu,"
+           "\"WsQueueSuppressedPackets\":%llu,"
+           "\"WsInitialSyncActive\":%u}\n",
+           (unsigned long long)analytics_epoch_ms(),
+           analytics_build_hash(),
+           (unsigned long long)ws_metrics.current_bytes,
+           (unsigned long long)ws_metrics.high_water_bytes,
+           (unsigned long long)ws_metrics.warning_events,
+           (unsigned long long)ws_metrics.disconnect_events,
+           (unsigned long long)ws_metrics.coalesced_packets,
+           (unsigned long long)ws_metrics.suppressed_packets,
+           ws_metrics.initial_active);
+
     net_tx_last_packets_total = net_tx_packets_total;
     net_tx_last_bytes_total = net_tx_bytes_total;
     net_tx_last_suppressed_packets_total = net_tx_suppressed_packets_total;
@@ -773,16 +939,12 @@ static void broadcast_highscores(void) {
     uint8_t buf[HIGHSCORE_HEADER + HIGHSCORE_TOP_N * HIGHSCORE_ENTRY_SIZE];
     int len = highscore_serialize(buf, &highscores);
     for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (!world.players[p].connected || !world.players[p].connection->conn) continue;
+        if (!server_player_is_gameplay_ready(&world.players[p]) ||
+            !world.players[p].connection->conn) {
+            continue;
+        }
         ws_send(world.players[p].connection->conn, buf, (size_t)len);
     }
-}
-
-static void send_highscores_to(struct mg_connection *c) {
-    if (!c) return;
-    uint8_t buf[HIGHSCORE_HEADER + HIGHSCORE_TOP_N * HIGHSCORE_ENTRY_SIZE];
-    int len = highscore_serialize(buf, &highscores);
-    ws_send(c, buf, (size_t)len);
 }
 
 #define STATION_IDENTITY_FALLBACK_MS 10000 /* reconciliation, not heartbeat */
@@ -803,12 +965,22 @@ static uint64_t last_player_state_emit = 0;
 #define SAVE_PATH "world.sav"
 #define PLAYER_SAVE_DIR "saves"
 #define STATION_CATALOG_DIR "stations"
+#define PERSISTENCE_GENERATION_DIR ".signal-generations"
 #define AUTOSAVE_MS 30000   /* autosave every 30 seconds */
+#define PERSISTENCE_RETRY_MS 1000
+
+static char active_player_save_dir[PERSISTENCE_GENERATION_PATH_MAX] =
+    PLAYER_SAVE_DIR;
+static bool persistence_save_requested = false;
+static uint64_t persistence_retry_not_before_ms = 0;
+static bool persistence_recovery_invariant_failed = false;
 
 /* Truncate the build SHA (GIT_HASH at compile time, "dev" otherwise) to
  * 8 hex chars and parse as u32 for the leaderboard's build_id column.
- * The same value is emitted as a BUILD_INFO operator post at startup so
- * the chain replay walker can tag historical deaths with their build. */
+ * The same value is emitted as a BUILD_INFO operator post when a fresh
+ * world's chain is created so the replay walker can tag historical deaths
+ * with their build. Resumed worlds must not append boot-only records before
+ * a matching persistence generation exists. */
 static uint32_t signal_build_id_u32(void) {
 #ifdef GIT_HASH
     const char *hash = GIT_HASH;
@@ -836,7 +1008,7 @@ static uint32_t signal_build_id_u32(void) {
 
 static void signal_handler(int sig) {
     (void)sig;
-    running = false;
+    running = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -850,8 +1022,103 @@ static int alloc_player(void) {
     return -1;
 }
 
+static void ws_runtime_collect(int pid) {
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    ws_client_runtime_t *runtime = &ws_clients[pid];
+    const ws_outbox_stats_t *stats = &runtime->outbox.stats;
+    ws_queue_coalesced_packets_total +=
+        stats->coalesced_packets - runtime->observed_coalesced_packets;
+    ws_queue_suppressed_packets_total +=
+        stats->suppressed_packets - runtime->observed_suppressed_packets;
+    ws_queue_warning_events_total +=
+        stats->warning_events - runtime->observed_warning_events;
+    uint64_t disconnect_delta =
+        stats->disconnect_events - runtime->observed_disconnect_events;
+    ws_queue_disconnect_events_total += disconnect_delta;
+    if (disconnect_delta > 0u &&
+        runtime->outbox.close_reason > WS_OUTBOX_CLOSE_NONE &&
+        runtime->outbox.close_reason <=
+            WS_OUTBOX_CLOSE_TRANSPORT_REJECTED) {
+        ws_queue_disconnect_reason_total[
+            runtime->outbox.close_reason] += disconnect_delta;
+    }
+    ws_queue_recovery_events_total +=
+        stats->recovery_events - runtime->observed_recovery_events;
+    runtime->observed_coalesced_packets = stats->coalesced_packets;
+    runtime->observed_suppressed_packets = stats->suppressed_packets;
+    runtime->observed_warning_events = stats->warning_events;
+    runtime->observed_disconnect_events = stats->disconnect_events;
+    runtime->observed_recovery_events = stats->recovery_events;
+    if (stats->high_water_bytes > ws_queue_high_water_bytes)
+        ws_queue_high_water_bytes = stats->high_water_bytes;
+}
+
+static void ws_backpressure_snapshot(
+    ws_backpressure_snapshot_t *snapshot) {
+    if (!snapshot) return;
+    memset(snapshot, 0, sizeof(*snapshot));
+    for (int pid = 0; pid < MAX_PLAYERS; pid++) {
+        ws_client_runtime_t *runtime = &ws_clients[pid];
+        if (!runtime->active) continue;
+        ws_runtime_collect(pid);
+        struct mg_connection *c =
+            (struct mg_connection *)world.players[pid].connection->conn;
+        size_t transport_bytes = c ? c->send.len : 0u;
+        size_t total = ws_outbox_total_bytes(
+            &runtime->outbox, transport_bytes);
+        snapshot->current_bytes += total;
+        if (total > snapshot->max_connection_bytes)
+            snapshot->max_connection_bytes = total;
+        if (ws_initial_sync_active(&runtime->initial_sync))
+            snapshot->initial_active++;
+    }
+    snapshot->high_water_bytes = ws_queue_high_water_bytes;
+    snapshot->coalesced_packets = ws_queue_coalesced_packets_total;
+    snapshot->suppressed_packets = ws_queue_suppressed_packets_total;
+    snapshot->warning_events = ws_queue_warning_events_total;
+    snapshot->disconnect_events = ws_queue_disconnect_events_total;
+    snapshot->recovery_events = ws_queue_recovery_events_total;
+    snapshot->initial_completed = ws_initial_sync_completed_total;
+    snapshot->initial_duration_ms_total =
+        ws_initial_sync_duration_ms_total;
+}
+
+static void ws_runtime_release(int pid, uint64_t now_ms) {
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    ws_runtime_collect(pid);
+    ws_client_runtime_t *runtime = &ws_clients[pid];
+    memset(runtime, 0, sizeof(*runtime));
+    ws_outbox_init(&runtime->outbox, now_ms);
+}
+
+static void ws_runtime_begin(int pid, uint64_t now_ms) {
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    ws_runtime_release(pid, now_ms);
+    ws_connection_generation++;
+    if (ws_connection_generation == 0) ws_connection_generation++;
+    ws_clients[pid].connection_generation =
+        ws_connection_generation;
+    ws_clients[pid].active = true;
+}
+
+static bool legacy_recovery_offer_active(uint64_t now_ms) {
+    if (persistence_recovery_invariant_failed)
+        return true;
+    bool active = false;
+    for (int pid = 0; pid < MAX_PLAYERS; pid++) {
+        ws_client_runtime_t *runtime = &ws_clients[pid];
+        if (!runtime->active) continue;
+        if (legacy_recovery_offer_blocks_persistence(
+                &runtime->legacy_recovery_offer, now_ms)) {
+            active = true;
+        }
+    }
+    return active;
+}
+
 static void reset_player_slot_for_reuse(int pid) {
     if (pid < 0 || pid >= MAX_PLAYERS) return;
+    ws_runtime_release(pid, mg_millis());
     (void)world_player_release_ship_asset(&world, pid);
     world_player_ship_slot_release(&world, pid);
     world_player_runtime_slot_reset(&world, pid);
@@ -881,19 +1148,32 @@ static void spawn_server_bots(void) {
         reset_player_slot_for_reuse(i);
         server_player_t *sp = &world.players[i];
 
-        sp->connected = true;
         sp->id = (uint8_t)i;
         sp->connection->conn = NULL;
-        sp->session_ready = true;
         sp->grace_period = false;
         sp->grace_timer = 0.0f;
 
+        if (!server_player_start_generated_session(sp)) {
+            fprintf(stderr,
+                    "[server] secure entropy unavailable; "
+                    "bot spawn stopped\n");
+            reset_player_slot_for_reuse(i);
+            break;
+        }
+        uint32_t logical_bot_ordinal =
+            (uint32_t)server_bot_players_spawned;
+        if (!server_finalize_generated_bot_identity(
+                &world, i, logical_bot_ordinal)) {
+            fprintf(stderr,
+                    "[server] durable bot identity unavailable; "
+                    "bot spawn stopped\n");
+            reset_player_slot_for_reuse(i);
+            break;
+        }
         player_init_ship(sp, &world);
-        unsigned bot_no = (unsigned)(server_bot_players_spawned % 900) + 1u;
+        unsigned bot_no =
+            (unsigned)(logical_bot_ordinal % 900u) + 1u;
         snprintf(sp->callsign, sizeof(sp->callsign), "BOT%03u", bot_no);
-
-        signal_crypto_random_bytes(sp->session_token,
-                                   sizeof(sp->session_token));
 
         int home_station = server_bot_home_station_for(server_bot_players_spawned);
         if (home_station >= 0 && home_station < MAX_STATIONS &&
@@ -930,18 +1210,100 @@ static void spawn_server_bots(void) {
 /* WebSocket send helpers                                             */
 /* ------------------------------------------------------------------ */
 
-static void ws_send(struct mg_connection *c, const void *data, size_t len) {
-    /* mg_ws_send -> mg_send dereferences `c` unconditionally (reads
-     * c->mgr->ifp on entry). Guard the whole function, not just the
-     * accounting: a NULL/empty send must be dropped, not passed through
-     * to vendor code. */
-    if (!c || !data || len == 0) return;
-    uint8_t msg = ((const uint8_t *)data)[0];
+static void net_tx_record_suppressed(const uint8_t *data, size_t len);
+static void net_tx_record_backpressure_suppressed(const uint8_t *data,
+                                                  size_t len);
+
+static ws_client_runtime_t *ws_runtime_for_connection(
+    struct mg_connection *c,
+    int *out_pid) {
+    int pid = server_connection_player_slot(c);
+    if (out_pid) *out_pid = pid;
+    if (pid < 0 || pid >= MAX_PLAYERS || !ws_clients[pid].active)
+        return NULL;
+    return &ws_clients[pid];
+}
+
+static void ws_log_backpressure_event(const char *event,
+                                      int pid,
+                                      struct mg_connection *c,
+                                      ws_outbox_close_reason_t reason) {
+    if (!event || pid < 0 || pid >= MAX_PLAYERS || !c) return;
+    char user_key[ANALYTICS_USER_KEY_LEN];
+    analytics_user_key(&world.players[pid], user_key);
+    const ws_outbox_t *outbox = &ws_clients[pid].outbox;
+    printf("{\"event\":\"%s\",\"service\":\"signal-relay\","
+           "\"user_key\":\"%s\",\"player_slot\":%d,"
+           "\"queue_bytes\":%llu,\"transport_bytes\":%llu,"
+           "\"high_water_bytes\":%llu,\"reason\":\"%s\"}\n",
+           event, user_key, pid,
+           (unsigned long long)outbox->stats.queue_wire_bytes,
+           (unsigned long long)c->send.len,
+           (unsigned long long)outbox->stats.high_water_bytes,
+           ws_outbox_close_reason_name(reason));
+}
+
+static void ws_close_for_backpressure(struct mg_connection *c,
+                                      int pid,
+                                      ws_outbox_close_reason_t reason) {
+    if (!c || c->is_closing || c->is_draining) return;
+    ws_log_backpressure_event("ws_backpressure_disconnect", pid, c, reason);
+    const char *reason_name = ws_outbox_close_reason_name(reason);
+    uint8_t payload[125];
+    payload[0] = 0x03u;  /* RFC 6455 close code 1008, network order */
+    payload[1] = 0xF0u;
+    size_t reason_len = strlen(reason_name);
+    if (reason_len > sizeof(payload) - 2u)
+        reason_len = sizeof(payload) - 2u;
+    memcpy(&payload[2], reason_name, reason_len);
+    if (mg_ws_send(c, payload, reason_len + 2u, WEBSOCKET_OP_CLOSE) > 0) {
+        if (pid >= 0 && pid < MAX_PLAYERS && ws_clients[pid].active) {
+            ws_clients[pid].backpressure_close_deadline_ms =
+                mg_millis() + WS_OUTBOX_CLOSE_DRAIN_MS;
+        }
+        c->is_draining = 1;
+    } else {
+        c->is_closing = 1;
+    }
+}
+
+static bool ws_transport_send(void *user,
+                              const uint8_t *data,
+                              size_t len) {
+    struct mg_connection *c = (struct mg_connection *)user;
+    if (!c || !data || len == 0u) return false;
+    if (mg_ws_send(c, data, len, WEBSOCKET_OP_BINARY) == 0u)
+        return false;
+    uint8_t msg = data[0];
     net_tx_packets_total++;
     net_tx_bytes_total += (uint64_t)len;
     net_tx_packets_by_msg[msg]++;
     net_tx_bytes_by_msg[msg] += (uint64_t)len;
-    mg_ws_send(c, data, len, WEBSOCKET_OP_BINARY);
+    return true;
+}
+
+static bool ws_send(struct mg_connection *c, const void *data, size_t len) {
+    if (!c || !data || len == 0u) return false;
+    int pid = -1;
+    ws_client_runtime_t *runtime = ws_runtime_for_connection(c, &pid);
+    if (!runtime || c->is_closing || c->is_draining) return false;
+
+    ws_outbox_result_t result = ws_outbox_enqueue(
+        &runtime->outbox, (const uint8_t *)data, len,
+        c->send.len, mg_millis());
+    if (result == WS_OUTBOX_ADMITTED || result == WS_OUTBOX_COALESCED)
+        return true;
+    if (result == WS_OUTBOX_SUPPRESSED) {
+        net_tx_record_backpressure_suppressed(
+            (const uint8_t *)data, len);
+        return false;
+    }
+    if (result == WS_OUTBOX_FATAL) {
+        ws_runtime_collect(pid);
+        ws_close_for_backpressure(
+            c, pid, runtime->outbox.close_reason);
+    }
+    return false;
 }
 
 static void net_tx_record_suppressed(const uint8_t *data, size_t len) {
@@ -968,8 +1330,9 @@ static bool ws_deferable_snapshot_backpressured(struct mg_connection *c,
                                                 const uint8_t *data,
                                                 size_t len) {
     if (!c || !data || len == 0) return false;
-    return net_deferable_snapshot_would_backpressure(
-        data[0], c->send.len, len, WS_DEFERABLE_SEND_BUFFER_RESERVE);
+    ws_client_runtime_t *runtime = ws_runtime_for_connection(c, NULL);
+    return runtime &&
+        ws_outbox_should_suppress(&runtime->outbox, c->send.len);
 }
 
 static bool ws_defer_snapshot_if_backpressured(struct mg_connection *c,
@@ -980,20 +1343,24 @@ static bool ws_defer_snapshot_if_backpressured(struct mg_connection *c,
     return true;
 }
 
-static void ws_send_if_changed(struct mg_connection *c,
+static bool ws_send_if_changed(struct mg_connection *c,
                                net_payload_cache_t *cache,
                                const uint8_t *data,
                                size_t len) {
-    if (!c || !data) return;
+    if (!c || !data) return false;
     if (!cache || len > UINT16_MAX) {
-        ws_send(c, data, len);
-        return;
+        return ws_send(c, data, len);
     }
+    net_payload_cache_t before = *cache;
     if (!net_payload_cache_should_send(cache, c, data, len)) {
         net_tx_record_suppressed(data, len);
-        return;
+        return true;
     }
-    ws_send(c, data, len);
+    if (!ws_send(c, data, len)) {
+        *cache = before;
+        return false;
+    }
+    return true;
 }
 
 static bool ws_send_player_states_if_changed(struct mg_connection *c,
@@ -1003,8 +1370,7 @@ static bool ws_send_player_states_if_changed(struct mg_connection *c,
                                              uint64_t now) {
     if (!c || !sp || !data) return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
-        return true;
+        return ws_send(c, data, len);
     }
     if (ws_defer_snapshot_if_backpressured(c, data, len))
         return false;
@@ -1020,7 +1386,7 @@ static bool ws_send_player_states_if_changed(struct mg_connection *c,
         net_tx_record_suppressed(data, len);
         return false;
     }
-    ws_send(c, data, len);
+    if (!ws_send(c, data, len)) return false;
     cache->valid = true;
     cache->conn = c;
     cache->len = (uint16_t)len;
@@ -1035,17 +1401,20 @@ static bool ws_send_player_motion_if_changed(struct mg_connection *c,
                                              size_t len) {
     if (!c || !sp || !data || len <= PLAYER_MOTION_MSG_HEADER) return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
-        return true;
+        return ws_send(c, data, len);
     }
     if (ws_defer_snapshot_if_backpressured(c, data, len))
         return false;
     net_payload_cache_t *cache = &sp->replication->world_player_motion_cache;
+    net_payload_cache_t before = *cache;
     if (!net_payload_cache_should_send(cache, c, data, len)) {
         net_tx_record_suppressed(data, len);
         return false;
     }
-    ws_send(c, data, len);
+    if (!ws_send(c, data, len)) {
+        *cache = before;
+        return false;
+    }
     return true;
 }
 
@@ -1056,13 +1425,11 @@ static bool ws_send_player_motion_mixed(struct mg_connection *c,
     if (!c || !sp || !data || len <= PLAYER_MOTIONM_Q_MSG_HEADER)
         return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
-        return true;
+        return ws_send(c, data, len);
     }
     if (ws_defer_snapshot_if_backpressured(c, data, len))
         return false;
-    ws_send(c, data, len);
-    return true;
+    return ws_send(c, data, len);
 }
 
 static bool ws_send_player_dock_if_changed(struct mg_connection *c,
@@ -1071,33 +1438,34 @@ static bool ws_send_player_dock_if_changed(struct mg_connection *c,
                                            size_t len) {
     if (!c || !sp || !data || len <= PLAYER_DOCK_MSG_HEADER) return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
-        return true;
+        return ws_send(c, data, len);
     }
     if (ws_defer_snapshot_if_backpressured(c, data, len))
         return false;
     net_payload_cache_t *cache = &sp->replication->world_player_dock_cache;
+    net_payload_cache_t before = *cache;
     if (!net_payload_cache_should_send(cache, c, data, len)) {
         net_tx_record_suppressed(data, len);
         return false;
     }
-    ws_send(c, data, len);
+    if (!ws_send(c, data, len)) {
+        *cache = before;
+        return false;
+    }
     return true;
 }
 
-static void ws_send_station_identity_if_changed(struct mg_connection *c,
+static bool ws_send_station_identity_if_changed(struct mg_connection *c,
                                                 server_player_t *sp,
                                                 const uint8_t *data,
                                                 size_t len) {
-    if (!c || !sp || !data) return;
+    if (!c || !sp || !data) return false;
     if (len > UINT16_MAX || len < 2 || data[0] != NET_MSG_STATION_IDENTITY) {
-        ws_send(c, data, len);
-        return;
+        return ws_send(c, data, len);
     }
     int station_idx = data[1];
     if (station_idx < 0 || station_idx >= MAX_STATIONS) {
-        ws_send(c, data, len);
-        return;
+        return ws_send(c, data, len);
     }
     uint8_t compact[STATION_IDENTITY_Q_MAX_SIZE];
     int compact_len = serialize_station_identity_q_from_full(
@@ -1115,13 +1483,15 @@ static void ws_send_station_identity_if_changed(struct mg_connection *c,
         cache->len == (uint16_t)wire_len &&
         cache->hash == hash) {
         net_tx_record_suppressed(wire_data, wire_len);
-        return;
+        return false;
     }
-    ws_send(c, wire_data, wire_len);
+    if (!ws_send(c, wire_data, wire_len))
+        return false;
     cache->valid = true;
     cache->conn = c;
     cache->len = (uint16_t)wire_len;
     cache->hash = hash;
+    return true;
 }
 
 static void ws_send_world_stations_if_changed(struct mg_connection *c,
@@ -1226,6 +1596,29 @@ static void force_player_authoritative_resync(server_player_t *sp) {
     if (sp) sp->replication->force_authoritative_resync = true;
 }
 
+/*
+ * The paced sync commits asteroid visibility late and must preserve that
+ * baseline. Private state is emitted first and can age while the remaining
+ * phases drain, so only those early recipient-local caches are invalidated
+ * for the one normal reconciliation pass after completion.
+ */
+static void invalidate_player_post_initial_sync_caches(
+    server_player_t *sp) {
+    if (!sp || !sp->replication) return;
+    server_player_reset_authoritative_ack_state(sp);
+    sp->replication->player_ship_cache.valid = false;
+    sp->replication->player_manifest_cache.valid = false;
+    sp->replication->inspect_snapshot_cache.valid = false;
+    sp->replication->known_contracts_cache.valid = false;
+    sp->replication->market_memories_cache.valid = false;
+    sp->replication->known_ledger_cache.valid = false;
+    sp->replication->delivery_ledger_cache.valid = false;
+    sp->replication->world_players_cache.valid = false;
+    sp->replication->world_players_last_sent_ms = 0u;
+    server_player_motion_delta_clear_all(sp);
+    sp->replication->world_player_dock_cache.valid = false;
+}
+
 static void send_action_ack(struct mg_connection *c, uint16_t action_id,
                             uint16_t input_seq, uint8_t status,
                             uint8_t action) {
@@ -1241,6 +1634,52 @@ static void send_action_result(struct mg_connection *c, uint16_t action_id,
     int len = serialize_action_result(buf, action_id, input_seq, status,
                                       action, server_tick);
     ws_send(c, buf, (size_t)len);
+}
+
+static void send_immediate_pod_present_result(
+    struct mg_connection *c,
+    int player_slot,
+    const server_signed_action_dispatch_result_t *dispatch) {
+    if (!c || !dispatch || !dispatch->pod_present_evaluated ||
+        player_slot < 0 || player_slot >= MAX_PLAYERS) {
+        return;
+    }
+    server_player_t *sp = &world.players[player_slot];
+    force_player_authoritative_resync(sp);
+
+    if (dispatch->pod_present_event_valid) {
+        sim_events_t events = {
+            .count = 1,
+        };
+        events.events[0] = dispatch->pod_present_event;
+        uint8_t buf[
+            NET_EVENT_V2_HEADER_SIZE + NET_EVENT_V2_RECORD_SIZE];
+        int len = serialize_events_v2_for_recipient(
+            buf, &events, player_slot);
+        if (len > NET_EVENT_V2_HEADER_SIZE)
+            ws_send(c, buf, (size_t)len);
+    }
+
+    if (dispatch->pod_present_action_id != 0) {
+        uint8_t status =
+            dispatch->pod_present_result == CARGO_POD_PRESENT_OK
+                ? NET_ACTION_RESULT_OK
+                : NET_ACTION_RESULT_REJECTED;
+        printf("[server] action-result player=%d id=%u input_seq=0 "
+               "action=%u status=%s tick=%u resync=immediate\n",
+               sp->id,
+               (unsigned)dispatch->pod_present_action_id,
+               (unsigned)NET_ACTION_PRESENT_POD,
+               server_action_result_status_name(status),
+               (unsigned)world.tick);
+        send_action_result(
+            c,
+            dispatch->pod_present_action_id,
+            0,
+            status,
+            NET_ACTION_PRESENT_POD,
+            world.tick);
+    }
 }
 
 static void send_latency_pong(struct mg_connection *c, uint32_t seq,
@@ -1332,9 +1771,6 @@ static void ws_send_contracts_if_changed(struct mg_connection *c,
         net_tx_record_suppressed(wire_data, wire_len);
         return;
     }
-    sp->replication->contracts_semantic_hash = hash;
-    sp->replication->contracts_semantic_valid = true;
-    sp->replication->contracts_last_sent_ms = now_ms;
     net_payload_cache_t *cache = &sp->replication->contracts_cache;
     uint64_t wire_hash = net_payload_hash(wire_data, wire_len);
     if (cache->valid &&
@@ -1342,9 +1778,16 @@ static void ws_send_contracts_if_changed(struct mg_connection *c,
         cache->len == (uint16_t)wire_len &&
         cache->hash == wire_hash) {
         net_tx_record_suppressed(wire_data, wire_len);
+        sp->replication->contracts_semantic_hash = hash;
+        sp->replication->contracts_semantic_valid = true;
+        sp->replication->contracts_last_sent_ms = now_ms;
         return;
     }
-    ws_send(c, wire_data, wire_len);
+    if (!ws_send(c, wire_data, wire_len))
+        return;
+    sp->replication->contracts_semantic_hash = hash;
+    sp->replication->contracts_semantic_valid = true;
+    sp->replication->contracts_last_sent_ms = now_ms;
     cache->valid = true;
     cache->conn = c;
     cache->len = (uint16_t)wire_len;
@@ -1385,118 +1828,745 @@ typedef struct {
     struct mg_connection *conn;
     server_player_t *player;
     uint32_t world_tick;
+    bool all_admitted;
 } ws_private_packet_sink_t;
+
+static net_payload_cache_t *ws_private_cache_for_type(
+    server_player_t *player,
+    uint8_t message_type) {
+    if (!player || !player->replication) return NULL;
+    switch (message_type) {
+    case NET_MSG_PLAYER_SHIP:
+        return &player->replication->player_ship_cache;
+    case NET_MSG_PLAYER_MANIFEST:
+        return &player->replication->player_manifest_cache;
+    case NET_MSG_INSPECT_SNAPSHOT:
+        return &player->replication->inspect_snapshot_cache;
+    case NET_MSG_PLAYER_KNOWN_CONTRACTS:
+        return &player->replication->known_contracts_cache;
+    case NET_MSG_PLAYER_MARKET_MEMORIES:
+        return &player->replication->market_memories_cache;
+    case NET_MSG_PLAYER_KNOWN_LEDGER:
+        return &player->replication->known_ledger_cache;
+    case NET_MSG_DELIVERY_LEDGER:
+        return &player->replication->delivery_ledger_cache;
+    default:
+        return NULL;
+    }
+}
 
 static void ws_private_packet_sink(void *user, const uint8_t *data, int len) {
     ws_private_packet_sink_t *sink = (ws_private_packet_sink_t *)user;
     if (!sink || !sink->conn || !sink->player || !data || len <= 0) return;
-    net_payload_cache_t *cache = NULL;
-    switch (data[0]) {
-    case NET_MSG_PLAYER_SHIP:
-        cache = &sink->player->replication->player_ship_cache;
-        break;
-    case NET_MSG_PLAYER_MANIFEST:
-        cache = &sink->player->replication->player_manifest_cache;
-        break;
-    case NET_MSG_INSPECT_SNAPSHOT:
-        cache = &sink->player->replication->inspect_snapshot_cache;
-        break;
-    case NET_MSG_PLAYER_KNOWN_CONTRACTS:
-        cache = &sink->player->replication->known_contracts_cache;
-        break;
-    case NET_MSG_PLAYER_MARKET_MEMORIES:
-        cache = &sink->player->replication->market_memories_cache;
-        break;
-    case NET_MSG_PLAYER_KNOWN_LEDGER:
-        cache = &sink->player->replication->known_ledger_cache;
-        break;
-    case NET_MSG_DELIVERY_LEDGER:
-        cache = &sink->player->replication->delivery_ledger_cache;
-        break;
+    net_payload_cache_t *cache =
+        ws_private_cache_for_type(sink->player, data[0]);
+    if (!ws_send_if_changed(sink->conn, cache, data, (size_t)len)) {
+        sink->all_admitted = false;
+        return;
+    }
+    if (data[0] == NET_MSG_PLAYER_MANIFEST) {
+        ws_client_runtime_t *runtime =
+            ws_runtime_for_connection(sink->conn, NULL);
+        if (runtime) {
+            server_receipt_resend_note_manifest_admitted(
+                &runtime->receipt_resend,
+                sink->player->ship);
+        }
+    }
+}
+
+enum {
+    WS_RECEIPT_RESEND_CHAINS_PER_PRIVATE_CYCLE = 2,
+};
+
+typedef struct {
+    struct mg_connection *conn;
+    ws_client_runtime_t *runtime;
+} ws_receipt_resend_sink_t;
+
+static bool ws_receipt_resend_packet_sink(
+    void *user,
+    const cargo_receipt_chain_t *chain) {
+    ws_receipt_resend_sink_t *sink =
+        (ws_receipt_resend_sink_t *)user;
+    if (!sink || !sink->conn || !sink->runtime ||
+        ws_outbox_should_suppress(
+            &sink->runtime->outbox,
+            sink->conn->send.len)) {
+        return false;
+    }
+    return send_cargo_receipt_chain(sink->conn, chain);
+}
+
+static void ws_drain_player_receipt_sidecars(
+    struct mg_connection *c,
+    server_player_t *sp) {
+    ws_client_runtime_t *runtime =
+        ws_runtime_for_connection(c, NULL);
+    if (!runtime || !c || !sp || !sp->ship ||
+        !sp->replication->player_manifest_cache.valid ||
+        sp->replication->player_manifest_cache.conn != c ||
+        ws_outbox_should_suppress(
+            &runtime->outbox, c->send.len)) {
+        return;
+    }
+    ws_receipt_resend_sink_t sink = {
+        .conn = c,
+        .runtime = runtime,
+    };
+    (void)server_receipt_resend_drain(
+        &runtime->receipt_resend, sp->ship,
+        WS_RECEIPT_RESEND_CHAINS_PER_PRIVATE_CYCLE,
+        ws_receipt_resend_packet_sink, &sink);
+}
+
+static bool ws_initial_sync_admit_frame(ws_client_runtime_t *runtime,
+                                        struct mg_connection *c,
+                                        const uint8_t *payload,
+                                        size_t payload_len,
+                                        uint64_t now_ms) {
+    if (!runtime || !c || !payload || payload_len == 0u) return false;
+    size_t wire_bytes = ws_outbox_wire_bytes(payload_len);
+    if (wire_bytes == SIZE_MAX ||
+        !ws_sync_pacer_can_send(
+            &runtime->initial_sync.pacer, now_ms, wire_bytes)) {
+        return false;
+    }
+    if (!ws_send(c, payload, payload_len))
+        return false;
+    return ws_sync_pacer_charge(
+        &runtime->initial_sync.pacer, now_ms, wire_bytes);
+}
+
+typedef struct {
+    struct mg_connection *conn;
+    server_player_t *player;
+    ws_client_runtime_t *runtime;
+    uint64_t now_ms;
+    uint8_t target;
+    uint8_t current;
+    bool admitted;
+} ws_initial_private_sink_t;
+
+static void ws_initial_private_packet_sink(void *user,
+                                           const uint8_t *data,
+                                           int len) {
+    ws_initial_private_sink_t *sink =
+        (ws_initial_private_sink_t *)user;
+    if (!sink || !data || len <= 0) return;
+    uint8_t current = sink->current++;
+    if (current != sink->target) return;
+    if (!ws_initial_sync_admit_frame(
+            sink->runtime, sink->conn, data, (size_t)len,
+            sink->now_ms)) {
+        return;
+    }
+    net_payload_cache_t *cache =
+        ws_private_cache_for_type(sink->player, data[0]);
+    if (cache && len <= UINT16_MAX) {
+        cache->valid = true;
+        cache->conn = sink->conn;
+        cache->len = (uint16_t)len;
+        cache->hash = net_payload_hash(data, (size_t)len);
+    }
+    if (data[0] == NET_MSG_PLAYER_MANIFEST) {
+        server_receipt_resend_note_manifest_admitted(
+            &sink->runtime->receipt_resend,
+            sink->player->ship);
+    }
+    sink->admitted = true;
+}
+
+static void ws_asteroid_sync_baseline_copy_from_player(
+    ws_asteroid_sync_baseline_scratch_t *scratch,
+    const server_player_t *sp) {
+    if (!scratch || !sp || !sp->replication) return;
+    memcpy(scratch->sent, sp->replication->asteroid_sent,
+           sizeof(scratch->sent));
+    memcpy(scratch->motion_sent_tick,
+           sp->replication->asteroid_motion_sent_tick,
+           sizeof(scratch->motion_sent_tick));
+    memcpy(scratch->motion_sent_pos,
+           sp->replication->asteroid_motion_sent_pos,
+           sizeof(scratch->motion_sent_pos));
+    memcpy(scratch->motion_sent_vel,
+           sp->replication->asteroid_motion_sent_vel,
+           sizeof(scratch->motion_sent_vel));
+    memcpy(scratch->identity_sent_sig,
+           sp->replication->asteroid_identity_sent_sig,
+           sizeof(scratch->identity_sent_sig));
+}
+
+static void ws_asteroid_sync_baseline_commit_to_player(
+    server_player_t *sp,
+    const ws_asteroid_sync_baseline_scratch_t *scratch) {
+    if (!scratch || !sp || !sp->replication) return;
+    memcpy(sp->replication->asteroid_sent, scratch->sent,
+           sizeof(scratch->sent));
+    memcpy(sp->replication->asteroid_motion_sent_tick,
+           scratch->motion_sent_tick,
+           sizeof(scratch->motion_sent_tick));
+    memcpy(sp->replication->asteroid_motion_sent_pos,
+           scratch->motion_sent_pos,
+           sizeof(scratch->motion_sent_pos));
+    memcpy(sp->replication->asteroid_motion_sent_vel,
+           scratch->motion_sent_vel,
+           sizeof(scratch->motion_sent_vel));
+    memcpy(sp->replication->asteroid_identity_sent_sig,
+           scratch->identity_sent_sig,
+           sizeof(scratch->identity_sent_sig));
+}
+
+static uint64_t ws_initial_station_generation_for_step(
+    ws_initial_sync_step_t step,
+    uint16_t station_index) {
+    if (station_index >= MAX_STATIONS) return 0u;
+    switch (step) {
+    case WS_INITIAL_SYNC_STATION_IDENTITY:
+        return station_identity_generation[station_index];
+    case WS_INITIAL_SYNC_STATION_DIAG:
+        return station_diag_generation[station_index];
+    case WS_INITIAL_SYNC_STATION_MANIFEST:
+        return station_manifest_generation[station_index];
     default:
-        break;
+        return 0u;
     }
-    ws_send_if_changed(sink->conn, cache, data, (size_t)len);
 }
 
-static void ws_station_snapshot_packet_sink(void *user,
-                                            const uint8_t *data,
-                                            int len) {
-    ws_private_packet_sink_t *sink = (ws_private_packet_sink_t *)user;
-    if (!sink || !sink->conn || !sink->player || !data || len <= 0) return;
-    if (data[0] == NET_MSG_STATION_IDENTITY && len >= 2) {
-        ws_send_station_identity_if_changed(
-            sink->conn,
-            sink->player,
-            data,
-            (size_t)len);
-        return;
+static uint64_t *ws_initial_station_sent_generation_for_step(
+    ws_client_runtime_t *runtime,
+    ws_initial_sync_step_t step,
+    uint16_t station_index) {
+    if (!runtime || station_index >= MAX_STATIONS) return NULL;
+    switch (step) {
+    case WS_INITIAL_SYNC_STATION_IDENTITY:
+        return &runtime->initial_station_identity_generation[station_index];
+    case WS_INITIAL_SYNC_STATION_DIAG:
+        return &runtime->initial_station_diag_generation[station_index];
+    case WS_INITIAL_SYNC_STATION_MANIFEST:
+        return &runtime->initial_station_manifest_generation[station_index];
+    default:
+        return NULL;
     }
-    if (data[0] == NET_MSG_WORLD_STATIONS && len >= 2) {
-        ws_send_world_stations_if_changed(
-            sink->conn,
-            sink->player,
-            data,
-            (size_t)len);
-        return;
-    }
-    ws_send_if_changed(sink->conn, NULL, data, (size_t)len);
 }
 
-static void send_initial_world_bundle_to_player(struct mg_connection *c,
-                                                int pid) {
+static void ws_initial_station_note_generation(
+    ws_client_runtime_t *runtime,
+    ws_initial_sync_step_t step,
+    uint16_t station_index,
+    uint64_t generation) {
+    uint64_t *sent = ws_initial_station_sent_generation_for_step(
+        runtime, step, station_index);
+    if (sent) *sent = generation;
+}
+
+static size_t ws_serialize_initial_station_snapshot(
+    ws_initial_sync_step_t step,
+    uint16_t station_index,
+    const uint8_t **payload,
+    uint8_t compact_identity[STATION_IDENTITY_Q_MAX_SIZE]) {
+    if (!payload || station_index >= MAX_STATIONS ||
+        !station_exists(&world.stations[station_index])) {
+        return 0u;
+    }
+    if (step == WS_INITIAL_SYNC_STATION_IDENTITY) {
+        int full_len = serialize_station_identity(
+            station_snapshot_scratch.station_identity,
+            station_index, &world.stations[station_index]);
+        int compact_len = serialize_station_identity_q_from_full(
+            compact_identity, station_snapshot_scratch.station_identity,
+            full_len);
+        *payload = compact_len > 0 ? compact_identity :
+            station_snapshot_scratch.station_identity;
+        return (size_t)(compact_len > 0 ? compact_len : full_len);
+    }
+    if (step == WS_INITIAL_SYNC_STATION_DIAG) {
+        int len = serialize_station_diag(
+            station_snapshot_scratch.station_diag,
+            station_index, &world.stations[station_index]);
+        *payload = station_snapshot_scratch.station_diag;
+        return (size_t)len;
+    }
+    if (step == WS_INITIAL_SYNC_STATION_MANIFEST) {
+        int len = serialize_station_manifest(
+            station_snapshot_scratch.station_manifest,
+            station_index, &world.stations[station_index]);
+        *payload = station_snapshot_scratch.station_manifest;
+        return (size_t)len;
+    }
+    return 0u;
+}
+
+static void ws_initial_sync_commit_for_player(ws_client_runtime_t *runtime,
+                                              int pid,
+                                              uint64_t now_ms) {
+    if (!runtime || pid < 0 || pid >= MAX_PLAYERS) return;
+    bool was_active = ws_initial_sync_active(&runtime->initial_sync);
+    ws_initial_sync_commit(&runtime->initial_sync, now_ms);
+    if (was_active && !ws_initial_sync_active(&runtime->initial_sync)) {
+        uint64_t duration = now_ms >= runtime->initial_started_ms
+            ? now_ms - runtime->initial_started_ms : 0u;
+        ws_initial_sync_completed_total++;
+        ws_initial_sync_duration_ms_total += duration;
+        if (ws_initial_sync_take_reconcile(
+                &runtime->initial_sync)) {
+            invalidate_player_post_initial_sync_caches(
+                &world.players[pid]);
+            force_player_authoritative_resync(
+                &world.players[pid]);
+        }
+        printf("{\"event\":\"ws_initial_sync_complete\","
+               "\"player_slot\":%d,\"duration_ms\":%llu}\n",
+               pid, (unsigned long long)duration);
+    }
+}
+
+typedef struct {
+    ws_initial_sync_step_t step;
+    uint16_t station_index;
+    uint64_t generation;
+} ws_initial_station_catchup_item_t;
+
+static bool ws_initial_sync_finish_catchup_if_current(
+    ws_client_runtime_t *runtime,
+    int pid,
+    uint64_t now_ms) {
+    if (!runtime ||
+        !ws_initial_sync_catchup_snapshot_current(
+            &runtime->initial_sync,
+            runtime->outbox.stats.suppressed_packets,
+            station_snapshot_generation)) {
+        return false;
+    }
+    ws_outbox_mark_resynced(&runtime->outbox);
+    ws_initial_sync_commit_for_player(runtime, pid, now_ms);
+    return true;
+}
+
+static void ws_service_initial_station_catchup(
+    struct mg_connection *c,
+    ws_client_runtime_t *runtime,
+    int pid,
+    uint64_t now_ms) {
+    if (!c || !runtime ||
+        ws_initial_sync_current(&runtime->initial_sync, NULL) !=
+            WS_INITIAL_SYNC_CATCHUP) {
+        return;
+    }
+
+    if (!ws_initial_sync_catchup_needs_snapshot(
+            &runtime->initial_sync)) {
+        (void)ws_initial_sync_finish_catchup_if_current(
+            runtime, pid, now_ms);
+        return;
+    }
+
+    ws_initial_station_catchup_item_t
+        items[MAX_STATIONS * 3];
+    size_t item_count = 0u;
+    size_t aggregate_wire = 0u;
+    bool batch_full = false;
+    for (uint16_t station_index = 0u;
+         station_index < MAX_STATIONS && !batch_full;
+         station_index++) {
+        if (!station_exists(&world.stations[station_index])) continue;
+        for (ws_initial_sync_step_t step =
+                 WS_INITIAL_SYNC_STATION_IDENTITY;
+             step <= WS_INITIAL_SYNC_STATION_MANIFEST;
+             step = (ws_initial_sync_step_t)(step + 1)) {
+            uint64_t generation = ws_initial_station_generation_for_step(
+                step, station_index);
+            uint64_t *sent = ws_initial_station_sent_generation_for_step(
+                runtime, step, station_index);
+            if (sent && *sent == generation) continue;
+
+            const uint8_t *payload = NULL;
+            uint8_t compact_identity[STATION_IDENTITY_Q_MAX_SIZE];
+            size_t payload_len = ws_serialize_initial_station_snapshot(
+                step, station_index, &payload, compact_identity);
+            size_t wire_bytes = ws_outbox_wire_bytes(payload_len);
+            if (!payload || payload_len == 0u ||
+                wire_bytes == SIZE_MAX ||
+                wire_bytes > WS_OUTBOX_SYNC_BURST_BYTES) {
+                return;
+            }
+            if (item_count > 0u &&
+                aggregate_wire >
+                    WS_OUTBOX_SYNC_BURST_BYTES - wire_bytes) {
+                batch_full = true;
+                break;
+            }
+            items[item_count++] = (ws_initial_station_catchup_item_t) {
+                .step = step,
+                .station_index = station_index,
+                .generation = generation,
+            };
+            aggregate_wire += wire_bytes;
+        }
+    }
+
+    if (item_count == 0u) {
+        ws_initial_sync_catchup_note_snapshot(
+            &runtime->initial_sync,
+            runtime->outbox.stats.suppressed_packets,
+            station_snapshot_generation);
+        (void)ws_initial_sync_finish_catchup_if_current(
+            runtime, pid, now_ms);
+        return;
+    }
+
+    if (!ws_sync_pacer_charge(
+            &runtime->initial_sync.pacer, now_ms, aggregate_wire)) {
+        return;
+    }
+
+    bool all_admitted = true;
+    for (size_t i = 0u; i < item_count; i++) {
+        const uint8_t *payload = NULL;
+        uint8_t compact_identity[STATION_IDENTITY_Q_MAX_SIZE];
+        size_t payload_len = ws_serialize_initial_station_snapshot(
+            items[i].step, items[i].station_index,
+            &payload, compact_identity);
+        if (!payload || payload_len == 0u ||
+            !ws_send(c, payload, payload_len)) {
+            all_admitted = false;
+            break;
+        }
+        ws_initial_station_note_generation(
+            runtime, items[i].step, items[i].station_index,
+            items[i].generation);
+    }
+    if (!all_admitted) return;
+
+    /*
+     * Multiple batches may be needed in a large world. Only establish the
+     * terminal boundary after every station family is current.
+     */
+    bool more_pending = false;
+    for (uint16_t station_index = 0u;
+         station_index < MAX_STATIONS && !more_pending;
+         station_index++) {
+        if (!station_exists(&world.stations[station_index])) continue;
+        for (ws_initial_sync_step_t step =
+                 WS_INITIAL_SYNC_STATION_IDENTITY;
+             step <= WS_INITIAL_SYNC_STATION_MANIFEST;
+             step = (ws_initial_sync_step_t)(step + 1)) {
+            uint64_t *sent = ws_initial_station_sent_generation_for_step(
+                runtime, step, station_index);
+            if (!sent ||
+                *sent != ws_initial_station_generation_for_step(
+                    step, station_index)) {
+                more_pending = true;
+                break;
+            }
+        }
+    }
+    if (more_pending) return;
+
+    ws_initial_sync_catchup_note_snapshot(
+        &runtime->initial_sync,
+        runtime->outbox.stats.suppressed_packets,
+        station_snapshot_generation);
+    if (!ws_outbox_should_suppress(&runtime->outbox, c->send.len)) {
+        (void)ws_initial_sync_finish_catchup_if_current(
+            runtime, pid, now_ms);
+    }
+}
+
+static void ws_service_initial_sync(struct mg_connection *c,
+                                    int pid,
+                                    uint64_t now_ms) {
     if (!c || pid < 0 || pid >= MAX_PLAYERS) return;
+    ws_client_runtime_t *runtime = &ws_clients[pid];
     server_player_t *sp = &world.players[pid];
-    if (!server_player_is_gameplay_ready(sp) || sp->connection->conn != c) return;
+    if (!runtime->active ||
+        !ws_initial_sync_active(&runtime->initial_sync) ||
+        !server_player_is_gameplay_ready(sp) ||
+        sp->connection->conn != c ||
+        ws_outbox_should_suppress(&runtime->outbox, c->send.len)) {
+        return;
+    }
 
-    {
-        ws_private_packet_sink_t station_sink = {
+    uint16_t station_index = 0u;
+    ws_initial_sync_step_t step = ws_initial_sync_current(
+        &runtime->initial_sync, &station_index);
+    if (step == WS_INITIAL_SYNC_CATCHUP) {
+        ws_service_initial_station_catchup(c, runtime, pid, now_ms);
+        return;
+    }
+    if (step >= WS_INITIAL_SYNC_STATION_IDENTITY &&
+        step <= WS_INITIAL_SYNC_STATION_MANIFEST &&
+        (station_index >= MAX_STATIONS ||
+         !station_exists(&world.stations[station_index]))) {
+        ws_initial_sync_skip_station(&runtime->initial_sync);
+        return;
+    }
+
+    if (step == WS_INITIAL_SYNC_PRIVATE) {
+        /*
+         * Keep the substep sequence stable across all eight invocations.
+         * Serializing the leading authoritative baseline marks the ack
+         * state valid; without resetting before the next substep, the
+         * emitter shrinks from eight packets to seven and shifts every
+         * remaining target.
+         */
+        server_player_reset_authoritative_ack_state(sp);
+        ws_initial_private_sink_t sink = {
             .conn = c,
             .player = sp,
+            .runtime = runtime,
+            .now_ms = now_ms,
+            .target = ws_initial_sync_substep(
+                &runtime->initial_sync),
         };
-        server_emit_station_snapshot(
-            &world, true, ws_station_snapshot_packet_sink, &station_sink,
-            &station_snapshot_scratch);
+        server_emit_private_snapshot_for_player(
+            &world, pid, false, ws_initial_private_packet_sink, &sink,
+            &private_snapshot_scratch);
+        if (sink.current !=
+            SERVER_INITIAL_PRIVATE_SNAPSHOT_PACKET_COUNT) {
+            fprintf(stderr,
+                    "[FATAL] private snapshot emitter count drift: "
+                    "expected=%u observed=%u\n",
+                    (unsigned)SERVER_INITIAL_PRIVATE_SNAPSHOT_PACKET_COUNT,
+                    (unsigned)sink.current);
+            c->is_closing = 1;
+            return;
+        }
+        if (sink.admitted) {
+            ws_initial_sync_commit_substep(
+                &runtime->initial_sync,
+                SERVER_INITIAL_PRIVATE_SNAPSHOT_PACKET_COUNT, now_ms);
+        }
+        return;
     }
 
-    if (!sp->docked) {
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0u;
+    uint8_t compact_identity[STATION_IDENTITY_Q_MAX_SIZE];
+    uint8_t compact_stations[STATION_Q_MAX_SIZE];
+    uint8_t contracts[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
+    uint8_t compact_contracts[CONTRACT_Q_MAX_SIZE];
+    uint8_t highscores_buf[
+        HIGHSCORE_HEADER + HIGHSCORE_TOP_N * HIGHSCORE_ENTRY_SIZE];
+
+    if (step == WS_INITIAL_SYNC_STATION_IDENTITY) {
+        int full_len = serialize_station_identity(
+            station_snapshot_scratch.station_identity,
+            station_index, &world.stations[station_index]);
+        int compact_len = serialize_station_identity_q_from_full(
+            compact_identity, station_snapshot_scratch.station_identity,
+            full_len);
+        payload = compact_len > 0 ? compact_identity :
+            station_snapshot_scratch.station_identity;
+        payload_len = (size_t)(compact_len > 0 ? compact_len : full_len);
+    } else if (step == WS_INITIAL_SYNC_STATION_DIAG) {
+        int len = serialize_station_diag(
+            station_snapshot_scratch.station_diag,
+            station_index, &world.stations[station_index]);
+        payload = station_snapshot_scratch.station_diag;
+        payload_len = (size_t)len;
+    } else if (step == WS_INITIAL_SYNC_STATION_MANIFEST) {
+        int len = serialize_station_manifest(
+            station_snapshot_scratch.station_manifest,
+            station_index, &world.stations[station_index]);
+        payload = station_snapshot_scratch.station_manifest;
+        payload_len = (size_t)len;
+    } else if (step == WS_INITIAL_SYNC_WORLD_STATIONS) {
+        int full_len = serialize_stations(
+            station_snapshot_scratch.world_stations, world.stations);
+        int compact_len = serialize_stations_q_from_full(
+            compact_stations, station_snapshot_scratch.world_stations,
+            full_len);
+        payload = compact_len > 0 ? compact_stations :
+            station_snapshot_scratch.world_stations;
+        payload_len = (size_t)(compact_len > 0 ? compact_len : full_len);
+    } else if (step == WS_INITIAL_SYNC_CONTRACTS) {
+        int full_len = serialize_contracts(contracts, world.contracts);
+        int compact_len = serialize_contracts_q_from_full(
+            compact_contracts, contracts, full_len);
+        payload = compact_len > 0 ? compact_contracts : contracts;
+        payload_len = (size_t)(compact_len > 0 ? compact_len : full_len);
+    } else if (step == WS_INITIAL_SYNC_ASTEROIDS) {
+        if (sp->docked) {
+            ws_initial_sync_commit_for_player(runtime, pid, now_ms);
+            return;
+        }
+        ws_asteroid_sync_baseline_scratch_t *baseline =
+            &ws_asteroid_sync_baseline_scratch;
+        ws_asteroid_sync_baseline_copy_from_player(baseline, sp);
         int asteroids_q_len = 0;
         int asteroids8_q_len = 0;
-        int sync_len = serialize_asteroids_for_player_split_ext_state_budget_at_tick(
-            world_snapshot_scratch.asteroids,
-            world_snapshot_scratch.asteroids_q, &asteroids_q_len,
-            world_snapshot_scratch.asteroids8_q, &asteroids8_q_len,
-            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-            world.asteroids, sp->ship->pos,
-            sp->replication->asteroid_sent, sp->replication->asteroid_motion_sent_tick,
-            sp->replication->asteroid_motion_sent_pos,
-            sp->replication->asteroid_motion_sent_vel, sp->replication->asteroid_identity_sent_sig,
-            NULL, NULL, NULL,
-            world.tick,
-            asteroid_net_background_identity_budget_at_tick(world.tick));
-        if (sync_len > ASTEROID_MSG_HEADER)
-            ws_send(c, world_snapshot_scratch.asteroids, (size_t)sync_len);
-        if (asteroids8_q_len > ASTEROID8_Q_MSG_HEADER)
-            ws_send(c, world_snapshot_scratch.asteroids8_q,
-                    (size_t)asteroids8_q_len);
-        if (asteroids_q_len > ASTEROID_Q_MSG_HEADER)
-            ws_send(c, world_snapshot_scratch.asteroids_q,
-                    (size_t)asteroids_q_len);
-    }
-
-    send_highscores_to(c);
-
-    if (world.signal_channel.count > 0) {
+        int sync_len =
+            serialize_asteroids_for_player_split_ext_state_budget_at_tick(
+                world_snapshot_scratch.asteroids,
+                world_snapshot_scratch.asteroids_q, &asteroids_q_len,
+                world_snapshot_scratch.asteroids8_q, &asteroids8_q_len,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                world.asteroids, sp->ship->pos,
+                baseline->sent,
+                baseline->motion_sent_tick,
+                baseline->motion_sent_pos,
+                baseline->motion_sent_vel,
+                baseline->identity_sent_sig,
+                NULL, NULL, NULL, world.tick,
+                asteroid_net_background_identity_budget_at_tick(world.tick));
+        const uint8_t *payloads[3];
+        size_t payload_lengths[3];
+        size_t payload_count = 0u;
+        if (sync_len > ASTEROID_MSG_HEADER) {
+            payloads[payload_count] =
+                world_snapshot_scratch.asteroids;
+            payload_lengths[payload_count++] = (size_t)sync_len;
+        }
+        if (asteroids8_q_len > ASTEROID8_Q_MSG_HEADER) {
+            payloads[payload_count] =
+                world_snapshot_scratch.asteroids8_q;
+            payload_lengths[payload_count++] =
+                (size_t)asteroids8_q_len;
+        }
+        if (asteroids_q_len > ASTEROID_Q_MSG_HEADER) {
+            payloads[payload_count] =
+                world_snapshot_scratch.asteroids_q;
+            payload_lengths[payload_count++] =
+                (size_t)asteroids_q_len;
+        }
+        size_t aggregate_wire = 0u;
+        for (size_t i = 0u; i < payload_count; i++) {
+            size_t wire = ws_outbox_wire_bytes(payload_lengths[i]);
+            if (wire == SIZE_MAX ||
+                aggregate_wire > SIZE_MAX - wire) {
+                return;
+            }
+            aggregate_wire += wire;
+        }
+        if (payload_count > 0u) {
+            if (!ws_sync_pacer_can_send(
+                    &runtime->initial_sync.pacer, now_ms,
+                    aggregate_wire) ||
+                !ws_outbox_can_admit_reliable_batch(
+                    &runtime->outbox, payloads, payload_lengths,
+                    payload_count, c->send.len)) {
+                return;
+            }
+            for (size_t i = 0u; i < payload_count; i++) {
+                if (!ws_send(c, payloads[i], payload_lengths[i]))
+                    return;
+            }
+            if (!ws_sync_pacer_charge(
+                    &runtime->initial_sync.pacer, now_ms,
+                    aggregate_wire)) {
+                return;
+            }
+        }
+        ws_asteroid_sync_baseline_commit_to_player(sp, baseline);
+        ws_initial_sync_commit_for_player(runtime, pid, now_ms);
+        return;
+    } else if (step == WS_INITIAL_SYNC_HIGHSCORES) {
+        int len = highscore_serialize(highscores_buf, &highscores);
+        payload = highscores_buf;
+        payload_len = (size_t)len;
+    } else if (step == WS_INITIAL_SYNC_SIGNAL_CHANNEL) {
+        if (world.signal_channel.count <= 0) {
+            ws_initial_sync_commit_for_player(runtime, pid, now_ms);
+            return;
+        }
         size_t cap = (size_t)(3 +
             world.signal_channel.count * SIGNAL_CHANNEL_RECORD_SIZE);
         uint8_t *msg = (uint8_t *)malloc(cap);
-        if (msg) {
-            int len = serialize_signal_channel(msg, &world.signal_channel);
-            ws_send(c, msg, (size_t)len);
-            free(msg);
+        if (!msg) return;
+        int len = serialize_signal_channel(msg, &world.signal_channel);
+        if (ws_initial_sync_admit_frame(
+                runtime, c, msg, (size_t)len, now_ms)) {
+            ws_initial_sync_commit_for_player(runtime, pid, now_ms);
         }
+        free(msg);
+        return;
     }
+
+    if (!payload || payload_len == 0u) return;
+    if (ws_initial_sync_admit_frame(
+            runtime, c, payload, payload_len, now_ms)) {
+        if (step >= WS_INITIAL_SYNC_STATION_IDENTITY &&
+            step <= WS_INITIAL_SYNC_STATION_MANIFEST) {
+            ws_initial_station_note_generation(
+                runtime, step, station_index,
+                ws_initial_station_generation_for_step(
+                    step, station_index));
+        }
+        ws_initial_sync_commit_for_player(runtime, pid, now_ms);
+    }
+}
+
+static void ws_service_connection(struct mg_connection *c,
+                                  uint64_t now_ms) {
+    int pid = -1;
+    ws_client_runtime_t *runtime = ws_runtime_for_connection(c, &pid);
+    if (!runtime || c->is_closing) return;
+    if (c->is_draining) {
+        if (runtime->backpressure_close_deadline_ms != 0u &&
+            now_ms >= runtime->backpressure_close_deadline_ms) {
+            ws_log_backpressure_event(
+                "ws_backpressure_drain_timeout", pid, c,
+                runtime->outbox.close_reason);
+            c->is_closing = 1;
+        }
+        return;
+    }
+
+    ws_service_initial_sync(c, pid, now_ms);
+    if (runtime->outbox.frame_count > 0u) {
+        (void)ws_outbox_pump(
+            &runtime->outbox, c->send.len,
+            WS_OUTBOX_TRANSPORT_LIMIT_BYTES, now_ms,
+            ws_pump_scratch, sizeof(ws_pump_scratch),
+            ws_transport_send, c);
+    }
+
+    if (runtime->outbox.warning_active && !runtime->warning_logged) {
+        ws_log_backpressure_event(
+            "ws_backpressure_warning", pid, c, WS_OUTBOX_CLOSE_NONE);
+        runtime->warning_logged = true;
+    } else if (!runtime->outbox.pressure_active &&
+               runtime->warning_logged) {
+        ws_log_backpressure_event(
+            "ws_backpressure_recovered", pid, c, WS_OUTBOX_CLOSE_NONE);
+        runtime->warning_logged = false;
+    }
+
+    ws_outbox_close_reason_t reason = ws_outbox_check_timeouts(
+        &runtime->outbox, now_ms, c->send.len);
+    ws_runtime_collect(pid);
+    if (reason != WS_OUTBOX_CLOSE_NONE)
+        ws_close_for_backpressure(c, pid, reason);
+}
+
+static bool ws_replication_cycle_allowed(server_player_t *sp) {
+    if (!server_player_is_gameplay_ready(sp) || !sp->connection->conn)
+        return false;
+    struct mg_connection *c =
+        (struct mg_connection *)sp->connection->conn;
+    int pid = server_connection_player_slot(c);
+    if (pid < 0 || pid >= MAX_PLAYERS) return false;
+    ws_client_runtime_t *runtime = &ws_clients[pid];
+    if (!runtime->active || !runtime->session_bootstrap_complete)
+        return false;
+    if (ws_initial_sync_active(&runtime->initial_sync) ||
+        ws_outbox_should_suppress(&runtime->outbox, c->send.len)) {
+        force_player_authoritative_resync(sp);
+        return false;
+    }
+    if (ws_outbox_needs_resync(&runtime->outbox)) {
+        invalidate_player_authoritative_caches(sp);
+        force_player_authoritative_resync(sp);
+        ws_outbox_mark_resynced(&runtime->outbox);
+        uint64_t now_ms = mg_millis();
+        ws_initial_sync_begin(
+            &runtime->initial_sync, now_ms, MAX_STATIONS);
+        runtime->initial_started_ms = now_ms;
+        return false;
+    }
+    return true;
 }
 
 static void server_note_npc_identity_packet_sent(server_player_t *sp,
@@ -1511,7 +2581,8 @@ static bool ws_send_world_npcs_if_changed(struct mg_connection *c,
                                           uint32_t world_tick) {
     if (!c || !sp || !data) return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
+        if (!ws_send(c, data, len))
+            return false;
         server_note_npc_identity_packet_sent(sp, data, len, world_tick);
         sp->replication->world_npcs_last_sent_tick = world_tick;
         return true;
@@ -1527,14 +2598,20 @@ static bool ws_send_world_npcs_if_changed(struct mg_connection *c,
         net_tx_record_suppressed(data, len);
         return false;
     }
-    if (!net_payload_cache_should_send(&sp->replication->world_npcs_cache, c, data, len)) {
+    net_payload_cache_t cache_before =
+        sp->replication->world_npcs_cache;
+    if (!net_payload_cache_should_send(
+            &sp->replication->world_npcs_cache, c, data, len)) {
         net_tx_record_suppressed(data, len);
+        return false;
+    }
+    if (!ws_send(c, data, len)) {
+        sp->replication->world_npcs_cache = cache_before;
         return false;
     }
     sp->replication->world_npcs_semantic_hash = hash;
     sp->replication->world_npcs_semantic_valid = true;
     sp->replication->world_npcs_last_sent_tick = world_tick;
-    ws_send(c, data, len);
     server_note_npc_identity_packet_sent(sp, data, len, world_tick);
     return true;
 }
@@ -1891,16 +2968,24 @@ static bool ws_send_npc_motion_payload(struct mg_connection *c,
                                        uint32_t world_tick) {
     if (!c || !sp || !data || len <= NPC_MOTION_MSG_HEADER) return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
+        if (!ws_send(c, data, len))
+            return false;
     } else {
         if (ws_defer_snapshot_if_backpressured(c, data, len))
             return false;
-        if (!net_payload_cache_should_send(&sp->replication->world_npc_motion_cache,
-                                           c, data, len)) {
+        net_payload_cache_t cache_before =
+            sp->replication->world_npc_motion_cache;
+        if (!net_payload_cache_should_send(
+                &sp->replication->world_npc_motion_cache,
+                c, data, len)) {
             net_tx_record_suppressed(data, len);
             return false;
         }
-        ws_send(c, data, len);
+        if (!ws_send(c, data, len)) {
+            sp->replication->world_npc_motion_cache =
+                cache_before;
+            return false;
+        }
     }
     if (data[0] == NET_MSG_WORLD_NPC_POS_Q)
         server_note_npc_pos_packet_sent(sp, data, len, world_tick);
@@ -1991,8 +3076,9 @@ static void ws_send_world_npc_status_if_changed(struct mg_connection *c,
         return;
     }
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
-        sp->replication->world_npc_status_last_sent_tick = world_tick;
+        if (ws_send(c, data, len))
+            sp->replication->world_npc_status_last_sent_tick =
+                world_tick;
         return;
     }
     if (ws_defer_snapshot_if_backpressured(c, data, len))
@@ -2006,7 +3092,8 @@ static void ws_send_world_npc_status_if_changed(struct mg_connection *c,
         net_tx_record_suppressed(data, len);
         return;
     }
-    ws_send(c, data, len);
+    if (!ws_send(c, data, len))
+        return;
     cache->valid = true;
     cache->conn = c;
     cache->len = (uint16_t)len;
@@ -2021,7 +3108,8 @@ static bool ws_send_world_interactions_if_changed(struct mg_connection *c,
                                                   uint32_t world_tick) {
     if (!c || !sp || !data) return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
+        if (!ws_send(c, data, len))
+            return false;
         sp->replication->world_interactions_last_sent_tick = world_tick;
         return true;
     }
@@ -2039,15 +3127,21 @@ static bool ws_send_world_interactions_if_changed(struct mg_connection *c,
             sp->replication->world_interaction_drift_block_tick = world_tick;
         return false;
     }
-    if (!net_payload_cache_should_send(&sp->replication->world_interactions_cache,
-                                       c, data, len)) {
+    net_payload_cache_t cache_before =
+        sp->replication->world_interactions_cache;
+    if (!net_payload_cache_should_send(
+            &sp->replication->world_interactions_cache,
+            c, data, len)) {
         net_tx_record_suppressed(data, len);
+        return false;
+    }
+    if (!ws_send(c, data, len)) {
+        sp->replication->world_interactions_cache = cache_before;
         return false;
     }
     sp->replication->world_interactions_semantic_hash = hash;
     sp->replication->world_interactions_semantic_valid = true;
     sp->replication->world_interactions_last_sent_tick = world_tick;
-    ws_send(c, data, len);
     return true;
 }
 
@@ -2072,18 +3166,26 @@ static void ws_send_world_interaction_drift_if_changed(struct mg_connection *c,
         return;
     }
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
-        sp->replication->world_interaction_drift_last_sent_tick = world_tick;
+        if (ws_send(c, data, len))
+            sp->replication->world_interaction_drift_last_sent_tick =
+                world_tick;
         return;
     }
     if (ws_defer_snapshot_if_backpressured(c, data, len))
         return;
-    if (!net_payload_cache_should_send(&sp->replication->world_interaction_drift_cache,
-                                       c, data, len)) {
+    net_payload_cache_t cache_before =
+        sp->replication->world_interaction_drift_cache;
+    if (!net_payload_cache_should_send(
+            &sp->replication->world_interaction_drift_cache,
+            c, data, len)) {
         net_tx_record_suppressed(data, len);
         return;
     }
-    ws_send(c, data, len);
+    if (!ws_send(c, data, len)) {
+        sp->replication->world_interaction_drift_cache =
+            cache_before;
+        return;
+    }
     sp->replication->world_interaction_drift_last_sent_tick = world_tick;
 }
 
@@ -2323,7 +3425,8 @@ static bool ws_send_world_cargo_pods_if_changed(struct mg_connection *c,
                                                 uint32_t world_tick) {
     if (!c || !sp || !data) return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
+        if (!ws_send(c, data, len))
+            return false;
         server_note_cargo_pod_identity_packet_sent(sp, data, len, world_tick);
         sp->replication->world_cargo_pods_last_sent_tick = world_tick;
         return true;
@@ -2339,15 +3442,21 @@ static bool ws_send_world_cargo_pods_if_changed(struct mg_connection *c,
         net_tx_record_suppressed(data, len);
         return false;
     }
-    if (!net_payload_cache_should_send(&sp->replication->world_cargo_pods_cache,
-                                       c, data, len)) {
+    net_payload_cache_t cache_before =
+        sp->replication->world_cargo_pods_cache;
+    if (!net_payload_cache_should_send(
+            &sp->replication->world_cargo_pods_cache,
+            c, data, len)) {
         net_tx_record_suppressed(data, len);
+        return false;
+    }
+    if (!ws_send(c, data, len)) {
+        sp->replication->world_cargo_pods_cache = cache_before;
         return false;
     }
     sp->replication->world_cargo_pods_semantic_hash = hash;
     sp->replication->world_cargo_pods_semantic_valid = true;
     sp->replication->world_cargo_pods_last_sent_tick = world_tick;
-    ws_send(c, data, len);
     server_note_cargo_pod_identity_packet_sent(sp, data, len, world_tick);
     return true;
 }
@@ -2360,16 +3469,24 @@ static bool ws_send_cargo_pod_motion_payload(struct mg_connection *c,
     if (!c || !sp || !data || len <= CARGO_POD_MOTION_MSG_HEADER)
         return false;
     if (len > UINT16_MAX) {
-        ws_send(c, data, len);
+        if (!ws_send(c, data, len))
+            return false;
     } else {
         if (ws_defer_snapshot_if_backpressured(c, data, len))
             return false;
-        if (!net_payload_cache_should_send(&sp->replication->world_cargo_pod_motion_cache,
-                                           c, data, len)) {
+        net_payload_cache_t cache_before =
+            sp->replication->world_cargo_pod_motion_cache;
+        if (!net_payload_cache_should_send(
+                &sp->replication->world_cargo_pod_motion_cache,
+                c, data, len)) {
             net_tx_record_suppressed(data, len);
             return false;
         }
-        ws_send(c, data, len);
+        if (!ws_send(c, data, len)) {
+            sp->replication->world_cargo_pod_motion_cache =
+                cache_before;
+            return false;
+        }
     }
     if (data[0] == NET_MSG_WORLD_CARGO_POD_LINEAR_Q)
         server_note_cargo_pod_linear_packet_sent(sp, data, len, world_tick);
@@ -2507,7 +3624,16 @@ static void broadcast_except(int exclude, const void *data, size_t len) {
 }
 
 static void broadcast_fracture_updates(void) {
-    server_emit_fracture_updates(&world, -1, ws_player_packet_sink, NULL);
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        server_player_t *sp = &world.players[p];
+        if (!server_player_is_gameplay_ready(sp) ||
+            !sp->connection->conn ||
+            !ws_replication_cycle_allowed(sp)) {
+            continue;
+        }
+        server_emit_fracture_updates(
+            &world, p, ws_player_packet_sink, NULL);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2536,53 +3662,276 @@ static bool ws_rate_bucket_allow(ws_rate_bucket_t *bucket, uint64_t now,
     return ++bucket->msg_count <= limit;
 }
 
-static bool ws_message_allowed_before_session(uint8_t type) {
-    switch (type) {
-    case NET_MSG_LATENCY_PING:
-    case NET_MSG_CLIENT_METRICS:
-    case NET_MSG_REGISTER_PUBKEY:
-    case NET_MSG_PROVE_PUBKEY:
-    case NET_MSG_SESSION:
-        return true;
-    default:
+static void select_generation_players(
+    bool save_player_slot[MAX_PLAYERS]);
+static void wait_for_persistence_writer_result(uint64_t now);
+static void reject_ws_authentication(
+    struct mg_connection *c, int pid, const char *reason);
+static bool complete_ws_session_bootstrap_if_ready(
+    struct mg_connection *c, int pid, uint64_t now);
+
+static void send_legacy_recovery_result(
+    struct mg_connection *c,
+    int pid,
+    legacy_recovery_result_status_t status) {
+    uint8_t result[NET_LEGACY_RECOVERY_RESULT_SIZE];
+    int result_len = legacy_recovery_serialize_result(result, status);
+    if (!legacy_recovery_audit_append(".", status)) {
+        fprintf(stderr,
+                "[recovery] bearer-free audit append failed status=%s\n",
+                legacy_recovery_result_name(status));
+    }
+    if (c && result_len == NET_LEGACY_RECOVERY_RESULT_SIZE)
+        (void)ws_send(c, result, (size_t)result_len);
+    printf("[recovery] player=%d status=%s\n",
+           pid, legacy_recovery_result_name(status));
+}
+
+/*
+ * A recovery claimant is deliberately kept out of the finalized registry,
+ * ledger, ship, and character domains. Terminal failure can therefore erase
+ * the unpublished slot exactly, then release the persistence pause.
+ */
+static void abort_legacy_recovery_session(
+    struct mg_connection *c, int pid, const char *reason) {
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    printf("[server] player %d: recovery session ended (%s)\n",
+           pid, reason ? reason : "unknown");
+    ws_client_runtime_t *runtime = &ws_clients[pid];
+    if (c && runtime->active &&
+        runtime->outbox.frame_count > 0u) {
+        (void)ws_outbox_pump(
+            &runtime->outbox, c->send.len,
+            WS_OUTBOX_TRANSPORT_LIMIT_BYTES, mg_millis(),
+            ws_pump_scratch, sizeof(ws_pump_scratch),
+            ws_transport_send, c);
+    }
+    if (c && !c->is_closing && !c->is_draining) {
+        if (mg_ws_send(c, NULL, 0, WEBSOCKET_OP_CLOSE) > 0)
+            c->is_draining = 1;
+        else
+            c->is_closing = 1;
+    }
+    ws_runtime_release(pid, mg_millis());
+    if (!world_player_abort_provisional_legacy_recovery(
+            &world, pid)) {
+        /*
+         * Do not resume autosave if an invariant violation left provisional
+         * authority behind. A clean restart from the last generation is
+         * safer than serializing an uncommitted claimant.
+         */
+        fprintf(stderr,
+                "[FATAL] recovery claimant %d acquired authoritative state "
+                "before commit\n", pid);
+        persistence_recovery_invariant_failed = true;
+        running = 0;
+        return;
+    }
+    persistence_save_requested = true;
+}
+
+static bool offer_legacy_recovery_if_present(
+    struct mg_connection *c,
+    int pid,
+    uint64_t now,
+    bool *out_offered) {
+    if (out_offered) *out_offered = false;
+    if (!c || pid < 0 || pid >= MAX_PLAYERS) return false;
+    server_player_t *sp = &world.players[pid];
+    ws_client_runtime_t *runtime = &ws_clients[pid];
+    if (!runtime->active ||
+        runtime->connection_generation == 0 ||
+        sp->connection->conn != c ||
+        !server_player_can_use_pubkey_persistence(sp)) {
         return false;
+    }
+
+    legacy_recovery_source_status_t source_status =
+        legacy_recovery_source_probe(
+            PERSISTENCE_GENERATION_DIR, PLAYER_SAVE_DIR,
+            sp->session_token, sp->pubkey);
+    if (source_status == LEGACY_RECOVERY_SOURCE_NO_MATCH) {
+        legacy_recovery_offer_clear(
+            &runtime->legacy_recovery_offer);
+        sp->legacy_recovery_save_pending = false;
+        return true;
+    }
+
+    /*
+     * Invalid and conflicting canonical nodes are still surfaced only as a
+     * bounded result after the authenticated owner confirms.  Until then,
+     * keep ordinary autosave from creating/replacing the pubkey destination.
+     */
+    sp->legacy_recovery_save_pending = true;
+    if (!legacy_recovery_offer_issue(
+            &runtime->legacy_recovery_offer,
+            &world, pid, runtime->connection_generation,
+            now, LEGACY_RECOVERY_DEFAULT_TTL_MS)) {
+        return false;
+    }
+    uint8_t packet[NET_LEGACY_RECOVERY_OFFER_SIZE];
+    int packet_len = legacy_recovery_serialize_offer(
+        packet, &runtime->legacy_recovery_offer, now);
+    if (packet_len != NET_LEGACY_RECOVERY_OFFER_SIZE ||
+        !ws_send(c, packet, (size_t)packet_len)) {
+        legacy_recovery_offer_clear(
+            &runtime->legacy_recovery_offer);
+        return false;
+    }
+    if (out_offered) *out_offered = true;
+    printf("[recovery] player=%d opaque offer issued\n", pid);
+    return true;
+}
+
+static void handle_verified_legacy_recovery(
+    struct mg_connection *c,
+    int pid,
+    uint64_t now,
+    uint64_t nonce,
+    const uint8_t *payload,
+    uint16_t payload_len) {
+    if (!c || pid < 0 || pid >= MAX_PLAYERS) return;
+    ws_client_runtime_t *runtime = &ws_clients[pid];
+    legacy_recovery_result_status_t status =
+        legacy_recovery_offer_begin(
+            &runtime->legacy_recovery_offer,
+            &world, pid, runtime->connection_generation,
+            now, payload, payload_len);
+    if (status != LEGACY_RECOVERY_RESULT_SUCCESS) {
+        send_legacy_recovery_result(c, pid, status);
+        abort_legacy_recovery_session(
+            c, pid, "legacy recovery confirmation rejected");
+        return;
+    }
+
+    bool save_player_slot[MAX_PLAYERS];
+    wait_for_persistence_writer_result(now);
+    select_generation_players(save_player_slot);
+    save_player_slot[pid] = true;
+    persistence_generation_paths_t published = {0};
+    status = legacy_recovery_execute(
+        &world, pid, nonce,
+        PERSISTENCE_GENERATION_DIR, PLAYER_SAVE_DIR,
+        save_player_slot,
+        PERSISTENCE_GENERATION_FAULT_NONE,
+        &published);
+    legacy_recovery_offer_finish(
+        &runtime->legacy_recovery_offer);
+
+    if (status == LEGACY_RECOVERY_RESULT_SUCCESS) {
+        int n = snprintf(active_player_save_dir,
+                         sizeof(active_player_save_dir), "%s",
+                         published.player_dir);
+        if (n <= 0 ||
+            (size_t)n >= sizeof(active_player_save_dir)) {
+            fprintf(stderr,
+                    "[FATAL] recovered player generation path is too long\n");
+            running = 0;
+        }
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            server_player_t *player = &world.players[p];
+            if (!player->connected || !player->replication) continue;
+            invalidate_player_authoritative_caches(player);
+            force_player_authoritative_resync(player);
+        }
+        for (int s = 0; s < MAX_STATIONS; s++)
+            station_identity_dirty[s] = true;
+        station_econ_dirty = true;
+        contracts_dirty = true;
+        persistence_save_requested = false;
+        persistence_retry_not_before_ms = 0;
+        if (!complete_ws_session_bootstrap_if_ready(
+                c, pid, now)) {
+            fprintf(stderr,
+                    "[server] recovered player %d could not publish "
+                    "its live session\n", pid);
+        }
+        printf("[recovery] published generation %" PRIu64 "\n",
+               published.generation);
+    }
+    send_legacy_recovery_result(c, pid, status);
+    if (status != LEGACY_RECOVERY_RESULT_SUCCESS) {
+        abort_legacy_recovery_session(
+            c, pid, "legacy recovery migration failed");
     }
 }
 
-static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
+static bool finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
                                               uint64_t now,
                                               bool preserve_live_state) {
-    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    if (pid < 0 || pid >= MAX_PLAYERS) return false;
     server_player_t *sp = &world.players[pid];
-    if (!server_player_can_use_pubkey_persistence(sp)) return;
-    if (sp->pubkey_identity_finalized) return;
+    if (!server_player_can_use_pubkey_persistence(sp)) return true;
+    if (sp->pubkey_identity_finalized) return true;
+    if (sp->legacy_recovery_save_pending) return true;
 
     const uint8_t *pk = sp->pubkey;
     bool transferred_live_state = false;
     int existing = registry_lookup_by_pubkey(&world, pk);
+    bool canonical_destination_exists = false;
+    bool recovery_source_absent = false;
+    bool preserve_requested =
+        preserve_live_state ||
+        sp->preserve_live_state_on_pubkey_finalize;
+    if (existing < 0 && !preserve_requested) {
+        legacy_recovery_source_status_t destination_status =
+            legacy_recovery_destination_probe(
+                PERSISTENCE_GENERATION_DIR, PLAYER_SAVE_DIR, pk);
+        if (destination_status == LEGACY_RECOVERY_SOURCE_INVALID)
+            return false;
+        canonical_destination_exists =
+            destination_status ==
+                LEGACY_RECOVERY_SOURCE_DESTINATION_CONFLICT;
+        if (destination_status == LEGACY_RECOVERY_SOURCE_NO_MATCH) {
+            legacy_recovery_source_status_t source_status =
+                legacy_recovery_source_probe(
+                    PERSISTENCE_GENERATION_DIR, PLAYER_SAVE_DIR,
+                    sp->session_token, pk);
+            if (source_status != LEGACY_RECOVERY_SOURCE_NO_MATCH) {
+                bool offered = false;
+                if (!offer_legacy_recovery_if_present(
+                        c, pid, now, &offered) ||
+                    !offered) {
+                    return false;
+                }
+                /*
+                 * No player ship, registry row, ledger migration, ownership,
+                 * or gameplay publication exists until confirmation commits
+                 * the detached candidate.
+                */
+                return true;
+            }
+            recovery_source_absent = true;
+        }
+    }
+    /* A fresh identity must reserve bounded registry capacity before any
+     * ship activation. An existing exact identity already owns a registry
+     * slot; leave its old token binding intact until state transfer succeeds
+     * so a failed transfer cannot strand the live identity behind a new
+     * token. */
+    if (existing < 0 &&
+        !server_finalize_pubkey_identity(&world, pid)) {
+        return false;
+    }
     if (existing >= 0 && existing != pid) {
         server_player_t *old = &world.players[existing];
-        bool session_token_changed =
-            memcmp(old->session_token, sp->session_token, 8) != 0;
+        /* Heal the bounded legacy economy locator before moving live state.
+         * Bearer sessions are never promoted into durable ownership. */
+        if (!world_migrate_legacy_ledger_to_pubkey(
+                &world, old->session_token, sp->pubkey)) {
+            return false;
+        }
         if (world_player_transfer_ship_state(&world, pid, existing)) {
+            /* Updating an existing exact-key binding cannot consume new
+             * capacity. Roll the ship transfer back defensively if the
+             * registry invariant is ever violated. */
+            if (!server_finalize_pubkey_identity(&world, pid)) {
+                (void)world_player_transfer_ship_state(
+                    &world, existing, pid);
+                return false;
+            }
             struct mg_connection *old_conn =
                 (struct mg_connection *)old->connection->conn;
-            if (session_token_changed) {
-                uint8_t old_pseudo[32] = {0};
-                uint8_t new_pseudo[32] = {0};
-                memcpy(old_pseudo, old->session_token, 8);
-                memcpy(new_pseudo, sp->session_token, 8);
-                for (int s = 0; s < MAX_STATIONS; s++) {
-                    station_t *st = &world.stations[s];
-                    for (int e = 0; e < st->ledger_count; e++) {
-                        if (memcmp(st->ledger[e].player_pubkey,
-                                   old_pseudo, 32) == 0) {
-                            memcpy(st->ledger[e].player_pubkey,
-                                   new_pseudo, 32);
-                        }
-                    }
-                }
-            }
 
             old->connected = false;
             world_character_unbind_player(&world, existing);
@@ -2590,6 +3939,7 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
             old->connection->conn = NULL;
             server_player_clear_live_session_identity(old);
             server_player_clear_transient_input(old);
+            ws_runtime_release(existing, now);
             if (old_conn && old_conn != c) {
                 mg_ws_send(old_conn, NULL, 0, WEBSOCKET_OP_CLOSE);
                 old_conn->is_closing = 1;
@@ -2599,44 +3949,237 @@ static void finalize_verified_pubkey_identity(struct mg_connection *c, int pid,
             transferred_live_state = true;
             printf("[server] player %d: pubkey reconnect (was slot %d)\n",
                    pid, existing);
+        } else {
+            return false;
         }
     }
 
-    (void)server_finalize_pubkey_identity(&world, pid);
+    if (!sp->ship) {
+        player_init_ship(sp, &world);
+        if (!sp->ship) return false;
+    }
     printf("[server] player %d: verified pubkey %02x%02x%02x%02x...\n",
            pid, pk[0], pk[1], pk[2], pk[3]);
     analytics_log_player_event("player_identity", pid, sp, now, 0);
 
-    bool keep_live_state = preserve_live_state || transferred_live_state ||
-                           sp->preserve_live_state_on_pubkey_finalize;
+    bool keep_live_state =
+        preserve_requested || transferred_live_state;
     sp->preserve_live_state_on_pubkey_finalize = false;
 
     if (keep_live_state) {
         server_player_reset_input_stream(sp);
         force_player_authoritative_resync(sp);
         printf("[server] player %d: kept live pubkey reconnect state\n", pid);
-    } else if (player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
+    } else if (player_load_by_pubkey(
+                   sp, &world, active_player_save_dir, pk)) {
         printf("[server] player %d: restored save by pubkey\n", pid);
     } else {
-        char prefixes[LEGACY_SAVES_MAX_LIST][LEGACY_SAVES_PREFIX_LEN + 1];
-        char names[LEGACY_SAVES_MAX_LIST][64];
-        int n = player_save_list_legacy(PLAYER_SAVE_DIR, prefixes, names,
-                                        LEGACY_SAVES_MAX_LIST);
-        if (n > 0) {
-            uint8_t buf[LEGACY_SAVES_HEADER +
-                        LEGACY_SAVES_MAX_LIST * LEGACY_SAVES_PREFIX_LEN];
-            buf[0] = NET_MSG_LEGACY_SAVES_AVAILABLE;
-            buf[1] = (uint8_t)n;
-            for (int i = 0; i < n; i++) {
-                memcpy(&buf[LEGACY_SAVES_HEADER + i * LEGACY_SAVES_PREFIX_LEN],
-                       prefixes[i], LEGACY_SAVES_PREFIX_LEN);
+        /*
+         * Recovery is decided before finalization. A destination that was
+         * present but failed to decode is a corrupt canonical save, not
+         * permission to fall back to bearer state after global mutation.
+         */
+        if (canonical_destination_exists ||
+            (!preserve_requested && existing < 0 &&
+             !recovery_source_absent)) {
+            return false;
+        }
+        player_seed_credits(sp, &world);
+    }
+    return true;
+}
+
+static void reject_ws_authentication(struct mg_connection *c, int pid,
+                                     const char *reason) {
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    server_player_t *sp = &world.players[pid];
+    bool was_published = ws_clients[pid].session_bootstrap_complete;
+    printf("[server] player %d: authentication failed (%s)\n",
+           pid, reason ? reason : "unknown");
+
+    if (was_published) {
+        if (ws_clients[pid].pubkey_upgrade_from_published_token)
+            (void)server_player_abandon_pending_pubkey_identity(sp);
+        if (server_player_has_live_session(sp)) {
+            if (c && !c->is_closing && !c->is_draining) {
+                if (mg_ws_send(c, NULL, 0, WEBSOCKET_OP_CLOSE) > 0)
+                    c->is_draining = 1;
+                else
+                    c->is_closing = 1;
             }
-            ws_send(c, buf,
-                    (size_t)(LEGACY_SAVES_HEADER + n * LEGACY_SAVES_PREFIX_LEN));
-            printf("[server] player %d: advertised %d legacy save(s)\n",
-                   pid, n);
+            persistence_save_requested = true;
+            sp->connection->conn = NULL;
+            sp->grace_period = true;
+            sp->grace_timer = 30.0f;
+            server_player_clear_transient_input(sp);
+            ws_runtime_release(pid, mg_millis());
+            printf("[server] player %d: published session preserved in "
+                   "grace after authentication failure\n", pid);
+            return;
         }
     }
+
+    /* No published identity exists: clear the provisional auth state and
+     * release the transport slot immediately. */
+    server_player_clear_live_session_identity(sp);
+    sp->connected = false;
+    if (c && !c->is_closing && !c->is_draining) {
+        if (mg_ws_send(c, NULL, 0, WEBSOCKET_OP_CLOSE) > 0)
+            c->is_draining = 1;
+        else
+            c->is_closing = 1;
+    }
+    reset_player_slot_for_reuse(pid);
+}
+
+/*
+ * One transport gets one bounded recovery opportunity. Expiry closes the
+ * connection, erases the unpublished claimant, and only then ends the global
+ * pause. A reconnect gets a fresh proof- and connection-bound offer.
+ */
+static void service_legacy_recovery_offers(uint64_t now) {
+    for (int pid = 0; pid < MAX_PLAYERS; pid++) {
+        ws_client_runtime_t *runtime = &ws_clients[pid];
+        server_player_t *sp = &world.players[pid];
+        if (!runtime->active ||
+            !sp->legacy_recovery_save_pending ||
+            !sp->connection->conn) {
+            continue;
+        }
+        legacy_recovery_offer_t *offer =
+            &runtime->legacy_recovery_offer;
+        if (!legacy_recovery_offer_expired(offer, now))
+            continue;
+        struct mg_connection *c =
+            (struct mg_connection *)sp->connection->conn;
+        legacy_recovery_offer_clear(offer);
+        send_legacy_recovery_result(
+            c, pid, LEGACY_RECOVERY_RESULT_STALE_OFFER);
+        abort_legacy_recovery_session(
+            c, pid, "legacy recovery offer expired");
+    }
+}
+
+static bool complete_ws_session_bootstrap_if_ready(
+    struct mg_connection *c, int pid, uint64_t now) {
+    if (!c || pid < 0 || pid >= MAX_PLAYERS) return false;
+    server_player_t *sp = &world.players[pid];
+    ws_client_runtime_t *runtime = &ws_clients[pid];
+    if (!runtime->active || sp->connection->conn != c) return false;
+    if (!sp->session_ready) return true;
+
+    /* Token-only SESSION remains an intentional compatibility mode. A client
+     * that also REGISTERs a pubkey must enter the challenge path before its
+     * registered session is considered live. REGISTER-first is the normal
+     * client order; a later REGISTER upgrades an already-live legacy session
+     * and fails closed if the auth challenge cannot be established. */
+    if (sp->pubkey_set && !sp->pubkey_challenge_issued) {
+        uint8_t challenge[PUBKEY_CHALLENGE_MSG_SIZE] = {
+            NET_MSG_PUBKEY_CHALLENGE
+        };
+        if (!server_issue_pubkey_challenge(&world, pid, &challenge[1])) {
+            reject_ws_authentication(c, pid, "secure entropy unavailable");
+            return false;
+        }
+        /* PUBKEY_CHALLENGE is CONTROL-class. A successful return proves it
+         * was admitted to reserved queue capacity before a registered client
+         * reaches save restore, gameplay publication, or persistence. */
+        if (!ws_send(c, challenge, sizeof(challenge))) {
+            reject_ws_authentication(c, pid, "challenge enqueue rejected");
+            return false;
+        }
+    }
+    if (sp->pubkey_set &&
+        (!sp->pubkey_proof_ok || !sp->pubkey_challenge_consumed)) {
+        return true;
+    }
+    if (runtime->session_bootstrap_complete) {
+        if (!finalize_verified_pubkey_identity(
+                c, pid, now,
+                runtime->pubkey_upgrade_from_published_token)) {
+            reject_ws_authentication(c, pid, "pubkey finalization failed");
+            return false;
+        }
+        runtime->pubkey_upgrade_from_published_token = false;
+        return true;
+    }
+
+    const uint8_t *token = sp->session_token;
+    bool reattach_identity_conflict = false;
+    int reattach = server_find_session_reattach_slot(
+        &world, pid, &reattach_identity_conflict);
+    if (reattach_identity_conflict) {
+        reject_ws_authentication(
+            c, pid, "session token belongs to another identity");
+        return false;
+    }
+    bool reattached_live_state = false;
+    if (reattach >= 0) {
+        server_player_t *old = &world.players[reattach];
+        struct mg_connection *old_conn =
+            (struct mg_connection *)old->connection->conn;
+        if (!world_player_transfer_ship_state(&world, pid, reattach)) {
+            reject_ws_authentication(c, pid, "session reattach failed");
+            return false;
+        }
+        old->connected = false;
+        world_character_unbind_player(&world, reattach);
+        old->grace_period = false;
+        old->connection->conn = NULL;
+        server_player_clear_live_session_identity(old);
+        server_player_clear_transient_input(old);
+        ws_runtime_release(reattach, now);
+        if (old_conn && old_conn != c) {
+            mg_ws_send(old_conn, NULL, 0, WEBSOCKET_OP_CLOSE);
+            old_conn->is_closing = 1;
+        }
+        uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)reattach };
+        broadcast(leave_old, 2);
+        printf("[server] player %d: reconnected (was slot %d)\n",
+               pid, reattach);
+        reattached_live_state = true;
+        sp->preserve_live_state_on_pubkey_finalize = true;
+    } else if (!server_player_can_use_pubkey_persistence(sp)) {
+        player_init_ship(sp, &world);
+        if (!sp->ship) {
+            reject_ws_authentication(c, pid, "ship initialization failed");
+            return false;
+        }
+        if (player_load_by_token(
+                sp, &world, active_player_save_dir, token)) {
+            printf("[server] player %d: restored save by session\n", pid);
+        } else {
+            printf("[server] player %d: no save for session, fresh ship\n", pid);
+        }
+        player_seed_credits(sp, &world);
+    }
+
+    if (!finalize_verified_pubkey_identity(
+            c, pid, now, reattached_live_state)) {
+        reject_ws_authentication(c, pid, "pubkey finalization failed");
+        return false;
+    }
+    sp = &world.players[pid];
+    if (sp->legacy_recovery_save_pending)
+        return true;
+    if (!sp->ship) {
+        reject_ws_authentication(c, pid, "missing authenticated ship");
+        return false;
+    }
+    server_player_reset_input_stream(sp);
+    invalidate_player_authoritative_caches(sp);
+    (void)server_emit_authoritative_player_state_snapshot(
+        sp, (uint8_t)pid, world.tick, ws_packet_sink, c);
+    sp->replication->force_authoritative_resync = false;
+    sp->pending_action_result_valid = false;
+    ws_initial_sync_begin(&runtime->initial_sync, now, MAX_STATIONS);
+    runtime->initial_started_ms = now;
+    runtime->session_bootstrap_complete = true;
+    uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };
+    broadcast_except(pid, join_msg, 2);
+    analytics_record_activity(sp, now);
+    analytics_log_player_event("player_session", pid, sp, now, 0);
+    return true;
 }
 
 static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm) {
@@ -2650,6 +4193,19 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     int len = (int)wm->data.len;
     if (len < 1) return;
     uint8_t type = data[0];
+
+    /*
+     * Retired arbitrary-basename recovery packets are inert before rate,
+     * analytics, authentication, filesystem, or authoritative-state paths.
+     * Keep this ahead of all mutable connection bookkeeping so rejection is
+     * byte-neutral for live game state as well as disk.
+     */
+    if (type == NET_MSG_CLAIM_LEGACY_SAVE) {
+        server_legacy_save_claim_result_t result;
+        (void)server_dispatch_legacy_save_claim_message(
+            &world, pid, data, len, &result);
+        return;
+    }
 
     /* Rate limit: silently drop excess messages. Latency probes have a
      * separate tiny bucket so input/action bursts cannot starve ping samples. */
@@ -2665,7 +4221,12 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
 
     analytics_record_activity(&world.players[pid], now);
     if (!server_player_has_live_session(&world.players[pid]) &&
-        !ws_message_allowed_before_session(type)) {
+        !net_message_allowed_before_session(type)) {
+        return;
+    }
+    if (world.players[pid].legacy_recovery_save_pending &&
+        type != NET_MSG_SIGNED_ACTION &&
+        type != NET_MSG_LATENCY_PING) {
         return;
     }
 
@@ -2815,6 +4376,22 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             &action_type, &nonce, &payload, &payload_len);
         if (res != SIGNED_ACTION_OK) {
             signed_action_reject_count++;
+            if (res == SIGNED_ACTION_REJECT_REPLAY &&
+                len == SIGNED_ACTION_HEADER_SIZE +
+                       LEGACY_RECOVERY_OFFER_ID_SIZE +
+                       SIGNED_ACTION_SIG_SIZE &&
+                data[9] ==
+                    SIGNED_ACTION_RECOVER_LEGACY_SAVE &&
+                data[10] ==
+                    LEGACY_RECOVERY_OFFER_ID_SIZE &&
+                data[11] == 0) {
+                legacy_recovery_offer_finish(
+                    &ws_clients[pid].legacy_recovery_offer);
+                send_legacy_recovery_result(
+                    c, pid, LEGACY_RECOVERY_RESULT_REPLAY);
+                abort_legacy_recovery_session(
+                    c, pid, "legacy recovery replay rejected");
+            }
             const char *reason = "unknown";
             switch (res) {
             case SIGNED_ACTION_REJECT_NO_PUBKEY:    reason = "no-pubkey"; break;
@@ -2829,18 +4406,40 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                    reason, pid, pk[0], pk[1], pk[2], pk[3]);
             break;
         }
+        if (world.players[pid].legacy_recovery_save_pending &&
+            action_type != SIGNED_ACTION_RECOVER_LEGACY_SAVE) {
+            signed_action_reject_count++;
+            printf("[server] signed-action rejected "
+                   "(recovery-pending) from player %d\n", pid);
+            break;
+        }
+        signed_action_count++;
+        if (action_type ==
+            SIGNED_ACTION_RECOVER_LEGACY_SAVE) {
+            /*
+             * Recovery commits its nonce in the detached candidate so the
+             * pre-commit live state stays untouched.  Rejected offers and
+             * failed migrations consume only their opaque one-time offer;
+             * their nonce high-water mark remains byte-identical.
+             */
+            handle_verified_legacy_recovery(
+                c, pid, now, nonce, payload, payload_len);
+            break;
+        }
         /* Verified — commit the nonce high-water mark BEFORE dispatch
          * so a faulting handler can't clear the replay protection. */
         world.players[pid].last_signed_nonce = nonce;
-        signed_action_count++;
         server_signed_action_dispatch_result_t dispatch_result;
         if (server_dispatch_signed_action_payload(
                 &world, pid, action_type, payload, payload_len,
-                ws_cargo_receipt_chain_sink, c, &dispatch_result) &&
-            dispatch_result.station_identity_dirty >= 0 &&
-            dispatch_result.station_identity_dirty < MAX_STATIONS) {
-            station_identity_dirty[dispatch_result.station_identity_dirty] =
-                true;
+                ws_cargo_receipt_chain_sink, c, &dispatch_result)) {
+            if (dispatch_result.station_identity_dirty >= 0 &&
+                dispatch_result.station_identity_dirty < MAX_STATIONS) {
+                station_identity_dirty[
+                    dispatch_result.station_identity_dirty] = true;
+            }
+            send_immediate_pod_present_result(
+                c, pid, &dispatch_result);
         }
         break;
     }
@@ -2850,12 +4449,21 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
          * waits for NET_MSG_PROVE_PUBKEY. */
     {
         server_pubkey_register_result_t result;
-        if (server_dispatch_register_pubkey_message(&world, pid, data, len,
-                                                    &result)) {
-            if (result.same_pubkey) {
-                finalize_verified_pubkey_identity(c, pid, now, false);
-                break;
-            }
+        bool begins_published_token_upgrade =
+            ws_clients[pid].session_bootstrap_complete &&
+            !world.players[pid].pubkey_set;
+        if (!server_dispatch_register_pubkey_message(
+                &world, pid, data, len, &result)) {
+            if (result.conflicting_pubkey)
+                reject_ws_authentication(
+                    c, pid, "conflicting pubkey registration");
+            break;
+        }
+        if (begins_published_token_upgrade && !result.same_pubkey)
+            ws_clients[pid].pubkey_upgrade_from_published_token = true;
+        if (!complete_ws_session_bootstrap_if_ready(c, pid, now))
+            break;
+        if (!result.same_pubkey) {
             printf("[server] player %d: registered pubkey pending proof %02x%02x%02x%02x...\n",
                    pid, result.pubkey[0], result.pubkey[1],
                    result.pubkey[2], result.pubkey[3]);
@@ -2868,154 +4476,40 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         if (server_dispatch_pubkey_proof_message(&world, pid, data, len,
                                                  &result) &&
             result.verified) {
-            finalize_verified_pubkey_identity(c, pid, now, false);
+            (void)complete_ws_session_bootstrap_if_ready(c, pid, now);
+        } else if (server_pubkey_proof_status_requires_disconnect(
+                       result.status)) {
+            reject_ws_authentication(
+                c, pid, "legacy v1 pubkey proof on protocol v3");
         } else if (result.status != SERVER_PUBKEY_PROOF_MALFORMED) {
             printf("[server] player %d: pubkey proof rejected (%s)\n",
                    pid, server_pubkey_proof_status_name(result.status));
         }
         break;
     }
-    case NET_MSG_CLAIM_LEGACY_SAVE: {
-        /* Layer A.4 of #479. Client supplies (token_hex, signature). We
-         * verify sig against the registered pubkey, then rename the
-         * legacy save to the pubkey-keyed path and load it. */
-        if (len < 2) break;
-        server_player_t *sp = &world.players[pid];
-        if (!server_player_can_use_pubkey_persistence(sp)) break;
-        uint8_t hex_len = data[1];
-        if (hex_len == 0 || hex_len > 64) break;
-        if (len < (int)(2 + hex_len + SIGNED_ACTION_SIG_SIZE)) break;
-        const uint8_t *hex = &data[2];
-        const uint8_t *sig = &data[2 + hex_len];
-
-        /* Reject any non-hex byte to keep the basename safe for filesystem. */
-        for (int i = 0; i < hex_len; i++) {
-            uint8_t ch = hex[i];
-            bool digit = (ch >= '0' && ch <= '9');
-            bool lower = (ch >= 'a' && ch <= 'f');
-            bool upper = (ch >= 'A' && ch <= 'F');
-            if (!digit && !lower && !upper) {
-                printf("[server] player %d: claim rejected (bad hex)\n", pid);
-                goto claim_done;
-            }
-        }
-
-        /* Reconstruct the signed message: domain || token_hex. */
-        const char *domain = CLAIM_LEGACY_SAVE_DOMAIN;
-        size_t dlen = strlen(domain);
-        uint8_t msg[64 + 64];
-        if (dlen + hex_len > sizeof(msg)) goto claim_done;
-        memcpy(msg, domain, dlen);
-        memcpy(msg + dlen, hex, hex_len);
-        if (!signal_crypto_verify(sig, msg, dlen + hex_len, sp->pubkey)) {
-            printf("[server] player %d: claim signature invalid\n", pid);
-            goto claim_done;
-        }
-
-        /* The wire format carries the full token base name *without*
-         * the "player_" prefix or the .sav suffix; legacy saves on disk
-         * use either the "player_<hex>" form (token-keyed) or
-         * "player_<slot>" form (anonymous slot fallback). Accept either:
-         * try the literal name first, then with the historical prefix. */
-        char basename[80];
-        if ((size_t)hex_len + 1 > sizeof(basename)) goto claim_done;
-        memcpy(basename, hex, hex_len);
-        basename[hex_len] = '\0';
-
-        bool ok = player_save_rename_legacy_to_pubkey(PLAYER_SAVE_DIR,
-                                                       basename, sp->pubkey);
-        const char *audit_name = basename;
-        char prefixed[96];
-        if (!ok) {
-            snprintf(prefixed, sizeof(prefixed), "player_%s", basename);
-            ok = player_save_rename_legacy_to_pubkey(PLAYER_SAVE_DIR,
-                                                     prefixed, sp->pubkey);
-            if (ok) audit_name = prefixed;
-        }
-        (void)player_save_audit_legacy_claim(PLAYER_SAVE_DIR, audit_name,
-                                             sp->pubkey, ok,
-                                             ok ? "renamed" : "missing-or-raced");
-        if (!ok) {
-            printf("[server] player %d: claim rename failed (race / missing)\n", pid);
-            goto claim_done;
-        }
-        if (player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, sp->pubkey)) {
-            printf("[server] player %d: claimed legacy save\n", pid);
-        }
-    claim_done:
-        break;
-    }
     case NET_MSG_SESSION:
     {
         server_session_message_t session;
-        if (server_parse_session_message(data, len, &session) &&
-            !world.players[pid].session_ready) {
-            const uint8_t *token = session.token;
-            /* Extract callsign if present (bytes 9-15) */
-            if (session.has_callsign) {
-                printf("[server] player %d callsign: %s\n", pid, session.callsign);
-            }
-            /* Reattach a previous slot with the same browser token. Most
-             * reconnects arrive after the old slot entered grace, but a page
-             * reload can send SESSION before WebRTC/WebSocket close reaches
-             * the server. Treat that active duplicate as a handoff too. */
-            int reattach = server_find_session_reattach_slot(&world, pid, token);
-            bool reattached_live_state = false;
-            if (reattach >= 0) {
-                /* Reattach: copy state from grace slot to new slot */
-                server_player_t *old = &world.players[reattach];
-                struct mg_connection *old_conn =
-                    (struct mg_connection *)old->connection->conn;
-                if (!world_player_transfer_ship_state(&world, pid, reattach))
-                    break;
-                if (!server_apply_session_message(&world, pid, &session))
-                    break;
-                /* Clear the grace slot and broadcast LEAVE so clients drop the ghost */
-                old->connected = false;
-                world_character_unbind_player(&world, reattach);
-                old->grace_period = false;
-                old->connection->conn = NULL;
-                server_player_clear_live_session_identity(old);
-                server_player_clear_transient_input(old);
-                if (old_conn && old_conn != c) {
-                    mg_ws_send(old_conn, NULL, 0, WEBSOCKET_OP_CLOSE);
-                    old_conn->is_closing = 1;
-                }
-                uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)reattach };
-                broadcast(leave_old, 2);
-                printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);
-                reattached_live_state = true;
-                world.players[pid].preserve_live_state_on_pubkey_finalize = true;
-            } else {
-                if (!server_apply_session_message(&world, pid, &session))
-                    break;
-                /* Try to restore saved state keyed by session token */
-                if (true &&
-                    player_load_by_token(&world.players[pid], &world,
-                                         PLAYER_SAVE_DIR, token)) {
-                    printf("[server] player %d: restored save by session\n", pid);
-                } else {
-                    printf("[server] player %d: no save for session, fresh ship\n", pid);
-                }
-                /* Seed starting credits now that session_token is set */
-                player_seed_credits(&world.players[pid], &world);
-            }
-            finalize_verified_pubkey_identity(c, pid, now,
-                                              reattached_live_state);
-            server_player_t *ready_sp = &world.players[pid];
-            server_player_reset_input_stream(ready_sp);
-            invalidate_player_authoritative_caches(ready_sp);
-            (void)server_emit_authoritative_player_state_snapshot(
-                ready_sp, (uint8_t)pid, world.tick, ws_packet_sink, c);
-            ready_sp->replication->force_authoritative_resync = false;
-            ready_sp->pending_action_result_valid = false;
-            send_initial_world_bundle_to_player(c, pid);
-            uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };
-            broadcast_except(pid, join_msg, 2);
-            analytics_record_activity(&world.players[pid], now);
-            analytics_log_player_event("player_session", pid, &world.players[pid],
-                                       now, 0);
+        if (!server_parse_session_message(data, len, &session)) {
+            reject_ws_authentication(
+                c, pid, "malformed session handshake");
+            break;
         }
+        if (!server_session_protocol_compatible(&session)) {
+            reject_ws_authentication(
+                c, pid, "protocol version mismatch");
+            break;
+        }
+        server_player_t *sp = &world.players[pid];
+        if (!sp->session_ready) {
+            if (!server_apply_session_message(&world, pid, &session))
+                break;
+            if (session.has_callsign) {
+                printf("[server] player %d callsign: %s\n",
+                       pid, session.callsign);
+            }
+        }
+        (void)complete_ws_session_bootstrap_if_ready(c, pid, now);
         break;
     }
     default:
@@ -3413,6 +4907,51 @@ static void append_callsign_json(char *buf, int *pos, int bufsz,
     json_escape_append(buf, pos, bufsz, cs);
 }
 
+static const char *station_api_public_actor_kind(
+    const public_actor_id_t *actor) {
+    if (!public_actor_id_is_canonical(actor)) return "unattributed";
+    switch ((public_actor_id_kind_t)actor->kind) {
+    case PUBLIC_ACTOR_ID_DERIVED:
+        return "derived";
+    case PUBLIC_ACTOR_ID_LEGACY_UNATTRIBUTED:
+        return "legacy-unattributed";
+    case PUBLIC_ACTOR_ID_UNATTRIBUTED:
+    case PUBLIC_ACTOR_ID_NONE:
+    case PUBLIC_ACTOR_ID_KIND_COUNT:
+    default:
+        return "unattributed";
+    }
+}
+
+/*
+ * Append a display-only actor projection for a station ledger row. Legacy
+ * token-padded keys become an explicit sentinel and emit no identifier bytes;
+ * current full pubkeys become domain-separated public IDs. Neither form is an
+ * authority credential.
+ */
+static void station_api_append_ledger_actor(
+    char *buf,
+    int *pos,
+    int bufsz,
+    const uint8_t ledger_key[ACTOR_PRINCIPAL_ID_SIZE]) {
+    public_actor_id_t actor = public_actor_id_legacy_unattributed();
+    if (!public_actor_id_from_ledger_projection(
+            &world, ledger_key, &actor)) {
+        actor = public_actor_id_unattributed();
+    }
+    BUF_APPEND(*pos, buf, bufsz,
+               "\"actor_kind\":\"%s\",\"actor_id\":",
+               station_api_public_actor_kind(&actor));
+    if (actor.kind != (uint8_t)PUBLIC_ACTOR_ID_DERIVED) {
+        BUF_APPEND(*pos, buf, bufsz, "null");
+        return;
+    }
+    BUF_APPEND(*pos, buf, bufsz, "\"");
+    for (size_t i = 0; i < sizeof(actor.id); i++)
+        BUF_APPEND(*pos, buf, bufsz, "%02x", actor.id[i]);
+    BUF_APPEND(*pos, buf, bufsz, "\"");
+}
+
 static int collect_route_history_api_aggregates(
     route_history_aggregate_row_t *out,
     int cap)
@@ -3489,7 +5028,7 @@ static void reply_bot_trace_weights(struct mg_connection *c) {
     float reference = highscore_trace_reference_score(&highscores);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         const server_player_t *sp = &world.players[i];
-        if (!sp->connected) continue;
+        if (!server_player_is_gameplay_ready(sp)) continue;
         if (sp->server_brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT) continue;
         if (isfinite(sp->ship->stat_credits_earned) &&
             sp->ship->stat_credits_earned > reference) {
@@ -3510,7 +5049,7 @@ static void reply_bot_trace_weights(struct mg_connection *c) {
     bool first = true;
     for (int i = 0; i < MAX_PLAYERS; i++) {
         const server_player_t *sp = &world.players[i];
-        if (!sp->connected) continue;
+        if (!server_player_is_gameplay_ready(sp)) continue;
         if (sp->server_brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT) continue;
 
         char cs[9];
@@ -3791,7 +5330,7 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         "ferrite_ore","cuprite_ore","crystal_ore",
         "ferrite_ingot","cuprite_ingot","crystal_ingot",
         "frame","laser_module","tractor_module",
-        "repair_kit",
+        "repair_kit","engine_module",
     };
     _Static_assert(sizeof(cnames)/sizeof(cnames[0]) == COMMODITY_COUNT,
                    "cnames must stay in sync with commodity_t");
@@ -3971,10 +5510,14 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
      * Sort by last_dock_tick DESC to surface recent visitors first. */
     BUF_APPEND(pos, buf, BUFSZ, "],\"relationships\":[");
     enum { MAX_RELATIONSHIPS_IN_API = 8 };
+    int api_ledger_count = st->ledger_count;
+    if (api_ledger_count < 0) api_ledger_count = 0;
+    if (api_ledger_count > STATION_LEDGER_MAX)
+        api_ledger_count = STATION_LEDGER_MAX;
     /* Find indices with non-zero last_dock_tick, sort by tick descending */
-    int rel_indices[16];
+    int rel_indices[STATION_LEDGER_MAX];
     int rel_count = 0;
-    for (int i = 0; i < st->ledger_count; i++) {
+    for (int i = 0; i < api_ledger_count; i++) {
         if (st->ledger[i].last_dock_tick > 0) {
             rel_indices[rel_count++] = i;
         }
@@ -3995,13 +5538,11 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         int idx = rel_indices[i];
         if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
         first = false;
+        BUF_APPEND(pos, buf, BUFSZ, "{");
+        station_api_append_ledger_actor(
+            buf, &pos, BUFSZ, st->ledger[idx].player_pubkey);
         BUF_APPEND(pos, buf, BUFSZ,
-            "{\"pubkey\":\"");
-        /* Encode pubkey as hex for JSON */
-        for (int j = 0; j < 32; j++)
-            BUF_APPEND(pos, buf, BUFSZ, "%02x", st->ledger[idx].player_pubkey[j]);
-        BUF_APPEND(pos, buf, BUFSZ,
-            "\",\"first_dock_tick\":%llu,\"last_dock_tick\":%llu,"
+            ",\"first_dock_tick\":%llu,\"last_dock_tick\":%llu,"
             "\"total_docks\":%u,\"lifetime_ore_units\":%u,"
             "\"lifetime_credits_in\":%u,\"lifetime_credits_out\":%u,"
             "\"top_commodity\":%u}",
@@ -4028,7 +5569,7 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         double ore_sum = 0.0;
         int recent_docks = 0;
 
-        for (int i = 0; i < st->ledger_count; i++) {
+        for (int i = 0; i < api_ledger_count; i++) {
             if (st->ledger[i].last_dock_tick > window_start) {
                 ore_sum += st->ledger[i].lifetime_ore_units;
                 recent_docks++;
@@ -4037,7 +5578,7 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
 
         /* Top haulers: up to 3 players by lifetime ore contributed */
         int top_indices[3] = {-1, -1, -1};
-        for (int i = 0; i < st->ledger_count; i++) {
+        for (int i = 0; i < api_ledger_count; i++) {
             for (int j = 0; j < 3; j++) {
                 if (top_indices[j] < 0 ||
                     st->ledger[i].lifetime_ore_units > st->ledger[top_indices[j]].lifetime_ore_units) {
@@ -4056,11 +5597,11 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         for (int j = 0; j < 3; j++) {
             if (top_indices[j] < 0) break;
             if (j > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
-            BUF_APPEND(pos, buf, BUFSZ, "\"");
-            for (int k = 0; k < 32; k++) {
-                BUF_APPEND(pos, buf, BUFSZ, "%02x", st->ledger[top_indices[j]].player_pubkey[k]);
-            }
-            BUF_APPEND(pos, buf, BUFSZ, "\"");
+            BUF_APPEND(pos, buf, BUFSZ, "{");
+            station_api_append_ledger_actor(
+                buf, &pos, BUFSZ,
+                st->ledger[top_indices[j]].player_pubkey);
+            BUF_APPEND(pos, buf, BUFSZ, "}");
         }
 
         BUF_APPEND(pos, buf, BUFSZ, "]}");
@@ -4895,7 +6436,22 @@ static bool serve_static_http(struct mg_connection *c,
 }
 
 static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
-    if (ev == MG_EV_HTTP_MSG) {
+    if (ev == MG_EV_POLL) {
+        if (c->is_websocket) {
+            uint64_t now_ms = ev_data
+                ? *(uint64_t *)ev_data : mg_millis();
+            ws_service_connection(c, now_ms);
+        }
+    } else if (ev == MG_EV_WRITE) {
+        int pid = server_connection_player_slot(c);
+        if (pid >= 0 && ev_data) {
+            long written = *(long *)ev_data;
+            if (written > 0)
+                ws_outbox_note_write_progress(
+                    &ws_clients[pid].outbox, mg_millis(),
+                    (size_t)written);
+        }
+    } else if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = ev_data;
         if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
             server_note_ws_client_addr(c, hm);
@@ -5043,6 +6599,12 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             for (int i = 0; i < MAX_PLAYERS; i++)
                 if (world.players[i].connected) count++;
             int live_connections = live_player_connection_count();
+            ws_backpressure_snapshot_t ws_metrics;
+            ws_backpressure_snapshot(&ws_metrics);
+            uint64_t ws_initial_avg_ms = ws_metrics.initial_completed > 0u
+                ? ws_metrics.initial_duration_ms_total /
+                    ws_metrics.initial_completed
+                : 0u;
             static const uint8_t zero_pub[32] = {0};
             int chain_station_count = 0;
             int chain_blocked_count = 0;
@@ -5078,6 +6640,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             int pos = 0;
             BUF_APPEND(pos, buf, HEALTH_BUFSZ,
                        "{\"status\":\"ok\",\"players\":%d,\"live_connections\":%d,"
+                       "\"world_tick\":%u,"
                        "\"server_bot_players\":%d,"
                        "\"frontier_virtual_pilots\":%d,"
                        "\"frontier_plans_created\":%u,"
@@ -5108,7 +6671,8 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        "\"load_enabled\":%s,\"save_enabled\":%s,"
                        "\"externalized\":%s,\"external_store\":\"%s\","
                        "\"state_uri\":\"",
-                       count, live_connections, server_bot_players_spawned,
+                       count, live_connections, world.tick,
+                       server_bot_players_spawned,
                        world.frontier_virtual_pilots,
                        world.frontier_plans_created,
                        world.frontier_scaffold_orders,
@@ -5147,12 +6711,77 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                        "\"unsigned_action_count\":%llu,"
                        "\"hopper_smelt_events\":%llu,"
                        "\"hopper_smelt_units\":%.3f,"
+                       "\"websocket_backpressure\":{"
+                       "\"connection_hard_bytes\":%u,"
+                       "\"application_hard_bytes\":%u,"
+                       "\"normal_limit_bytes\":%u,"
+                       "\"control_reserve_bytes\":%u,"
+                       "\"transport_hard_bytes\":%u,"
+                       "\"transport_application_bytes\":%u,"
+                       "\"transport_control_reserve_bytes\":%u,"
+                       "\"current_bytes\":%llu,"
+                       "\"max_connection_bytes\":%llu,"
+                       "\"high_water_bytes\":%llu,"
+                       "\"warnings\":%llu,\"disconnects\":%llu,"
+                       "\"coalesced_packets\":%llu,"
+                       "\"suppressed_packets\":%llu,"
+                       "\"recoveries\":%llu,"
+                       "\"initial_active\":%u,"
+                       "\"initial_completed\":%llu,"
+                       "\"initial_avg_duration_ms\":%llu,"
+                       "\"disconnect_reasons\":{"
+                       "\"queue_hard_limit\":%llu,"
+                       "\"control_headroom_exhausted\":%llu,"
+                       "\"no_write_progress\":%llu,"
+                       "\"sustained_pressure\":%llu,"
+                       "\"frame_too_large\":%llu,"
+                       "\"descriptor_exhausted\":%llu,"
+                       "\"transport_rejected\":%llu}},"
                        "\"chain\":{\"status\":\"%s\",\"chain_dir\":\"",
                        (unsigned long long)signed_action_count,
                        (unsigned long long)signed_action_reject_count,
                        (unsigned long long)unsigned_action_count,
                        (unsigned long long)world.hopper_smelt_events,
                        world.hopper_smelt_units,
+                       (unsigned)WS_OUTBOX_HARD_BYTES,
+                       (unsigned)WS_OUTBOX_APP_HARD_BYTES,
+                       (unsigned)WS_OUTBOX_NORMAL_LIMIT_BYTES,
+                       (unsigned)WS_OUTBOX_CONTROL_RESERVE_BYTES,
+                       (unsigned)WS_OUTBOX_TRANSPORT_HARD_LIMIT_BYTES,
+                       (unsigned)WS_OUTBOX_TRANSPORT_LIMIT_BYTES,
+                       (unsigned)WS_OUTBOX_TRANSPORT_CONTROL_RESERVE_BYTES,
+                       (unsigned long long)ws_metrics.current_bytes,
+                       (unsigned long long)ws_metrics.max_connection_bytes,
+                       (unsigned long long)ws_metrics.high_water_bytes,
+                       (unsigned long long)ws_metrics.warning_events,
+                       (unsigned long long)ws_metrics.disconnect_events,
+                       (unsigned long long)ws_metrics.coalesced_packets,
+                       (unsigned long long)ws_metrics.suppressed_packets,
+                       (unsigned long long)ws_metrics.recovery_events,
+                       ws_metrics.initial_active,
+                       (unsigned long long)ws_metrics.initial_completed,
+                       (unsigned long long)ws_initial_avg_ms,
+                       (unsigned long long)
+                           ws_queue_disconnect_reason_total[
+                               WS_OUTBOX_CLOSE_QUEUE_HARD_LIMIT],
+                       (unsigned long long)
+                           ws_queue_disconnect_reason_total[
+                               WS_OUTBOX_CLOSE_CONTROL_HEADROOM_EXHAUSTED],
+                       (unsigned long long)
+                           ws_queue_disconnect_reason_total[
+                               WS_OUTBOX_CLOSE_NO_WRITE_PROGRESS],
+                       (unsigned long long)
+                           ws_queue_disconnect_reason_total[
+                               WS_OUTBOX_CLOSE_SUSTAINED_PRESSURE],
+                       (unsigned long long)
+                           ws_queue_disconnect_reason_total[
+                               WS_OUTBOX_CLOSE_FRAME_TOO_LARGE],
+                       (unsigned long long)
+                           ws_queue_disconnect_reason_total[
+                               WS_OUTBOX_CLOSE_DESCRIPTOR_EXHAUSTED],
+                       (unsigned long long)
+                           ws_queue_disconnect_reason_total[
+                               WS_OUTBOX_CLOSE_TRANSPORT_REJECTED],
                        chain_health);
             json_escape_append(buf, &pos, HEALTH_BUFSZ, chain_log_get_dir());
             BUF_APPEND(pos, buf, HEALTH_BUFSZ,
@@ -5230,6 +6859,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             mg_http_reply(c, 404, "", "Not found");
         }
     } else if (ev == MG_EV_WS_OPEN) {
+        c->send_limit = WS_OUTBOX_TRANSPORT_HARD_LIMIT_BYTES;
         /* Per-IP connection limit to mitigate slot exhaustion */
         #define MAX_CONNS_PER_IP 4
         {
@@ -5259,14 +6889,15 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         sp->connected = true;
         sp->id = (uint8_t)pid;
         sp->connection->conn = c;
+        server_connection_assign_player(c, pid);
+        ws_runtime_begin(pid, mg_millis());
         sp->connection->client_addr_key = server_connection_limit_key(c);
         sp->connection->client_addr_key_valid = true;
         sp->session_ready = false;
-        sp->grace_timer = 5.0f;  /* Must send SESSION within 5 seconds */
+        sp->grace_timer = SERVER_PUBKEY_PROOF_TIMEOUT_SECONDS;
         sp->connection->analytics_connected_ms = mg_millis();
         sp->connection->analytics_last_activity_ms = sp->connection->analytics_connected_ms;
-        /* Start with fresh ship — save is loaded when client sends SESSION */
-        player_init_ship(sp, &world);
+        /* Ship/asset activation is deferred until authentication completes. */
         printf("[server] player %d: awaiting session token\n", pid);
         analytics_log_player_event("player_connect", pid, sp,
                                    sp->connection->analytics_connected_ms, 0);
@@ -5312,11 +6943,24 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
 
         printf("[server] player %d joined\n", pid);
     } else if (ev == MG_EV_WS_MSG) {
-        handle_ws_message(c, ev_data);
+        if (!c->is_closing && !c->is_draining)
+            handle_ws_message(c, ev_data);
     } else if (ev == MG_EV_CLOSE) {
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (world.players[i].connection->conn == c) {
                 uint64_t now_ms = mg_millis();
+                ws_client_runtime_t *runtime = &ws_clients[i];
+                if (world.players[i].legacy_recovery_save_pending) {
+                    abort_legacy_recovery_session(
+                        c, i, "legacy recovery transport closed");
+                    break;
+                }
+                if (runtime->pubkey_upgrade_from_published_token)
+                    (void)server_player_abandon_pending_pubkey_identity(
+                        &world.players[i]);
+                bool had_live_session =
+                    runtime->session_bootstrap_complete &&
+                    server_player_has_live_session(&world.players[i]);
                 uint64_t duration_ms =
                     (world.players[i].connection->analytics_connected_ms != 0 &&
                      now_ms >= world.players[i].connection->analytics_connected_ms)
@@ -5325,10 +6969,11 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 analytics_log_player_event("player_disconnect", i,
                                            &world.players[i], now_ms,
                                            duration_ms);
-                if (world.players[i].session_ready)
-                    player_save(&world.players[i], PLAYER_SAVE_DIR, i);
+                ws_runtime_release(i, now_ms);
+                if (had_live_session)
+                    persistence_save_requested = true;
                 world.players[i].connection->conn = NULL;
-                if (world.players[i].session_ready) {
+                if (had_live_session) {
                     /* Keep slot alive for reconnect grace window */
                     world.players[i].grace_period = true;
                     world.players[i].grace_timer = 30.0f;
@@ -5367,6 +7012,7 @@ static void broadcast_player_states(uint64_t now) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         server_player_t *sp = &world.players[i];
         if (!server_player_is_gameplay_ready(sp) || !sp->connection->conn) continue;
+        if (!ws_replication_cycle_allowed(sp)) continue;
         int len = serialize_player_states_except_recipient(
             buf, world.players, i, server_tick);
         bool sent_full = ws_send_player_states_if_changed(
@@ -5427,7 +7073,11 @@ static void broadcast_player_states(uint64_t now) {
 static void broadcast_world(void) {
     for (int p = 0; p < MAX_PLAYERS; p++) {
         server_player_t *sp = &world.players[p];
-        if (!sp->connected || !sp->session_ready || !sp->connection->conn) continue;
+        if (!server_player_is_gameplay_ready(sp) ||
+            !sp->connection->conn) {
+            continue;
+        }
+        if (!ws_replication_cycle_allowed(sp)) continue;
         ws_private_packet_sink_t sink = {
             .conn = sp->connection->conn,
             .player = sp,
@@ -5447,17 +7097,25 @@ static int send_player_ship(uint8_t *buf, uint8_t id, const server_player_t *sp)
 static void broadcast_ship_states(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         server_player_t *sp = &world.players[i];
-        if (!sp->connected || !sp->session_ready || !sp->connection->conn) continue;
+        if (!server_player_is_gameplay_ready(sp) ||
+            !sp->connection->conn) {
+            continue;
+        }
+        if (!ws_replication_cycle_allowed(sp)) continue;
         if (sp->replication->force_authoritative_resync)
             invalidate_player_authoritative_caches(sp);
         ws_private_packet_sink_t sink = {
             .conn = sp->connection->conn,
             .player = sp,
+            .all_admitted = true,
         };
         server_emit_private_snapshot_for_player(
             &world, i, true, ws_private_packet_sink, &sink,
             &private_snapshot_scratch);
-        sp->replication->force_authoritative_resync = false;
+        ws_drain_player_receipt_sidecars(
+            sp->connection->conn, sp);
+        if (sink.all_admitted)
+            sp->replication->force_authoritative_resync = false;
     }
 
     if (station_econ_dirty) {
@@ -5497,7 +7155,8 @@ static void srv_on_player_state_change(const sim_event_t *ev) {
     int pid = ev->player_id;
     if (pid < 0 || pid >= MAX_PLAYERS) return;
     server_player_t *sp = &world.players[pid];
-    if (!sp->connected || !sp->connection->conn) {
+    if (!server_player_is_gameplay_ready(sp) ||
+        !sp->connection->conn) {
         station_econ_dirty = true;
         contracts_dirty = true;
         return;
@@ -5532,7 +7191,7 @@ static void srv_on_death(const sim_event_t *ev) {
     int pid = ev->player_id;
     if (pid < 0 || pid >= MAX_PLAYERS) return;
     server_player_t *sp = &world.players[pid];
-    if (!sp->connected) return;
+    if (!server_player_is_gameplay_ready(sp)) return;
 
     /* Resolve killer callsign by token against currently-connected
      * peers BEFORE chain emit so the killed_by_callsign rides along on
@@ -5562,10 +7221,9 @@ static void srv_on_death(const sim_event_t *ev) {
     {
         chain_payload_death_t dp;
         memset(&dp, 0, sizeof(dp));
-        if (sp->pubkey_set) memcpy(dp.victim_pubkey, sp->pubkey, 32);
-        memcpy(dp.victim_session_token, sp->session_token, 8);
+        (void)server_player_copy_verified_pubkey(
+            sp, dp.victim_pubkey);
         memcpy(dp.victim_callsign, sp->callsign, 8);
-        memcpy(dp.killer_token, ev->death.killer_token, 8);
         dp.cause = ev->death.cause;
         dp.epoch_tick = (uint64_t)world.tick;
         dp.credits_earned = ev->death.credits_earned;
@@ -5612,7 +7270,10 @@ static void srv_on_hail_response(const sim_event_t *ev) {
     int pid = ev->player_id;
     if (pid < 0 || pid >= MAX_PLAYERS) return;
     server_player_t *sp = &world.players[pid];
-    if (!sp->connected || !sp->connection->conn) return;
+    if (!server_player_is_gameplay_ready(sp) ||
+        !sp->connection->conn) {
+        return;
+    }
 
     uint8_t msg[NET_HAIL_RESPONSE_REASON_SIZE];
     int msg_len = serialize_hail_response_for_world(msg, &world, ev);
@@ -5689,7 +7350,17 @@ static void srv_dispatch_sim_event(const sim_event_t *ev) {
  * a token. listen_url is sized by the caller. */
 static bool read_env_config(char *listen_url, size_t listen_url_size) {
     const char *port = getenv("PORT");
+    const char *bind_host = getenv("SIGNAL_BIND_HOST");
     if (!port || port[0] == '\0') port = "8080";
+    if (!bind_host || bind_host[0] == '\0') bind_host = "0.0.0.0";
+    if (strcmp(bind_host, "0.0.0.0") != 0 &&
+        strcmp(bind_host, "127.0.0.1") != 0) {
+        fprintf(stderr,
+                "[FATAL] invalid SIGNAL_BIND_HOST=%s "
+                "(use 0.0.0.0 or 127.0.0.1)\n",
+                bind_host);
+        return false;
+    }
     static_root_dir = getenv("SIGNAL_STATIC_DIR");
     persistence_data_dir = getenv("SIGNAL_DATA_DIR");
     if (!persistence_data_dir || persistence_data_dir[0] == '\0') 
@@ -5861,17 +7532,24 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
         "X-Content-Type-Options: nosniff\r\n"
         "Cache-Control: no-store\r\n", allowed_origin);
     printf("[server] CORS origin: %s\n", allowed_origin);
-    snprintf(listen_url, listen_url_size, "http://0.0.0.0:%s", port);
+    snprintf(listen_url, listen_url_size,
+             "http://%s:%s", bind_host, port);
     return true;
 }
 
 static void ensure_persistence_dirs(void) {
     MKDIR_PATH(PLAYER_SAVE_DIR);
     MKDIR_PATH(STATION_CATALOG_DIR);
+    char namespace_path[64];
+    snprintf(namespace_path, sizeof(namespace_path),
+             "%s/legacy", PLAYER_SAVE_DIR);
+    MKDIR_PATH(namespace_path);
+    snprintf(namespace_path, sizeof(namespace_path),
+             "%s/pubkey", PLAYER_SAVE_DIR);
+    MKDIR_PATH(namespace_path);
     /* Layer A.4 of #479: ensure pubkey/ + legacy/ subdirs exist and any
      * existing top-level *.sav files (v39 and earlier layout) get moved
      * into legacy/ so the new path layout takes effect. Idempotent. */
-    player_save_migrate_legacy_layout(PLAYER_SAVE_DIR);
 }
 
 static bool enter_persistence_data_dir(void) {
@@ -5929,19 +7607,86 @@ static void server_seed_worker_trace_npc(int station_idx,
     knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
     server_seed_worker_trace_contract(npc, ct0);
     server_seed_worker_trace_contract(npc, ct1);
-    if (station_idx >= 0 && station_idx < MAX_STATIONS)
+    if (station_idx >= 0 && station_idx < MAX_STATIONS) {
         ledger_earn(&world.stations[station_idx], npc->session_token, 1200.0f);
+    }
 }
 
-static void server_apply_npc_worker_trace_fixture(void) {
+static int server_seed_ws_backpressure_named_ingots(station_t *station,
+                                                     int station_idx,
+                                                     int target_count) {
+    if (!station || target_count <= 0 ||
+        !station_manifest_bootstrap(station)) {
+        return 0;
+    }
+    int minted = 0;
+    for (uint32_t attempt = 0;
+        attempt < 100000u && minted < target_count;
+         attempt++) {
+        uint8_t seed[12] = {
+            'W', 'S', 'B', 'P', '6', '6', '3', '!',
+            (uint8_t)attempt,
+            (uint8_t)(attempt >> 8),
+            (uint8_t)(attempt >> 16),
+            (uint8_t)(attempt >> 24),
+        };
+        uint8_t fragment_pub[32];
+        cargo_unit_t unit;
+        sha256_bytes(seed, sizeof(seed), fragment_pub);
+        if (!hash_ingot(COMMODITY_FERRITE_INGOT,
+                        MINING_GRADE_COMMON,
+                        fragment_pub,
+                        (uint16_t)attempt,
+                        &unit) ||
+            (ingot_prefix_t)unit.prefix_class ==
+                INGOT_PREFIX_ANONYMOUS) {
+            continue;
+        }
+        unit.origin_station = (uint8_t)station_idx;
+        unit.mined_block = attempt + 1u;
+        chain_payload_smelt_t smelt = {0};
+        if (!chain_payload_smelt_bind_output(
+                &smelt, fragment_pub, (uint16_t)attempt,
+                &unit)) {
+            continue;
+        }
+        if (chain_log_emit(&world, station, CHAIN_EVT_SMELT,
+                           &smelt, (uint16_t)sizeof(smelt)) == 0u) {
+            continue;
+        }
+        if (!station_manifest_push_with_chain(station, &unit, NULL))
+            break;
+        minted++;
+    }
+    return minted;
+}
+
+static bool server_apply_npc_worker_trace_fixture(void) {
     const char *scenario = getenv("SIGNAL_NPC_WORKER_TRACE_SCENARIO");
-    if (!scenario || strcmp(scenario, "rich") != 0) return;
+    if (!scenario || strcmp(scenario, "rich") != 0) return true;
 
     uint8_t origin[8] = { 'W','O','R','K','E','R','v','1' };
-    (void)station_finished_mint(&world.stations[0], COMMODITY_FERRITE_INGOT, 28, origin);
-    (void)station_finished_mint(&world.stations[0], COMMODITY_FRAME, 16, origin);
-    (void)station_finished_mint(&world.stations[2], COMMODITY_LASER_MODULE, 16, origin);
-    (void)station_finished_mint(&world.stations[2], COMMODITY_TRACTOR_MODULE, 16, origin);
+    bool stock_seeded =
+        station_finished_mint(
+            &world.stations[0], COMMODITY_FERRITE_INGOT, 28, origin) == 28 &&
+        station_finished_mint(
+            &world.stations[0], COMMODITY_FRAME, 16, origin) == 16 &&
+        station_finished_mint(
+            &world.stations[2], COMMODITY_LASER_MODULE, 16, origin) == 16 &&
+        station_finished_mint(
+            &world.stations[2], COMMODITY_TRACTOR_MODULE, 16, origin) == 16;
+    if (!stock_seeded) {
+        fprintf(stderr,
+                "[FATAL] could not seed complete NPC worker trace cargo\n");
+        return false;
+    }
+    if (!world_anchor_station_legacy_cargo_origins(&world, 0) ||
+        !world_anchor_station_legacy_cargo_origins(&world, 2)) {
+        fprintf(stderr,
+                "[FATAL] could not durably anchor NPC worker trace cargo "
+                "origins\n");
+        return false;
+    }
     world.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 80.0f;
     world.stations[2]._inventory_cache[COMMODITY_CUPRITE_ORE] = 80.0f;
     world.stations[2]._inventory_cache[COMMODITY_CRYSTAL_ORE] = 80.0f;
@@ -5987,21 +7732,181 @@ static void server_apply_npc_worker_trace_fixture(void) {
     server_seed_worker_trace_npc(2, NPC_ROLE_MINER, &world.contracts[1], NULL);
 
     printf("[server] seeded rich NPC worker trace scenario\n");
+    return true;
+}
+
+/*
+ * Dedicated, disabled-by-default fixture for the real WebSocket slow-reader
+ * soak. Keep it separate from the rich NPC trace scenario: active haulers can
+ * legitimately consume one ship-load of station stock before the clients
+ * finish initial sync, which makes the byte load nondeterministic.
+ */
+static bool ws_backpressure_fixture_active = false;
+
+static bool server_apply_ws_backpressure_fixture(void) {
+    if (!ws_backpressure_fixture_enabled(
+            getenv("SIGNAL_WS_BACKPRESSURE_FIXTURE"))) {
+        return true;
+    }
+
+    for (int station_idx = 0;
+         station_idx < WS_BACKPRESSURE_FIXTURE_STATION_COUNT;
+         station_idx++) {
+        station_t *station = &world.stations[station_idx];
+        if (!station_exists(station)) {
+            fprintf(stderr,
+                    "[FATAL] WebSocket backpressure fixture station %d "
+                    "does not exist\n",
+                    station_idx);
+            return false;
+        }
+        /* This fixture replaces only cargo storage on a still-live station.
+         * Full station_cleanup() is a lifecycle boundary and wipes its
+         * signing key, so retain the established authority identity here. */
+        cargo_store_cleanup(&station->cargo_store);
+        if (!station_manifest_bootstrap(station)) {
+            fprintf(stderr,
+                    "[FATAL] failed to initialize WebSocket backpressure "
+                    "fixture station %d manifest\n",
+                    station_idx);
+            return false;
+        }
+
+        memset(station->_inventory_cache, 0,
+               sizeof(station->_inventory_cache));
+        memset(station->_finished_residue, 0,
+               sizeof(station->_finished_residue));
+        station->module_count = 0;
+        station->arm_count = 0;
+        station->pending_scaffold_count = 0;
+        station->pending_ship_build_count = 0;
+
+        uint8_t origin[8] = { 'W','S','B','P','6','6','3','0' };
+        origin[7] = (uint8_t)('0' + station_idx);
+        int named = station_idx == 0
+            ? server_seed_ws_backpressure_named_ingots(
+                  station, station_idx,
+                  WS_BACKPRESSURE_FIXTURE_NAMED_INGOTS)
+            : 0;
+        int expected_frames = station_idx == 0
+            ? WS_BACKPRESSURE_FIXTURE_STATION0_FRAMES
+            : WS_BACKPRESSURE_FIXTURE_OTHER_STATION_FRAMES;
+        int frames = station_finished_mint(
+            station, COMMODITY_FRAME, expected_frames, origin);
+        int expected_total = station_idx == 0
+            ? WS_BACKPRESSURE_FIXTURE_STATION0_DETAILS
+            : WS_BACKPRESSURE_FIXTURE_OTHER_STATION_FRAMES;
+        if (named != (station_idx == 0
+                         ? WS_BACKPRESSURE_FIXTURE_NAMED_INGOTS
+                         : 0) ||
+            frames != expected_frames ||
+            station->manifest.count != expected_total) {
+            fprintf(stderr,
+                    "[FATAL] WebSocket backpressure fixture cargo "
+                    "mismatch at station %d: named=%d frames=%d total=%u\n",
+                    station_idx, named, frames,
+                    (unsigned)station->manifest.count);
+            return false;
+        }
+    }
+
+    /*
+     * The first soak client uses this explicit, opt-in fixture token to
+     * bootstrap a challenge-verified ephemeral pubkey. The matching harness
+     * owns the test constant directly; public station APIs never disclose the
+     * bearer. Normal identity finalization migrates the fixture credit to the
+     * verified pubkey while preserving all 32 slots for the actual test.
+     */
+    const uint8_t session_token[8] = { 'W','S','B','P','6','6','3','!' };
+    uint8_t pseudo_pubkey[32] = {0};
+    station_t *station = &world.stations[0];
+    memcpy(pseudo_pubkey, session_token, sizeof(session_token));
+    ledger_earn(station, session_token, LEDGER_FLOAT_LIMIT);
+    ledger_record_dock(
+        station, pseudo_pubkey, world.tick > 0u ? world.tick : 1u);
+
+    ws_backpressure_fixture_active = true;
+    printf("[server] seeded WebSocket backpressure fixture: "
+           "%d stations, %d details each\n",
+           WS_BACKPRESSURE_FIXTURE_STATION_COUNT,
+           WS_BACKPRESSURE_FIXTURE_STATION0_DETAILS);
+    return true;
+}
+
+/*
+ * Alternate canonical manifest ordering once per network world tick. The
+ * cargo and its receipt sidecars move together, so this is a real bounded
+ * snapshot revision without performing costly economy or chain-log I/O.
+ * Real buy/deliver actions in the soak independently prove exact identity
+ * removal and restoration.
+ */
+static void server_churn_ws_backpressure_fixture(void) {
+    if (!ws_backpressure_fixture_active) return;
+    for (int station_idx = 0;
+         station_idx < WS_BACKPRESSURE_FIXTURE_STATION_COUNT;
+         station_idx++) {
+        station_t *station = &world.stations[station_idx];
+        ship_receipts_t *receipts = station_get_receipts(station);
+        if (!station->manifest.units || station->manifest.count < 2u ||
+            !receipts || receipts->count != station->manifest.count) {
+            continue;
+        }
+        uint16_t a = (uint16_t)(station->manifest.count - 2u);
+        uint16_t b = (uint16_t)(station->manifest.count - 1u);
+        if (cargo_store_swap_rows(&station->cargo_store, a, b))
+            station->manifest_dirty = true;
+    }
 }
 
 /* Layered persistence (#314):
- *   1. world_reset() seeds starter stations + belt field
- *   2. Catalog overwrites identity for any persisted stations
- *   3. Session snapshot overlays economy state
- *   4. Rebuild derived structures (signal chain, station nav, hash chain) */
+ *   1. Resolve one complete committed generation (or the legacy layout)
+ *   2. world_reset() seeds starter stations + belt field
+ *   3. That generation's catalog overwrites persisted station identity
+ *   4. That same generation's world snapshot overlays economy state
+ *   5. Rebuild derived structures (signal chain, station nav, hash chain) */
 static bool load_world_state(void) {
+    persistence_generation_paths_t generation = {0};
+    persistence_generation_status_t generation_status =
+        persistence_generation_resolve(
+            PERSISTENCE_GENERATION_DIR, &generation);
+    if (generation_status == PERSISTENCE_GENERATION_INVALID) {
+        fprintf(stderr,
+                "[FATAL] generation commit marker exists but neither its "
+                "current nor previous complete generation validates; "
+                "refusing mixed/partial persistence\n");
+        return false;
+    }
+    const char *world_path = SAVE_PATH;
+    const char *catalog_dir = STATION_CATALOG_DIR;
+    if (generation_status != PERSISTENCE_GENERATION_NONE) {
+        world_path = generation.world_path;
+        catalog_dir = generation.catalog_dir;
+        int n = snprintf(active_player_save_dir,
+                         sizeof(active_player_save_dir), "%s",
+                         generation.player_dir);
+        if (n <= 0 || (size_t)n >= sizeof(active_player_save_dir)) {
+            fprintf(stderr,
+                    "[FATAL] committed player generation path is too long\n");
+            return false;
+        }
+        if (generation_status == PERSISTENCE_GENERATION_PREVIOUS) {
+            fprintf(stderr,
+                    "[save] current generation failed validation; "
+                    "recovered published previous generation %" PRIu64 "\n",
+                    generation.generation);
+        } else {
+            printf("[server] selected persistence generation %" PRIu64 "\n",
+                   generation.generation);
+        }
+    }
+
     /* Belt seed is persistent across normal restarts: rotate only when
-     * world.sav is absent (true first boot of a fresh world). On a
+     * the selected world save is absent (true first boot). On a
      * resume, world_load below overwrites belt_seed and world_seq with
      * the persisted values so asteroid layout, station Ed25519 pubkeys,
      * and the leaderboard's world ordering all stay stable. */
     bool fresh_world = true;
-    FILE *probe = fopen(SAVE_PATH, "rb");
+    FILE *probe = fopen(world_path, "rb");
     if (probe) {
         fclose(probe);
         fresh_world = false;
@@ -6014,21 +7919,63 @@ static bool load_world_state(void) {
     }
     world_reset(&world);
 
-    int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
-                                                 STATION_CATALOG_DIR);
+    int catalog_count = station_catalog_load_all(
+        world.stations, MAX_STATIONS, catalog_dir);
+    if (catalog_count < 0) {
+        fprintf(stderr,
+                "[FATAL] current station catalog identity is invalid or "
+                "ambiguous; refusing to start\n");
+        return false;
+    }
     if (catalog_count > 0)
         printf("[server] loaded %d station(s) from catalog\n", catalog_count);
 
+    if (fresh_world) {
+        /* No session snapshot will reconcile legacy/current catalog identity.
+         * Finalize actors before any catalog-owned genesis hull is authored. */
+        if (world.next_station_id == 0) world.next_station_id = 1;
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            if (station_exists(&world.stations[i]) &&
+                world.stations[i].id == 0) {
+                world.stations[i].id = world.next_station_id++;
+            }
+        }
+        if (!world_ensure_station_actor_ids(&world) ||
+            !world_reseed_genesis_ship_assets(&world)) {
+            fprintf(stderr,
+                    "[FATAL] fresh station catalog identities cannot be "
+                    "reconciled with genesis hull ownership\n");
+            return false;
+        }
+    }
+
     if (!fresh_world) {
-        if (!world_load(&world, SAVE_PATH)) {
+        if (!world_load(&world, world_path)) {
             fprintf(stderr,
                     "[FATAL] %s exists but is invalid or unreadable; refusing "
                     "to replace it with a fresh world\n",
-                    SAVE_PATH);
+                    world_path);
+            return false;
+        }
+        /*
+         * A CRC-valid save proves byte integrity, not cargo origin,
+         * semantics, custody, or conservation. Inventory pre-V1 rows for
+         * operator action, but never manufacture current V1 CRAFT
+         * attestations over evidence the save did not contain. Existing
+         * trust callers leave every missing-origin row inert.
+         */
+        cargo_legacy_inventory_report_t legacy_inventory = {0};
+        if (!cargo_legacy_inventory_scan_world(
+                &world, &legacy_inventory) ||
+            !cargo_legacy_inventory_report_write(
+                stderr, &legacy_inventory)) {
+            fprintf(stderr,
+                    "[FATAL] legacy cargo inventory failed; refusing to "
+                    "start without a bounded migration audit\n");
             return false;
         }
         printf("[server] loaded session from %s (belt_seed=%u world_seq=%u)\n",
-               SAVE_PATH, world.belt_seed, world.world_seq);
+               world_path, world.belt_seed, world.world_seq);
     } else {
         /* fresh_world above already rotated rng; stamp world_seq from the
          * wall clock so cross-wipe ordering is monotonic too. */
@@ -6041,17 +7988,30 @@ static bool load_world_state(void) {
         /* Stations are sovereign currency issuers; no seed pool. The
          * pool just tracks net issuance from genesis. */
         world_seed_station_manifests(&world);
+        if (!world_anchor_validated_legacy_cargo_origins(&world)) {
+            fprintf(stderr,
+                    "[FATAL] fresh cargo origin bootstrap failed; refusing "
+                    "to start with unanchored inventory\n");
+            return false;
+        }
         /* Emit per-station MOTD + rarity-tier genesis events. Only on
          * fresh-world boots — a resumed world's chain history already
          * contains them from its original genesis. */
         world_seed_station_chain_genesis(&world);
     }
 
-    /* Assign stable IDs to any stations loaded from v1 catalogs (id == 0). */
-    if (world.next_station_id == 0) world.next_station_id = 1;
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        if (station_exists(&world.stations[i]) && world.stations[i].id == 0)
-            world.stations[i].id = world.next_station_id++;
+    if (!fresh_world) {
+        /*
+         * world_load reconciles session + catalog identities before signing
+         * authority rekey. This final read-only check also covers any
+         * catalog-only legacy IDs not represented in an older snapshot.
+         */
+        if (!world_validate_station_actor_ids(&world)) {
+            fprintf(stderr,
+                    "[FATAL] station catalog/session identities cannot be "
+                    "reconciled; refusing to start\n");
+            return false;
+        }
     }
 
     /* The station catalog format doesn't persist currency_name (yet)
@@ -6091,19 +8051,19 @@ static bool load_world_state(void) {
         printf("[server] replayed %d highscore(s) from chain log\n",
                highscores.count);
 
-    /* Anchor the current world's identity in every station chain. The
-     * BUILD_INFO + WORLD_INFO operator posts let replay/analyzer walks
-     * tag subsequent events with this world's belt_seed, world_seq, and
-     * build SHA. emit_world_identity_anchor is below. */
-    emit_world_identity_anchor();
+    /* Anchor a new world's identity in every station chain. A resumed world
+     * already has its identity cursor in the signed history. Appending two
+     * boot-only records on every restart advances the durable logs ahead of
+     * the selected world/player generation; a second restart then correctly
+     * blocks all station appends because those records have no matching
+     * snapshot. Keep genesis authoring on the fresh-world path only. */
+    if (fresh_world) emit_world_identity_anchor();
     return true;
 }
 
-/* Forward-declared above load_world_state but defined here so it can
- * use chain_log_emit + the static GIT_HASH constant. Idempotent: emits
- * one BUILD_INFO and one WORLD_INFO per station every server start
- * (the chain log grows by 2 events per station per restart, which is
- * fine and gives every station log its own world cursor). */
+/* Forward-declared above load_world_state but defined here so it can use
+ * chain_log_emit + the static GIT_HASH constant. Called once when a fresh
+ * world's chain is created; resumed worlds reuse their existing cursor. */
 static void emit_world_identity_anchor_for_station(station_t *st) {
     if (!st || !station_exists(st)) return;
 #ifdef GIT_HASH
@@ -6218,12 +8178,15 @@ static bool run_sim_tick_has_control_barrier(void) {
 
 static void send_sim_events_to_recipients(const sim_events_t *events) {
     if (!events || events->count <= 0) return;
-    uint8_t ebuf[2 + SIM_MAX_EVENTS * NET_EVENT_RECORD_SIZE];
+    uint8_t ebuf[
+        NET_EVENT_V2_HEADER_SIZE +
+        SIM_MAX_EVENTS * NET_EVENT_V2_RECORD_SIZE];
     for (int p = 0; p < MAX_PLAYERS; p++) {
         server_player_t *sp = &world.players[p];
         if (!server_player_is_gameplay_ready(sp) || !sp->connection->conn) continue;
-        int elen = serialize_events_for_recipient(ebuf, events, p);
-        if (elen > 2)
+        int elen = serialize_events_v2_for_recipient(
+            ebuf, events, p);
+        if (elen > NET_EVENT_V2_HEADER_SIZE)
             ws_send(sp->connection->conn, ebuf, (size_t)elen);
     }
 }
@@ -6266,7 +8229,6 @@ static bool run_sim_ticks(float *sim_accum, float elapsed, uint64_t now) {
         steps++;
     }
     flush_pending_input_acks(pending_input_acks);
-    if (*sim_accum > SIM_DT) *sim_accum = 0.0f; /* prevent spiral */
     return false;
 }
 
@@ -6288,26 +8250,37 @@ static void tick_session_timers(void) {
                 printf("[server] player %d grace expired, fully disconnected\n", i);
             }
         }
-        /* Kick clients that never sent SESSION within the auth window. */
-        if (sp->connected && !sp->session_ready && !sp->grace_period) {
-            sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
-            if (sp->grace_timer <= 0.0f) {
-                printf("[server] player %d: session timeout, disconnecting\n", i);
-                if (sp->connection->conn)
-                    mg_ws_send(sp->connection->conn, NULL, 0, WEBSOCKET_OP_CLOSE);
-                (void)world_player_release_ship_asset(&world, i);
-                sp->connected = false;
-                world_character_unbind_player(&world, i);
-                sp->connection->conn = NULL;
-                server_player_clear_live_session_identity(sp);
-                server_player_clear_transient_input(sp);
-                uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
-                broadcast(leave_msg, 2);
-            }
+        /* Bound both halves of authentication. Token-only SESSION completes
+         * immediately; an asserted pubkey gets a fresh proof deadline when
+         * its challenge is issued. */
+        bool awaiting_pubkey_proof =
+            sp->session_ready &&
+            sp->pubkey_set &&
+            sp->pubkey_challenge_issued &&
+            (!sp->pubkey_proof_ok || !sp->pubkey_challenge_consumed);
+        if (server_player_tick_auth_timeout(
+                sp, (float)SIM_TICK_MS / 1000.0f)) {
+            struct mg_connection *conn =
+                (struct mg_connection *)sp->connection->conn;
+            reject_ws_authentication(
+                conn, i,
+                awaiting_pubkey_proof
+                    ? "pubkey proof timeout"
+                    : "session timeout");
         }
     }
 }
 
+
+static uint64_t station_snapshot_advance_generation(
+    uint64_t *family_generation) {
+    station_snapshot_generation++;
+    if (station_snapshot_generation == 0u)
+        station_snapshot_generation++;
+    if (family_generation)
+        *family_generation = station_snapshot_generation;
+    return station_snapshot_generation;
+}
 
 static bool station_diag_changed(int station_idx) {
     if (station_idx < 0 || station_idx >= MAX_STATIONS) return false;
@@ -6349,9 +8322,25 @@ static void broadcast_dirty_station_diag(uint64_t now) {
         if (last_diag != 0 && now - last_diag < STATION_DIAG_MIN_MS)
             continue;
         if (!station_diag_changed(s)) continue;
+        uint64_t generation = station_snapshot_advance_generation(
+            &station_diag_generation[s]);
         uint8_t diag_buf[STATION_DIAG_SIZE];
         int diag_len = serialize_station_diag(diag_buf, s, &world.stations[s]);
-        broadcast(diag_buf, (size_t)diag_len);
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            server_player_t *sp = &world.players[p];
+            if (!server_player_is_gameplay_ready(sp) ||
+                !sp->connection->conn) {
+                continue;
+            }
+            if (ws_send(sp->connection->conn,
+                        diag_buf, (size_t)diag_len) &&
+                ws_initial_sync_active(
+                    &ws_clients[p].initial_sync)) {
+                ws_initial_station_note_generation(
+                    &ws_clients[p], WS_INITIAL_SYNC_STATION_DIAG,
+                    (uint16_t)s, generation);
+            }
+        }
         station_diag_last_sent_ms[s] = now;
     }
 }
@@ -6368,6 +8357,8 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_identity_dirty[s]) continue;
         if (!station_exists(&world.stations[s])) continue;
+        uint64_t generation = station_snapshot_advance_generation(
+            &station_identity_generation[s]);
         uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
         int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
         float sr_sq = world.stations[s].signal_range * world.stations[s].signal_range;
@@ -6375,11 +8366,18 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
             if (!server_player_is_gameplay_ready(&world.players[p]) ||
                 !world.players[p].connection->conn) continue;
             if (v2_dist_sq(world.players[p].ship->pos, world.stations[s].pos) <= sr_sq) {
-                ws_send_station_identity_if_changed(
-                    world.players[p].connection->conn,
-                    &world.players[p],
-                    id_buf,
-                    (size_t)id_len);
+                if (ws_send_station_identity_if_changed(
+                        world.players[p].connection->conn,
+                        &world.players[p],
+                        id_buf,
+                        (size_t)id_len) &&
+                    ws_initial_sync_active(
+                        &ws_clients[p].initial_sync)) {
+                    ws_initial_station_note_generation(
+                        &ws_clients[p],
+                        WS_INITIAL_SYNC_STATION_IDENTITY,
+                        (uint16_t)s, generation);
+                }
             }
         }
         station_identity_dirty[s] = false;
@@ -6389,12 +8387,22 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!world.stations[s].manifest_dirty) continue;
         if (!station_exists(&world.stations[s])) continue;
+        uint64_t generation = station_snapshot_advance_generation(
+            &station_manifest_generation[s]);
         uint8_t mbuf[STATION_MANIFEST_MAX_SIZE];
         int mlen = serialize_station_manifest(mbuf, s, &world.stations[s]);
         for (int p = 0; p < MAX_PLAYERS; p++) {
             if (!server_player_is_gameplay_ready(&world.players[p]) ||
                 !world.players[p].connection->conn) continue;
-            ws_send(world.players[p].connection->conn, mbuf, (size_t)mlen);
+            if (ws_send(world.players[p].connection->conn,
+                        mbuf, (size_t)mlen) &&
+                ws_initial_sync_active(
+                    &ws_clients[p].initial_sync)) {
+                ws_initial_station_note_generation(
+                    &ws_clients[p],
+                    WS_INITIAL_SYNC_STATION_MANIFEST,
+                    (uint16_t)s, generation);
+            }
         }
         world.stations[s].manifest_dirty = false;
     }
@@ -6418,41 +8426,127 @@ static int server_poll_timeout_ms(uint64_t now,
     next = min_due_ms(next, last_world, WORLD_TICK_MS);
     next = min_due_ms(next, last_ship, SHIP_TICK_MS);
     next = min_due_ms(next, last_analytics, ANALYTICS_EMF_INTERVAL_MS);
-    next = min_due_ms(next, last_save, AUTOSAVE_MS);
+    if (!legacy_recovery_offer_active(now) &&
+        !persistence_writer_active(persistence_writer)) {
+        if (persistence_save_requested) {
+            if (persistence_retry_not_before_ms < next)
+                next = persistence_retry_not_before_ms;
+        } else {
+            next = min_due_ms(next, last_save, AUTOSAVE_MS);
+        }
+    }
     if (next <= now) return 0;
     uint64_t wait = next - now;
     if (wait > SIM_TICK_MS) wait = SIM_TICK_MS;
     return (int)wait;
 }
 
-static bool save_active_players(void) {
-    bool ok = true;
+static void select_generation_players(
+    bool save_player_slot[MAX_PLAYERS]) {
+    memset(save_player_slot, 0,
+           sizeof(bool) * MAX_PLAYERS);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         server_player_t *sp = &world.players[i];
-        if (!sp->session_ready) continue;
-        if (!player_save(sp, PLAYER_SAVE_DIR, i)) {
-            fprintf(stderr, "[save] player %d autosave failed: %s\n",
-                    i, strerror(errno));
-            ok = false;
+        if (!server_player_has_live_session(sp)) continue;
+        if (sp->connection->conn &&
+            (!ws_clients[i].active ||
+             !ws_clients[i].session_bootstrap_complete)) {
+            continue;
         }
+        if (sp->legacy_recovery_save_pending)
+            continue;
+        save_player_slot[i] = true;
     }
-    return ok;
+}
+
+static bool adopt_published_generation(
+    const persistence_generation_paths_t *published
+) {
+    if (!published) return false;
+    int n = snprintf(active_player_save_dir,
+                     sizeof(active_player_save_dir), "%s",
+                     published->player_dir);
+    if (n <= 0 || (size_t)n >= sizeof(active_player_save_dir)) {
+        fprintf(stderr,
+                "[FATAL] published player generation path is too long\n");
+        running = 0;
+        return false;
+    }
+    printf("[save] published persistence generation %" PRIu64 "\n",
+           published->generation);
+    return true;
+}
+
+static void apply_persistence_writer_result(
+    persistence_writer_state_t state,
+    const persistence_generation_paths_t *published,
+    uint64_t now,
+    uint64_t *last_save
+) {
+    if (state == PERSISTENCE_WRITER_SUCCEEDED) {
+        if (adopt_published_generation(published)) {
+            persistence_retry_not_before_ms = 0;
+            if (last_save) *last_save = now;
+        } else {
+            persistence_save_requested = true;
+            persistence_retry_not_before_ms = now + PERSISTENCE_RETRY_MS;
+        }
+    } else if (state == PERSISTENCE_WRITER_FAILED) {
+        fprintf(stderr,
+                "[save] background generation was not published\n");
+        persistence_save_requested = true;
+        persistence_retry_not_before_ms = now + PERSISTENCE_RETRY_MS;
+    }
+}
+
+static void wait_for_persistence_writer_result(uint64_t now) {
+    if (!persistence_writer) return;
+    persistence_generation_paths_t published = {0};
+    persistence_writer_state_t state =
+        persistence_writer_wait(persistence_writer, &published);
+    apply_persistence_writer_result(state, &published, now, NULL);
+}
+
+static bool start_persistent_state_save(void) {
+    if (!persistence_writer || persistence_recovery_invariant_failed)
+        return false;
+    bool save_player_slot[MAX_PLAYERS];
+    select_generation_players(save_player_slot);
+    if (!persistence_writer_start(
+            persistence_writer,
+            PERSISTENCE_GENERATION_DIR,
+            PLAYER_SAVE_DIR,
+            &world,
+            save_player_slot)) {
+        return false;
+    }
+    /* New mutations may set this again while the immutable snapshot saves. */
+    persistence_save_requested = false;
+    return true;
 }
 
 static bool save_persistent_state(void) {
-    bool catalogs_ok = station_catalog_save_all(
-        world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
-    bool world_ok = world_save(&world, SAVE_PATH);
-    bool players_ok = save_active_players();
-    if (!catalogs_ok || !world_ok || !players_ok) {
+    if (persistence_recovery_invariant_failed) {
         fprintf(stderr,
-                "[save] persistence snapshot incomplete "
-                "(catalogs=%s world=%s players=%s)\n",
-                catalogs_ok ? "ok" : "failed",
-                world_ok ? "ok" : "failed",
-                players_ok ? "ok" : "failed");
+                "[save] refused after recovery isolation invariant failure\n");
+        return false;
     }
-    return catalogs_ok && world_ok && players_ok;
+    bool save_player_slot[MAX_PLAYERS];
+    select_generation_players(save_player_slot);
+    persistence_generation_paths_t published = {0};
+    if (!persistence_generation_commit(
+            PERSISTENCE_GENERATION_DIR,
+            PLAYER_SAVE_DIR,
+            &world,
+            save_player_slot,
+            PERSISTENCE_GENERATION_FAULT_NONE,
+            &published)) {
+        fprintf(stderr,
+                "[save] complete generation was not published: %s\n",
+                strerror(errno));
+        return false;
+    }
+    return adopt_published_generation(&published);
 }
 
 /* ------------------------------------------------------------------ */
@@ -6465,6 +8559,11 @@ int main(void) {
      * stdout holds [server] printf lines until a 4KB page fills. */
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    if (atexit(server_sensitive_state_cleanup) != 0) {
+        fprintf(stderr,
+                "[FATAL] failed to register sensitive-state cleanup\n");
+        return 1;
+    }
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGPIPE, SIG_IGN);  /* WebSocket disconnect during write */
@@ -6477,7 +8576,14 @@ int main(void) {
     if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
     if (!load_world_state()) return 1;
-    server_apply_npc_worker_trace_fixture();
+    persistence_writer = persistence_writer_create();
+    if (!persistence_writer) {
+        fprintf(stderr,
+                "[FATAL] failed to create background persistence writer\n");
+        return 1;
+    }
+    if (!server_apply_npc_worker_trace_fixture()) return 1;
+    if (!server_apply_ws_backpressure_fixture()) return 1;
     frontier_virtual_pilots_set(&world, frontier_virtual_pilot_target);
     signal_intelligence_holographic_init();
     if (server_bot_brain_mode == SERVER_BRAIN_MODE_NEURAL_FLIGHT) {
@@ -6551,10 +8657,10 @@ int main(void) {
         const char *avatar_keypair_b64 = getenv("SIGNAL_AVATAR_KEYPAIR_B64");
         if (avatar_keypair_b64 && avatar_keypair_b64[0]) {
             /* Decode base64 → 32-byte seed */
-            uint8_t seed[32];
+            uint8_t seed[32] = {0};
             int seed_len = base64_decode(avatar_keypair_b64, seed, 32);
             if (seed_len == 32) {
-                uint8_t nacl_secret[64];
+                uint8_t nacl_secret[64] = {0};
                 signal_crypto_keypair_from_seed(seed, nacl_secret + 32, nacl_secret);
                 printf("[server] imported avatar keypair from SIGNAL_AVATAR_KEYPAIR_B64\n");
                 
@@ -6570,9 +8676,12 @@ int main(void) {
                 int32_t py = (int32_t)((phash[4] << 24 | phash[5] << 16 | phash[6] << 8 | phash[7]) % 20000 - 10000);
                 printf("[server] avatar station position: (%d, %d)\n", px, py);
                 printf("[server] tow a SIGNAL RELAY scaffold here and press E to found your station\n");
+                signal_memzero_explicit(nacl_secret,
+                                        sizeof(nacl_secret));
             } else {
                 fprintf(stderr, "[server] WARNING: SIGNAL_AVATAR_KEYPAIR_B64 decode failed (got %d bytes, expected 32)\n", seed_len);
             }
+            signal_memzero_explicit(seed, sizeof(seed));
         }
     }
 
@@ -6608,6 +8717,13 @@ int main(void) {
             poll_now, last_sim, last_state, last_world, last_ship,
             last_analytics, last_save));
         uint64_t now = mg_millis();
+        service_legacy_recovery_offers(now);
+        persistence_generation_paths_t background_published = {0};
+        persistence_writer_state_t background_state =
+            persistence_writer_poll(
+                persistence_writer, &background_published);
+        apply_persistence_writer_result(
+            background_state, &background_published, now, &last_save);
 
         if (now - last_sim >= SIM_TICK_MS) {
             float elapsed = (float)(now - last_sim) / 1000.0f;
@@ -6627,14 +8743,23 @@ int main(void) {
             last_state = now;
             last_player_state_emit = now;
         }
-        if (now - last_world >= WORLD_TICK_MS) {
-            broadcast_world();
-            broadcast_dirty_station_data(now, &last_station_identity);
-            last_world = now;
-        }
-        if (now - last_ship >= SHIP_TICK_MS) {
-            broadcast_ship_states();
-            last_ship = now;
+        ws_replication_cycle_t replication_order[2];
+        size_t replication_count = ws_replication_cycle_order(
+            now - last_ship >= SHIP_TICK_MS,
+            now - last_world >= WORLD_TICK_MS,
+            replication_order);
+        for (size_t i = 0u; i < replication_count; i++) {
+            if (replication_order[i] ==
+                WS_REPLICATION_CYCLE_PRIVATE) {
+                broadcast_ship_states();
+                last_ship = now;
+            } else {
+                broadcast_world();
+                server_churn_ws_backpressure_fixture();
+                broadcast_dirty_station_data(
+                    now, &last_station_identity);
+                last_world = now;
+            }
         }
         if (highscores_dirty) {
             broadcast_highscores();
@@ -6644,13 +8769,30 @@ int main(void) {
             analytics_emit_emf(now);
             last_analytics = now;
         }
-        if (now - last_save >= AUTOSAVE_MS) {
-            (void)save_persistent_state();
-            last_save = now;
+        bool recovery_offer_in_flight =
+            legacy_recovery_offer_active(now);
+        bool autosave_due =
+            !recovery_offer_in_flight &&
+            !persistence_save_requested &&
+            now - last_save >= AUTOSAVE_MS;
+        bool requested_save_due =
+            !recovery_offer_in_flight &&
+            persistence_save_requested &&
+            now >= persistence_retry_not_before_ms;
+        if (!persistence_writer_active(persistence_writer) &&
+            (autosave_due || requested_save_due)) {
+            if (!start_persistent_state_save()) {
+                /* Keep dirty intent and retry at a bounded cadence instead
+                 * of either losing it or fsync-spinning. */
+                persistence_save_requested = true;
+                persistence_retry_not_before_ms =
+                    now + PERSISTENCE_RETRY_MS;
+            }
         }
     }
 
     mg_mgr_free(&mgr);
+    wait_for_persistence_writer_result(mg_millis());
     if (save_persistent_state()) {
         printf("[server] world saved\n");
     } else {

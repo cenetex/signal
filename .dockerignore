@@ -36,11 +36,9 @@ assets/voice/whisper/
 assets/voice/voicebox
 assets/voice/voicebox.exe
 
-# NOTE: client-only vendor deps (vendor/sokol, vendor/minimp3,
-# vendor/fastfilter) are NOT excluded here.
+# NOTE: no vendor subtree is excluded here.
 #
-# The top-level Dockerfile's wasm-build stage compiles the full client
-# and needs them; .dockerignore is global so excluding them broke that
-# build (#521 over-corrected). The server image is unaffected because
-# server/Dockerfile's runtime stage only copies the compiled binary —
-# headers in the builder stage are discarded.
+# server/Dockerfile's web-builder compiles the full client, while its native
+# builder compiles the server. Both COPY vendor/ from this one global context,
+# so even apparently client-only exclusions break a build stage. `make
+# vendor-drift` enforces and mutation-tests this invariant.

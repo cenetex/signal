@@ -145,7 +145,7 @@ The `stations-don't-talk` rule is enforced structurally: contracts spread only v
 - **Binary little-endian protocol, v1, 40+ message types (0x01–0x47).** Fixed record sizes (player 77 B, asteroid 35 B) with `compact_u16` varints for counts. `NET_MSG_PROTOCOL_INFO` (0x41) self-describes every stream's cadence/record size/caps, also exposed as HTTP `/api/protocol` — external tooling discovers wire layout instead of hardcoding it. 8-bit capability bitmask in lieu of version negotiation.
 - **Cadences:** player state 20 Hz, world/asteroids 10 Hz, autosave 30 s. Relevance filtering at ~3000u view radius keeps asteroid/NPC broadcast O(N·viewers).
 - **Prediction:** client replays up to 512 recorded input frames (`net_replay`, `client.h:446`) against server acks; input lead derived from RTT, clamped 12 ticks; render-offset smoothing eases corrections over 180–340 ms. One-shot actions ride a separate 8-deep ack'd action queue with 6 s resend.
-- **Auth handshake:** session token (8 B) → `NET_MSG_REGISTER_PUBKEY` (33 B) → `NET_MSG_PROVE_PUBKEY` (Ed25519 over `"prove-pubkey-v1" || pubkey || token`) → save loaded from `saves/pubkey/`. Pubkey collision with a live session evicts the old session and transfers ledger entries (`main.c:1078-1119`). State-changing actions go over `NET_MSG_SIGNED_ACTION` with a monotonic nonce; movement stays unsigned for throughput.
+- **Auth handshake:** session token (8 B) → `NET_MSG_REGISTER_PUBKEY` (33 B) → server one-time challenge → `NET_MSG_PROVE_PUBKEY` (Ed25519 over `"prove-pubkey-v2" || pubkey || token || challenge`) → save loaded from `saves/pubkey/`. Protocol v3 requires the challenge-bound proof; a new client sends the legacy unchallenged v1 proof only when `PROTOCOL_INFO` explicitly identifies a v2-or-older server. Pubkey collision with a live session fails authentication closed. State-changing actions go over `NET_MSG_SIGNED_ACTION` with a monotonic nonce; movement stays unsigned for throughput.
 - **Limits:** 4 connections/IP, 5 s session-handshake timeout, 30 s reconnect grace, 20 req/s token bucket on `/api/*`.
 
 ---
@@ -165,10 +165,12 @@ The `stations-don't-talk` rule is enforced structurally: contracts spread only v
 ## 8. Persistence
 
 - **world.sav:** magic "SIGN", **v61**, min v49, CRC32 trailers, written atomically (.tmp → rename, `sim_save.c:1369`). Thirteen documented migration steps v49→v61 with per-field gating; idempotent live migrations (e.g., auto-tagging furnace hoppers at v50 load).
-- **Player saves:** `saves/pubkey/<base58>.sav` ("PLY7" format, carries manifest + receipt chains + last signed nonce); `saves/legacy/<token_hex>.sav` fallback. Legacy claim: sign `"claim-legacy-save-v1" || token_hex`, server renames into pubkey dir, first-claim-wins. Since `2118f9f` and `b2b0da1`, player saves use atomic writes and CRC/staged-load hardening so corrupt files are rejected before live player state is replaced.
+- **Player saves (historical snapshot):** `saves/pubkey/<base58>.sav` ("PLY7" format, carries manifest + receipt chains + last signed nonce); `saves/legacy/<token_hex>.sav` fallback. The first-claim-wins basename flow described by this June report has since been retired and is inert under #672 containment; it must not be treated as current operator guidance. Since `2118f9f` and `b2b0da1`, player saves use atomic writes and CRC/staged-load hardening so corrupt files are rejected before live player state is replaced.
 - **Chain-log/save reconciliation:** the save stores `chain_last_hash`/`chain_event_count`; if the on-disk log verifies and is ahead of the save (crash after append), the verified tail is adopted at load.
 
-**Remaining gaps:** no `fsync` anywhere (rename atomicity only); legacy-save claiming is now audited but still fundamentally proves key possession rather than original ownership. Full historical ownership remains a chain-log/provenance problem, not just a file-rename problem.
+**Historical remaining gaps:** this report predated the #672 containment. The
+unsafe claim path is now disabled; authenticated, crash-recoverable migration
+and complete durable ownership transfer remain open.
 
 ---
 

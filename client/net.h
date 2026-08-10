@@ -11,6 +11,8 @@
  *   STATE (0x03): 45 bytes, optional authoritative ack/timestamp tail
  *   INPUT (0x04): 22 bytes, legacy-compatible prefix + seq + uint16 target + action id + input tick + client_sent_ms
  *   PROTOCOL_INFO (0x41): stream classes, record sizes, max counts, cadences
+ *   PUBKEY_CHALLENGE (0x70): protocol-v3 transport-bound auth nonce
+ *   WORLD_TOW_LINKS (0x71): atomic revisioned tow relationship snapshot
  *   ASTEROID_UPDATE (0x05): relay-only
  */
 #ifndef NET_H
@@ -105,7 +107,7 @@ typedef struct {
     int target_asteroid;    /* mining target (-1 for none) */
     int towed_fragment;     /* towed fragment (-1 for none) */
     uint8_t tint_r, tint_g, tint_b; /* manifest rarity display tint */
-    uint8_t session_token[8];       /* worker identity for custody labels */
+    uint8_t _legacy_identity_reserved[8]; /* always zero; never identity */
     uint8_t home_station;           /* 0xFF = unknown */
 } NetNpcState;
 
@@ -268,7 +270,6 @@ typedef struct {
     int pending_ship_build_count;
     struct {
         hull_class_t hull_class;
-        int8_t owner;
         float build_progress;
     } pending_ship_builds[STATION_PENDING_SHIP_RECORD_COUNT];
     uint8_t stored_hull_count[HULL_CLASS_COUNT];
@@ -335,6 +336,8 @@ typedef struct {
     uint8_t tractor_station;
     uint8_t tractor_module;
     uint8_t tow_hardpoint_tag;
+    uint8_t custody_station;
+    uint8_t selection_token[32];
 } NetCargoPodState;
 typedef struct {
     uint8_t index;
@@ -363,6 +366,8 @@ typedef struct {
 typedef void (*net_on_interactions_fn)(const sim_interaction_t *items, int count);
 typedef void (*net_on_interaction_drift_fn)(const NetInteractionDriftState *items,
                                             int count);
+typedef void (*net_on_tow_links_fn)(const tow_link_t *links, int count,
+                                    uint32_t revision, uint32_t server_tick);
 
 typedef struct {
     uint32_t flags;
@@ -490,10 +495,17 @@ typedef struct {
     uint16_t version;
     uint32_t capabilities;
     int stream_count;
+    /* True only after exact wire/count/version/schema validation. */
+    bool compatible;
     NetProtocolStreamInfo streams[PROTOCOL_INFO_STREAM_CAPACITY];
 } NetProtocolInfo;
 
 typedef void (*net_on_protocol_info_fn)(const NetProtocolInfo *info);
+typedef void (*net_on_legacy_recovery_offer_fn)(
+    const uint8_t offer_id[LEGACY_RECOVERY_OFFER_ID_SIZE],
+    uint16_t expires_in_seconds);
+typedef void (*net_on_legacy_recovery_result_fn)(
+    legacy_recovery_result_status_t status);
 
 typedef struct {
     net_on_player_join_fn on_join;
@@ -522,6 +534,7 @@ typedef struct {
     net_on_cargo_pod_linear_fn on_cargo_pod_linear;
     net_on_interactions_fn on_interactions;
     net_on_interaction_drift_fn on_interaction_drift;
+    net_on_tow_links_fn on_tow_links;
     net_on_hail_response_fn on_hail_response;
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;
@@ -548,6 +561,8 @@ typedef struct {
     net_on_protocol_info_fn    on_protocol_info;
     net_on_handoff_ticket_fn   on_handoff_ticket;
     net_on_handoff_result_fn   on_handoff_result;
+    net_on_legacy_recovery_offer_fn on_legacy_recovery_offer;
+    net_on_legacy_recovery_result_fn on_legacy_recovery_result;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.
@@ -592,11 +607,15 @@ bool net_has_identity_pubkey(void);
  * signatures + pubkey. */
 void net_set_identity_secret(const uint8_t secret[64]);
 
+/* Wipe the process-resident networking copy of the player keypair. This is
+ * application teardown, not connection teardown: reconnect keeps identity. */
+void net_clear_identity(void);
+
 /* Send a signed state-changing action.
  *
- * Returns true if the message was queued onto the wire; false if the
- * client lacks an installed secret or the payload exceeds
- * SIGNED_ACTION_MAX_PAYLOAD.
+ * Returns true if the message was admitted to the transport; false if the
+ * client lacks an installed secret, the payload exceeds
+ * SIGNED_ACTION_MAX_PAYLOAD, or the transport rejects the write.
  *
  * Nonce is chosen internally — monotonic across the process lifetime.
  * The first signed action after process start uses the wall clock time
@@ -604,19 +623,28 @@ void net_set_identity_secret(const uint8_t secret[64]);
 bool net_send_signed_action(uint8_t action_type,
                             const uint8_t *payload, uint16_t payload_len);
 
+/*
+ * Confirm the opaque recovery offer through the normal signed-action nonce
+ * stream. The caller receives the offer bytes only from
+ * on_legacy_recovery_offer; no basename or filesystem path is accepted.
+ */
+bool net_send_confirm_legacy_recovery(
+    const uint8_t offer_id[LEGACY_RECOVERY_OFFER_ID_SIZE]);
+
+/*
+ * Production UI entry point: confirms the exact connection-local offer
+ * already latched by the decoder, without moving opaque bytes into UI state.
+ */
+bool net_send_latched_legacy_recovery(void);
+
 /* Returns true if a secret is installed and signed actions can be sent. */
 bool net_has_identity_secret(void);
 
-/* Layer A.4 of #479 — claim a legacy (token-keyed) save by signing the
- * domain-separated token name with the persistent identity. Returns true
- * if the message was queued. `token_basename` is the legacy save's base
- * name without the .sav suffix (as advertised in NET_MSG_LEGACY_SAVES_
- * AVAILABLE). The server verifies the signature, then renames the
- * legacy save to the pubkey-keyed path and loads it.
- *
- * UI integration is intentionally minimal for now — operators can
- * trigger this manually for stranded players; a docked-UI flow is a
- * follow-up issue. */
+/* Deprecated and permanently disabled arbitrary-basename recovery API.
+ * Kept temporarily for source compatibility with old operator tooling; it
+ * always returns false and never inspects, signs, logs, or sends the argument.
+ * Recovery UI remains blocked until the authenticated opaque-offer and
+ * crash-recoverable migration protocol is implemented. */
 bool net_send_claim_legacy_save(const char *token_basename);
 
 /* Send an app-level ping probe. The server immediately echoes it via
@@ -674,7 +702,8 @@ void net_send_handoff_present(const handoff_ticket_t *ticket,
 
 /* Send a planning intent (outpost create / module slot / cancel).
  * Returns false when an identity-backed client cannot use the signed
- * planning channel and the request is blocked instead of downgraded. */
+ * planning channel or the transport rejects the write; the request is
+ * blocked instead of downgraded. */
 bool net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                    uint8_t module_type, float px, float py);
 
@@ -683,6 +712,15 @@ void net_poll(void);
 
 /* Returns true if connected to the relay server. */
 bool net_is_connected(void);
+
+/* Returns true after transport connection and exact compatible protocol
+ * discovery. This admits only the REGISTER/SESSION/PROOF bootstrap. */
+bool net_is_protocol_ready(void);
+
+/* Returns true only after challenge-v2 proof has been sent and the server has
+ * confirmed admission with an exact authoritative local-player state.
+ * Gameplay and telemetry writes remain blocked until this becomes true. */
+bool net_is_gameplay_ready(void);
 
 /* Returns the local player's assigned ID, or 0xFF if not assigned. */
 uint8_t net_local_id(void);

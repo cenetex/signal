@@ -154,7 +154,8 @@ fi
         if cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON \
                  -DGIT_HASH="$GIT_HASH" >/dev/null 2>&1 \
            && cmake --build build-test --parallel >/dev/null 2>&1; then
-            ./build-test/signal_test --quiet --no-soak
+            "$ROOT/scripts/run_signal_test.sh" "$ROOT/build-test/signal_test" \
+                --quiet --no-soak
             rc=$?
             if [ "$rc" = "0" ]; then
                 echo "[local-test] PASSED at $GIT_HASH"

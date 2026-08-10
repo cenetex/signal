@@ -14,6 +14,7 @@
  *      vendor/tweetnacl/tweetnacl.c \
  *      vendor/tweetnacl/randombytes.c \
  *      vendor/tweetnacl/signal_crypto_tweetnacl.c \
+ *      shared/signal_memzero.c \
  *      -o /tmp/gen_chain_fixture
  *
  * Run:

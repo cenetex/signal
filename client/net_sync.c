@@ -10,6 +10,9 @@
 #include "contract_objective.h"
 #include "net_input_lead.h"
 #include "net_clock.h"
+#include "remote_receipt_cache.h"
+#include "state_digest.h"
+#include "asteroid_presentation.h"
 
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
@@ -25,7 +28,6 @@
  * distant rocks. Prediction must span that interval instead of freezing
  * after a fraction of a second. */
 #define ASTEROID_RENDER_PREDICT_MAX_SEC 60.0f
-#define ASTEROID_AMBIENT_DRAG 0.42f
 #define ASTEROID_RENDER_CORRECTION_CUTOFF_SEC \
     (ASTEROID_RENDER_CORRECTION_SEC * 4.0f)
 #define NPC_RENDER_CORRECTION_SEC 0.18f
@@ -38,7 +40,6 @@
 #define CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC 2.20f
 #define CARGO_POD_RENDER_CORRECTION_CUTOFF_SEC \
     (CARGO_POD_RENDER_CORRECTION_SEC * 4.0f)
-#define REMOTE_PENDING_RECEIPT_CAP 64
 #define NET_INPUT_JITTER_BUFFER_TICKS 1u
 /* Replay is keyed to server-anchored sim ticks. Movement packets carry the
  * client-predicted target tick, and the server only applies them during the
@@ -48,15 +49,18 @@
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
-static cargo_receipt_chain_t remote_pending_receipts[REMOTE_PENDING_RECEIPT_CAP];
-static uint8_t remote_pending_receipt_pub[REMOTE_PENDING_RECEIPT_CAP][32];
-static uint8_t remote_pending_receipt_count;
+static remote_receipt_cache_t remote_pending_receipts;
+static asteroid_presentation_diagnostics_t
+    local_asteroid_presentation_diagnostics;
+static bool local_asteroid_presentation_feed_active;
 
 static void net_replay_clear_frames(void);
+static void net_clear_tow_projections(void);
+static void net_reproject_tow_snapshot(void);
 
 bool net_local_prediction_enabled(void) {
     if (!g.net_authority_enabled) return true;
-    return g.net_input_tick_protocol;
+    return g.net_input_tick_protocol && net_is_gameplay_ready();
 }
 
 static bool net_replay_enabled(void) {
@@ -226,7 +230,7 @@ static void net_replay_append(const input_replay_frame_t *frame) {
 void net_replay_record_prediction(const input_intent_t *intent, float dt) {
     if (!intent || dt <= 0.0f) return;
     if (!net_replay_enabled()) return;
-    if (!g.net_authority_enabled || !net_is_connected())
+    if (!g.net_authority_enabled || !net_is_gameplay_ready())
         return;
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
     if (!g.net_prediction_tick_valid) return;
@@ -263,6 +267,236 @@ static int net_replay_first_after(uint32_t server_tick) {
 static bool net_replay_missing_prefix(uint32_t server_tick, int first_after) {
     if (first_after < 0) return false;
     return net_replay_frame_at(first_after)->tick != server_tick + 1u;
+}
+
+static const input_replay_frame_t *net_replay_frame_for_tick(uint32_t tick)
+{
+    for (int i = 0; i < (int)g.net_replay_count; i++) {
+        const input_replay_frame_t *frame = net_replay_frame_at(i);
+        if (frame->tick == tick) return frame;
+    }
+    return NULL;
+}
+
+static uint16_t net_reconcile_predicted_input_seq(uint32_t server_tick)
+{
+    const input_replay_frame_t *frame =
+        net_replay_frame_for_tick(server_tick);
+    if (frame) return frame->input_seq;
+    if (g.net_prediction_tick_valid &&
+        g.net_prediction_tick == server_tick) {
+        return g.net_last_server_ack;
+    }
+    return g.net_input_seq;
+}
+
+static net_reconcile_pose_bits_t net_reconcile_player_pose(
+    const server_player_t *sp)
+{
+    if (!sp || !sp->ship)
+        return net_reconcile_pose_bits(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    return net_reconcile_pose_bits(
+        sp->ship->pos.x, sp->ship->pos.y,
+        sp->ship->vel.x, sp->ship->vel.y,
+        sp->ship->angle);
+}
+
+static bool net_reconcile_motion_changed(float old_x,
+                                         float old_y,
+                                         float old_vx,
+                                         float old_vy,
+                                         float old_angle,
+                                         float new_x,
+                                         float new_y,
+                                         float new_vx,
+                                         float new_vy,
+                                         float new_angle)
+{
+    net_reconcile_pose_bits_t old_pose = net_reconcile_pose_bits(
+        old_x, old_y, old_vx, old_vy, old_angle);
+    net_reconcile_pose_bits_t new_pose = net_reconcile_pose_bits(
+        new_x, new_y, new_vx, new_vy, new_angle);
+    return !net_reconcile_pose_equal(&old_pose, &new_pose);
+}
+
+static bool net_reconcile_loopback_intent_differs(
+    const NetPlayerState *state,
+    const server_player_t *predicted_player)
+{
+    const world_t *authority =
+        local_server_world_const(&g.local_server);
+    if (!state || !predicted_player || !authority ||
+        !g.local_server.active || !net_is_loopback() ||
+        authority->tick != state->server_tick ||
+        state->player_id >= MAX_PLAYERS) {
+        return false;
+    }
+
+    const input_intent_t *predicted = &predicted_player->input;
+    const input_replay_frame_t *frame =
+        net_replay_frame_for_tick(state->server_tick);
+    if (frame) predicted = &frame->intent;
+    const input_intent_t *authoritative =
+        &authority->players[state->player_id].input;
+    return !net_reconcile_movement_intent_equal(predicted, authoritative);
+}
+
+static net_reconcile_tick_window_t net_reconcile_input_window(
+    const NetPlayerState *state,
+    const server_player_t *predicted_player,
+    uint32_t prediction_tick,
+    uint16_t predicted_input_seq,
+    bool has_unacked_input)
+{
+    if (!state || state->server_tick == 0 || prediction_tick == 0)
+        return (net_reconcile_tick_window_t){0};
+
+    uint32_t causes = NET_RECONCILE_CAUSE_NONE;
+    if (prediction_tick != state->server_tick)
+        causes |= NET_RECONCILE_CAUSE_TICK_FRONTIER;
+    if (predicted_input_seq != state->input_seq_ack)
+        causes |= NET_RECONCILE_CAUSE_INPUT_SEQUENCE;
+    if (has_unacked_input)
+        causes |= NET_RECONCILE_CAUSE_UNACKED_INPUT;
+    if (net_reconcile_loopback_intent_differs(state, predicted_player))
+        causes |= NET_RECONCILE_CAUSE_INPUT_INTENT;
+
+    int first_after = net_replay_first_after(state->server_tick);
+    if (net_replay_missing_prefix(state->server_tick, first_after))
+        causes |= NET_RECONCILE_CAUSE_REPLAY_GAP;
+    if (causes == NET_RECONCILE_CAUSE_NONE)
+        return (net_reconcile_tick_window_t){0};
+
+    uint32_t first_tick = state->server_tick;
+    uint32_t last_tick = prediction_tick;
+    if (replay_tick_after(first_tick, last_tick)) {
+        uint32_t swap = first_tick;
+        first_tick = last_tick;
+        last_tick = swap;
+    }
+    return net_reconcile_tick_window(first_tick, last_tick, causes);
+}
+
+static net_reconcile_tick_window_t net_reconcile_semantic_window(
+    const NetPlayerState *state,
+    const server_player_t *predicted_player)
+{
+    if (!state || state->server_tick == 0)
+        return (net_reconcile_tick_window_t){0};
+
+    uint32_t causes = NET_RECONCILE_CAUSE_NONE;
+    bool state_docked = (state->flags & 4u) != 0u;
+    if (g.net_reconcile.authoritative_state_known) {
+        if (state_docked != g.net_reconcile.authoritative_docked) {
+            causes |= state_docked
+                ? NET_RECONCILE_CAUSE_DOCK
+                : NET_RECONCILE_CAUSE_LAUNCH;
+        }
+        if (state->towed_count !=
+            g.net_reconcile.authoritative_towed_count) {
+            causes |= state->towed_count >
+                    g.net_reconcile.authoritative_towed_count
+                ? NET_RECONCILE_CAUSE_TOW_ATTACH
+                : NET_RECONCILE_CAUSE_TOW_RELEASE;
+        }
+    }
+    if (predicted_player &&
+        state_docked != predicted_player->docked &&
+        g.action_predict_timer > 0.0f) {
+        causes |= NET_RECONCILE_CAUSE_PREDICTED_ACTION;
+    }
+
+    net_reconcile_tick_window_t pending =
+        net_reconcile_take_semantic_window(
+            &g.net_reconcile, state->server_tick);
+    causes |= pending.cause_mask;
+    return net_reconcile_tick_window(
+        state->server_tick, state->server_tick, causes);
+}
+
+static void net_reconcile_update_authoritative_metadata(
+    const NetPlayerState *state)
+{
+    if (!state) return;
+    g.net_reconcile.authoritative_state_known = true;
+    g.net_reconcile.authoritative_docked =
+        (state->flags & 4u) != 0u;
+    g.net_reconcile.authoritative_towed_count = state->towed_count;
+}
+
+static void net_observe_local_reconciliation(
+    const NetPlayerState *state,
+    const server_player_t *predicted_player,
+    net_reconcile_pose_bits_t predicted_pose,
+    uint32_t prediction_tick,
+    uint16_t predicted_input_seq,
+    bool bootstrap,
+    bool has_unacked_input,
+    bool transport_recovery)
+{
+    if (!state) return;
+
+    net_reconcile_sample_t sample = {
+        .bootstrap = bootstrap,
+        .frontier_known =
+            prediction_tick != 0 &&
+            state->server_tick != 0 &&
+            (state->has_input_tick_ack || net_is_loopback()),
+        .entity_id = state->player_id,
+        .server_tick = state->server_tick,
+        .prediction_tick = prediction_tick,
+        .predicted_input_seq = predicted_input_seq,
+        .authoritative_input_seq = state->input_seq_ack,
+        .input_frontier = net_reconcile_input_window(
+            state, predicted_player, prediction_tick,
+            predicted_input_seq, has_unacked_input),
+        .semantic = net_reconcile_semantic_window(
+            state, predicted_player),
+        .transport_recovery = transport_recovery
+            ? net_reconcile_tick_window(
+                  state->server_tick, state->server_tick,
+                  NET_RECONCILE_CAUSE_REBASE)
+            : (net_reconcile_tick_window_t){0},
+        .predicted = predicted_pose,
+        .authoritative = net_reconcile_pose_bits(
+            state->x, state->y, state->vx, state->vy, state->angle),
+        .authoritative_root = NULL,
+    };
+
+    net_reconcile_class_t classification =
+        net_reconcile_classify(&sample);
+    uint8_t root[SIGNAL_AUTH_STATE_DIGEST_SIZE];
+    const world_t *authority =
+        local_server_world_const(&g.local_server);
+    if (classification == NET_RECONCILE_NUMERIC_DRIFT &&
+        !g.net_reconcile.first_numeric_drift_valid &&
+        authority &&
+        g.local_server.active &&
+        net_is_loopback() &&
+        authority->tick == state->server_tick) {
+        signal_authoritative_state_digest(authority, root);
+        sample.authoritative_root = root;
+    }
+
+    classification =
+        net_reconcile_diagnostics_observe(&g.net_reconcile, &sample);
+    net_reconcile_update_authoritative_metadata(state);
+    if (classification == NET_RECONCILE_NUMERIC_DRIFT &&
+        g.net_reconcile.class_count[NET_RECONCILE_NUMERIC_DRIFT] == 1u) {
+        fprintf(stderr,
+                "[net-drift] class=%s tick=%u prediction_tick=%u "
+                "input_seq=%u ack=%u entity=player:%u domain=%s "
+                "predicted_bits=0x%08x authoritative_bits=0x%08x\n",
+                net_reconcile_class_name(classification),
+                (unsigned)g.net_reconcile.first_server_tick,
+                (unsigned)g.net_reconcile.first_prediction_tick,
+                (unsigned)g.net_reconcile.first_predicted_input_seq,
+                (unsigned)g.net_reconcile.first_authoritative_input_seq,
+                (unsigned)g.net_reconcile.first_entity_id,
+                net_reconcile_domain_name(g.net_reconcile.first_domain),
+                (unsigned)g.net_reconcile.first_predicted_bits,
+                (unsigned)g.net_reconcile.first_authoritative_bits);
+    }
 }
 
 float net_prediction_latency_blend(void) {
@@ -360,6 +594,7 @@ static void sync_local_tow_state_from_authority(const NetPlayerState *state,
                                                 server_player_t *sp) {
     if (!state || !sp) return;
     sp->ship->tractor_level = (int)state->tractor_level;
+    if (g.tow_snapshot_received) return;
 
     int tow_cap = (int)(sizeof(sp->ship->towed_fragments) /
                         sizeof(sp->ship->towed_fragments[0]));
@@ -630,37 +865,6 @@ static void net_collect_towed_asteroids(bool towed[MAX_ASTEROIDS]) {
     }
 }
 
-static void asteroid_predict_motion(const asteroid_t *base, float elapsed,
-                                    bool towed, vec2 *out_pos, vec2 *out_vel) {
-    vec2 pos = base->pos;
-    vec2 vel = base->vel;
-
-    if (towed) {
-        pos = v2_add(pos, v2_scale(vel, elapsed));
-    } else if (elapsed > 0.0f) {
-        /* Match sim_step_asteroid_dynamics(): integrate position, then apply
-         * the rational drag factor once per fixed simulation tick. Cache the
-         * derived constants and use one exponential for the smooth
-         * fractional-tick continuation; fixed-tick positions remain exact. */
-        static float drag_decay_rate;
-        static float drag_displacement_limit;
-        if (drag_decay_rate <= 0.0f) {
-            float drag_step =
-                1.0f / (1.0f + ASTEROID_AMBIENT_DRAG * SIM_DT);
-            drag_decay_rate = -logf(drag_step) / SIM_DT;
-            drag_displacement_limit = SIM_DT / (1.0f - drag_step);
-        }
-        float retained = expf(-drag_decay_rate * elapsed);
-        float displacement_scale =
-            drag_displacement_limit * (1.0f - retained);
-        pos = v2_add(pos, v2_scale(vel, displacement_scale));
-        vel = v2_scale(vel, retained);
-    }
-
-    *out_pos = pos;
-    *out_vel = vel;
-}
-
 static asteroid_t asteroid_render_state_at(int slot, float elapsed,
                                            bool towed) {
     const asteroid_t *prev = &g.asteroid_interp.prev[slot];
@@ -669,7 +873,8 @@ static asteroid_t asteroid_render_state_at(int slot, float elapsed,
     if (!curr->active) return out;
 
     elapsed = clampf(elapsed, 0.0f, ASTEROID_RENDER_PREDICT_MAX_SEC);
-    asteroid_predict_motion(curr, elapsed, towed, &out.pos, &out.vel);
+    asteroid_presentation_predict_motion(
+        curr, elapsed, towed, &out.pos, &out.vel);
     out.age += elapsed;
     out.rotation = wrap_angle(curr->rotation + curr->spin * elapsed);
 
@@ -755,6 +960,23 @@ static cargo_pod_t cargo_pod_render_state_at(int slot, float elapsed) {
         out.rotation = lerp_angle(prev->rotation, curr->rotation, blend);
     }
     return out;
+}
+
+bool net_remote_cargo_pod_presentation(
+    int index, vec2 *out_pos, vec2 *out_vel) {
+    if (index < 0 || index >= MAX_CARGO_PODS ||
+        !out_pos || !out_vel ||
+        !g.cargo_pod_interp.curr[index].active) {
+        return false;
+    }
+    cargo_pod_t presented = cargo_pod_render_state_at(
+        index,
+        clampf(g.cargo_pod_interp.elapsed[index], 0.0f,
+               CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC));
+    if (!presented.active) return false;
+    *out_pos = presented.pos;
+    *out_vel = presented.vel;
+    return true;
 }
 
 static void cargo_pod_interp_begin_update(int idx) {
@@ -1021,6 +1243,7 @@ void net_reset_local_input_stream(void) {
     memset(g.net_action_queue, 0, sizeof(g.net_action_queue));
     memset(g.net_input_timing, 0, sizeof(g.net_input_timing));
     memset(&g.net_motion, 0, sizeof(g.net_motion));
+    net_reconcile_diagnostics_reset(&g.net_reconcile);
     g.net_motion.input_lead_margin_ticks =
         NET_INPUT_LEAD_DEFAULT_MARGIN_TICKS;
     g.local_player_render_offset = v2(0.0f, 0.0f);
@@ -1029,6 +1252,20 @@ void net_reset_local_input_stream(void) {
 
 void reset_remote_dynamic_sync(void) {
     net_reset_local_input_stream();
+    net_clear_tow_projections();
+    g.tow_snapshot_received = false;
+    g.tow_snapshot_revision = 0;
+    g.tow_snapshot_server_tick = 0;
+    memset(g.world.tow_links, 0, sizeof(g.world.tow_links));
+    g.world.tow_revision = 0;
+    g.world.tow_revision_tick = 0;
+    ship_t *live_ship = NULL;
+    if (g.local_player_slot >= 0 &&
+        g.local_player_slot < MAX_PLAYERS) {
+        live_ship = g.world.players[g.local_player_slot].ship;
+    }
+    remote_receipt_cache_reset_session(
+        &remote_pending_receipts, live_ship);
     g.net_last_ping_raw_rtt = 0.0f;
     g.net_last_ping_rtt = 0.0f;
     g.net_last_ping_server_turnaround_ms = 0.0f;
@@ -1102,6 +1339,7 @@ void net_update_remote_player_scans(const NetPlayerState *players) {
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
     bool asteroid_towed[MAX_ASTEROIDS];
     net_collect_towed_asteroids(asteroid_towed);
+    bool tow_relevance_changed = false;
 
     bool received[MAX_ASTEROIDS];
     memset(received, 0, sizeof(received));
@@ -1122,6 +1360,12 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
 
         asteroid_t* a = &g.asteroid_interp.curr[idx];
         bool was_active = a->active;
+        bool motion_changed = was_active &&
+            (asteroids[i].flags & 1u) != 0u &&
+            net_reconcile_motion_changed(
+                a->pos.x, a->pos.y, a->vel.x, a->vel.y, 0.0f,
+                asteroids[i].x, asteroids[i].y,
+                asteroids[i].vx, asteroids[i].vy, 0.0f);
         bool was_child = a->fracture_child;
         asteroid_tier_t was_tier = a->tier;
         commodity_t was_commodity = a->commodity;
@@ -1146,6 +1390,7 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
             was_tier == a->tier &&
             was_commodity == a->commodity;
         if (!a->active) {
+            if (was_active) tow_relevance_changed = true;
             a->age = 0.0f;
             a->max_hp = 0.0f;
             a->max_ore = 0.0f;
@@ -1153,6 +1398,7 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         } else if (same_identity) {
             a->age = carried_age;
         } else {
+            if (!was_active) tow_relevance_changed = true;
             a->age = 0.0f;
             a->max_hp = 0.0f;
             a->max_ore = 0.0f;
@@ -1160,6 +1406,8 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         }
         if (a->max_hp < a->hp) a->max_hp = a->hp;
         if (a->max_ore < a->ore) a->max_ore = a->ore;
+        if (motion_changed)
+            g.net_reconcile.asteroid_motion_samples++;
         net_preserve_local_towed_asteroid_prediction((int)idx);
     }
 
@@ -1177,9 +1425,12 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
                 g.asteroid_interp.curr[i].active = false;
                 g.asteroid_interp.prev[i].active = false;
                 g.asteroid_interp.elapsed[i] = 0.0f;
+                tow_relevance_changed = true;
             }
         }
     }
+    if (g.tow_snapshot_received && tow_relevance_changed)
+        net_reproject_tow_snapshot();
 
     /* World asteroids are updated by interpolate_world_for_render() at
      * render time, ensuring game logic and rendering see the same positions. */
@@ -1206,10 +1457,18 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
         vec2 carried_vel = visual.vel;
         bool keep_velocity =
             !isfinite(asteroids[i].vx) || !isfinite(asteroids[i].vy);
+        float next_vx = keep_velocity ? carried_vel.x : asteroids[i].vx;
+        float next_vy = keep_velocity ? carried_vel.y : asteroids[i].vy;
+        if (net_reconcile_motion_changed(
+                a->pos.x, a->pos.y, a->vel.x, a->vel.y, 0.0f,
+                asteroids[i].x, asteroids[i].y,
+                next_vx, next_vy, 0.0f)) {
+            g.net_reconcile.asteroid_motion_samples++;
+        }
         a->pos.x = asteroids[i].x;
         a->pos.y = asteroids[i].y;
-        a->vel.x = keep_velocity ? carried_vel.x : asteroids[i].vx;
-        a->vel.y = keep_velocity ? carried_vel.y : asteroids[i].vy;
+        a->vel.x = next_vx;
+        a->vel.y = next_vy;
         a->age = carried_age;
         net_preserve_local_towed_asteroid_prediction((int)idx);
     }
@@ -1271,6 +1530,12 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         received[idx] = true;
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
+        bool motion_changed = n->active &&
+            (npcs[i].flags & 1u) != 0u &&
+            net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, npcs[i].vx, npcs[i].vy,
+                npcs[i].angle);
         n->active = (npcs[i].flags & 1) != 0;
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
@@ -1283,15 +1548,18 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->angle = npcs[i].angle;
         n->target_asteroid =
             remote_npc_asteroid_index(npcs[i].target_asteroid);
-        n->towed_fragment =
-            remote_npc_asteroid_index(npcs[i].towed_fragment);
-        n->towed_scaffold = -1;
+        if (!g.tow_snapshot_received) {
+            n->towed_fragment =
+                remote_npc_asteroid_index(npcs[i].towed_fragment);
+            n->towed_scaffold = -1;
+        }
         n->tint_r = (float)npcs[i].tint_r / 255.0f;
         n->tint_g = (float)npcs[i].tint_g / 255.0f;
         n->tint_b = (float)npcs[i].tint_b / 255.0f;
-        memcpy(n->session_token, npcs[i].session_token, sizeof(n->session_token));
         n->home_station = (npcs[i].home_station == 0xFFu)
             ? -1 : (int)npcs[i].home_station;
+        if (motion_changed)
+            g.net_reconcile.npc_motion_samples++;
     }
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -1319,6 +1587,12 @@ void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count) {
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        if (net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, npcs[i].vx, npcs[i].vy,
+                npcs[i].angle)) {
+            g.net_reconcile.npc_motion_samples++;
+        }
         n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
@@ -1348,6 +1622,11 @@ void apply_remote_npc_pos(const NetNpcPosState* npcs, int count) {
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        if (net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, n->vel.x, n->vel.y, n->angle)) {
+            g.net_reconcile.npc_motion_samples++;
+        }
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
     }
@@ -1371,6 +1650,12 @@ void apply_remote_npc_pose(const NetNpcPoseState* npcs, int count) {
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        if (net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, n->vel.x, n->vel.y,
+                npcs[i].angle)) {
+            g.net_reconcile.npc_motion_samples++;
+        }
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
         n->angle = npcs[i].angle;
@@ -1395,6 +1680,12 @@ void apply_remote_npc_linear(const NetNpcLinearState* npcs, int count) {
 
         client_npc_render_state_t* n = &g.npc_interp.curr[idx];
         if (!n->active) continue;
+        if (net_reconcile_motion_changed(
+                n->pos.x, n->pos.y, n->vel.x, n->vel.y, n->angle,
+                npcs[i].x, npcs[i].y, npcs[i].vx, npcs[i].vy,
+                n->angle)) {
+            g.net_reconcile.npc_motion_samples++;
+        }
         n->pos.x = npcs[i].x;
         n->pos.y = npcs[i].y;
         n->vel.x = npcs[i].vx;
@@ -1414,9 +1705,11 @@ void apply_remote_npc_status(const NetNpcStatusState* npcs, int count) {
         n->hull_class = npc_default_hull_class_for_role(n->role);
         n->target_asteroid =
             remote_npc_asteroid_index(npcs[i].target_asteroid);
-        n->towed_fragment =
-            remote_npc_asteroid_index(npcs[i].towed_fragment);
-        n->towed_scaffold = -1;
+        if (!g.tow_snapshot_received) {
+            n->towed_fragment =
+                remote_npc_asteroid_index(npcs[i].towed_fragment);
+            n->towed_scaffold = -1;
+        }
     }
 }
 
@@ -1515,62 +1808,14 @@ void apply_remote_station_manifest(uint8_t station_id,
     }
 }
 
-static int remote_pending_receipt_find(const uint8_t cargo_pub[32]) {
-    if (!cargo_pub) return -1;
-    for (int i = 0; i < remote_pending_receipt_count; i++) {
-        if (memcmp(remote_pending_receipt_pub[i], cargo_pub, 32) == 0)
-            return i;
-    }
-    return -1;
-}
-
-static bool receipt_chain_cargo_pub(const cargo_receipt_chain_t *chain,
-                                    uint8_t out[32]) {
-    static const uint8_t zero32[32] = {0};
-    if (!chain || chain->len == 0 || chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN)
-        return false;
-    if (memcmp(chain->links[0].cargo_pub, zero32, 32) == 0) return false;
-    memcpy(out, chain->links[0].cargo_pub, 32);
-    return true;
-}
-
-static bool remote_attach_receipt_chain(ship_t *ship,
-                                        const cargo_receipt_chain_t *chain) {
-    uint8_t cargo_pub[32];
-    if (!ship || !chain || !receipt_chain_cargo_pub(chain, cargo_pub))
-        return false;
-    if (!ship->manifest.units || !ship->receipts_opaque) return false;
-    int idx = manifest_find(&ship->manifest, cargo_pub);
-    if (idx < 0) return false;
-    ship_receipts_t *receipts = ship_get_receipts(ship);
-    if (!receipts || idx >= (int)receipts->count) return false;
-    receipts->chains[idx] = *chain;
-    return true;
-}
-
 static void remote_store_receipt_chain(const cargo_receipt_chain_t *chain) {
-    uint8_t cargo_pub[32];
-    if (!receipt_chain_cargo_pub(chain, cargo_pub)) return;
-    int idx = remote_pending_receipt_find(cargo_pub);
-    if (idx < 0) {
-        if (remote_pending_receipt_count >= REMOTE_PENDING_RECEIPT_CAP) {
-            memmove(remote_pending_receipt_pub,
-                    &remote_pending_receipt_pub[1],
-                    (REMOTE_PENDING_RECEIPT_CAP - 1) * sizeof(remote_pending_receipt_pub[0]));
-            memmove(remote_pending_receipts,
-                    &remote_pending_receipts[1],
-                    (REMOTE_PENDING_RECEIPT_CAP - 1) * sizeof(remote_pending_receipts[0]));
-            idx = REMOTE_PENDING_RECEIPT_CAP - 1;
-        } else {
-            idx = remote_pending_receipt_count++;
-        }
+    ship_t *ship = NULL;
+    if (g.local_player_slot >= 0 &&
+        g.local_player_slot < MAX_PLAYERS) {
+        ship = g.world.players[g.local_player_slot].ship;
     }
-    memcpy(remote_pending_receipt_pub[idx], cargo_pub, 32);
-    remote_pending_receipts[idx] = *chain;
-
-    if (g.local_player_slot >= 0 && g.local_player_slot < MAX_PLAYERS)
-        (void)remote_attach_receipt_chain(g.world.players[g.local_player_slot].ship,
-                                          chain);
+    (void)remote_receipt_cache_store_unmatched(
+        &remote_pending_receipts, ship, chain);
 }
 
 static bool receipt_bundle_is_one_chain(const cargo_receipt_t *receipts,
@@ -1690,11 +1935,17 @@ void apply_remote_player_manifest(const NetManifestSummaryEntry *summary,
      * frozen at pre-action). The trade UI then shows phantom rows
      * (manifest > cargo). The brief predict/snapshot flicker is the
      * lesser evil compared to ghost SELL rows the player can't act on. */
-    if (!ship->manifest.units && !ship_manifest_bootstrap(ship)) return;
-    manifest_clear(&ship->manifest);
-    ship_receipts_t *receipts = ship_get_receipts(ship);
-    if (receipts) ship_receipts_clear(receipts);
-
+    if (!ship) return;
+    cargo_store_t staged = {0};
+    uint16_t initial_capacity =
+        ship->manifest.cap > SHIP_MANIFEST_DEFAULT_CAP
+            ? ship->manifest.cap
+            : SHIP_MANIFEST_DEFAULT_CAP;
+    if (!cargo_store_bootstrap(
+            &staged, initial_capacity)) {
+        cargo_store_cleanup(&staged);
+        return;
+    }
     uint16_t detailed[COMMODITY_COUNT][MINING_GRADE_COUNT];
     memset(detailed, 0, sizeof(detailed));
     if (detail_count < 0) detail_count = 0;
@@ -1703,36 +1954,59 @@ void apply_remote_player_manifest(const NetManifestSummaryEntry *summary,
     for (int i = 0; details && i < detail_count; i++) {
         const cargo_unit_t *unit = &details[i];
         if (!remote_manifest_detail_valid(unit)) continue;
-        if (!ship_manifest_push_with_chain(ship, unit, NULL)) return;
+        const cargo_receipt_chain_t *chain =
+            remote_receipt_chain_for_snapshot(
+                &remote_pending_receipts, ship, unit->pub);
+        if (!cargo_store_push_with_chain(
+                &staged, unit, chain)) {
+            cargo_store_cleanup(&staged);
+            return;
+        }
         detailed[unit->commodity][unit->grade]++;
-        int pending_idx = remote_pending_receipt_find(unit->pub);
-        if (pending_idx >= 0)
-            (void)remote_attach_receipt_chain(
-                ship, &remote_pending_receipts[pending_idx]);
     }
 
-    if (summary_count <= 0) return;
-    uint8_t origin[8] = { 'S','R','V','M','I','R','R','0' };
-    uint16_t out_idx = 0;
-    for (int i = 0; i < summary_count; i++) {
-        uint8_t c = summary[i].commodity;
-        uint8_t gr = summary[i].grade;
-        uint16_t n = summary[i].count;
-        if (c >= COMMODITY_COUNT) continue;
-        if (gr >= MINING_GRADE_COUNT) continue;
-        cargo_kind_t kind;
-        if (!cargo_kind_for_commodity((commodity_t)c, &kind)) continue;
-        uint16_t remaining = detailed[c][gr] < n
-            ? (uint16_t)(n - detailed[c][gr])
-            : 0;
-        for (uint16_t k = 0; k < remaining; k++) {
-            cargo_unit_t unit = {0};
-            if (!hash_legacy_migrate_unit(origin, (commodity_t)c, out_idx++, &unit))
+    if (summary_count > 0) {
+        uint8_t origin[8] = { 'S','R','V','M','I','R','R','0' };
+        uint16_t out_idx = 0;
+        for (int i = 0; i < summary_count; i++) {
+            uint8_t c = summary[i].commodity;
+            uint8_t gr = summary[i].grade;
+            uint16_t n = summary[i].count;
+            if (c >= COMMODITY_COUNT) continue;
+            if (gr >= MINING_GRADE_COUNT) continue;
+            cargo_kind_t kind;
+            if (!cargo_kind_for_commodity(
+                    (commodity_t)c, &kind)) {
                 continue;
-            unit.grade = gr;
-            if (!ship_manifest_push_with_chain(ship, &unit, NULL)) return;
+            }
+            uint16_t remaining = detailed[c][gr] < n
+                ? (uint16_t)(n - detailed[c][gr])
+                : 0;
+            for (uint16_t k = 0; k < remaining; k++) {
+                cargo_unit_t unit = {0};
+                if (!hash_legacy_migrate_unit(
+                        origin, (commodity_t)c,
+                        out_idx++, &unit)) {
+                    continue;
+                }
+                unit.grade = gr;
+                if (!cargo_store_push_with_chain(
+                        &staged, &unit, NULL)) {
+                    cargo_store_cleanup(&staged);
+                    return;
+                }
+            }
         }
     }
+
+    for (uint16_t i = 0; i < staged.manifest.count; i++) {
+        (void)remote_receipt_cache_remove(
+            &remote_pending_receipts,
+            staged.manifest.units[i].pub);
+    }
+    cargo_store_t previous = ship->cargo_store;
+    ship->cargo_store = staged;
+    cargo_store_cleanup(&previous);
 }
 
 void apply_remote_contracts(const contract_t* contracts, int count) {
@@ -1853,13 +2127,18 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     }
     st->pending_ship_build_count = si->pending_ship_build_count;
     if (st->pending_ship_build_count > 4) st->pending_ship_build_count = 4;
+    memset(st->pending_ship_builds, 0, sizeof(st->pending_ship_builds));
     for (int p = 0; p < st->pending_ship_build_count; p++) {
         st->pending_ship_builds[p].hull_class =
             si->pending_ship_builds[p].hull_class;
-        st->pending_ship_builds[p].owner =
-            si->pending_ship_builds[p].owner;
         st->pending_ship_builds[p].build_progress =
             si->pending_ship_builds[p].build_progress;
+        /*
+         * Station identity intentionally carries no ownership authority.
+         * Client replicas retain an explicit unknown mode and a zero/NONE
+         * principal rather than reconstructing identity from a wire slot.
+         */
+        st->pending_ship_builds[p].mode = PENDING_SHIP_BUILD_MODE_UNKNOWN;
     }
     memcpy(st->stored_hull_count, si->stored_hull_count,
            sizeof(st->stored_hull_count));
@@ -1915,6 +2194,7 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
     g.scaffold_interp.t = 0.0f;
 
     bool seen[MAX_SCAFFOLDS] = { false };
+    bool tow_relevance_changed = false;
     const NetProtocolInfo *info = net_protocol_info();
     bool replacement_snapshot = !info ||
         (info->capabilities & SIGNAL_PROTOCOL_CAP_SCAFFOLD_REMOVE) == 0;
@@ -1922,7 +2202,9 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
         uint8_t idx = received[i].index;
         if (idx >= MAX_SCAFFOLDS) continue;
         scaffold_t *sc = &g.scaffold_interp.curr[idx];
+        bool was_active = sc->active;
         sc->active = true;
+        if (!was_active) tow_relevance_changed = true;
         sc->state = (scaffold_state_t)received[i].state;
         sc->module_type = (module_type_t)received[i].module_type;
         sc->owner = received[i].owner;
@@ -1939,9 +2221,14 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
     }
     if (replacement_snapshot) {
         for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-            if (!seen[i]) g.scaffold_interp.curr[i].active = false;
+            if (!seen[i] && g.scaffold_interp.curr[i].active) {
+                g.scaffold_interp.curr[i].active = false;
+                tow_relevance_changed = true;
+            }
         }
     }
+    if (g.tow_snapshot_received && tow_relevance_changed)
+        net_reproject_tow_snapshot();
 }
 
 void apply_remote_scaffold_remove(const uint8_t* indices, int count) {
@@ -1962,6 +2249,8 @@ void apply_remote_scaffold_remove(const uint8_t* indices, int count) {
         if (idx >= MAX_SCAFFOLDS) continue;
         g.scaffold_interp.curr[idx].active = false;
     }
+    if (g.tow_snapshot_received)
+        net_reproject_tow_snapshot();
 }
 
 void apply_remote_scaffold_motion(const NetScaffoldMotionState* received,
@@ -1990,18 +2279,21 @@ void apply_remote_scaffold_motion(const NetScaffoldMotionState* received,
 
 void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
     bool seen[MAX_CARGO_PODS] = { false };
+    bool tow_relevance_changed = false;
     const NetProtocolInfo *info = net_protocol_info();
     bool replacement_snapshot = !info ||
         (info->capabilities & SIGNAL_PROTOCOL_CAP_CARGO_POD_REMOVE) == 0;
     for (int i = 0; i < count; i++) {
         uint8_t idx = received[i].index;
         if (idx >= MAX_CARGO_PODS) continue;
+        bool was_active = g.cargo_pod_interp.curr[idx].active;
         cargo_pod_interp_begin_update(idx);
         cargo_pod_t *pod = &g.cargo_pod_interp.curr[idx];
         pod->active = true;
+        if (!was_active) tow_relevance_changed = true;
         pod->kind = (cargo_pod_kind_t)received[i].kind;
         pod->commodity = (commodity_t)received[i].commodity;
-        cargo_pod_clear_tractor(pod);
+        if (!g.tow_snapshot_received) cargo_pod_clear_tractor(pod);
         pod->pos = v2(received[i].pos_x, received[i].pos_y);
         pod->vel = v2(received[i].vel_x, received[i].vel_y);
         pod->radius = received[i].radius;
@@ -2012,13 +2304,19 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
         pod->shipment_id = received[i].shipment_id;
         pod->summary_flags = received[i].summary_flags;
         pod->summary_grade = received[i].summary_grade;
-        if (received[i].tractor_player >= 0) {
-            cargo_pod_set_player_tractor(pod, received[i].tractor_player);
-        } else if (received[i].tractor_station > 0 &&
-                   received[i].tractor_module > 0) {
-            cargo_pod_set_module_tractor(
-                pod, (int)received[i].tractor_station - 1,
-                (int)received[i].tractor_module - 1);
+        pod->custody_station = received[i].custody_station;
+        memcpy(pod->selection_token,
+               received[i].selection_token,
+               sizeof(pod->selection_token));
+        if (!g.tow_snapshot_received) {
+            if (received[i].tractor_player >= 0) {
+                cargo_pod_set_player_tractor(pod, received[i].tractor_player);
+            } else if (received[i].tractor_station > 0 &&
+                       received[i].tractor_module > 0) {
+                cargo_pod_set_module_tractor(
+                    pod, (int)received[i].tractor_station - 1,
+                    (int)received[i].tractor_module - 1);
+            }
         }
         pod->tow_hardpoint_tag = received[i].tow_hardpoint_tag <=
                 CARGO_POD_HARDPOINT_COUNT
@@ -2030,9 +2328,13 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
             if (seen[i] || !g.cargo_pod_interp.curr[i].active) continue;
             cargo_pod_interp_begin_update(i);
             g.cargo_pod_interp.curr[i].active = false;
+            tow_relevance_changed = true;
         }
     }
-    sync_local_towed_pods_from_cargo_authority();
+    if (g.tow_snapshot_received && tow_relevance_changed)
+        net_reproject_tow_snapshot();
+    else
+        sync_local_towed_pods_from_cargo_authority();
 }
 
 void apply_remote_cargo_pod_remove(const uint8_t* indices, int count) {
@@ -2044,7 +2346,10 @@ void apply_remote_cargo_pod_remove(const uint8_t* indices, int count) {
         cargo_pod_interp_begin_update(idx);
         g.cargo_pod_interp.curr[idx].active = false;
     }
-    sync_local_towed_pods_from_cargo_authority();
+    if (g.tow_snapshot_received)
+        net_reproject_tow_snapshot();
+    else
+        sync_local_towed_pods_from_cargo_authority();
 }
 
 void apply_remote_cargo_pod_motion(const NetCargoPodMotionState* received,
@@ -2104,6 +2409,337 @@ void apply_remote_interaction_drift(const NetInteractionDriftState *items,
         it->target_pos = v2(items[i].target_x, items[i].target_y);
         it->range = items[i].range;
         it->intensity = items[i].intensity;
+    }
+}
+
+static bool net_tow_revision_before(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) < 0;
+}
+
+static bool net_tow_link_shape_valid(const tow_link_t *link,
+                                     uint32_t snapshot_revision) {
+    if (!link || !link->active || entity_ref_is_none(link->source) ||
+        entity_ref_is_none(link->target) || link->target.part != -1 ||
+        link->source.generation == 0 || link->target.generation == 0 ||
+        link->revision == 0 ||
+        net_tow_revision_before(snapshot_revision, link->revision) ||
+        link->state <= TOW_LINK_INACTIVE ||
+        link->state > TOW_LINK_RELEASING) {
+        return false;
+    }
+    bool target_valid =
+        (link->target.kind == ENTITY_KIND_ASTEROID &&
+         link->target.index >= 0 && link->target.index < MAX_ASTEROIDS) ||
+        (link->target.kind == ENTITY_KIND_CARGO_POD &&
+         link->target.index >= 0 && link->target.index < MAX_CARGO_PODS) ||
+        (link->target.kind == ENTITY_KIND_SCAFFOLD &&
+         link->target.index >= 0 && link->target.index < MAX_SCAFFOLDS);
+    if (!target_valid) return false;
+    if (link->source.kind == ENTITY_KIND_SHIP) {
+        if (link->source.index < WORLD_PLAYER_SHIP_BASE ||
+            link->source.index >= WORLD_SHIP_CAP ||
+            link->source.part != -1) {
+            return false;
+        }
+        if (link->profile == TOW_PROFILE_SHIP_FRAGMENT) {
+            return link->target.kind == ENTITY_KIND_ASTEROID &&
+                   link->slot < 10 &&
+                   (link->source.index < WORLD_NPC_SHIP_BASE ||
+                    link->slot == 0);
+        }
+        if (link->profile == TOW_PROFILE_SHIP_POD) {
+            return link->target.kind == ENTITY_KIND_CARGO_POD &&
+                   link->source.index < WORLD_NPC_SHIP_BASE &&
+                   link->slot < 10;
+        }
+        if (link->profile == TOW_PROFILE_SHIP_SCAFFOLD) {
+            return link->target.kind == ENTITY_KIND_SCAFFOLD &&
+                   link->slot == 0;
+        }
+        return false;
+    }
+    return link->source.kind == ENTITY_KIND_STATION_MODULE &&
+           link->source.index >= 0 &&
+           link->source.index < MAX_STATIONS &&
+           link->source.part >= 0 &&
+           link->source.part < MAX_MODULES_PER_STATION &&
+           link->profile == TOW_PROFILE_MODULE_POD &&
+           link->target.kind == ENTITY_KIND_CARGO_POD &&
+           link->slot == 0;
+}
+
+static bool net_tow_links_conflict(const tow_link_t *a,
+                                   const tow_link_t *b) {
+    if (a->target.kind == b->target.kind &&
+        a->target.index == b->target.index &&
+        a->target.part == b->target.part) {
+        return true;
+    }
+    /*
+     * A station module has a set of physical pod hold points, but those
+     * points are not individually addressable in the compatibility model.
+     * The server therefore publishes every MODULE_POD relation at slot zero.
+     * Target identity still makes each relation unique; treating slot zero as
+     * exclusive here would reject a valid multi-pod dock snapshot wholesale.
+     */
+    if (a->profile == TOW_PROFILE_MODULE_POD &&
+        b->profile == TOW_PROFILE_MODULE_POD) {
+        return false;
+    }
+    return a->source.kind == b->source.kind &&
+           a->source.index == b->source.index &&
+           a->source.part == b->source.part &&
+           a->profile == b->profile &&
+           a->slot == b->slot;
+}
+
+static tractor_binding_t net_tow_binding_for_source(entity_ref_t source) {
+    tractor_binding_t binding;
+    tractor_binding_clear(&binding);
+    if (source.kind == ENTITY_KIND_SHIP &&
+        source.index >= WORLD_PLAYER_SHIP_BASE &&
+        source.index < WORLD_NPC_SHIP_BASE) {
+        binding.kind = TRACTOR_SOURCE_PLAYER;
+        binding.source_index =
+            (int16_t)(source.index - WORLD_PLAYER_SHIP_BASE);
+    } else if (source.kind == ENTITY_KIND_SHIP &&
+               source.index >= WORLD_NPC_SHIP_BASE &&
+               source.index < WORLD_SHIP_CAP) {
+        binding.kind = TRACTOR_SOURCE_NPC;
+        binding.source_index =
+            (int16_t)(source.index - WORLD_NPC_SHIP_BASE);
+    } else if (source.kind == ENTITY_KIND_STATION_MODULE) {
+        binding.kind = TRACTOR_SOURCE_STATION_MODULE;
+        binding.source_index = source.index;
+        binding.source_part = source.part;
+    }
+    binding.source_generation = source.generation;
+    return binding;
+}
+
+static bool net_tow_ship_source_is_live(entity_ref_t source) {
+    if (source.kind != ENTITY_KIND_SHIP ||
+        source.index < WORLD_PLAYER_SHIP_BASE ||
+        source.index >= WORLD_SHIP_CAP) {
+        return false;
+    }
+    /*
+     * Ship generations are replicated by the atomic relation and are also
+     * present on the client's live component slot. Require an exact match so
+     * a delayed relation from a departed/recycled actor cannot paint a beam
+     * from the new occupant of the same numeric slot.
+     */
+    return entity_ref_equal(
+        world_ship_ref_for_slot(&g.world, source.index), source);
+}
+
+static bool net_tow_source_is_relevant(entity_ref_t source) {
+    if (source.kind == ENTITY_KIND_SHIP)
+        return net_tow_ship_source_is_live(source);
+    if (source.kind != ENTITY_KIND_STATION_MODULE ||
+        source.index < 0 || source.index >= MAX_STATIONS ||
+        source.part < 0 || source.part >= MAX_MODULES_PER_STATION) {
+        return false;
+    }
+    const station_t *station = &g.world.stations[source.index];
+    return station_exists(station) &&
+           source.part < station->module_count;
+}
+
+static bool net_tow_target_is_relevant(entity_ref_t target) {
+    /*
+     * Non-ship generation numbers are opaque on the client because the
+     * asteroid/pod/scaffold roster streams intentionally do not expose their
+     * pool generations. Keep the complete generation-bearing ref in
+     * g.world.tow_links, but only project it onto a currently relevant body.
+     * Equal-revision snapshot delivery re-runs this gate, which restores a
+     * valid beam after relevance re-entry. A newer replacement/release
+     * revision wins before projection, so an older relation cannot be
+     * inherited by a recycled target slot once that authority is observed.
+     */
+    if (target.kind == ENTITY_KIND_ASTEROID &&
+        target.index >= 0 && target.index < MAX_ASTEROIDS) {
+        return g.asteroid_interp.curr[target.index].active;
+    }
+    if (target.kind == ENTITY_KIND_CARGO_POD &&
+        target.index >= 0 && target.index < MAX_CARGO_PODS) {
+        return g.cargo_pod_interp.curr[target.index].active;
+    }
+    if (target.kind == ENTITY_KIND_SCAFFOLD &&
+        target.index >= 0 && target.index < MAX_SCAFFOLDS) {
+        return g.scaffold_interp.curr[target.index].active;
+    }
+    return false;
+}
+
+static void net_clear_tow_projections(void) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        tractor_binding_clear(&g.world.asteroids[i].tractor);
+        tractor_binding_clear(&g.asteroid_interp.prev[i].tractor);
+        tractor_binding_clear(&g.asteroid_interp.curr[i].tractor);
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        tractor_binding_clear(&g.world.cargo_pods[i].tractor);
+        tractor_binding_clear(&g.cargo_pod_interp.prev[i].tractor);
+        tractor_binding_clear(&g.cargo_pod_interp.curr[i].tractor);
+    }
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        tractor_binding_clear(&g.world.scaffolds[i].tractor);
+        tractor_binding_clear(&g.scaffold_interp.prev[i].tractor);
+        tractor_binding_clear(&g.scaffold_interp.curr[i].tractor);
+    }
+    for (int i = 0; i < WORLD_SHIP_CAP; i++) {
+        if (!g.world.ships[i].active) continue;
+        ship_t *ship = &g.world.ships[i].component;
+        ship->towed_count = 0;
+        ship->towed_pod_count = 0;
+        ship->towed_scaffold = -1;
+        memset(ship->towed_fragments, -1, sizeof(ship->towed_fragments));
+        memset(ship->towed_pods, -1, sizeof(ship->towed_pods));
+    }
+    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+        g.player_interp.prev[i].towed_count = 0;
+        g.player_interp.curr[i].towed_count = 0;
+        for (int slot = 0; slot < 10; slot++) {
+            g.player_interp.prev[i].towed_fragments[slot] = 0xFFFFu;
+            g.player_interp.curr[i].towed_fragments[slot] = 0xFFFFu;
+        }
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        g.npc_interp.prev[i].towed_fragment = -1;
+        g.npc_interp.curr[i].towed_fragment = -1;
+        g.npc_interp.prev[i].towed_scaffold = -1;
+        g.npc_interp.curr[i].towed_scaffold = -1;
+    }
+}
+
+static void net_project_tow_target(entity_ref_t target,
+                                   tractor_binding_t binding) {
+    if (target.kind == ENTITY_KIND_ASTEROID &&
+        target.index >= 0 && target.index < MAX_ASTEROIDS) {
+        g.world.asteroids[target.index].tractor = binding;
+        g.asteroid_interp.prev[target.index].tractor = binding;
+        g.asteroid_interp.curr[target.index].tractor = binding;
+    } else if (target.kind == ENTITY_KIND_CARGO_POD &&
+               target.index >= 0 && target.index < MAX_CARGO_PODS) {
+        g.world.cargo_pods[target.index].tractor = binding;
+        g.cargo_pod_interp.prev[target.index].tractor = binding;
+        g.cargo_pod_interp.curr[target.index].tractor = binding;
+    } else if (target.kind == ENTITY_KIND_SCAFFOLD &&
+               target.index >= 0 && target.index < MAX_SCAFFOLDS) {
+        g.world.scaffolds[target.index].tractor = binding;
+        g.scaffold_interp.prev[target.index].tractor = binding;
+        g.scaffold_interp.curr[target.index].tractor = binding;
+    }
+}
+
+static void net_project_tow_source(const tow_link_t *link) {
+    if (!link || link->source.kind != ENTITY_KIND_SHIP) return;
+    int ship_slot = link->source.index;
+    ship_t *ship = g.world.ships[ship_slot].active
+        ? &g.world.ships[ship_slot].component : NULL;
+    if (link->profile == TOW_PROFILE_SHIP_FRAGMENT) {
+        if (ship) {
+            ship->towed_fragments[link->slot] = link->target.index;
+            if (ship->towed_count <= link->slot)
+                ship->towed_count = (uint8_t)(link->slot + 1);
+        }
+        if (ship_slot < WORLD_NPC_SHIP_BASE) {
+            int player = ship_slot - WORLD_PLAYER_SHIP_BASE;
+            g.player_interp.prev[player].towed_fragments[link->slot] =
+                (uint16_t)link->target.index;
+            g.player_interp.curr[player].towed_fragments[link->slot] =
+                (uint16_t)link->target.index;
+            if (g.player_interp.prev[player].towed_count <= link->slot) {
+                g.player_interp.prev[player].towed_count =
+                    (uint8_t)(link->slot + 1);
+            }
+            if (g.player_interp.curr[player].towed_count <= link->slot) {
+                g.player_interp.curr[player].towed_count =
+                    (uint8_t)(link->slot + 1);
+            }
+        } else {
+            int npc = ship_slot - WORLD_NPC_SHIP_BASE;
+            g.npc_interp.prev[npc].towed_fragment = link->target.index;
+            g.npc_interp.curr[npc].towed_fragment = link->target.index;
+        }
+    } else if (link->profile == TOW_PROFILE_SHIP_POD && ship) {
+        ship->towed_pods[link->slot] = link->target.index;
+        if (ship->towed_pod_count <= link->slot)
+            ship->towed_pod_count = (uint8_t)(link->slot + 1);
+    } else if (link->profile == TOW_PROFILE_SHIP_SCAFFOLD) {
+        if (ship) ship->towed_scaffold = link->target.index;
+        if (ship_slot >= WORLD_NPC_SHIP_BASE) {
+            int npc = ship_slot - WORLD_NPC_SHIP_BASE;
+            g.npc_interp.prev[npc].towed_scaffold = link->target.index;
+            g.npc_interp.curr[npc].towed_scaffold = link->target.index;
+        }
+    }
+}
+
+static void net_reproject_tow_snapshot(void) {
+    net_clear_tow_projections();
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &g.world.tow_links[i];
+        if (!link->active ||
+            !net_tow_source_is_relevant(link->source) ||
+            !net_tow_target_is_relevant(link->target)) {
+            continue;
+        }
+        net_project_tow_source(link);
+        net_project_tow_target(
+            link->target,
+            net_tow_binding_for_source(link->source));
+    }
+}
+
+void apply_remote_tow_links(const tow_link_t *links, int count,
+                            uint32_t revision, uint32_t server_tick) {
+    if (count < 0 || count > MAX_TOW_LINKS ||
+        (count > 0 && !links)) {
+        return;
+    }
+    if (g.tow_snapshot_received &&
+        revision != g.tow_snapshot_revision &&
+        net_tow_revision_before(revision, g.tow_snapshot_revision)) {
+        return;
+    }
+
+    bool duplicate_revision =
+        g.tow_snapshot_received && revision == g.tow_snapshot_revision;
+    tow_link_t accepted[MAX_TOW_LINKS];
+    int accepted_count = 0;
+    if (duplicate_revision) {
+        /* Equal revisions are duplicate delivery, not a new command. Reuse
+         * the accepted relation set so a same-version packet with different
+         * bytes cannot mutate authority, while still re-projecting after a
+         * target identity enters relevance. */
+        for (int i = 0; i < MAX_TOW_LINKS; i++) {
+            if (g.world.tow_links[i].active)
+                accepted[accepted_count++] = g.world.tow_links[i];
+        }
+    } else {
+        for (int i = 0; i < count; i++) {
+            if (!net_tow_link_shape_valid(&links[i], revision))
+                return;
+            for (int j = 0; j < accepted_count; j++) {
+                if (net_tow_links_conflict(&accepted[j], &links[i]))
+                    return;
+            }
+            accepted[accepted_count++] = links[i];
+        }
+    }
+
+    memset(g.world.tow_links, 0, sizeof(g.world.tow_links));
+    for (int i = 0; i < accepted_count; i++)
+        g.world.tow_links[i] = accepted[i];
+    net_reproject_tow_snapshot();
+    g.world.tow_revision = revision;
+    g.tow_snapshot_received = true;
+    g.tow_snapshot_revision = revision;
+    if (!duplicate_revision) {
+        g.world.tow_revision_tick = server_tick;
+        g.tow_snapshot_server_tick = server_tick;
     }
 }
 
@@ -2474,6 +3110,12 @@ void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id == net_local_id()) {
         /* Reconcile local prediction with server-authoritative position. */
         server_player_t* sp = &g.world.players[state->player_id];
+        net_reconcile_pose_bits_t predicted_pose =
+            net_reconcile_player_pose(sp);
+        uint32_t predicted_tick = g.net_prediction_tick_valid
+            ? g.net_prediction_tick : 0;
+        uint16_t predicted_input_seq =
+            net_reconcile_predicted_input_seq(state->server_tick);
         vec2 before_pos = sp->ship->pos;
         if (state->has_input_tick_ack) g.net_input_tick_protocol = true;
         bool force_rebase = false;
@@ -2513,6 +3155,10 @@ void apply_remote_player_state(const NetPlayerState* state) {
         }
         net_observe_server_tick(state->server_tick);
         sync_local_tow_state_from_authority(state, sp);
+        net_observe_local_reconciliation(
+            state, sp, predicted_pose, predicted_tick,
+            predicted_input_seq, !g.net_local_state_ready,
+            has_unacked_input, force_rebase);
 
         if (!g.net_local_state_ready) {
             accept_initial_local_player_state(state, sp);
@@ -2657,6 +3303,13 @@ void apply_remote_player_state(const NetPlayerState* state) {
                 }
             }
         }
+        if (g.tow_snapshot_received) {
+            const NetPlayerState *tow =
+                &g.player_interp.curr[state->player_id];
+            next.towed_count = tow->towed_count;
+            memcpy(next.towed_fragments, tow->towed_fragments,
+                   sizeof(next.towed_fragments));
+        }
         g.player_interp.curr[state->player_id] = next;
         /* First time we see this player with a callsign — show join notice */
         if (!was_active && next.active && next.callsign[0])
@@ -2689,10 +3342,14 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
             sp->ship->cargo[c] = state->cargo[c];
         sp->nearby_fragments = (int)state->nearby_fragments;
         sp->tractor_fragments = (int)state->tractor_fragments;
-        sp->ship->towed_count = state->towed_count;
-        for (int t = 0; t < 10; t++)
-            sp->ship->towed_fragments[t] = (state->towed_fragments[t] == 0xFFFFu)
-                ? -1 : (int16_t)state->towed_fragments[t];
+        if (!g.tow_snapshot_received) {
+            sp->ship->towed_count = state->towed_count;
+            for (int t = 0; t < 10; t++) {
+                sp->ship->towed_fragments[t] =
+                    (state->towed_fragments[t] == 0xFFFFu)
+                        ? -1 : (int16_t)state->towed_fragments[t];
+            }
+        }
         /* Autopilot is also predict-protected: the [O] press triggers an
          * optimistic local toggle, and stale PLAYER_SHIP messages can
          * arrive carrying the pre-toggle value before the server has
@@ -2743,7 +3400,56 @@ void sync_local_player_slot_from_network(void) {
     if (LOCAL_PLAYER.connection) LOCAL_PLAYER.connection->conn = NULL;
 }
 
-void interpolate_world_for_render(void) {
+static void apply_local_authority_asteroid_presentation(float frame_dt)
+{
+    local_asteroid_presentation_feed_active = false;
+    const world_t *authority =
+        local_server_world_const(&g.local_server);
+    if (!g.net_authority_enabled || !net_is_loopback() ||
+        !g.local_server.active || !authority) {
+        return;
+    }
+
+    local_asteroid_presentation_feed_active = true;
+    asteroid_presentation_diagnostics_begin_frame(
+        &local_asteroid_presentation_diagnostics);
+    float render_ahead = g.runtime.accumulator;
+    if (!isfinite(render_ahead) || render_ahead < 0.0f)
+        render_ahead = 0.0f;
+    if (render_ahead > SIM_DT) render_ahead = SIM_DT;
+    float zoom = g.boost_zoom;
+    if (!isfinite(zoom) || zoom <= 0.01f) zoom = 1.0f;
+    float pixels_per_world = 1.0f / zoom;
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *dst = &g.world.asteroids[i];
+        asteroid_t legacy = *dst;
+        asteroid_t presented;
+        asteroid_motion_class_t motion_class = ASTEROID_MOTION_LOOSE;
+        asteroid_presentation_action_t action =
+            asteroid_presentation_resolve(
+                authority, &legacy, i, render_ahead,
+                &presented, &motion_class);
+        if (action == ASTEROID_PRESENTATION_PRESENT) {
+            *dst = presented;
+            asteroid_presentation_diagnostics_present(
+                &local_asteroid_presentation_diagnostics,
+                i, motion_class, &legacy, dst, &presented,
+                frame_dt, pixels_per_world);
+        } else if (action == ASTEROID_PRESENTATION_RETIRE) {
+            dst->active = false;
+            asteroid_presentation_diagnostics_retire(
+                &local_asteroid_presentation_diagnostics, i);
+        } else if (authority->asteroids[i].active && legacy.active) {
+            asteroid_presentation_diagnostics_skip(
+                &local_asteroid_presentation_diagnostics,
+                i, motion_class, &legacy,
+                frame_dt, pixels_per_world);
+        }
+    }
+}
+
+void interpolate_world_for_render_frame(float frame_dt) {
     bool asteroid_towed[MAX_ASTEROIDS];
     net_collect_towed_asteroids(asteroid_towed);
 
@@ -2759,6 +3465,12 @@ void interpolate_world_for_render(void) {
         *dst = asteroid_render_state_at(
             i, g.asteroid_interp.elapsed[i], asteroid_towed[i]);
     }
+
+    /* Local singleplayer still decodes the exact 10 Hz multiplayer stream,
+     * then replaces only render pose with the in-process 120 Hz authority.
+     * Server state is separate and const here, so presentation can never
+     * feed smoothed values back into gameplay. */
+    apply_local_authority_asteroid_presentation(frame_dt);
 
     float npc_elapsed = clampf(g.npc_interp.t * g.npc_interp.interval,
                                0.0f, NPC_RENDER_EXTRAPOLATE_MAX_SEC);
@@ -2787,8 +3499,8 @@ void interpolate_world_for_render(void) {
         dst->tint_r = render.tint_r;
         dst->tint_g = render.tint_g;
         dst->tint_b = render.tint_b;
-        memcpy(dst->session_token, render.session_token,
-               sizeof(dst->session_token));
+        /* Public NPC snapshots have no bearer-derived identity. */
+        memset(dst->session_token, 0, sizeof(dst->session_token));
         dst->home_station = render.home_station;
         dst->ship->hull_class = render.hull_class;
         dst->ship->pos = render.pos;
@@ -2823,7 +3535,75 @@ void interpolate_world_for_render(void) {
             i, clampf(g.cargo_pod_interp.elapsed[i], 0.0f,
                       CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC));
     }
-    sync_local_towed_pods_from_cargo_authority();
+    if (!g.tow_snapshot_received)
+        sync_local_towed_pods_from_cargo_authority();
+}
+
+void interpolate_world_for_render(void)
+{
+    interpolate_world_for_render_frame(SIM_DT);
+}
+
+void reset_local_asteroid_motion_telemetry(void)
+{
+    asteroid_presentation_diagnostics_reset(
+        &local_asteroid_presentation_diagnostics);
+}
+
+int get_local_asteroid_motion_feed_active(void)
+{
+    return local_asteroid_presentation_feed_active ? 1 : 0;
+}
+
+int get_local_asteroid_motion_frame_samples(void)
+{
+    return (int)local_asteroid_presentation_diagnostics.frame_samples;
+}
+
+int get_local_asteroid_motion_presented_samples(void)
+{
+    return (int)local_asteroid_presentation_diagnostics.presented_samples;
+}
+
+int get_local_asteroid_motion_starvation_events(void)
+{
+    return (int)local_asteroid_presentation_diagnostics.starvation_events;
+}
+
+float get_local_asteroid_motion_max_correction(void)
+{
+    return local_asteroid_presentation_diagnostics.max_correction_world;
+}
+
+float get_local_asteroid_motion_max_velocity_discontinuity(void)
+{
+    return local_asteroid_presentation_diagnostics
+        .max_velocity_discontinuity;
+}
+
+float get_local_asteroid_motion_max_screen_jerk(void)
+{
+    return local_asteroid_presentation_diagnostics.max_screen_jerk;
+}
+
+float get_local_asteroid_motion_max_avoided_correction(void)
+{
+    return local_asteroid_presentation_diagnostics
+        .max_legacy_correction_avoided;
+}
+
+int get_local_asteroid_motion_class_samples(int motion_class)
+{
+    if (motion_class < 0 ||
+        motion_class >= ASTEROID_MOTION_CLASS_COUNT) return 0;
+    return (int)local_asteroid_presentation_diagnostics
+        .class_samples[motion_class];
+}
+
+int local_asteroid_motion_within_thresholds(void)
+{
+    return asteroid_presentation_diagnostics_within_thresholds(
+        &local_asteroid_presentation_diagnostics) ? 1 : 0;
 }
 
 const NetPlayerState* net_get_interpolated_players(void) {
@@ -2843,6 +3623,19 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
                      uint8_t respawn_station, float respawn_fee) {
     if ((int)player_id != g.local_player_slot) return;
     net_replay_reset();
+    g.net_reconcile.death_respawn_events++;
+    const world_t *authority =
+        local_server_world_const(&g.local_server);
+    uint32_t event_tick =
+        authority && g.local_server.active && net_is_loopback()
+            ? authority->tick
+            : g.net_last_server_tick + 1u;
+    if (event_tick == 0) event_tick = 1u;
+    uint32_t event_last =
+        event_tick <= UINT32_MAX - 2u ? event_tick + 2u : event_tick;
+    net_reconcile_note_semantic_window(
+        &g.net_reconcile, event_tick, event_last,
+        NET_RECONCILE_CAUSE_DEATH_RESPAWN);
     float impact_speed = sqrtf(vel_x * vel_x + vel_y * vel_y);
     float severity = clampf(impact_speed / 260.0f, 0.8f, 2.4f);
     uint32_t spin_seed = ((uint32_t)player_id << 24) ^
@@ -2884,7 +3677,8 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
     /* Suppress the legacy detector path */
     g.death_screen_timer = 0.0f;
     g.death_screen_max = 0.0f;
-    memset(g.episode.watched, 0, sizeof(g.episode.watched));
+    episode_reset(&g.episode);
+    episode_clear_watched(&g.episode);
     g.episode.stations_visited = 0;
     episode_trigger(&g.episode, 9);
     episode_save(&g.episode);

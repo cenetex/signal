@@ -26,15 +26,19 @@
 /* Must be a power of 2 for efficient radix-2 FFT. */
 #define HNN_DIM 1024
 #define HNN_KEYGEN_VERSION 1u
-#define HNN_PILOT_ENCODER_VERSION 1u
+#define HNN_PILOT_ENCODER_VERSION 2u
 #define HNN_TRACE_FORMAT_VERSION 1u
-#define HNN_FEATURE_KEY_SEED_BASE 1000ull
 #define HNN_ACTION_KEY_SEED_BASE 2000ull
+#define HNN_FEATURE_KEY_SEED_BASE 3000ull
+#define HNN_VALUE_KEY_SEED_BASE 4000ull
+#define HNN_FEATURE_VALUE_LEVELS 17
 #define HNN_TRACE_CAPACITY 128u
 #define HNN_HOLONET_TRACE_COUNT 3u
 #define HNN_CONTRACT_SEED \
-    ((((uint64_t)HNN_FEATURE_KEY_SEED_BASE) << 32) | \
-     (uint64_t)HNN_ACTION_KEY_SEED_BASE)
+    ((((uint64_t)HNN_ACTION_KEY_SEED_BASE) << 48) | \
+     (((uint64_t)HNN_FEATURE_KEY_SEED_BASE) << 32) | \
+     (((uint64_t)HNN_VALUE_KEY_SEED_BASE) << 16) | \
+     (uint64_t)HNN_FEATURE_VALUE_LEVELS)
 
 /* Discrete flight actions the holographic brain can select. */
 enum {
@@ -227,9 +231,11 @@ typedef struct {
 } hnn_pilot_features_t;
 
 /*
- * Encode pilot features into a holographic state key vector.
- * Uses feature_index (0..HNN_FEATURE_COUNT-1) bound with
- * feature_value, then bundles all pairs.
+ * Encode pilot features into a holographic state key vector. Encoder v2
+ * represents each finite value with a normalized interpolation between
+ * adjacent deterministic value-level anchors, component-wise bound to a
+ * deterministic feature key. Values are clipped to [-1, 1], non-finite values
+ * become zero, and all feature/value codes are bundled into one unit vector.
  */
 void hnn_encode_state(const hnn_pilot_features_t *features,
                       float state_out[HNN_DIM]);

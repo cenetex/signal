@@ -558,6 +558,38 @@ receive only the lightweight open/protocol packets; the large station,
 asteroid, highscore, and signal-channel snapshot bundle is held until `SESSION`
 is accepted.
 
+The bounded-WebSocket acceptance soak exercises the production relay with 32
+real clients, including one peer that stops reading while the other 31 keep
+sending inputs and mutating station manifests:
+
+```sh
+make ws-backpressure-soak        # 5m all-reader baseline + 5m slow-reader phase
+make ws-backpressure-soak-short  # 30s + 30s CI/development regression mode
+```
+
+By default the harness launches an isolated relay with the production
+per-client-IP gate still enabled, using trusted proxy addresses only to model
+distinct clients. A dedicated, disabled-by-default backpressure fixture fills
+the canonical bounded manifest and supplies a funded docked identity directly
+to the disposable local harness; the station API never discloses its bearer
+credential. The harness proves real WebSocket buy/deliver cycles by observing
+the concrete cargo identity disappear from and return to the station manifest.
+It waits for every session and initial sync to settle, then compares
+equal-duration baseline and slow-reader windows. Both modes rely on genuine
+manifest revisions through the production serializer. The fixture cycles four
+canonical 240-detail manifests at the normal 10 Hz world cadence, while
+provenance-valid buy/deliver actions run at a lower rate. This
+separates transport pressure from durable chain-log I/O while still proving
+exact cargo removal and restoration during both phases; round-robin selection
+also stays below the 16-link receipt cap. Short mode increases the proof-action
+rate over its smaller observation windows. The JSON report includes actual
+payload bytes/sec, process RSS, queue high-water and disconnect-reason
+telemetry, raw end-to-end input-ack p95/p99 latency (plus a
+server-time-excluded diagnostic), world-tick cadence, verified manifest
+transfers, and sampled disconnect timing. Pass `--url`, `--server-pid`, and
+`--funded-session-token` to target an existing disposable fixture, or
+`--json-out` to retain the machine-readable report.
+
 Production runs the web client and headless multiplayer relay as one small
 Fly.io app with a persistent volume and auto-start/auto-suspend. See
 [`docs/fly-multiplayer.md`](docs/fly-multiplayer.md).
@@ -567,7 +599,9 @@ Fly.io app with a persistent volume and auto-start/auto-suspend. See
 The `make test` target rebuilds `signal_test` and the native client from
 current source before running fast, non-soak tests across shards, so a stale
 binary cannot mask regressions. Default output is quiet — failures and the
-final summary print:
+final labeled summary print. `make test-soak` is also a distinct required
+pull-request job; its aggregate summary derives the current `RUN_SOAK` count,
+and failed shard logs are uploaded by CI.
 
 ```sh
 make test                   # quiet: failures + summary only
@@ -575,20 +609,37 @@ make test TEST_VERBOSE=1    # full per-test "ok" stream
 make test-soak              # long-running sim/contract/autopilot cases
 make test-all               # fast + soak suites
 make test-serial            # single-process fast suite for debugging
+make test-san               # non-soak suite under ASan + UBSan
+make test-san-soak          # RUN_SOAK suite under ASan + UBSan
+make soak-automation        # tagged inventory + CI wiring freshness guard
+make banned-apis deterministic-libm doc-freshness soak-automation vendor-drift
+make cppcheck               # blocking static-analysis configuration
 make smoke                  # build wasm and run Playwright browser smoke
 make smoke-latency-suite    # build, launch local relay/proxies, run latency smokes
 make relay-traffic-probe    # sample raw relay payload by message type
 ```
+
+The native soak lane runs for every relevant pull request. The sanitizer soak
+lane runs weekly and on manual dispatch. The exact expected inventory lives in
+`scripts/check_soak_automation.py`; additions, removals, moves, or renames must
+update that reviewed list, and CI prints the live count and registrations.
+`make vendor-drift` also verifies that the complete vendored source tree stays
+in the Docker context and that every production Docker `COPY` input is covered
+by both pull-request CI and deployment path filters.
 
 Or invoke the binary directly:
 
 ```sh
 cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON
 cmake --build build-test
-./build-test/signal_test            # verbose
-./build-test/signal_test --quiet    # quiet (matches `make test`)
-./build-test/signal_test --shard=0/4   # one of 4 parallel shards
+scripts/run_signal_test.sh ./build-test/signal_test
+scripts/run_signal_test.sh ./build-test/signal_test --quiet
+scripts/run_signal_test.sh ./build-test/signal_test --shard=0/4
 ```
+
+The launcher is required for direct test runs on Linux: it raises the soft
+stack limit to the same 64 MiB contract used by the Make targets. A raw
+`signal_test` invocation is not a supported Linux test command.
 
 ## Notes
 
@@ -597,8 +648,10 @@ cmake --build build-test
 - The game stays asset-light: world geometry and HUD text are drawn directly
   with Sokol. Music, station portraits/MOTD JSON, and MPEG episode clips are
   runtime assets loaded from `assets/` in native development or from the asset
-  CDN in browser builds. The large media pack is not tracked in git; run
-  [`assets/manifest.txt`](assets/manifest.txt).
+  CDN in browser builds. [`assets/manifest.txt`](assets/manifest.txt) is the
+  canonical external-media inventory; it is not an executable download
+  command. Runtime media under `assets/` is ignored/local unless provisioned
+  by the deployment or content pipeline.
 - Native builds use Metal on macOS, OpenGL on Linux, and OpenGL on Windows
   through Sokol.
 - The browser target uses WebGL 2 via Emscripten.

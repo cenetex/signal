@@ -53,9 +53,10 @@ FROM alpine:3.19
 RUN apk add --no-cache ca-certificates libstdc++ nodejs npm
 
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev --no-package-lock \
-    && npm cache clean --force
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev \
+    && npm cache clean --force \
+    && rm -rf /root/.npm
 
 COPY --from=builder /src/build/signal_server ./signal-server
 COPY --from=web-builder /src/public ./public

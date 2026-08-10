@@ -313,54 +313,66 @@ native station history rather than define it.
 
 ## Groomed Backlog
 
+The active north star is **one hour of smooth, complete, trustworthy play**.
+Issue #690 is the live milestone. Provenance remains Signal's differentiator,
+but broad substrate work does not outrank a broken economic transaction, a
+janky rock, an unreliable tow, or an unreachable outpost.
+
+### Accepted Decisions
+
+- **#588 determinism acceptance:** certified Linux x64, macOS ARM, and WASM
+  authorities use the strict IEEE, deterministic-transcendental, versioned
+  state-root, and replay-gate profile. A broad `q32.32` rewrite is deferred.
+  Root mismatches fail closed, new authority platforms must pass the replay
+  bundles, and fixed-point migration is limited to a numeric domain that
+  produces a reproducible same-tick, same-input-frontier divergence.
+
 ### Now
 
-1. **#588 determinism acceptance:** decide whether strict native/WASM replay
-   gates are the staged acceptance path or whether full `q32.32` remains the
-   next mandatory rewrite.
-2. **#340 / #339 manifest-backed transfers:** buy, sell, deliver, and production
-   should move concrete `cargo_unit_t` rows; retire finished-goods float
-   authority once compatibility is no longer needed.
-3. **Visible matter algebra migration:** restate conserved production around
-   the quartering rule: `REFINERY_INGOTS_PER_FRAGMENT = 4`, frame press
-   `1 ingot -> 4 frames`, module fab `1 ingot + 1 frame -> 1 module`,
-   station blocks `4 frames -> 1 block`, and build costs restated to preserve
-   effective rock costs (`dock 16 frames = 1 rock`, `furnace 48 frames = 3
-   rocks`). Do not treat the repair-kit x100 path as a permanent system; route
-   repair work toward block-count hull/station repair.
-4. **Lineage view:** the CLI can print cargo lineage from chain logs; next make
-   rock -> fragment -> ingot -> frame -> outpost/gate contribution inspectable
-   in the player-facing UI.
-5. **#587 typed provenance contracts:** support explicit target pubkeys and
-   fracture/death fulfillment so contracts can price witnessed events.
-6. **Player-facing lineage:** expose cargo history, local station ledger facts,
-   and provenance requirements in the docked UI.
+1. **#686 economy integrity:** reproduce the station payment loop and make
+   every payout source/action commit at most once across retries, failed
+   handoffs, reconnect, and save/load.
+2. **#685 asteroid motion:** eliminate the local-mode 10 Hz correction rhythm
+   for towed, colliding, fractured, and station-pulled rocks.
+3. **#687 gameplay observability:** attribute slow frames and visible jerk to
+   simulation, loopback encode/decode, interpolation, rendering, persistence,
+   or accumulator loss. Record p50/p95/p99 rather than optimizing by hunch.
+4. **#617 atomic towing:** make attach, tow, release, and remote presentation
+   reliable under loopback and adverse network conditions.
+5. **#674 reachable construction:** let legitimately purchased or towed frame
+   pods found an outpost through a receipt-preserving normal-player handoff.
 
 ### Next
 
-1. **#354 game-sim validation to settlement events:** make meaningful validated
-   actions emit canonical settlement facts.
-2. **#355 construction milestone events:** outpost/module progress becomes
-   station history.
-3. **#356 signal-channel continuity:** clients can verify station-authored
-   hail/work/history roots.
-4. **#294 unified ship/controller model:** remove cargo/provenance divergence
-   between NPCs and players.
-5. **Institution tools:** shared contracts, escrowed cargo, station-endorsed
-   bounties, route health dashboards, and public construction manifests.
+1. **#684 physics feel:** tune ship, tractor, collision, throw, and camera
+   behavior after #687 can distinguish physics response from frame hitching.
+2. **#666 persistence hitch:** publish crash-consistent generations from a
+   bounded writer so autosave cannot stall or duplicate gameplay state.
+3. **#619 attention budget:** make the immediate target, tow state/tension,
+   docking, payout, danger, and rejection reason readable at a glance.
+4. **#688 first-hour progression:** gate the normal
+   mine -> smelt -> trade -> upgrade -> outpost path without injected state.
+5. **#689 rock combat and rewards:** make impacts, risk, feedback, upgrades,
+   and physical conflict produce meaningful decisions.
 
 ### Later, Gated
 
-1. **#590 / #591 / #589 permaweb and P2P:** Arweave reads, peer anchoring, and
+1. **Player-facing lineage and #587 typed provenance contracts:** expose deep
+   history when it improves a live trade, construction, or combat decision.
+2. **#354 / #355 / #356 settlement bridge:** expand canonical settlement facts
+   after the player actions they describe are stable and complete.
+3. **#590 / #591 / #589 permaweb and P2P:** Arweave reads, peer anchoring, and
    WebRTC quorum behavior.
-2. **#496 RATi vessel identity:** substrate-born cross-world identity.
-3. **Hull/station block convergence:** converge #343 hull-as-merkle, #603
+4. **#496 RATi vessel identity:** substrate-born cross-world identity.
+5. **Hull/station block convergence:** converge #343 hull-as-merkle, #603
    sheared blocks, and ship/station repair into one visible block grammar:
    damage removes blocks, repair welds frames/blocks back, and repair kits
    disappear as a player-facing matter type.
-4. **#285 streaming entity pool:** cap lifting and broader `game_sim.c`
+6. **#294 and #308 broad convergence:** take only narrow slices required by a
+   Playable Core issue; defer whole-model rewrites.
+7. **#285 streaming entity pool:** cap lifting and broader `game_sim.c`
    decomposition.
-5. **External-chain adapters:** Solana bridge, burn-to-mint, and bounty payout
+8. **External-chain adapters:** Solana bridge, burn-to-mint, and bounty payout
    flows over native Signal settlement history.
 
 ## Positioning Sentence

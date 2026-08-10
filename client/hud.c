@@ -18,7 +18,6 @@
 #include "signal_model.h"
 #include "palette.h"
 #include "contract_fit.h"
-#include "npc_identity.h"
 #include "ui_clarity.h"
 #include "rock_usefulness.h"
 #include "chain_log.h"
@@ -535,7 +534,8 @@ static const char *hud_module_consequence(const station_t *st, int module_idx) {
     }
     case MODULE_FRAME_PRESS:
     case MODULE_LASER_FAB:
-    case MODULE_TRACTOR_FAB: {
+    case MODULE_TRACTOR_FAB:
+    case MODULE_ENGINE_FAB: {
         module_inputs_t req = module_instance_required_inputs(m);
         commodity_t out = module_instance_output(m);
         if (req.count <= 0 || out >= COMMODITY_COUNT) break;
@@ -551,7 +551,7 @@ static const char *hud_module_consequence(const station_t *st, int module_idx) {
     }
     case MODULE_SHIPYARD:
         snprintf(label, sizeof(label),
-                 "Frames + Laser Modules + Tractor Modules -> ships/kits");
+                 "Frames + Engines + tools -> ships; tools -> kits");
         return label;
     case MODULE_HOPPER:
         if ((commodity_t)m->commodity < COMMODITY_COUNT) {
@@ -1882,22 +1882,8 @@ static void hud_npc_label(const npc_ship_t *npc, int idx, char *out, size_t cap)
         snprintf(out, cap, "NPC --");
         return;
     }
-    if (npc->session_token[0] == 'N' && npc->session_token[1] == 'P' &&
-        npc->session_token[2] == 'C') {
-        snprintf(out, cap, "%s N%02u", hud_npc_custody_role_label(npc->role),
-                 (unsigned)npc->session_token[5]);
-    } else {
-        snprintf(out, cap, "%s %02d", hud_npc_custody_role_label(npc->role), idx);
-    }
-}
-
-static void hud_npc_custody_pubkey(const npc_ship_t *npc,
-                                   int npc_slot,
-                                   uint8_t out[32]) {
-    uint8_t role = npc ? (uint8_t)npc->role : 0;
-    uint8_t home = npc ? (uint8_t)npc->home_station : 0xFFu;
-    npc_custody_pubkey_from_fields(npc ? npc->session_token : NULL,
-                                   npc_slot, role, home, out);
+    /* Runtime slot is presentation only; no bearer-derived name is shown. */
+    snprintf(out, cap, "%s %02d", hud_npc_custody_role_label(npc->role), idx);
 }
 
 /* Resolve a 32-byte receipt identity for player-facing provenance. Stations
@@ -1929,23 +1915,11 @@ static void hud_identity_name_for_pubkey(const uint8_t pub[32],
                 snprintf(out, cap, "pilot %d", i);
             return;
         }
-        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-            const npc_ship_t *npc = &g.world.npc_ships[i];
-            if (!npc->active) continue;
-            bool has_token = false;
-            for (int b = 0; b < 8; b++) {
-                if (npc->session_token[b] != 0) {
-                    has_token = true;
-                    break;
-                }
-            }
-            if (!has_token) continue;
-            uint8_t custody[32];
-            hud_npc_custody_pubkey(npc, i, custody);
-            if (memcmp(custody, pub, 32) != 0) continue;
-            hud_npc_label(npc, i, out, cap);
-            return;
-        }
+        /*
+         * NPC receipt identities are currently token-derived authority data.
+         * Public snapshots do not expose those tokens, so UI deliberately
+         * falls back to the receipt hash instead of inventing an actor link.
+         */
     }
     char tmp[8];
     hud_hash_short_label(pub, tmp);
@@ -3048,10 +3022,22 @@ static void hud_draw_kill_counter(float screen_w) {
 static void hud_draw_scoreboard(float screen_w, float screen_h) {
     if (!g.scoreboard.show) return;
     float cell = 8.0f;
-    int order[16];
+    int order[CLIENT_SCOREBOARD_MAX_ROWS];
+    char labels[CLIENT_SCOREBOARD_MAX_ROWS]
+               [CLIENT_PUBLIC_ACTOR_DISPLAY_LABEL_CAP];
     int n = g.scoreboard.row_count;
-    if (n > 16) n = 16;
-    for (int i = 0; i < n; i++) order[i] = i;
+    if (n > CLIENT_SCOREBOARD_MAX_ROWS)
+        n = CLIENT_SCOREBOARD_MAX_ROWS;
+    size_t longest_label = 4;
+    for (int i = 0; i < n; i++) {
+        order[i] = i;
+        if (!client_scoreboard_format_row_label(
+                &g.scoreboard, i, labels[i], sizeof(labels[i]))) {
+            snprintf(labels[i], sizeof(labels[i]), "%s", "????");
+        }
+        size_t label_len = strlen(labels[i]);
+        if (label_len > longest_label) longest_label = label_len;
+    }
     for (int i = 1; i < n; i++) {
         int k = order[i];
         int j = i - 1;
@@ -3069,11 +3055,25 @@ static void hud_draw_scoreboard(float screen_w, float screen_h) {
     }
 
     bool narrow = screen_w < 520.0f;
-    float panel_w = fminf(narrow ? 358.0f : 360.0f, screen_w - 32.0f);
+    /*
+     * Keep the K/D columns fixed and wrap only the actor label. This retains
+     * every byte of an adversarial full-ID disambiguation suffix without
+     * letting it push the numeric columns off-screen.
+     */
+    const int stats_cols = 13;
+    int available_cols = (int)floorf((screen_w - 16.0f) / cell);
+    int label_cols = available_cols - stats_cols;
+    if (label_cols < 4) label_cols = 4;
+    size_t desired_label_cols =
+        longest_label < 20u ? 20u : longest_label;
+    if ((size_t)label_cols > desired_label_cols)
+        label_cols = (int)desired_label_cols;
+    if (label_cols < 4) label_cols = 4;
+    float panel_w = (float)(label_cols + stats_cols) * cell;
     float panel_x = (screen_w - panel_w) * 0.5f;
+    if (panel_x < 8.0f) panel_x = 8.0f;
     float panel_y = fmaxf(28.0f, screen_h * 0.16f);
-    int max_rows = (int)((screen_h - panel_y - 64.0f) / 12.0f);
-    if (n > max_rows) n = max_rows;
+    float stats_x = panel_x + (float)(label_cols + 1) * cell;
     sdtx_canvas(screen_w, screen_h);
     sdtx_origin(0.0f, 0.0f);
 
@@ -3084,8 +3084,9 @@ static void hud_draw_scoreboard(float screen_w, float screen_h) {
 
     sdtx_color3b(180, 180, 180);
     sdtx_pos((panel_x + 16.0f) / cell, (panel_y + 34.0f) / cell);
-    sdtx_puts(narrow ? "PILOT         K  D  RATIO"
-                     : "PILOT             K   D   K/D");
+    sdtx_puts("PILOT");
+    sdtx_pos(stats_x / cell, (panel_y + 34.0f) / cell);
+    sdtx_puts("  K   D   K/D");
 
     if (n == 0) {
         sdtx_color3b(140, 140, 140);
@@ -3093,15 +3094,46 @@ static void hud_draw_scoreboard(float screen_w, float screen_h) {
         sdtx_puts("(no kills or deaths yet)");
         return;
     }
+    public_actor_id_t local_actor = public_actor_id_none();
+    bool have_local_actor =
+        client_local_public_actor_id(&local_actor);
+    float row_y = panel_y + 54.0f;
     for (int rank = 0; rank < n; rank++) {
         int idx = order[rank];
-        const char *label = g.scoreboard.rows[idx].label[0]
-                          ? g.scoreboard.rows[idx].label : "????";
-        bool is_me = memcmp(g.scoreboard.rows[idx].token,
-                            g.world.players[g.local_player_slot].session_token, 8) == 0;
+        const char *label = labels[idx];
+        size_t label_len = strlen(label);
+        int label_lines =
+            (int)((label_len + (size_t)label_cols - 1u) /
+                  (size_t)label_cols);
+        if (label_lines < 1) label_lines = 1;
+        float row_height = (float)label_lines * 12.0f;
+        if (row_y + row_height > screen_h - 8.0f) {
+            sdtx_color3b(140, 140, 140);
+            sdtx_pos(panel_x / cell, row_y / cell);
+            sdtx_printf("... %d more", n - rank);
+            break;
+        }
+
+        bool is_me = have_local_actor &&
+            public_actor_id_equal(
+                &g.scoreboard.rows[idx].actor, &local_actor);
         if (is_me) sdtx_color3b(255, 220, 100);
         else       sdtx_color3b(200, 200, 200);
-        char kdr[8];
+        for (int line = 0; line < label_lines; line++) {
+            size_t offset = (size_t)line * (size_t)label_cols;
+            size_t remaining = label_len - offset;
+            size_t chunk_len = remaining < (size_t)label_cols
+                ? remaining : (size_t)label_cols;
+            char chunk[CLIENT_PUBLIC_ACTOR_DISPLAY_LABEL_CAP];
+            memcpy(chunk, label + offset, chunk_len);
+            chunk[chunk_len] = '\0';
+            sdtx_pos(
+                panel_x / cell,
+                (row_y + (float)line * 12.0f) / cell);
+            sdtx_puts(chunk);
+        }
+
+        char kdr[16];
         if (g.scoreboard.rows[idx].deaths == 0) {
             snprintf(kdr, sizeof(kdr), "%d.0", g.scoreboard.rows[idx].kills);
         } else {
@@ -3109,17 +3141,12 @@ static void hud_draw_scoreboard(float screen_w, float screen_h) {
                       (float)g.scoreboard.rows[idx].deaths;
             snprintf(kdr, sizeof(kdr), "%.2f", r);
         }
-        sdtx_pos((panel_x + 16.0f) / cell,
-                 (panel_y + 54.0f + (float)rank * 12.0f) / cell);
-        if (narrow) {
-            sdtx_printf("%-12.12s %2d %2d %6s", label,
-                        g.scoreboard.rows[idx].kills,
-                        g.scoreboard.rows[idx].deaths, kdr);
-        } else {
-            sdtx_printf("%-16s %3d %3d %5s", label,
-                        g.scoreboard.rows[idx].kills,
-                        g.scoreboard.rows[idx].deaths, kdr);
-        }
+        sdtx_pos(stats_x / cell, row_y / cell);
+        sdtx_printf("%3d %3d %5s",
+                    g.scoreboard.rows[idx].kills,
+                    g.scoreboard.rows[idx].deaths,
+                    kdr);
+        row_y += row_height;
     }
 }
 
@@ -3977,12 +4004,20 @@ enum {
     SMOKE_LOOP_STATE_REMEMBERED_WORK_DEGRADED = 35,
     SMOKE_LOOP_STATE_CONSTRUCTION_CONSEQUENCE = 36,
     SMOKE_LOOP_STATE_STATION_FRAGMENT_TRACTOR = 37,
+    SMOKE_LOOP_STATE_REFIT_SUPPLY_ACTIVE = 38,
+    SMOKE_LOOP_STATE_REFIT_SUPPLY_INACTIVE = 39,
+    SMOKE_LOOP_STATE_REFIT_WORK_AGED = 40,
 };
 
 static int smoke_remembered_work_mode = -1;
 static bool smoke_construction_snapshot_valid = false;
 static int smoke_construction_snapshot_indices[2] = {-1, -1};
 static station_module_t smoke_construction_snapshot_modules[2];
+static bool smoke_refit_supply_snapshot_valid = false;
+static float smoke_refit_supply_signal_ranges[2];
+static bool smoke_refit_work_snapshot_valid = false;
+static int smoke_refit_work_snapshot_index = -1;
+static float smoke_refit_work_snapshot_age = 0.0f;
 
 static bool smoke_maintain_npc_motive_view(bool degraded) {
     if (g.world.station_count <= 1 ||
@@ -4066,7 +4101,8 @@ static bool smoke_maintain_remembered_work_view(void) {
 
 static bool smoke_seed_remembered_work(bool degraded) {
     int mode = degraded ? 1 : 0;
-    if (g.local_server.world.station_count <= 1) return false;
+    world_t *local_authority = local_server_world(&g.local_server);
+    if (!local_authority || local_authority->station_count <= 1) return false;
     if (smoke_remembered_work_mode != mode) {
         chain_payload_route_history_t payload = {0};
         payload.memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS;
@@ -4081,8 +4117,8 @@ static bool smoke_seed_remembered_work(bool degraded) {
         payload.observed_tick = (uint32_t)g.world.tick;
         payload.subject_nonce = degraded
             ? UINT64_C(0x6060dd01) : UINT64_C(0x6060cc01);
-        station_t *authority = &g.local_server.world.stations[1];
-        if (chain_log_emit(&g.local_server.world, authority,
+        station_t *authority = &local_authority->stations[1];
+        if (chain_log_emit(local_authority, authority,
                            CHAIN_EVT_ROUTE_HISTORY,
                            &payload, sizeof(payload)) == 0) {
             return false;
@@ -4200,7 +4236,7 @@ static bool smoke_maintain_weak_signal_view(void) {
         !station_exists(&g.world.stations[0])) return false;
 
     server_player_t *sp = &LOCAL_PLAYER;
-    g.episode.watched[7] = true;
+    episode_set_watched(&g.episode, 7, true);
     g.local_server.active = false;
     sp->docked = false;
     sp->current_station = -1;
@@ -4342,6 +4378,28 @@ static void smoke_set_onboarding_economy_progress(bool earned,
 static void smoke_clear_loop_state(void) {
     server_player_t *sp = &LOCAL_PLAYER;
     float max_hull = ship_max_hull(sp->ship);
+
+    if (smoke_refit_work_snapshot_valid) {
+        if (smoke_refit_work_snapshot_index >= 0 &&
+            smoke_refit_work_snapshot_index < MAX_CONTRACTS) {
+            g.world.contracts[
+                smoke_refit_work_snapshot_index].age =
+                    smoke_refit_work_snapshot_age;
+        }
+        smoke_refit_work_snapshot_valid = false;
+        smoke_refit_work_snapshot_index = -1;
+        smoke_refit_work_snapshot_age = 0.0f;
+    }
+
+    if (smoke_refit_supply_snapshot_valid) {
+        if (g.world.station_count > 2) {
+            g.world.stations[1].signal_range =
+                smoke_refit_supply_signal_ranges[0];
+            g.world.stations[2].signal_range =
+                smoke_refit_supply_signal_ranges[1];
+        }
+        smoke_refit_supply_snapshot_valid = false;
+    }
 
     if (smoke_construction_snapshot_valid && g.world.station_count > 0 &&
         station_exists(&g.world.stations[0])) {
@@ -4502,6 +4560,39 @@ static int smoke_apply_loop_state(int state) {
     switch (state) {
     case SMOKE_LOOP_STATE_CLEAR:
         return 1;
+    case SMOKE_LOOP_STATE_REFIT_SUPPLY_ACTIVE:
+    case SMOKE_LOOP_STATE_REFIT_SUPPLY_INACTIVE:
+        if (g.world.station_count <= 2 ||
+            !station_exists(&g.world.stations[1]) ||
+            !station_exists(&g.world.stations[2])) {
+            return 0;
+        }
+        smoke_refit_supply_signal_ranges[0] =
+            g.world.stations[1].signal_range;
+        smoke_refit_supply_signal_ranges[1] =
+            g.world.stations[2].signal_range;
+        smoke_refit_supply_snapshot_valid = true;
+        g.world.stations[1].signal_range = 0.0f;
+        if (state == SMOKE_LOOP_STATE_REFIT_SUPPLY_INACTIVE) {
+            g.world.stations[2].signal_range = 0.0f;
+        } else if (g.world.stations[2].signal_range <= 0.0f) {
+            g.world.stations[2].signal_range = 1.0f;
+        }
+        return 1;
+    case SMOKE_LOOP_STATE_REFIT_WORK_AGED:
+        for (int i = 0; i < MAX_CONTRACTS; i++) {
+            contract_t *contract = &g.world.contracts[i];
+            if (!contract->active ||
+                !starter_refit_work_order_matches(contract)) {
+                continue;
+            }
+            smoke_refit_work_snapshot_valid = true;
+            smoke_refit_work_snapshot_index = i;
+            smoke_refit_work_snapshot_age = contract->age;
+            contract->age = 300.0f;
+            return 1;
+        }
+        return 0;
     case SMOKE_LOOP_STATE_FRAGMENTS_NEARBY:
         sp->nearby_fragments = 3;
         return 1;
@@ -5091,22 +5182,23 @@ static int smoke_apply_loop_state(int state) {
         if (!hash_product(RECIPE_FRAME_BASIC, &ingot, 1, 0, &frame)) return 0;
         frame.origin_station = 0;
 
-        if (g.local_server.world.station_count > 0) {
-            station_t *authority = &g.local_server.world.stations[0];
+        world_t *local_authority = local_server_world(&g.local_server);
+        if (local_authority && local_authority->station_count > 0) {
+            station_t *authority = &local_authority->stations[0];
             chain_payload_smelt_t smelt = {0};
-            memcpy(smelt.fragment_pub, fragment_pub, 32);
-            memcpy(smelt.ingot_pub, ingot.pub, 32);
-            smelt.prefix_class = ingot.prefix_class;
-            smelt.mined_block = ingot.mined_block;
-            (void)chain_log_emit(&g.local_server.world, authority,
+            if (!chain_payload_smelt_bind_output(
+                    &smelt, fragment_pub, 0, &ingot)) {
+                return 0;
+            }
+            (void)chain_log_emit(local_authority, authority,
                                  CHAIN_EVT_SMELT, &smelt, sizeof(smelt));
 
             chain_payload_craft_t craft = {0};
-            craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
-            craft.input_count = 1;
-            memcpy(craft.output_pub, frame.pub, 32);
-            memcpy(craft.input_pubs[0], ingot.pub, 32);
-            (void)chain_log_emit(&g.local_server.world, authority,
+            if (!chain_payload_craft_bind_output(
+                    &craft, &ingot, 1, &frame)) {
+                return 0;
+            }
+            (void)chain_log_emit(local_authority, authority,
                                  CHAIN_EVT_CRAFT, &craft, sizeof(craft));
         }
 

@@ -12,7 +12,9 @@
 bool station_catalog_save(const station_t *st, int index, const char *dir);
 
 /* Load all station identities from stations/ directory into stations array.
- * Returns number of stations loaded.  Session-tier fields are zeroed. */
+ * Returns the number loaded, or -1 when a current-format immutable identity
+ * is corrupt or conflicts with another station. The destination is unchanged
+ * on that hard failure. Session-tier fields are zeroed on successful loads. */
 int station_catalog_load_all(station_t *stations, int max_stations, const char *dir);
 
 /* Save entire catalog (convenience wrapper). */

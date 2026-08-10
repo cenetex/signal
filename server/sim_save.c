@@ -1,3 +1,6 @@
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE
+#endif
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -38,9 +41,18 @@
 #include "base58.h"
 #include "protocol.h"
 #include "station_authority.h"
+#include "actor_principal_resolver.h"
+#include "contract_ownership.h"
 #include "chain_log.h"
+#include "legacy_save_recovery.h"
+#include "ownership_quarantine.h"
+#include "persistence_generation.h"
 #include "persistence_io.h"
+#include "sha256.h"
+#include "signal_memzero.h"
+#include "wire_codec.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <math.h>
@@ -60,7 +72,6 @@
 #define mkdir_700(p) _mkdir(p)
 #else
 #include <unistd.h>
-#include <dirent.h>
 #include <fcntl.h>
 #define mkdir_700(p) mkdir((p), 0700)
 #endif
@@ -78,7 +89,36 @@
 #define SAVE_MAGIC     0x5349474E  /* "SIGN" */
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
-#define SAVE_VERSION 76  /* v76: cargo pods persist their named tow hardpoint.
+#define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
+#define SAVE_VERSION 83  /* v83: append Engine commodity/module identities and
+                          * expand station module slots from 16 to 18.
+                          * v82: cargo-pod player tow custody uses canonical
+                          * actor principals. Runtime player slots are
+                          * projections only; ambiguous v81 slots migrate into
+                          * bound, inert ownership quarantine rows.
+                          * v81: contract claimants and delivery debtors use
+                          * canonical actor principals. Legacy player-slot
+                          * owners are quarantined rather than rebound to
+                          * whichever identity later occupies that slot.
+                          * v80: active station-custody cargo pods persist
+                          * their aggregate integer purchase-price anchor,
+                          * original-unit progress, and exact ordered remaining
+                          * manifest digest so bounded PRESENT batches conserve
+                          * one quote across restart.
+                          * v79: durable ship builds/assets use canonical
+                          * actor principals, station actors have immutable
+                          * IDs, in-flight birth assemblies and completed
+                          * birth provenance survive restart, and ambiguous
+                          * v73-v78 build modes are quarantined inert.
+                          * v78: appends a bounded, server-only ownership
+                          * quarantine before CRC2. Legacy actor rows that
+                          * cannot be proven are retained as inert public
+                          * locators for operator review; no bearer tokens are
+                          * stored in this table.
+                          * v77: stations persist a bounded, versioned public
+                          * authority lifecycle/trust registry. Private station
+                          * keys remain memory-only.
+                          * v76: cargo pods persist their named tow hardpoint.
                           * v75: station finished-goods residue is persisted
                           * separately; whole stock exists only in manifests.
                           * v74: cargo pods persist their active module tractor
@@ -264,14 +304,101 @@ _Static_assert(sizeof(legacy_named_ingot_t) == 56,
                "legacy_named_ingot_t must match the accepted PLY4 layout");
 #define LEGACY_SHIP_HOLD_INGOTS_MAX     8
 
+typedef enum {
+    LEGACY_SHIP_ASSET_OWNER_NONE = 0,
+    LEGACY_SHIP_ASSET_OWNER_STATION = 1,
+    LEGACY_SHIP_ASSET_OWNER_PLAYER_PUBKEY = 2,
+    LEGACY_SHIP_ASSET_OWNER_PLAYER_SESSION = 3,
+} legacy_ship_asset_owner_kind_t;
+
+typedef struct {
+    hull_class_t hull_class;
+    int8_t owner;
+    uint8_t _pad[3];
+    float build_progress;
+} legacy_pending_ship_build_v63_t;
+
+typedef struct {
+    hull_class_t hull_class;
+    int8_t owner;
+    uint8_t owner_kind;
+    uint8_t _pad[2];
+    float build_progress;
+    uint8_t owner_pubkey[32];
+    uint8_t owner_session[8];
+} legacy_pending_ship_build_v65_t;
+
+_Static_assert(sizeof(legacy_pending_ship_build_v63_t) == 12,
+               "v63-v64 pending ship build layout changed");
+_Static_assert(sizeof(legacy_pending_ship_build_v65_t) == 52,
+               "v65-v78 pending ship build layout changed");
+
+typedef struct {
+    bool present;
+    bool slot_only;
+    int8_t owner_code;
+    uint8_t owner_kind;
+    uint8_t owner_pubkey[32];
+    uint8_t owner_session[8];
+} legacy_pending_ship_owner_evidence_t;
+
+typedef struct {
+    bool present;
+    uint8_t owner_kind;
+    int16_t owner_station;
+    uint8_t owner_pubkey[32];
+    uint8_t owner_session[8];
+} legacy_ship_asset_owner_evidence_t;
+
+typedef struct {
+    bool present;
+    bool module_bound;
+    int8_t player_slot;
+} legacy_cargo_pod_tow_evidence_t;
+
+enum {
+    OWNERSHIP_V79_STAGED_ROW_CAP =
+        MAX_STATIONS * 4 * 2 + MAX_SHIP_ASSETS +
+        MAX_CONTRACTS + MAX_DELIVERY_SHIPMENTS +
+        MAX_CARGO_PODS,
+    SHIP_BIRTH_ASSEMBLY_SAVE_CAP = MAX_STATIONS * 4,
+    SHIP_BIRTH_ASSEMBLY_WIRE_SIZE =
+        2 + 2 * (int)sizeof(float) +
+        3 * (int)sizeof(float) + 3 * 32,
+};
+
+_Static_assert(SHIP_BIRTH_ASSEMBLY_WIRE_SIZE == 118,
+               "v79 birth assembly row must stay explicit");
+
+typedef struct {
+    legacy_pending_ship_owner_evidence_t pending[MAX_STATIONS][4];
+    legacy_ship_asset_owner_evidence_t assets[MAX_SHIP_ASSETS];
+    bool legacy_contract_present[MAX_CONTRACTS];
+    int16_t legacy_contract_actor_code[MAX_CONTRACTS];
+    bool legacy_delivery_present[MAX_DELIVERY_SHIPMENTS];
+    uint16_t legacy_delivery_actor_code[MAX_DELIVERY_SHIPMENTS];
+    legacy_cargo_pod_tow_evidence_t
+        cargo_pods[MAX_CARGO_PODS];
+    ownership_quarantine_entry_t
+        staged_rows[OWNERSHIP_V79_STAGED_ROW_CAP];
+    size_t staged_row_count;
+} ownership_v79_migration_t;
+
 /* Set by world_load() before read_station() so per-station readers know
  * which version they're parsing and can handle field additions. */
 static int g_loaded_save_version = SAVE_VERSION;
+static int g_writing_save_version = SAVE_VERSION;
+/* Exclusive end of the CRC-covered payload for the active world decode.
+ * Count-driven readers use it to prove their complete variable-width section
+ * exists before reserving dynamic storage. Restored after every load. */
+static long g_loaded_save_payload_end = -1;
 
 /* Current hauler capacity is 40 ingots; keep the on-disk corruption
  * guard comfortably above that while avoiding hostile giant receipt
  * allocations from malformed saves. */
-#define NPC_SHIP_MANIFEST_SAVE_MAX 512u
+_Static_assert(
+    WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS >= 512u,
+    "world-save ship manifest guard must cover the reviewed hauler bound");
 
 /* v51 cargo-in-space schema migration (Slice 1):
  * - Tag every untagged FURNACE (commodity == COMMODITY_COUNT) with an
@@ -385,6 +512,254 @@ void world_apply_cargo_schema_migration(world_t *w) {
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
 #define READ_FIELD(f, val)  do { if (fread(&(val), sizeof(val), 1, (f)) != 1) return false; } while(0)
 
+enum {
+    SAVE_V82_COMMODITY_COUNT = 10,
+    SAVE_V82_MODULE_COUNT = 16,
+};
+
+static bool write_commodity_floats(FILE *f,
+                                   const float values[COMMODITY_COUNT]) {
+    size_t count = g_writing_save_version >= 83
+        ? COMMODITY_COUNT : SAVE_V82_COMMODITY_COUNT;
+    return fwrite(values, sizeof(float), count, f) == count;
+}
+
+static bool read_commodity_floats(FILE *f,
+                                  float values[COMMODITY_COUNT]) {
+    size_t count = g_loaded_save_version >= 83
+        ? COMMODITY_COUNT : SAVE_V82_COMMODITY_COUNT;
+    memset(values, 0, sizeof(float) * COMMODITY_COUNT);
+    return fread(values, sizeof(float), count, f) == count;
+}
+
+static int save_module_slot_count_for_version(int version) {
+    return version >= 83 ? MAX_MODULES_PER_STATION : SAVE_V82_MODULE_COUNT;
+}
+
+static bool world_load_payload_has_bytes(FILE *f, size_t byte_count) {
+    if (!f || g_loaded_save_payload_end < 0) return false;
+    long offset = ftell(f);
+    if (offset < 0 || offset > g_loaded_save_payload_end) return false;
+    return (uint64_t)byte_count <=
+           (uint64_t)(g_loaded_save_payload_end - offset);
+}
+
+/*
+ * Validate a complete variable-width manifest section before its count can
+ * drive manifest/receipt allocations. The second decode pass still performs
+ * all semantic validation and production insertion; this pass only proves
+ * that every declared row and receipt chain is contained in the CRC-covered
+ * payload.
+ */
+static bool world_load_preflight_manifest(
+    FILE *f,
+    uint16_t count,
+    bool has_receipt_chains) {
+    if (!f) return false;
+    long start = ftell(f);
+    if (start < 0) return false;
+
+    bool ok = true;
+    for (uint16_t i = 0; i < count && ok; i++) {
+        size_t fixed_bytes = sizeof(cargo_unit_t) +
+            (has_receipt_chains ? sizeof(uint8_t) : 0u);
+        if (!world_load_payload_has_bytes(f, fixed_bytes) ||
+            fseek(f, (long)sizeof(cargo_unit_t), SEEK_CUR) != 0) {
+            ok = false;
+            break;
+        }
+        if (!has_receipt_chains) continue;
+
+        uint8_t chain_len = 0;
+        if (fread(&chain_len, sizeof(chain_len), 1, f) != 1 ||
+            chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+            ok = false;
+            break;
+        }
+        size_t receipt_bytes =
+            (size_t)chain_len * sizeof(cargo_receipt_t);
+        if (!world_load_payload_has_bytes(f, receipt_bytes) ||
+            (receipt_bytes > 0 &&
+             fseek(f, (long)receipt_bytes, SEEK_CUR) != 0)) {
+            ok = false;
+        }
+    }
+
+    if (fseek(f, start, SEEK_SET) != 0) return false;
+    return ok;
+}
+
+static bool world_load_record_oom(world_load_result_t *result) {
+    if (result) *result = WORLD_LOAD_RESULT_OUT_OF_MEMORY;
+    return false;
+}
+
+static bool write_actor_principal(
+    FILE *f,
+    const actor_principal_t *principal) {
+    uint8_t wire[ACTOR_PRINCIPAL_WIRE_SIZE];
+    return f && actor_principal_pack(principal, wire) &&
+           fwrite(wire, sizeof(wire), 1, f) == 1;
+}
+
+static bool read_actor_principal(
+    FILE *f,
+    actor_principal_t *principal) {
+    uint8_t wire[ACTOR_PRINCIPAL_WIRE_SIZE];
+    if (!f || !principal ||
+        fread(wire, sizeof(wire), 1, f) != 1) {
+        if (principal) *principal = actor_principal_none();
+        return false;
+    }
+    return actor_principal_unpack(wire, principal);
+}
+
+static bool save_bytes_any(const uint8_t *bytes, size_t len) {
+    uint8_t any = 0;
+    if (!bytes) return false;
+    for (size_t i = 0; i < len; i++) any |= bytes[i];
+    return any != 0;
+}
+
+static bool ship_asset_birth_proof_is_canonical(
+    const ship_asset_t *asset) {
+    if (!asset) return false;
+    bool grades = save_bytes_any(
+        asset->birth_fragment_grades,
+        sizeof(asset->birth_fragment_grades));
+    bool soul = save_bytes_any(
+        asset->birth_soul_pub, sizeof(asset->birth_soul_pub));
+    bool material = save_bytes_any(
+        asset->birth_material_root,
+        sizeof(asset->birth_material_root));
+    bool fragment[3] = {
+        save_bytes_any(asset->birth_fragment_pubs[0], 32),
+        save_bytes_any(asset->birth_fragment_pubs[1], 32),
+        save_bytes_any(asset->birth_fragment_pubs[2], 32),
+    };
+    if (asset->provenance == SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY) {
+        uint8_t expected_soul[32];
+        uint8_t expected_material[32];
+        if (asset->birth_proof_version !=
+                SHIP_BIRTH_PROOF_VERSION_V1 ||
+            !soul || !material ||
+            !ship_birth_proof_compute_v1(
+                asset->birth_fragment_pubs,
+                asset->birth_fragment_grades,
+                expected_soul, expected_material)) {
+            return false;
+        }
+        return memcmp(
+                   asset->birth_soul_pub,
+                   expected_soul, sizeof(expected_soul)) == 0 &&
+               memcmp(
+                   asset->birth_material_root,
+                   expected_material,
+                   sizeof(expected_material)) == 0;
+    }
+    return asset->birth_proof_version == 0 &&
+           !grades && !soul && !material &&
+           !fragment[0] && !fragment[1] && !fragment[2];
+}
+
+static bool validate_ship_birth_provenance_uniqueness(
+    const world_t *w) {
+    if (!w) return false;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        const ship_asset_t *asset = &w->ship_assets[i];
+        if (!asset->active) continue;
+        if (!ship_asset_birth_proof_is_canonical(asset))
+            return false;
+        if (asset->provenance !=
+            SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY) {
+            continue;
+        }
+        for (int j = i + 1; j < MAX_SHIP_ASSETS; j++) {
+            const ship_asset_t *other = &w->ship_assets[j];
+            if (!other->active ||
+                other->provenance !=
+                    SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY) {
+                continue;
+            }
+            if (memcmp(asset->birth_soul_pub,
+                       other->birth_soul_pub, 32) == 0 ||
+                memcmp(asset->birth_material_root,
+                       other->birth_material_root, 32) == 0) {
+                return false;
+            }
+            for (int f = 0;
+                 f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT; f++) {
+                for (int other_f = 0;
+                     other_f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT;
+                     other_f++) {
+                    if (memcmp(
+                            asset->birth_fragment_pubs[f],
+                            other->birth_fragment_pubs[other_f],
+                            32) == 0) {
+                        return false;
+                    }
+                }
+            }
+        }
+        for (int station = 0; station < MAX_STATIONS; station++) {
+            for (int row = 0; row < 4; row++) {
+                const ship_birth_assembly_t *birth =
+                    &w->ship_birth_assemblies[station][row];
+                if (!birth->active) continue;
+                for (int f = 0;
+                     f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT; f++) {
+                    for (int birth_f = 0;
+                         birth_f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT;
+                         birth_f++) {
+                        if (memcmp(
+                                asset->birth_fragment_pubs[f],
+                                birth->fragment_pubs[birth_f],
+                                32) == 0) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        for (int row = 0; row < 4; row++) {
+            const ship_birth_assembly_t *birth =
+                &w->ship_birth_assemblies[station][row];
+            if (!birth->active) continue;
+            int key = station * 4 + row;
+            for (int other_station = station;
+                 other_station < MAX_STATIONS;
+                 other_station++) {
+                for (int other_row = 0; other_row < 4; other_row++) {
+                    int other_key =
+                        other_station * 4 + other_row;
+                    if (other_key <= key) continue;
+                    const ship_birth_assembly_t *other =
+                        &w->ship_birth_assemblies[
+                            other_station][other_row];
+                    if (!other->active) continue;
+                    for (int f = 0;
+                         f < SHIP_BIRTH_PROOF_FRAGMENT_COUNT; f++) {
+                        for (int other_f = 0;
+                             other_f <
+                                 SHIP_BIRTH_PROOF_FRAGMENT_COUNT;
+                             other_f++) {
+                            if (memcmp(
+                                    birth->fragment_pubs[f],
+                                    other->fragment_pubs[other_f],
+                                    32) == 0) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 /* ---- station field-by-field I/O ---- */
 /* write_station removed in v24 — station identity now persisted via
  * sim_catalog.c; session-tier data via write_station_session(). The
@@ -494,12 +869,14 @@ static bool read_station(FILE *f, station_t *s) {
 
 static bool write_station_session(FILE *f, const station_t *s) {
     /* Raw hopper inventory plus sub-unit finished-production residue. */
-    WRITE_FIELD(f, s->_inventory_cache);
-    WRITE_FIELD(f, s->_finished_residue);
+    if (!write_commodity_floats(f, s->_inventory_cache) ||
+        !write_commodity_floats(f, s->_finished_residue)) return false;
     /* Per-module production buffers */
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+    for (int m = 0; m < save_module_slot_count_for_version(
+                            g_writing_save_version); m++)
         WRITE_FIELD(f, s->modules[m].input_buffer);
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+    for (int m = 0; m < save_module_slot_count_for_version(
+                            g_writing_save_version); m++)
         WRITE_FIELD(f, s->modules[m].output_buffer);
     /* (credit_pool field removed in v43 — derived from ledger now.) */
     /* Economy ledger */
@@ -521,9 +898,36 @@ static bool write_station_session(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->pending_scaffold_count);
     for (int p = 0; p < 4; p++)
         WRITE_FIELD(f, s->pending_scaffolds[p]);
+    if (s->pending_ship_build_count < 0 ||
+        s->pending_ship_build_count > 4) {
+        return false;
+    }
     WRITE_FIELD(f, s->pending_ship_build_count);
-    for (int p = 0; p < 4; p++)
-        WRITE_FIELD(f, s->pending_ship_builds[p]);
+    for (int p = 0; p < 4; p++) {
+        pending_ship_build_t empty = {0};
+        const pending_ship_build_t *build =
+            p < s->pending_ship_build_count
+                ? &s->pending_ship_builds[p]
+                : &empty;
+        if ((unsigned)build->hull_class >= HULL_CLASS_COUNT ||
+            !actor_principal_is_canonical(
+                &build->owner_principal) ||
+            !isfinite(build->build_progress) ||
+            build->build_progress < 0.0f ||
+            build->build_progress > 1.0f ||
+            build->mode >= PENDING_SHIP_BUILD_MODE_COUNT) {
+            return false;
+        }
+        WRITE_FIELD(f, build->hull_class);
+        if (!write_actor_principal(
+                f, &build->owner_principal)) {
+            return false;
+        }
+        WRITE_FIELD(f, build->owner_quarantine_record_id);
+        WRITE_FIELD(f, build->mode_quarantine_record_id);
+        WRITE_FIELD(f, build->build_progress);
+        WRITE_FIELD(f, build->mode);
+    }
     /* Placement plans */
     WRITE_FIELD(f, s->placement_plan_count);
     for (int p = 0; p < 8; p++)
@@ -581,11 +985,32 @@ static bool write_station_session(FILE *f, const station_t *s) {
     if (fwrite(s->station_pubkey, 32, 1, f) != 1) return false;
     if (fwrite(s->outpost_founder_pubkey, 32, 1, f) != 1) return false;
     WRITE_FIELD(f, s->outpost_planted_tick);
+    WRITE_FIELD(f, s->id);
+    if (fwrite(s->station_actor_id,
+               sizeof(s->station_actor_id), 1, f) != 1) {
+        return false;
+    }
     WRITE_FIELD(f, s->name);
     WRITE_FIELD(f, s->faction_id);
     WRITE_FIELD(f, s->faction_allegiance);
     WRITE_FIELD(f, s->faction_ideology);
     WRITE_FIELD(f, s->faction_relations);
+    /*
+     * v77: fixed-width public station-authority lifecycle and trust history.
+     * Validation makes the persisted representation canonical. The
+     * station_secret field remains deliberately absent.
+     */
+    if (!station_authority_registry_validate(s)) return false;
+    WRITE_FIELD(f, s->authority_registry_version);
+    WRITE_FIELD(f, s->authority_registry_count);
+    WRITE_FIELD(f, s->authority_registry_pad);
+    for (int i = 0; i < STATION_AUTHORITY_REGISTRY_CAP; i++) {
+        if (fwrite(s->authority_registry[i].pubkey, 32, 1, f) != 1)
+            return false;
+        WRITE_FIELD(f, s->authority_registry[i].lifecycle);
+        WRITE_FIELD(f, s->authority_registry[i].trust);
+        WRITE_FIELD(f, s->authority_registry[i]._pad);
+    }
     /* v41: Layer C of #479 — chain log state. The actual events live in
      * side files under chain/<base58(pubkey)>.log; only the
      * continuation pointers (last full-record hash + monotonic event
@@ -596,17 +1021,24 @@ static bool write_station_session(FILE *f, const station_t *s) {
     return true;
 }
 
-static bool read_station_session(FILE *f, station_t *s) {
+static bool read_station_session(
+    FILE *f,
+    station_t *s,
+    ownership_v79_migration_t *migration,
+    int station_index,
+    world_load_result_t *load_result) {
     /* Inventory */
-    READ_FIELD(f, s->_inventory_cache);
+    if (!read_commodity_floats(f, s->_inventory_cache)) return false;
     if (g_loaded_save_version >= 75)
-        READ_FIELD(f, s->_finished_residue);
+        { if (!read_commodity_floats(f, s->_finished_residue)) return false; }
     else
         memset(s->_finished_residue, 0, sizeof(s->_finished_residue));
     /* Per-module production buffers */
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+    for (int m = 0; m < save_module_slot_count_for_version(
+                            g_loaded_save_version); m++)
         READ_FIELD(f, s->modules[m].input_buffer);
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+    for (int m = 0; m < save_module_slot_count_for_version(
+                            g_loaded_save_version); m++)
         READ_FIELD(f, s->modules[m].output_buffer);
     /* credit_pool was stored v23..v42; dropped in v43 (derived field).
      * For older saves, read and discard; the value is recoverable from
@@ -666,42 +1098,70 @@ static bool read_station_session(FILE *f, station_t *s) {
         READ_FIELD(f, s->pending_scaffolds[p]);
     if (g_loaded_save_version >= 63) {
         READ_FIELD(f, s->pending_ship_build_count);
-        if (s->pending_ship_build_count < 0) s->pending_ship_build_count = 0;
-        if (s->pending_ship_build_count > 4) s->pending_ship_build_count = 4;
+        if (s->pending_ship_build_count < 0 ||
+            s->pending_ship_build_count > 4) {
+            return false;
+        }
         for (int p = 0; p < 4; p++) {
-            if (g_loaded_save_version >= 65) {
-                READ_FIELD(f, s->pending_ship_builds[p]);
-            } else {
-                struct {
-                    hull_class_t hull_class;
-                    int8_t owner;
-                    float build_progress;
-                } legacy;
+            pending_ship_build_t decoded = {0};
+            legacy_pending_ship_owner_evidence_t evidence = {0};
+            if (g_loaded_save_version >= 79) {
+                READ_FIELD(f, decoded.hull_class);
+                if (!read_actor_principal(
+                        f, &decoded.owner_principal)) {
+                    return false;
+                }
+                READ_FIELD(
+                    f, decoded.owner_quarantine_record_id);
+                READ_FIELD(
+                    f, decoded.mode_quarantine_record_id);
+                READ_FIELD(f, decoded.build_progress);
+                READ_FIELD(f, decoded.mode);
+            } else if (g_loaded_save_version >= 65) {
+                legacy_pending_ship_build_v65_t legacy = {0};
                 READ_FIELD(f, legacy);
+                decoded.hull_class = legacy.hull_class;
+                decoded.build_progress = legacy.build_progress;
+                decoded.mode = g_loaded_save_version >= 73
+                    ? PENDING_SHIP_BUILD_MODE_UNKNOWN
+                    : PENDING_SHIP_BUILD_MODE_MATERIAL;
+                evidence.present = p < s->pending_ship_build_count;
+                evidence.owner_code = legacy.owner;
+                evidence.owner_kind = legacy.owner_kind;
+                memcpy(evidence.owner_pubkey, legacy.owner_pubkey,
+                       sizeof(evidence.owner_pubkey));
+                memcpy(evidence.owner_session, legacy.owner_session,
+                       sizeof(evidence.owner_session));
+            } else {
+                legacy_pending_ship_build_v63_t legacy = {0};
+                READ_FIELD(f, legacy);
+                decoded.hull_class = legacy.hull_class;
+                decoded.build_progress = legacy.build_progress;
+                decoded.mode = PENDING_SHIP_BUILD_MODE_MATERIAL;
+                evidence.present = p < s->pending_ship_build_count;
+                evidence.slot_only = true;
+                evidence.owner_code = legacy.owner;
+            }
+            if (p >= s->pending_ship_build_count) {
                 memset(&s->pending_ship_builds[p], 0,
                        sizeof(s->pending_ship_builds[p]));
-                s->pending_ship_builds[p].hull_class = legacy.hull_class;
-                s->pending_ship_builds[p].owner = legacy.owner;
-                s->pending_ship_builds[p].build_progress =
-                    legacy.build_progress;
-                if (legacy.owner < 0) {
-                    s->pending_ship_builds[p].owner_kind =
-                        (uint8_t)SHIP_ASSET_OWNER_STATION;
-                }
+                continue;
             }
-            if (s->pending_ship_builds[p].hull_class < 0 ||
-                s->pending_ship_builds[p].hull_class >= HULL_CLASS_COUNT) {
-                s->pending_ship_builds[p].hull_class = HULL_CLASS_DRONE_TRACTOR;
+            if ((unsigned)decoded.hull_class >= HULL_CLASS_COUNT ||
+                !actor_principal_is_canonical(
+                    &decoded.owner_principal) ||
+                !isfinite(decoded.build_progress) ||
+                decoded.build_progress < 0.0f ||
+                decoded.build_progress > 1.0f ||
+                decoded.mode >= PENDING_SHIP_BUILD_MODE_COUNT) {
+                return false;
             }
-            if (s->pending_ship_builds[p].owner_kind >
-                SHIP_ASSET_OWNER_PLAYER_SESSION) {
-                s->pending_ship_builds[p].owner_kind =
-                    (uint8_t)SHIP_ASSET_OWNER_NONE;
+            s->pending_ship_builds[p] = decoded;
+            if (migration && g_loaded_save_version < 79 &&
+                station_index >= 0 &&
+                station_index < MAX_STATIONS) {
+                migration->pending[station_index][p] = evidence;
             }
-            if (s->pending_ship_builds[p].build_progress < 0.0f)
-                s->pending_ship_builds[p].build_progress = 0.0f;
-            if (s->pending_ship_builds[p].build_progress > 1.0f)
-                s->pending_ship_builds[p].build_progress = 1.0f;
         }
     } else {
         s->pending_ship_build_count = 0;
@@ -730,16 +1190,24 @@ static bool read_station_session(FILE *f, station_t *s) {
     /* Every accepted world save (v49+) already uses the manifest layout.
      * The v26-v34 station named-ingot block and pre-v29 float migration are
      * unreachable below MIN_SAVE_VERSION and have been retired. */
-    if (!station_manifest_bootstrap(s)) return false;
     uint16_t manifest_count = 0;
+    READ_FIELD(f, manifest_count);
+    if (!world_load_preflight_manifest(
+            f, manifest_count,
+            g_loaded_save_version >= 53)) {
+        return false;
+    }
+    if (!station_manifest_bootstrap(s))
+        return world_load_record_oom(load_result);
     ship_receipts_t *rcpts = station_get_receipts(s);
     if (!rcpts) return false;
-    READ_FIELD(f, manifest_count);
     manifest_clear(&s->manifest);
     ship_receipts_clear(rcpts);
     if (manifest_count > 0) {
-        if (!manifest_reserve(&s->manifest, manifest_count)) return false;
-        if (!ship_receipts_reserve(rcpts, manifest_count)) return false;
+        if (!manifest_reserve(&s->manifest, manifest_count))
+            return world_load_record_oom(load_result);
+        if (!ship_receipts_reserve(rcpts, manifest_count))
+            return world_load_record_oom(load_result);
         for (uint16_t u = 0; u < manifest_count; u++) {
             cargo_unit_t unit = {0};
             cargo_receipt_chain_t chain = {0};
@@ -769,6 +1237,36 @@ static bool read_station_session(FILE *f, station_t *s) {
         if (fread(s->station_pubkey, 32, 1, f) != 1) return false;
         if (fread(s->outpost_founder_pubkey, 32, 1, f) != 1) return false;
         READ_FIELD(f, s->outpost_planted_tick);
+        if (g_loaded_save_version >= 79) {
+            uint32_t saved_id = 0;
+            uint8_t saved_actor[ACTOR_PRINCIPAL_ID_SIZE] = {0};
+            uint8_t saved_actor_any = 0;
+            READ_FIELD(f, saved_id);
+            if (fread(saved_actor, sizeof(saved_actor), 1, f) != 1) {
+                return false;
+            }
+            for (size_t i = 0; i < sizeof(saved_actor); i++) {
+                saved_actor_any |= saved_actor[i];
+            }
+            bool saved_station_occupied =
+                save_bytes_any(
+                    s->station_pubkey,
+                    sizeof(s->station_pubkey));
+            bool saved_actor_pair =
+                saved_id != 0 && saved_actor_any != 0;
+            if (saved_station_occupied != saved_actor_pair) {
+                return false;
+            }
+            if (s->station_actor_catalog_attested &&
+                (saved_id != s->id ||
+                 memcmp(saved_actor, s->station_actor_id,
+                        sizeof(saved_actor)) != 0)) {
+                return false;
+            }
+            s->id = saved_id;
+            memcpy(s->station_actor_id, saved_actor,
+                   sizeof(s->station_actor_id));
+        }
         /* v40 stamps the station name into the session save too, so
          * outpost rederivation has the name input even when the
          * catalog isn't loaded alongside the world save. The catalog
@@ -795,6 +1293,25 @@ static bool read_station_session(FILE *f, station_t *s) {
         memset(s->station_pubkey, 0, sizeof(s->station_pubkey));
         memset(s->outpost_founder_pubkey, 0, sizeof(s->outpost_founder_pubkey));
         s->outpost_planted_tick = 0;
+    }
+    if (g_loaded_save_version >= 77) {
+        READ_FIELD(f, s->authority_registry_version);
+        READ_FIELD(f, s->authority_registry_count);
+        READ_FIELD(f, s->authority_registry_pad);
+        for (int i = 0; i < STATION_AUTHORITY_REGISTRY_CAP; i++) {
+            if (fread(s->authority_registry[i].pubkey, 32, 1, f) != 1)
+                return false;
+            READ_FIELD(f, s->authority_registry[i].lifecycle);
+            READ_FIELD(f, s->authority_registry[i].trust);
+            READ_FIELD(f, s->authority_registry[i]._pad);
+        }
+        if (!station_authority_registry_validate(s)) return false;
+    } else {
+        /*
+         * Older saves know only the saved live key. Preserve it as current,
+         * but never infer historical identities or trust.
+         */
+        station_authority_registry_init(s);
     }
     /* v41: Layer C of #479 — chain log state. v40 and earlier saves
      * don't carry the continuation pointers; treat the chain as fresh
@@ -839,7 +1356,8 @@ static bool read_station_session(FILE *f, station_t *s) {
         }
     }
     /* station_secret is rederived by the world loader, not persisted. */
-    memset(s->station_secret, 0, sizeof(s->station_secret));
+    signal_memzero_explicit(s->station_secret,
+                            sizeof(s->station_secret));
     return true;
 }
 
@@ -940,6 +1458,7 @@ static bool read_fracture_child(FILE *f, world_t *w) {
     if (slot >= MAX_ASTEROIDS) return false;
     a = &w->asteroids[slot];
     state = &w->fracture_claims[slot];
+    if (a->active) return false;
     memset(a, 0, sizeof(*a));
     memset(state, 0, sizeof(*state));
     a->active = true;
@@ -1017,6 +1536,149 @@ static bool read_fracture_child(FILE *f, world_t *w) {
     return true;
 }
 
+static bool write_ship_birth_assemblies(FILE *f, const world_t *w) {
+    if (!f || !w) return false;
+    if (!world_ship_birth_saved_assemblies_valid(w)) return false;
+    uint16_t count = 0;
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        const station_t *st = &w->stations[station];
+        if (st->pending_ship_build_count < 0 ||
+            st->pending_ship_build_count > 4) {
+            return false;
+        }
+        for (int row = 0; row < 4; row++) {
+            const ship_birth_assembly_t *birth =
+                &w->ship_birth_assemblies[station][row];
+            bool expects =
+                row < st->pending_ship_build_count &&
+                st->pending_ship_builds[row].mode ==
+                    PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY;
+            if (birth->active && !expects) return false;
+            if (expects && !birth->active &&
+                st->pending_ship_builds[row].build_progress != 0.0f) {
+                return false;
+            }
+            if (!birth->active) continue;
+            if (count == UINT16_MAX) {
+                return false;
+            }
+            count++;
+        }
+    }
+    uint8_t count_wire[2];
+    wire_write_u16_le(count_wire, count);
+    if (fwrite(count_wire, sizeof(count_wire), 1, f) != 1) {
+        return false;
+    }
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        for (int row = 0; row < 4; row++) {
+            const ship_birth_assembly_t *birth =
+                &w->ship_birth_assemblies[station][row];
+            if (!birth->active) continue;
+            uint8_t wire[SHIP_BIRTH_ASSEMBLY_WIRE_SIZE] = {0};
+            wire_writer_t writer =
+                wire_writer_init(wire, sizeof(wire));
+            if (!wire_writer_reserve(&writer, 2)) return false;
+            wire[writer.offset++] = (uint8_t)station;
+            wire[writer.offset++] = (uint8_t)row;
+            wire_put_f32(&writer, birth->target.x);
+            wire_put_f32(&writer, birth->target.y);
+            for (int i = 0; i < 3; i++)
+                wire_put_f32(&writer, birth->start_dist[i]);
+            if (!wire_writer_reserve(
+                    &writer, sizeof(birth->fragment_pubs))) {
+                return false;
+            }
+            memcpy(wire + writer.offset, birth->fragment_pubs,
+                   sizeof(birth->fragment_pubs));
+            writer.offset += sizeof(birth->fragment_pubs);
+            if (!writer.ok || writer.offset != sizeof(wire) ||
+                fwrite(wire, sizeof(wire), 1, f) != 1) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool read_ship_birth_assemblies(FILE *f, world_t *w) {
+    if (!f || !w) return false;
+    memset(w->ship_birth_assemblies, 0,
+           sizeof(w->ship_birth_assemblies));
+    uint8_t count_wire[2];
+    if (fread(count_wire, sizeof(count_wire), 1, f) != 1) {
+        return false;
+    }
+    uint16_t count = wire_read_u16_le(count_wire);
+    if (count > SHIP_BIRTH_ASSEMBLY_SAVE_CAP) return false;
+    int previous_key = -1;
+    for (uint16_t record = 0; record < count; record++) {
+        uint8_t wire[SHIP_BIRTH_ASSEMBLY_WIRE_SIZE];
+        if (fread(wire, sizeof(wire), 1, f) != 1) return false;
+        wire_reader_t reader = wire_reader_init(wire, sizeof(wire));
+        if (!wire_reader_require(&reader, 2)) return false;
+        int station = wire[reader.offset++];
+        int row = wire[reader.offset++];
+        int key = station * 4 + row;
+        if (station < 0 || station >= MAX_STATIONS ||
+            row < 0 || row >= 4 ||
+            key <= previous_key) {
+            return false;
+        }
+        previous_key = key;
+        station_t *st = &w->stations[station];
+        if (row >= st->pending_ship_build_count ||
+            st->pending_ship_builds[row].mode !=
+                PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY) {
+            return false;
+        }
+        ship_birth_assembly_t *birth =
+            &w->ship_birth_assemblies[station][row];
+        birth->active = true;
+        birth->target.x = wire_get_f32(&reader);
+        birth->target.y = wire_get_f32(&reader);
+        for (int i = 0; i < 3; i++)
+            birth->start_dist[i] = wire_get_f32(&reader);
+        if (!wire_reader_require(
+                &reader, sizeof(birth->fragment_pubs))) {
+            return false;
+        }
+        memcpy(birth->fragment_pubs, wire + reader.offset,
+               sizeof(birth->fragment_pubs));
+        reader.offset += sizeof(birth->fragment_pubs);
+        for (int i = 0; i < 3; i++) birth->fragment_slots[i] = -1;
+        birth->age = 0.0f;
+        if (!reader.ok || reader.offset != sizeof(wire)) {
+            return false;
+        }
+    }
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        const station_t *st = &w->stations[station];
+        for (int row = 0; row < 4; row++) {
+            bool expects =
+                row < st->pending_ship_build_count &&
+                st->pending_ship_builds[row].mode ==
+                    PENDING_SHIP_BUILD_MODE_BIRTH_ASSEMBLY;
+            bool active =
+                w->ship_birth_assemblies[station][row].active;
+            if (active && !expects) {
+                return false;
+            }
+            if (expects && !active &&
+                st->pending_ship_builds[row].build_progress != 0.0f) {
+                return false;
+            }
+        }
+    }
+    /*
+     * Resolve fragment slots only after persisted NPC state is decoded and
+     * transient player tow state has been cleared. Doing it here would make
+     * acceptance depend on whatever runtime happened to occupy the
+     * destination world before load.
+     */
+    return true;
+}
+
 /* ---- npc_ship field-by-field I/O ----
  *
  * v50: pos/vel/angle/hull_class moved into the embedded ship_t. The
@@ -1046,7 +1708,7 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->ship->vel);
     WRITE_FIELD(f, n->ship->angle);
     ship_cargo_snapshot(n->ship, cargo_snapshot);
-    WRITE_FIELD(f, cargo_snapshot);
+    if (!write_commodity_floats(f, cargo_snapshot)) return false;
     WRITE_FIELD(f, n->target_asteroid);
     WRITE_FIELD(f, n->home_station);
     WRITE_FIELD(f, n->dest_station);
@@ -1069,7 +1731,7 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
     READ_FIELD(f, n->ship->pos);
     READ_FIELD(f, n->ship->vel);
     READ_FIELD(f, n->ship->angle);
-    READ_FIELD(f, n->ship->cargo);
+    if (!read_commodity_floats(f, n->ship->cargo)) return false;
     READ_FIELD(f, n->target_asteroid);
     READ_FIELD(f, n->home_station);
     READ_FIELD(f, n->dest_station);
@@ -1132,6 +1794,7 @@ static void ship_retire_finished_cargo_slots(ship_t *ship) {
 static bool write_npc_ship_manifest_payload(FILE *f, const ship_t *ship) {
     uint16_t count = 0;
     if (ship && ship->manifest.units) count = ship->manifest.count;
+    if (count > WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS) return false;
     if (fwrite(&count, sizeof(count), 1, f) != 1) return false;
 
     const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
@@ -1154,24 +1817,33 @@ static bool write_npc_ship_manifest_payload(FILE *f, const ship_t *ship) {
     return true;
 }
 
-static bool read_npc_ship_manifest_payload(FILE *f, ship_t *ship) {
+static bool read_npc_ship_manifest_payload(
+    FILE *f,
+    ship_t *ship,
+    world_load_result_t *load_result) {
     uint16_t count = 0;
     if (fread(&count, sizeof(count), 1, f) != 1) return false;
-    if (count > NPC_SHIP_MANIFEST_SAVE_MAX) return false;
+    if (count > WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS ||
+        !world_load_preflight_manifest(f, count, true)) {
+        return false;
+    }
 
     ship_receipts_t *rcpts = NULL;
     if (ship) {
-        if (!ship_manifest_bootstrap(ship)) return false;
+        if (!ship_manifest_bootstrap(ship))
+            return world_load_record_oom(load_result);
         manifest_clear(&ship->manifest);
         rcpts = ship_get_receipts(ship);
         if (!rcpts) return false;
         ship_receipts_clear(rcpts);
         if (count > ship->manifest.cap &&
             !manifest_reserve(&ship->manifest, count)) {
-            return false;
+            return world_load_record_oom(load_result);
         }
-        if (count > rcpts->cap && !ship_receipts_reserve(rcpts, count))
-            return false;
+        if (count > rcpts->cap &&
+            !ship_receipts_reserve(rcpts, count)) {
+            return world_load_record_oom(load_result);
+        }
     }
 
     for (uint16_t u = 0; u < count; u++) {
@@ -1211,7 +1883,7 @@ static bool write_asset_ship_payload(FILE *f, const ship_t *ship) {
     WRITE_FIELD(f, ship->angle);
     WRITE_FIELD(f, ship->hull);
     ship_cargo_snapshot(ship, cargo_snapshot);
-    WRITE_FIELD(f, cargo_snapshot);
+    if (!write_commodity_floats(f, cargo_snapshot)) return false;
     WRITE_FIELD(f, ship->hull_class);
     WRITE_FIELD(f, ship->mining_level);
     WRITE_FIELD(f, ship->hold_level);
@@ -1229,16 +1901,18 @@ static bool write_asset_ship_payload(FILE *f, const ship_t *ship) {
     return write_npc_ship_manifest_payload(f, ship);
 }
 
-static bool read_asset_ship_payload(FILE *f, ship_t *ship) {
+static bool read_asset_ship_payload(
+    FILE *f,
+    ship_t *ship,
+    world_load_result_t *load_result) {
     if (!ship) return false;
     ship_cleanup(ship);
     memset(ship, 0, sizeof(*ship));
-    (void)ship_manifest_bootstrap(ship);
     READ_FIELD(f, ship->pos);
     READ_FIELD(f, ship->vel);
     READ_FIELD(f, ship->angle);
     READ_FIELD(f, ship->hull);
-    READ_FIELD(f, ship->cargo);
+    if (!read_commodity_floats(f, ship->cargo)) return false;
     READ_FIELD(f, ship->hull_class);
     READ_FIELD(f, ship->mining_level);
     READ_FIELD(f, ship->hold_level);
@@ -1259,7 +1933,10 @@ static bool read_asset_ship_payload(FILE *f, ship_t *ship) {
         ship->hull = ship_max_hull(ship);
     if (ship->comm_range <= 0.0f) ship->comm_range = 1500.0f;
     if (ship->towed_count > 10) ship->towed_count = 0;
-    if (!read_npc_ship_manifest_payload(f, ship)) return false;
+    if (!read_npc_ship_manifest_payload(
+            f, ship, load_result)) {
+        return false;
+    }
     ship_retire_finished_cargo_slots(ship);
     return true;
 }
@@ -1268,45 +1945,119 @@ static bool write_ship_asset(FILE *f, const ship_asset_t *asset,
                              const ship_t *live_ship) {
     ship_asset_t empty = {0};
     if (!asset) asset = &empty;
+    if (!actor_principal_is_canonical(&asset->owner_principal) ||
+        (asset->active &&
+         (asset->asset_id == SHIP_ASSET_ID_NONE ||
+          (unsigned)asset->hull_class >= HULL_CLASS_COUNT ||
+          asset->status > SHIP_ASSET_STATUS_DESTROYED ||
+          asset->operator_kind > SHIP_ASSET_OPERATOR_NPC ||
+          asset->provenance >
+              SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY ||
+          !ship_asset_birth_proof_is_canonical(asset)))) {
+        return false;
+    }
     WRITE_FIELD(f, asset->active);
     WRITE_FIELD(f, asset->asset_id);
     WRITE_FIELD(f, asset->hull_class);
-    WRITE_FIELD(f, asset->owner_kind);
+    if (!write_actor_principal(f, &asset->owner_principal)) {
+        return false;
+    }
+    WRITE_FIELD(f, asset->owner_quarantine_record_id);
     WRITE_FIELD(f, asset->status);
     WRITE_FIELD(f, asset->operator_kind);
     WRITE_FIELD(f, asset->provenance);
-    WRITE_FIELD(f, asset->owner_station);
     WRITE_FIELD(f, asset->custody_station);
     WRITE_FIELD(f, asset->operator_slot);
     WRITE_FIELD(f, asset->build_station);
     WRITE_FIELD(f, asset->loaner);
     WRITE_FIELD(f, asset->destroyed);
-    WRITE_FIELD(f, asset->owner_pubkey);
-    WRITE_FIELD(f, asset->owner_session);
+    WRITE_FIELD(f, asset->birth_proof_version);
+    WRITE_FIELD(f, asset->birth_fragment_grades);
+    if (fwrite(asset->birth_soul_pub,
+               sizeof(asset->birth_soul_pub), 1, f) != 1 ||
+        fwrite(asset->birth_material_root,
+               sizeof(asset->birth_material_root), 1, f) != 1 ||
+        fwrite(asset->birth_fragment_pubs,
+               sizeof(asset->birth_fragment_pubs), 1, f) != 1) {
+        return false;
+    }
     const ship_t *ship = live_ship ? live_ship : &asset->stored_ship;
     return write_asset_ship_payload(f, asset->active ? ship : NULL);
 }
 
-static bool read_ship_asset(FILE *f, ship_asset_t *asset) {
+static bool read_ship_asset(
+    FILE *f,
+    ship_asset_t *asset,
+    ownership_v79_migration_t *migration,
+    int asset_index,
+    world_load_result_t *load_result) {
     if (!asset) return false;
     ship_cleanup(&asset->stored_ship);
     memset(asset, 0, sizeof(*asset));
     READ_FIELD(f, asset->active);
     READ_FIELD(f, asset->asset_id);
     READ_FIELD(f, asset->hull_class);
-    READ_FIELD(f, asset->owner_kind);
-    READ_FIELD(f, asset->status);
-    READ_FIELD(f, asset->operator_kind);
-    READ_FIELD(f, asset->provenance);
-    READ_FIELD(f, asset->owner_station);
-    READ_FIELD(f, asset->custody_station);
-    READ_FIELD(f, asset->operator_slot);
-    READ_FIELD(f, asset->build_station);
-    READ_FIELD(f, asset->loaner);
-    READ_FIELD(f, asset->destroyed);
-    READ_FIELD(f, asset->owner_pubkey);
-    READ_FIELD(f, asset->owner_session);
-    if (!read_asset_ship_payload(f, &asset->stored_ship)) return false;
+    if (g_loaded_save_version >= 79) {
+        if (!read_actor_principal(f, &asset->owner_principal)) {
+            return false;
+        }
+        READ_FIELD(f, asset->owner_quarantine_record_id);
+        READ_FIELD(f, asset->status);
+        READ_FIELD(f, asset->operator_kind);
+        READ_FIELD(f, asset->provenance);
+        READ_FIELD(f, asset->custody_station);
+        READ_FIELD(f, asset->operator_slot);
+        READ_FIELD(f, asset->build_station);
+        READ_FIELD(f, asset->loaner);
+        READ_FIELD(f, asset->destroyed);
+        READ_FIELD(f, asset->birth_proof_version);
+        READ_FIELD(f, asset->birth_fragment_grades);
+        if (fread(asset->birth_soul_pub,
+                  sizeof(asset->birth_soul_pub), 1, f) != 1 ||
+            fread(asset->birth_material_root,
+                  sizeof(asset->birth_material_root), 1, f) != 1 ||
+            fread(asset->birth_fragment_pubs,
+                  sizeof(asset->birth_fragment_pubs), 1, f) != 1) {
+            return false;
+        }
+    } else {
+        legacy_ship_asset_owner_evidence_t evidence = {0};
+        READ_FIELD(f, evidence.owner_kind);
+        READ_FIELD(f, asset->status);
+        READ_FIELD(f, asset->operator_kind);
+        READ_FIELD(f, asset->provenance);
+        READ_FIELD(f, evidence.owner_station);
+        READ_FIELD(f, asset->custody_station);
+        READ_FIELD(f, asset->operator_slot);
+        READ_FIELD(f, asset->build_station);
+        READ_FIELD(f, asset->loaner);
+        READ_FIELD(f, asset->destroyed);
+        READ_FIELD(f, evidence.owner_pubkey);
+        READ_FIELD(f, evidence.owner_session);
+        evidence.present = asset->active;
+        if (migration && asset_index >= 0 &&
+            asset_index < MAX_SHIP_ASSETS) {
+            migration->assets[asset_index] = evidence;
+        }
+        asset->owner_principal = actor_principal_none();
+        asset->birth_proof_version = 0;
+        memset(asset->birth_fragment_grades, 0,
+               sizeof(asset->birth_fragment_grades));
+        memset(asset->birth_soul_pub, 0,
+               sizeof(asset->birth_soul_pub));
+        memset(asset->birth_material_root, 0,
+               sizeof(asset->birth_material_root));
+        memset(asset->birth_fragment_pubs, 0,
+               sizeof(asset->birth_fragment_pubs));
+        if (asset->provenance ==
+            SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY) {
+            asset->provenance = SHIP_ASSET_PROVENANCE_LEGACY;
+        }
+    }
+    if (!read_asset_ship_payload(
+            f, &asset->stored_ship, load_result)) {
+        return false;
+    }
     asset->live_ship_ref = entity_ref_none();
     asset->ship = &asset->stored_ship;
     if (!asset->active) {
@@ -1314,23 +2065,24 @@ static bool read_ship_asset(FILE *f, ship_asset_t *asset) {
         memset(asset, 0, sizeof(*asset));
         return true;
     }
-    if (asset->asset_id == SHIP_ASSET_ID_NONE)
-        asset->active = false;
-    if (asset->hull_class < 0 || asset->hull_class >= HULL_CLASS_COUNT)
-        asset->hull_class = asset->stored_ship.hull_class;
-    if (asset->status > SHIP_ASSET_STATUS_DESTROYED)
-        asset->status = asset->destroyed
-            ? SHIP_ASSET_STATUS_DESTROYED
-            : SHIP_ASSET_STATUS_STORED;
-    if (asset->provenance > SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY)
-        asset->provenance = SHIP_ASSET_PROVENANCE_LEGACY;
+    if (asset->asset_id == SHIP_ASSET_ID_NONE ||
+        (unsigned)asset->hull_class >= HULL_CLASS_COUNT ||
+        asset->status > SHIP_ASSET_STATUS_DESTROYED ||
+        asset->operator_kind > SHIP_ASSET_OPERATOR_NPC ||
+        asset->provenance >
+            SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY ||
+        !actor_principal_is_canonical(&asset->owner_principal) ||
+        !ship_asset_birth_proof_is_canonical(asset)) {
+        return false;
+    }
     if (asset->destroyed)
         asset->status = SHIP_ASSET_STATUS_DESTROYED;
     return true;
 }
 
 /* ---- contract field-by-field I/O ---- */
-static bool write_contract(FILE *f, const contract_t *c) {
+static bool write_contract(FILE *f, const contract_t *c,
+                           uint32_t version) {
     WRITE_FIELD(f, c->active);
     WRITE_FIELD(f, c->action);
     WRITE_FIELD(f, c->station_index);
@@ -1347,11 +2099,21 @@ static bool write_contract(FILE *f, const contract_t *c) {
     WRITE_FIELD(f, c->target_pos);
     WRITE_FIELD(f, c->target_index);
     if (fwrite(c->target_pub, 32, 1, f) != 1) return false;
-    WRITE_FIELD(f, c->claimed_by);
+    if (version >= 81) {
+        if (!write_actor_principal(
+                f, &c->claimed_by_principal)) {
+            return false;
+        }
+        WRITE_FIELD(f, c->claimed_by_quarantine_record_id);
+    } else {
+        WRITE_FIELD(f, c->claimed_by);
+    }
     return true;
 }
 
-static bool read_contract(FILE *f, contract_t *c) {
+static bool read_contract(FILE *f, contract_t *c,
+                          ownership_v79_migration_t *migration,
+                          int contract_index) {
     READ_FIELD(f, c->active);
     READ_FIELD(f, c->action);
     READ_FIELD(f, c->station_index);
@@ -1390,17 +2152,46 @@ static bool read_contract(FILE *f, contract_t *c) {
     } else {
         memset(c->target_pub, 0, sizeof(c->target_pub));
     }
-    READ_FIELD(f, c->claimed_by);
+    c->claimed_by = -1;
+    c->claimed_by_principal = actor_principal_none();
+    c->claimed_by_quarantine_record_id = 0;
+    if (g_loaded_save_version >= 81) {
+        if (!read_actor_principal(
+                f, &c->claimed_by_principal)) {
+            return false;
+        }
+        READ_FIELD(f, c->claimed_by_quarantine_record_id);
+    } else {
+        int8_t legacy_claimed_by = -1;
+        READ_FIELD(f, legacy_claimed_by);
+        if (!migration || contract_index < 0 ||
+            contract_index >= MAX_CONTRACTS) {
+            return false;
+        }
+        migration->legacy_contract_present[contract_index] = true;
+        migration->legacy_contract_actor_code[contract_index] =
+            legacy_claimed_by;
+    }
     return true;
 }
 
-static bool write_delivery_shipment(FILE *f, const delivery_shipment_t *s) {
+static bool write_delivery_shipment(FILE *f,
+                                    const delivery_shipment_t *s,
+                                    uint32_t version) {
     WRITE_FIELD(f, s->active);
     WRITE_FIELD(f, s->shipment_id);
     WRITE_FIELD(f, s->origin_station);
     WRITE_FIELD(f, s->destination_station);
     WRITE_FIELD(f, s->contract_index);
-    WRITE_FIELD(f, s->debtor_player);
+    if (version >= 81) {
+        if (!write_actor_principal(
+                f, &s->debtor_principal)) {
+            return false;
+        }
+        WRITE_FIELD(f, s->debtor_quarantine_record_id);
+    } else {
+        WRITE_FIELD(f, s->debtor_player);
+    }
     WRITE_FIELD(f, s->commodity);
     WRITE_FIELD(f, s->quantity_total);
     WRITE_FIELD(f, s->quantity_bound);
@@ -1427,15 +2218,36 @@ static bool write_delivery_shipment(FILE *f, const delivery_shipment_t *s) {
     return true;
 }
 
-static bool read_delivery_shipment(FILE *f, delivery_shipment_t *s,
-                                   uint32_t version) {
+static bool read_delivery_shipment(
+    FILE *f,
+    delivery_shipment_t *s,
+    uint32_t version,
+    ownership_v79_migration_t *migration,
+    int shipment_index) {
     memset(s, 0, sizeof(*s));
     READ_FIELD(f, s->active);
     READ_FIELD(f, s->shipment_id);
     READ_FIELD(f, s->origin_station);
     READ_FIELD(f, s->destination_station);
     READ_FIELD(f, s->contract_index);
-    READ_FIELD(f, s->debtor_player);
+    s->debtor_player = UINT8_MAX;
+    if (version >= 81) {
+        if (!read_actor_principal(
+                f, &s->debtor_principal)) {
+            return false;
+        }
+        READ_FIELD(f, s->debtor_quarantine_record_id);
+    } else {
+        uint8_t legacy_debtor = UINT8_MAX;
+        READ_FIELD(f, legacy_debtor);
+        if (!migration || shipment_index < 0 ||
+            shipment_index >= MAX_DELIVERY_SHIPMENTS) {
+            return false;
+        }
+        migration->legacy_delivery_present[shipment_index] = true;
+        migration->legacy_delivery_actor_code[shipment_index] =
+            legacy_debtor;
+    }
     READ_FIELD(f, s->commodity);
     READ_FIELD(f, s->quantity_total);
     READ_FIELD(f, s->quantity_bound);
@@ -1463,12 +2275,15 @@ static bool read_delivery_shipment(FILE *f, delivery_shipment_t *s,
     return true;
 }
 
-static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
+static bool write_cargo_pod(FILE *f, uint16_t index,
+                            const cargo_pod_t *pod,
+                            uint32_t version) {
+    if (!cargo_pod_custody_charge_anchor_valid(pod) ||
+        pod->custody_charge_total > (int64_t)LEDGER_FLOAT_LIMIT) {
+        return false;
+    }
     uint8_t kind = (uint8_t)pod->kind;
     uint8_t commodity = (uint8_t)pod->commodity;
-    int player_tractor = cargo_pod_player_tractor(pod);
-    int8_t towed_by = (player_tractor >= 0 && player_tractor < MAX_PLAYERS)
-        ? (int8_t)player_tractor : -1;
     WRITE_FIELD(f, index);
     WRITE_FIELD(f, kind);
     WRITE_FIELD(f, commodity);
@@ -1480,7 +2295,38 @@ static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
     WRITE_FIELD(f, pod->rotation);
     WRITE_FIELD(f, pod->spin);
     WRITE_FIELD(f, pod->age);
-    WRITE_FIELD(f, towed_by);
+    if (version >= 82) {
+        if (!write_actor_principal(
+                f, &pod->tow_owner_principal)) {
+            return false;
+        }
+        WRITE_FIELD(
+            f, pod->tow_owner_quarantine_record_id);
+    } else {
+        int player_tractor =
+            cargo_pod_player_tractor(pod);
+        bool has_durable_player_owner =
+            pod->tow_owner_principal.kind ==
+                ACTOR_PRINCIPAL_PLAYER ||
+            pod->tow_owner_principal.kind ==
+                ACTOR_PRINCIPAL_UNATTRIBUTED;
+        /*
+         * Legacy output exists only for exact migration fixtures. Refuse a
+         * downgrade that cannot encode the current custody: offline owners
+         * and quarantine bindings must never be silently written as loose.
+         */
+        if (pod->tow_owner_quarantine_record_id != 0 ||
+            (has_durable_player_owner &&
+             (player_tractor < 0 ||
+              player_tractor >= MAX_PLAYERS))) {
+            return false;
+        }
+        int8_t towed_by =
+            (player_tractor >= 0 &&
+             player_tractor < MAX_PLAYERS)
+            ? (int8_t)player_tractor : -1;
+        WRITE_FIELD(f, towed_by);
+    }
     WRITE_FIELD(f, pod->manifest_count);
     if (pod->manifest_count > 0) {
         if (pod->manifest_count > CARGO_POD_MANIFEST_CAP) return false;
@@ -1511,10 +2357,19 @@ static bool write_cargo_pod(FILE *f, uint16_t index, const cargo_pod_t *pod) {
     WRITE_FIELD(f, tractor_station_tag);
     WRITE_FIELD(f, tractor_module_tag);
     WRITE_FIELD(f, pod->tow_hardpoint_tag);
+    WRITE_FIELD(f, pod->custody_charge_total);
+    WRITE_FIELD(f, pod->custody_charge_unit_count);
+    WRITE_FIELD(f, pod->custody_charge_units_processed);
+    if (fwrite(pod->custody_charge_manifest_digest,
+               sizeof(pod->custody_charge_manifest_digest), 1, f) != 1) {
+        return false;
+    }
     return true;
 }
 
-static bool read_cargo_pod(FILE *f, world_t *w, int version) {
+static bool read_cargo_pod(
+    FILE *f, world_t *w, int version,
+    ownership_v79_migration_t *migration) {
     uint16_t index = 0;
     uint8_t kind = 0;
     uint8_t commodity = 0;
@@ -1532,7 +2387,16 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     READ_FIELD(f, pod.rotation);
     READ_FIELD(f, pod.spin);
     READ_FIELD(f, pod.age);
-    READ_FIELD(f, towed_by);
+    if (version >= 82) {
+        if (!read_actor_principal(
+                f, &pod.tow_owner_principal)) {
+            return false;
+        }
+        READ_FIELD(
+            f, pod.tow_owner_quarantine_record_id);
+    } else {
+        READ_FIELD(f, towed_by);
+    }
     if (version >= 69) {
         READ_FIELD(f, pod.manifest_count);
         if (pod.manifest_count > CARGO_POD_MANIFEST_CAP) return false;
@@ -1563,13 +2427,23 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
         uint8_t tractor_module_tag = 0;
         READ_FIELD(f, tractor_station_tag);
         READ_FIELD(f, tractor_module_tag);
-        if (tractor_station_tag > 0 &&
+        bool module_tags_present =
+            tractor_station_tag != 0 ||
+            tractor_module_tag != 0;
+        bool module_tags_valid =
+            tractor_station_tag > 0 &&
             tractor_station_tag <= MAX_STATIONS &&
             tractor_module_tag > 0 &&
-            tractor_module_tag <= MAX_MODULES_PER_STATION) {
+            tractor_module_tag <= MAX_MODULES_PER_STATION;
+        if (module_tags_valid) {
             cargo_pod_set_module_tractor(
                 &pod, (int)tractor_station_tag - 1,
                 (int)tractor_module_tag - 1);
+        }
+        if (version >= 82 &&
+            module_tags_present &&
+            !module_tags_valid) {
+            return false;
         }
     }
     if (version >= 76) {
@@ -1577,7 +2451,22 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
         if (tow_hardpoint_tag > CARGO_POD_HARDPOINT_COUNT)
             tow_hardpoint_tag = 0;
     }
+    if (version >= 80) {
+        READ_FIELD(f, pod.custody_charge_total);
+        READ_FIELD(f, pod.custody_charge_unit_count);
+        READ_FIELD(f, pod.custody_charge_units_processed);
+        if (fread(pod.custody_charge_manifest_digest,
+                  sizeof(pod.custody_charge_manifest_digest),
+                  1, f) != 1) {
+            return false;
+        }
+    }
     if (index >= MAX_CARGO_PODS) return false;
+    if (w->cargo_pods[index].active ||
+        (version < 82 && migration &&
+         migration->cargo_pods[index].present)) {
+        return false;
+    }
     if (kind == CARGO_POD_NONE || kind > CARGO_POD_CARGO) return false;
     if (commodity >= COMMODITY_COUNT) return false;
     if (pod.manifest_count > pod.quantity) return false;
@@ -1589,8 +2478,39 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     pod.active = true;
     pod.kind = (cargo_pod_kind_t)kind;
     pod.commodity = (commodity_t)commodity;
-    if (towed_by >= 0 && towed_by < MAX_PLAYERS)
-        cargo_pod_set_player_tractor(&pod, towed_by);
+    if (!cargo_pod_custody_charge_anchor_valid(&pod) ||
+        pod.custody_charge_total > (int64_t)LEDGER_FLOAT_LIMIT) {
+        return false;
+    }
+    if (version >= 82) {
+        bool module_bound =
+            cargo_pod_has_module_tractor(&pod);
+        if (!actor_principal_is_canonical(
+                &pod.tow_owner_principal) ||
+            (pod.tow_owner_quarantine_record_id != 0 &&
+             pod.tow_owner_principal.kind !=
+                 ACTOR_PRINCIPAL_NONE) ||
+            (module_bound &&
+             (pod.tow_owner_quarantine_record_id != 0 ||
+              pod.tow_owner_principal.kind !=
+                  ACTOR_PRINCIPAL_NONE))) {
+            return false;
+        }
+    } else if (migration) {
+        migration->cargo_pods[index] =
+            (legacy_cargo_pod_tow_evidence_t){
+                .present = true,
+                .module_bound =
+                    cargo_pod_has_module_tractor(&pod),
+                .player_slot = towed_by,
+            };
+        /*
+         * A pre-v82 player slot is evidence only. Never project it into a live
+         * player relation before the conservative ownership migration runs.
+         */
+        if (towed_by >= 0)
+            tractor_binding_clear(&pod.tractor);
+    }
     /* Tractor setters intentionally clear stale attachment state.  Restore the
      * persisted named edge only after selecting the loaded tractor owner. */
     pod.tow_hardpoint_tag = tow_hardpoint_tag;
@@ -1598,10 +2518,785 @@ static bool read_cargo_pod(FILE *f, world_t *w, int version) {
     return true;
 }
 
-static bool world_save_payload(const world_t *w, FILE *f) {
+static bool write_ownership_quarantine(
+    FILE *f,
+    const ownership_quarantine_t *quarantine) {
+    if (!f || !ownership_quarantine_validate(quarantine))
+        return false;
+    WRITE_FIELD(f, quarantine->record_id_high_water);
+    WRITE_FIELD(f, quarantine->count);
+    for (uint16_t i = 0; i < quarantine->count; i++) {
+        const ownership_quarantine_entry_t *row =
+            &quarantine->entries[i];
+        WRITE_FIELD(f, row->record_id);
+        WRITE_FIELD(f, row->source_kind);
+        WRITE_FIELD(f, row->reason);
+        WRITE_FIELD(f, row->station_index);
+        WRITE_FIELD(f, row->row_index);
+        WRITE_FIELD(f, row->legacy_actor_code);
+    }
+    return true;
+}
+
+static bool read_ownership_quarantine(
+    FILE *f,
+    ownership_quarantine_t *quarantine) {
+    if (!f || !quarantine) return false;
+    ownership_quarantine_clear(quarantine);
+
+    uint16_t count = 0;
+    if (fread(&quarantine->record_id_high_water,
+              sizeof(quarantine->record_id_high_water), 1, f) != 1 ||
+        fread(&count, sizeof(count), 1, f) != 1 ||
+        count > OWNERSHIP_QUARANTINE_CAP) {
+        ownership_quarantine_clear(quarantine);
+        return false;
+    }
+    for (uint16_t i = 0; i < count; i++) {
+        ownership_quarantine_entry_t row = {0};
+        if (fread(&row.record_id, sizeof(row.record_id), 1, f) != 1 ||
+            fread(&row.source_kind, sizeof(row.source_kind), 1, f) != 1 ||
+            fread(&row.reason, sizeof(row.reason), 1, f) != 1 ||
+            fread(&row.station_index, sizeof(row.station_index), 1, f) != 1 ||
+            fread(&row.row_index, sizeof(row.row_index), 1, f) != 1 ||
+            fread(&row.legacy_actor_code,
+                  sizeof(row.legacy_actor_code), 1, f) != 1 ||
+            !ownership_quarantine_entry_is_canonical(&row)) {
+            ownership_quarantine_clear(quarantine);
+            return false;
+        }
+        quarantine->entries[i] = row;
+        quarantine->count = (uint16_t)(i + 1);
+    }
+    if (!ownership_quarantine_validate(quarantine)) {
+        ownership_quarantine_clear(quarantine);
+        return false;
+    }
+    return true;
+}
+
+static int legacy_pending_station_slot(
+    int station_index,
+    int8_t owner_code) {
+    if (owner_code == -1) return station_index;
+    if (owner_code == INT8_MIN) return 0;
+    if (owner_code <= -2) return -1 - (int)owner_code;
+    return -1;
+}
+
+static bool ownership_migration_stage_row(
+    ownership_v79_migration_t *migration,
+    const ownership_quarantine_t *existing,
+    uint64_t *next_record_id,
+    bool *record_id_initialized,
+    uint8_t source_kind,
+    uint8_t reason,
+    uint16_t station_index,
+    uint16_t row_index,
+    uint16_t legacy_actor_code,
+    uint64_t *record_id_out) {
+    if (record_id_out) *record_id_out = 0;
+    if (!migration || !existing || !next_record_id ||
+        !record_id_initialized ||
+        migration->staged_row_count >=
+            OWNERSHIP_V79_STAGED_ROW_CAP) {
+        return false;
+    }
+    if (!*record_id_initialized) {
+        if (!ownership_quarantine_next_record_id(
+                existing, next_record_id)) {
+            return false;
+        }
+        *record_id_initialized = true;
+    }
+    if (*next_record_id == 0) return false;
+    ownership_quarantine_entry_t row = {
+        .record_id = *next_record_id,
+        .source_kind = source_kind,
+        .reason = reason,
+        .station_index = station_index,
+        .row_index = row_index,
+        .legacy_actor_code = legacy_actor_code,
+    };
+    if (!ownership_quarantine_entry_is_canonical(&row)) {
+        return false;
+    }
+    migration->staged_rows[migration->staged_row_count++] = row;
+    if (record_id_out) *record_id_out = row.record_id;
+    if (*next_record_id == UINT64_MAX) {
+        *next_record_id = 0;
+    } else {
+        (*next_record_id)++;
+    }
+    return true;
+}
+
+static uint8_t legacy_pending_owner_migrate(
+    const world_t *w,
+    int station_index,
+    const legacy_pending_ship_owner_evidence_t *evidence,
+    actor_principal_t *owner_out,
+    uint16_t *legacy_actor_code_out) {
+    if (owner_out) *owner_out = actor_principal_none();
+    if (legacy_actor_code_out)
+        *legacy_actor_code_out = OWNERSHIP_QUARANTINE_NA;
+    if (!w || !evidence || !evidence->present || !owner_out) {
+        return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+    bool pub = save_bytes_any(
+        evidence->owner_pubkey,
+        sizeof(evidence->owner_pubkey));
+    bool session = save_bytes_any(
+        evidence->owner_session,
+        sizeof(evidence->owner_session));
+    bool valid_slot =
+        evidence->owner_code >= 0 &&
+        evidence->owner_code < MAX_PLAYERS;
+    if (evidence->slot_only) {
+        if (evidence->owner_code < 0) {
+            int target = legacy_pending_station_slot(
+                station_index, evidence->owner_code);
+            if (target >= 0 && target < MAX_STATIONS &&
+                actor_principal_from_station(w, target, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        }
+        if (valid_slot) {
+            if (legacy_actor_code_out)
+                *legacy_actor_code_out =
+                    (uint16_t)evidence->owner_code;
+            return OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN;
+        }
+        return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+
+    switch ((legacy_ship_asset_owner_kind_t)evidence->owner_kind) {
+        case LEGACY_SHIP_ASSET_OWNER_STATION: {
+            if (pub || session || evidence->owner_code >= 0) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            int target = legacy_pending_station_slot(
+                station_index, evidence->owner_code);
+            if (target >= 0 && target < MAX_STATIONS &&
+                actor_principal_from_station(w, target, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        }
+        case LEGACY_SHIP_ASSET_OWNER_PLAYER_PUBKEY:
+            if (session || evidence->owner_code < 0) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (valid_slot && pub &&
+                actor_principal_from_stable_id(
+                    ACTOR_PRINCIPAL_PLAYER,
+                    evidence->owner_pubkey, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_PLAYER_SESSION:
+            if (pub || evidence->owner_code < 0) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (valid_slot && session) {
+                if (legacy_actor_code_out)
+                    *legacy_actor_code_out =
+                        (uint16_t)evidence->owner_code;
+                return OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_NONE:
+            if (pub || session) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (valid_slot) {
+                if (legacy_actor_code_out)
+                    *legacy_actor_code_out =
+                        (uint16_t)evidence->owner_code;
+                return OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        default:
+            return (pub || session)
+                ? OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+}
+
+static uint8_t legacy_ship_asset_owner_migrate(
+    const world_t *w,
+    const legacy_ship_asset_owner_evidence_t *evidence,
+    actor_principal_t *owner_out) {
+    if (owner_out) *owner_out = actor_principal_none();
+    if (!w || !evidence || !evidence->present || !owner_out) {
+        return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+    bool pub = save_bytes_any(
+        evidence->owner_pubkey,
+        sizeof(evidence->owner_pubkey));
+    bool session = save_bytes_any(
+        evidence->owner_session,
+        sizeof(evidence->owner_session));
+    switch ((legacy_ship_asset_owner_kind_t)evidence->owner_kind) {
+        case LEGACY_SHIP_ASSET_OWNER_STATION:
+            if (pub || session) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (evidence->owner_station >= 0 &&
+                evidence->owner_station < MAX_STATIONS &&
+                actor_principal_from_station(
+                    w, evidence->owner_station, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_PLAYER_PUBKEY:
+            if (session || evidence->owner_station != -1) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            if (pub && actor_principal_from_stable_id(
+                           ACTOR_PRINCIPAL_PLAYER,
+                           evidence->owner_pubkey, owner_out)) {
+                return OWNERSHIP_QUARANTINE_REASON_NONE;
+            }
+            return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_PLAYER_SESSION:
+            if (pub || evidence->owner_station != -1) {
+                return OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+            }
+            return session
+                ? OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        case LEGACY_SHIP_ASSET_OWNER_NONE:
+            return (pub || session || evidence->owner_station != -1)
+                ? OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        default:
+            return (pub || session)
+                ? OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+}
+
+static uint8_t legacy_slot_actor_migrate(
+    const world_t *w,
+    int actor_code,
+    bool open_sentinel_allowed,
+    actor_principal_t *owner_out,
+    uint16_t *legacy_actor_code_out) {
+    if (owner_out) *owner_out = actor_principal_none();
+    if (legacy_actor_code_out)
+        *legacy_actor_code_out = OWNERSHIP_QUARANTINE_NA;
+    if (!w || !owner_out) {
+        return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+    }
+    if (open_sentinel_allowed && actor_code == -1)
+        return OWNERSHIP_QUARANTINE_REASON_NONE;
+    if (actor_code >= 0 && actor_code < MAX_PLAYERS) {
+        if (legacy_actor_code_out)
+            *legacy_actor_code_out = (uint16_t)actor_code;
+        return OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN;
+    }
+    if (actor_code >= MAX_PLAYERS &&
+        actor_code < MAX_PLAYERS + MAX_NPC_SHIPS) {
+        int npc_slot = actor_code - MAX_PLAYERS;
+        bool token_conflict = false;
+        if (!actor_principal_from_unique_npc_slot(
+                w, npc_slot, owner_out,
+                &token_conflict)) {
+            return token_conflict
+                ? OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL
+                : OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        }
+        return OWNERSHIP_QUARANTINE_REASON_NONE;
+    }
+    return OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+}
+
+static bool migrate_legacy_ownership(
+    world_t *w,
+    ownership_v79_migration_t *migration,
+    uint32_t loaded_version) {
+    if (!w || !migration || loaded_version >= 82 ||
+        !ownership_quarantine_validate(
+            &w->ownership_quarantine)) {
+        return loaded_version >= 82 && w && migration;
+    }
+    uint64_t next_record_id = 0;
+    bool record_id_initialized = false;
+
+    if (loaded_version < 79) {
+      for (int station = 0; station < MAX_STATIONS; station++) {
+        station_t *st = &w->stations[station];
+        if (st->pending_ship_build_count < 0 ||
+            st->pending_ship_build_count > 4) {
+            return false;
+        }
+        for (int row = 0; row < st->pending_ship_build_count; row++) {
+            pending_ship_build_t *build =
+                &st->pending_ship_builds[row];
+            uint16_t legacy_actor_code =
+                OWNERSHIP_QUARANTINE_NA;
+            uint8_t reason = legacy_pending_owner_migrate(
+                w, station,
+                &migration->pending[station][row],
+                &build->owner_principal,
+                &legacy_actor_code);
+            if (reason != OWNERSHIP_QUARANTINE_REASON_NONE &&
+                !ownership_migration_stage_row(
+                    migration, &w->ownership_quarantine,
+                    &next_record_id, &record_id_initialized,
+                    OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                    reason, (uint16_t)station, (uint16_t)row,
+                    legacy_actor_code,
+                    &build->owner_quarantine_record_id)) {
+                return false;
+            }
+            if (loaded_version >= 73) {
+                build->mode = PENDING_SHIP_BUILD_MODE_UNKNOWN;
+                if (!ownership_migration_stage_row(
+                        migration, &w->ownership_quarantine,
+                        &next_record_id, &record_id_initialized,
+                        OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                        OWNERSHIP_QUARANTINE_REASON_LEGACY_BUILD_MODE_UNPROVEN,
+                        (uint16_t)station, (uint16_t)row,
+                        OWNERSHIP_QUARANTINE_NA,
+                        &build->mode_quarantine_record_id)) {
+                    return false;
+                }
+            } else {
+                build->mode = PENDING_SHIP_BUILD_MODE_MATERIAL;
+            }
+        }
+      }
+
+      for (int row = 0; row < MAX_SHIP_ASSETS; row++) {
+        ship_asset_t *asset = &w->ship_assets[row];
+        if (!asset->active) continue;
+        uint8_t reason = legacy_ship_asset_owner_migrate(
+            w, &migration->assets[row],
+            &asset->owner_principal);
+        if (reason != OWNERSHIP_QUARANTINE_REASON_NONE) {
+            if (!ownership_migration_stage_row(
+                    migration, &w->ownership_quarantine,
+                    &next_record_id, &record_id_initialized,
+                    OWNERSHIP_QUARANTINE_SOURCE_SHIP_ASSET,
+                    reason, OWNERSHIP_QUARANTINE_NA,
+                    (uint16_t)row,
+                    OWNERSHIP_QUARANTINE_NA,
+                    &asset->owner_quarantine_record_id)) {
+                return false;
+            }
+            asset->status = asset->destroyed
+                ? SHIP_ASSET_STATUS_DESTROYED
+                : SHIP_ASSET_STATUS_STORED;
+            asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+            asset->operator_slot = -1;
+            asset->live_ship_ref = entity_ref_none();
+            asset->ship = &asset->stored_ship;
+            asset->loaner = false;
+        }
+      }
+    }
+
+    if (loaded_version < 81) {
+      for (int row = 0; row < MAX_CONTRACTS; row++) {
+        contract_t *contract = &w->contracts[row];
+        if (!migration->legacy_contract_present[row])
+            return false;
+        if (!contract->active) {
+            contract_ownership_clear(contract);
+            continue;
+        }
+        uint16_t legacy_actor_code = OWNERSHIP_QUARANTINE_NA;
+        uint8_t reason = legacy_slot_actor_migrate(
+            w, migration->legacy_contract_actor_code[row],
+            true, &contract->claimed_by_principal,
+            &legacy_actor_code);
+        contract->claimed_by = -1;
+        if (reason != OWNERSHIP_QUARANTINE_REASON_NONE &&
+            !ownership_migration_stage_row(
+                migration, &w->ownership_quarantine,
+                &next_record_id, &record_id_initialized,
+                OWNERSHIP_QUARANTINE_SOURCE_CONTRACT,
+                reason, OWNERSHIP_QUARANTINE_NA,
+                (uint16_t)row, legacy_actor_code,
+                &contract->claimed_by_quarantine_record_id)) {
+            return false;
+        }
+      }
+
+      for (int row = 0; row < MAX_DELIVERY_SHIPMENTS; row++) {
+        delivery_shipment_t *shipment =
+            &w->delivery_shipments[row];
+        if (!migration->legacy_delivery_present[row])
+            return false;
+        shipment->debtor_player = UINT8_MAX;
+        if (!shipment->active) {
+            shipment->debtor_principal =
+                actor_principal_none();
+            shipment->debtor_quarantine_record_id = 0;
+            continue;
+        }
+        uint16_t legacy_actor_code = OWNERSHIP_QUARANTINE_NA;
+        uint8_t reason = legacy_slot_actor_migrate(
+            w, migration->legacy_delivery_actor_code[row],
+            false, &shipment->debtor_principal,
+            &legacy_actor_code);
+        if (reason != OWNERSHIP_QUARANTINE_REASON_NONE &&
+            !ownership_migration_stage_row(
+                migration, &w->ownership_quarantine,
+                &next_record_id, &record_id_initialized,
+                OWNERSHIP_QUARANTINE_SOURCE_DELIVERY_SHIPMENT,
+                reason, OWNERSHIP_QUARANTINE_NA,
+                (uint16_t)row, legacy_actor_code,
+                &shipment->debtor_quarantine_record_id)) {
+            return false;
+        }
+      }
+    }
+
+    if (loaded_version < 82) {
+      for (int row = 0; row < MAX_CARGO_PODS; row++) {
+        cargo_pod_t *pod = &w->cargo_pods[row];
+        const legacy_cargo_pod_tow_evidence_t *evidence =
+            &migration->cargo_pods[row];
+        if (!pod->active) {
+            if (evidence->present) return false;
+            continue;
+        }
+        if (!evidence->present) return false;
+        pod->tow_owner_principal =
+            actor_principal_none();
+        pod->tow_owner_quarantine_record_id = 0;
+
+        int actor_code = (int)evidence->player_slot;
+        if (actor_code == -1 &&
+            !evidence->module_bound) {
+            continue;
+        }
+        if (actor_code == -1 &&
+            evidence->module_bound) {
+            continue;
+        }
+
+        uint8_t reason =
+            OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL;
+        uint16_t legacy_actor_code =
+            OWNERSHIP_QUARANTINE_NA;
+        if (actor_code >= 0 &&
+            actor_code < MAX_PLAYERS) {
+            legacy_actor_code =
+                (uint16_t)actor_code;
+            reason = evidence->module_bound
+                ? OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL
+                : OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN;
+        }
+        tractor_binding_clear(&pod->tractor);
+        if (!ownership_migration_stage_row(
+                migration, &w->ownership_quarantine,
+                &next_record_id,
+                &record_id_initialized,
+                OWNERSHIP_QUARANTINE_SOURCE_CARGO_POD_TRACTOR,
+                reason, OWNERSHIP_QUARANTINE_NA,
+                (uint16_t)row, legacy_actor_code,
+                &pod->tow_owner_quarantine_record_id)) {
+            return false;
+        }
+      }
+    }
+    return ownership_quarantine_add_batch(
+        &w->ownership_quarantine,
+        migration->staged_rows,
+        migration->staged_row_count);
+}
+
+static const ownership_quarantine_entry_t *
+ownership_quarantine_find_record(
+    const ownership_quarantine_t *quarantine,
+    uint64_t record_id,
+    uint16_t *index_out) {
+    if (index_out) *index_out = UINT16_MAX;
+    if (!quarantine || record_id == 0) return NULL;
+    uint16_t low = 0;
+    uint16_t high = quarantine->count;
+    while (low < high) {
+        uint16_t mid = (uint16_t)(
+            low + (uint16_t)((high - low) / 2));
+        const ownership_quarantine_entry_t *row =
+            &quarantine->entries[mid];
+        if (row->record_id < record_id) {
+            low = (uint16_t)(mid + 1);
+        } else {
+            high = mid;
+        }
+    }
+    if (low >= quarantine->count ||
+        quarantine->entries[low].record_id != record_id) {
+        return NULL;
+    }
+    if (index_out) *index_out = low;
+    return &quarantine->entries[low];
+}
+
+static bool ownership_quarantine_owner_reason(uint8_t reason) {
+    return reason ==
+               OWNERSHIP_QUARANTINE_REASON_LEGACY_SLOT_UNPROVEN ||
+           reason ==
+               OWNERSHIP_QUARANTINE_REASON_LEGACY_SESSION_UNPROVEN ||
+           reason ==
+               OWNERSHIP_QUARANTINE_REASON_INVALID_PRINCIPAL ||
+           reason ==
+               OWNERSHIP_QUARANTINE_REASON_CONFLICTING_PRINCIPAL;
+}
+
+static bool ownership_quarantine_bind_once(
+    const ownership_quarantine_t *quarantine,
+    uint64_t record_id,
+    uint8_t expected_source,
+    bool build_mode_reason,
+    bool used[OWNERSHIP_QUARANTINE_CAP]) {
+    uint16_t index = UINT16_MAX;
+    const ownership_quarantine_entry_t *row =
+        ownership_quarantine_find_record(
+            quarantine, record_id, &index);
+    if (!row || index >= OWNERSHIP_QUARANTINE_CAP ||
+        used[index] ||
+        row->source_kind != expected_source) {
+        return false;
+    }
+    bool reason_ok = build_mode_reason
+        ? row->reason ==
+              OWNERSHIP_QUARANTINE_REASON_LEGACY_BUILD_MODE_UNPROVEN
+        : ownership_quarantine_owner_reason(row->reason);
+    if (!reason_ok) return false;
+    used[index] = true;
+    return true;
+}
+
+static bool validate_v79_ownership(const world_t *w) {
+    if (!w ||
+        !ownership_quarantine_validate(
+            &w->ownership_quarantine)) {
+        return false;
+    }
+    bool used[OWNERSHIP_QUARANTINE_CAP] = {false};
+    for (int station = 0; station < MAX_STATIONS; station++) {
+        const station_t *st = &w->stations[station];
+        if (st->pending_ship_build_count < 0 ||
+            st->pending_ship_build_count > 4) {
+            return false;
+        }
+        for (int row = 0; row < st->pending_ship_build_count; row++) {
+            const pending_ship_build_t *build =
+                &st->pending_ship_builds[row];
+            if (build->mode >=
+                PENDING_SHIP_BUILD_MODE_COUNT) {
+                return false;
+            }
+            bool unknown =
+                build->mode == PENDING_SHIP_BUILD_MODE_UNKNOWN;
+            bool owner_none =
+                build->owner_principal.kind ==
+                    ACTOR_PRINCIPAL_NONE;
+            bool mode_bound =
+                build->mode_quarantine_record_id != 0;
+            bool owner_bound =
+                build->owner_quarantine_record_id != 0;
+            if (unknown != mode_bound ||
+                owner_none != owner_bound) {
+                return false;
+            }
+            if (mode_bound &&
+                !ownership_quarantine_bind_once(
+                    &w->ownership_quarantine,
+                    build->mode_quarantine_record_id,
+                    OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                    true, used)) {
+                return false;
+            }
+            if (owner_bound &&
+                !ownership_quarantine_bind_once(
+                    &w->ownership_quarantine,
+                    build->owner_quarantine_record_id,
+                    OWNERSHIP_QUARANTINE_SOURCE_PENDING_SHIP_BUILD,
+                    false, used)) {
+                return false;
+            }
+            if (!owner_none &&
+                (build->owner_principal.kind !=
+                     ACTOR_PRINCIPAL_PLAYER &&
+                 build->owner_principal.kind !=
+                     ACTOR_PRINCIPAL_STATION)) {
+                return false;
+            }
+        }
+    }
+    for (int row = 0; row < MAX_SHIP_ASSETS; row++) {
+        const ship_asset_t *asset = &w->ship_assets[row];
+        if (!asset->active) continue;
+        bool owner_none =
+            asset->owner_principal.kind == ACTOR_PRINCIPAL_NONE;
+        bool owner_bound =
+            asset->owner_quarantine_record_id != 0;
+        if (owner_none != owner_bound) return false;
+        if (owner_none) {
+            if (asset->status != SHIP_ASSET_STATUS_STORED &&
+                asset->status != SHIP_ASSET_STATUS_DESTROYED) {
+                return false;
+            }
+            if (asset->operator_kind != SHIP_ASSET_OPERATOR_NONE ||
+                asset->operator_slot != -1 ||
+                !ownership_quarantine_bind_once(
+                    &w->ownership_quarantine,
+                    asset->owner_quarantine_record_id,
+                    OWNERSHIP_QUARANTINE_SOURCE_SHIP_ASSET,
+                    false, used)) {
+                return false;
+            }
+        } else if (
+            asset->owner_principal.kind != ACTOR_PRINCIPAL_PLAYER &&
+            asset->owner_principal.kind != ACTOR_PRINCIPAL_STATION) {
+            return false;
+        }
+        if (asset->loaner &&
+            asset->owner_principal.kind !=
+                ACTOR_PRINCIPAL_STATION) {
+            return false;
+        }
+    }
+    for (int row = 0; row < MAX_CONTRACTS; row++) {
+        const contract_t *contract = &w->contracts[row];
+        if (!contract_ownership_is_valid(contract))
+            return false;
+        if (contract->claimed_by_quarantine_record_id != 0 &&
+            !ownership_quarantine_bind_once(
+                &w->ownership_quarantine,
+                contract->claimed_by_quarantine_record_id,
+                OWNERSHIP_QUARANTINE_SOURCE_CONTRACT,
+                false, used)) {
+            return false;
+        }
+    }
+    for (int row = 0; row < MAX_DELIVERY_SHIPMENTS; row++) {
+        const delivery_shipment_t *shipment =
+            &w->delivery_shipments[row];
+        if (!delivery_ownership_is_valid(shipment))
+            return false;
+        if (shipment->active &&
+            shipment->debtor_principal.kind ==
+                ACTOR_PRINCIPAL_NONE &&
+            shipment->debtor_quarantine_record_id == 0) {
+            return false;
+        }
+        if (shipment->debtor_quarantine_record_id != 0 &&
+            !ownership_quarantine_bind_once(
+                &w->ownership_quarantine,
+                shipment->debtor_quarantine_record_id,
+                OWNERSHIP_QUARANTINE_SOURCE_DELIVERY_SHIPMENT,
+                false, used)) {
+            return false;
+        }
+    }
+    for (int row = 0; row < MAX_CARGO_PODS; row++) {
+        const cargo_pod_t *pod =
+            &w->cargo_pods[row];
+        if (!pod->active) continue;
+        if (!actor_principal_is_canonical(
+                &pod->tow_owner_principal) ||
+            (pod->tow_owner_principal.kind !=
+                 ACTOR_PRINCIPAL_NONE &&
+             pod->tow_owner_principal.kind !=
+                 ACTOR_PRINCIPAL_UNATTRIBUTED &&
+             pod->tow_owner_principal.kind !=
+                 ACTOR_PRINCIPAL_PLAYER)) {
+            return false;
+        }
+
+        bool quarantined =
+            pod->tow_owner_quarantine_record_id != 0;
+        if (quarantined) {
+            const ownership_quarantine_entry_t *entry =
+                ownership_quarantine_find_record(
+                    &w->ownership_quarantine,
+                    pod->tow_owner_quarantine_record_id,
+                    NULL);
+            if (pod->tow_owner_principal.kind !=
+                    ACTOR_PRINCIPAL_NONE ||
+                pod->tractor.kind !=
+                    TRACTOR_SOURCE_NONE ||
+                !entry ||
+                entry->station_index !=
+                    OWNERSHIP_QUARANTINE_NA ||
+                entry->row_index != (uint16_t)row ||
+                !ownership_quarantine_bind_once(
+                    &w->ownership_quarantine,
+                    pod->tow_owner_quarantine_record_id,
+                    OWNERSHIP_QUARANTINE_SOURCE_CARGO_POD_TRACTOR,
+                    false, used)) {
+                return false;
+            }
+            continue;
+        }
+
+        if (pod->tractor.kind ==
+            TRACTOR_SOURCE_PLAYER) {
+            int player_idx =
+                cargo_pod_player_tractor(pod);
+            if (player_idx < 0 ||
+                player_idx >= MAX_PLAYERS) {
+                return false;
+            }
+            if (pod->tow_owner_principal.kind ==
+                ACTOR_PRINCIPAL_PLAYER) {
+                actor_principal_t player =
+                    actor_principal_none();
+                if (!actor_principal_from_verified_player(
+                        &w->players[player_idx],
+                        &player) ||
+                    !actor_principal_equal(
+                        &pod->tow_owner_principal,
+                        &player)) {
+                    return false;
+                }
+            } else if (
+                pod->tow_owner_principal.kind !=
+                    ACTOR_PRINCIPAL_UNATTRIBUTED) {
+                return false;
+            }
+        } else if (
+            pod->tractor.kind ==
+            TRACTOR_SOURCE_STATION_MODULE) {
+            if (pod->tow_owner_principal.kind !=
+                    ACTOR_PRINCIPAL_NONE ||
+                !cargo_pod_module_tractor_indices(
+                    pod, NULL, NULL)) {
+                return false;
+            }
+        } else if (
+            pod->tractor.kind !=
+            TRACTOR_SOURCE_NONE) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool world_save_payload(const world_t *w, FILE *f,
+                               uint32_t output_version) {
+    if (output_version != SAVE_VERSION &&
+        output_version != 81 &&
+        output_version != 80)
+        return false;
+    if (!world_validate_station_actor_ids(w) ||
+        !validate_v79_ownership(w) ||
+        !world_ship_birth_saved_assemblies_valid(w) ||
+        !validate_ship_birth_provenance_uniqueness(w)) {
+        return false;
+    }
     /* Header */
     uint32_t magic = SAVE_MAGIC;
-    uint32_t version = SAVE_VERSION;
+    uint32_t version = output_version;
     WRITE_FIELD(f, magic);
     WRITE_FIELD(f, version);
     WRITE_FIELD(f, w->rng);
@@ -1634,6 +3329,9 @@ static bool world_save_payload(const world_t *w, FILE *f) {
             }
         }
     }
+    /* v79: sparse, identity-keyed in-flight ship-birth choreography. Raw
+     * asteroid slots are transient and are reconstructed from fragment pubs. */
+    if (!write_ship_birth_assemblies(f, w)) return false;
     /* Asteroids: terrain remains derived from belt seed */
     /* Scaffolds: removed in v24 — transient in-flight construction */
     /* v37: belt_seed (anchor for rock_pub derivation). v38: each
@@ -1659,11 +3357,15 @@ static bool world_save_payload(const world_t *w, FILE *f) {
     }
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
-        if (!write_contract(f, &w->contracts[i])) return false;
+        if (!write_contract(
+                f, &w->contracts[i], output_version)) {
+            return false;
+        }
     }
     WRITE_FIELD(f, w->next_delivery_shipment_id);
     for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
-        if (!write_delivery_shipment(f, &w->delivery_shipments[i])) {
+        if (!write_delivery_shipment(
+                f, &w->delivery_shipments[i], output_version)) {
             return false;
         }
     }
@@ -1737,11 +3439,20 @@ static bool world_save_payload(const world_t *w, FILE *f) {
         WRITE_FIELD(f, pod_count);
         for (int i = 0; i < MAX_CARGO_PODS; i++) {
             if (!w->cargo_pods[i].active) continue;
-            if (!write_cargo_pod(f, (uint16_t)i, &w->cargo_pods[i])) {
+            if (!write_cargo_pod(
+                    f, (uint16_t)i,
+                    &w->cargo_pods[i],
+                    output_version)) {
                 return false;
             }
         }
     }
+
+    /* v78: bounded, server-only legacy ownership quarantine. Rows are
+     * serialized field-by-field in canonical record-ID order and contain no
+     * pubkeys, session tokens, reconnect secrets, or other bearer material. */
+    if (!write_ownership_quarantine(f, &w->ownership_quarantine))
+        return false;
 
     return true;
 }
@@ -1762,9 +3473,18 @@ void world_apply_starter_stock_migrations(world_t *w, uint32_t version) {
                    (int)version, seeded, seeded == 1 ? "" : "s");
         }
     }
+    /*
+     * The starter work-order marker predates its own save-version hook:
+     * some otherwise-current saves therefore have the exact untouched
+     * reserve but no order. This content-addressed ensure is safe on every
+     * load. A matching inactive marker is a consumed one-shot tombstone and
+     * blocks regeneration forever.
+     */
+    (void)world_ensure_starter_mining_refit_work_order(w);
 }
 
-bool world_save(const world_t *w, const char *path) {
+static bool world_save_version(const world_t *w, const char *path,
+                               uint32_t output_version) {
     if (!w || !path || !path[0]) return false;
     char tmp_path[272];
     int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
@@ -1772,7 +3492,10 @@ bool world_save(const world_t *w, const char *path) {
 
     FILE *f = fopen(tmp_path, "wb");
     if (!f) return false;
-    bool ok = world_save_payload(w, f);
+    int prior_writing_version = g_writing_save_version;
+    g_writing_save_version = (int)output_version;
+    bool ok = world_save_payload(w, f, output_version);
+    g_writing_save_version = prior_writing_version;
     if (ok) ok = fflush(f) == 0;
     if (fclose(f) != 0) ok = false;
     if (!ok) {
@@ -1817,27 +3540,66 @@ bool world_save(const world_t *w, const char *path) {
     return true;
 }
 
-static bool world_load_payload(world_t *w, FILE *f) {
+bool world_save(const world_t *w, const char *path) {
+    return world_save_version(w, path, SAVE_VERSION);
+}
+
+#if defined(SIGNAL_SAVE_TESTING)
+bool world_save_legacy_v80_for_test(
+    const world_t *w,
+    const char *path) {
+    return world_save_version(w, path, 80);
+}
+
+bool world_save_legacy_v81_for_test(
+    const world_t *w,
+    const char *path) {
+    return world_save_version(w, path, 81);
+}
+#endif
+
+static bool world_load_payload(
+    world_t *w,
+    FILE *f,
+    world_load_result_t *result) {
     uint32_t magic, version;
-    READ_FIELD(f, magic);
-    READ_FIELD(f, version);
-    if (magic != SAVE_MAGIC || version < MIN_SAVE_VERSION || version > SAVE_VERSION) {
+    ownership_v79_migration_t ownership_migration = {0};
+    if (!w || !f || !result) return false;
+    *result = WORLD_LOAD_RESULT_MALFORMED;
+    if (fread(&magic, sizeof(magic), 1, f) != 1 ||
+        fread(&version, sizeof(version), 1, f) != 1) {
+        *result = WORLD_LOAD_RESULT_TRUNCATED;
+        return false;
+    }
+    if (magic != SAVE_MAGIC) {
+        return false;
+    }
+    if (version < MIN_SAVE_VERSION || version > SAVE_VERSION) {
         printf("[save] rejected save: magic=0x%08x version=%u (need %d-%d)\n",
                magic, version, MIN_SAVE_VERSION, SAVE_VERSION);
+        *result = WORLD_LOAD_RESULT_UNSUPPORTED_VERSION;
         return false;
     }
     g_loaded_save_version = (int)version;
 
     READ_FIELD(f, w->rng);
     READ_FIELD(f, w->time);
-    w->tick = (uint32_t)lroundf(w->time / SIM_DT);
+    if (!isfinite(w->time) || w->time < 0.0f) return false;
+    double loaded_tick = (double)w->time / (double)SIM_DT;
+    if (!isfinite(loaded_tick) ||
+        loaded_tick > (double)UINT32_MAX) {
+        return false;
+    }
+    w->tick = (uint32_t)llround(loaded_tick);
     READ_FIELD(f, w->field_spawn_timer);
+    if (!isfinite(w->field_spawn_timer)) return false;
 
     /* v25+: station_count header; v24: fixed at 8 */
     int save_station_slots = 8; /* v24 and earlier had MAX_STATIONS=8 */
     if (version >= 25) {
         int32_t sc;
         READ_FIELD(f, sc);
+        if (sc < 0 || sc > MAX_STATIONS) return false;
         w->station_count = (int)sc;
         READ_FIELD(f, w->next_station_id);
         if (version >= 27) READ_FIELD(f, w->next_fracture_id);
@@ -1852,7 +3614,11 @@ static bool world_load_payload(world_t *w, FILE *f) {
     if (version >= 24) {
         /* v24+: station identity comes from catalog; read session only */
         for (int i = 0; i < save_station_slots; i++) {
-            if (!read_station_session(f, &w->stations[i])) return false;
+            if (!read_station_session(
+                    f, &w->stations[i],
+                    &ownership_migration, i, result)) {
+                return false;
+            }
         }
         /* v24→v25 migration: scan for active stations to set station_count */
         if (version < 25) {
@@ -1876,6 +3642,14 @@ static bool world_load_payload(world_t *w, FILE *f) {
                 }
             }
         }
+        if (version >= 79) {
+            if (!read_ship_birth_assemblies(f, w)) {
+                return false;
+            }
+        } else {
+            memset(w->ship_birth_assemblies, 0,
+                   sizeof(w->ship_birth_assemblies));
+        }
         /* No terrain asteroids or scaffolds in v24+ */
     } else {
         /* v20-v23: full station data (identity will be written to catalog on next save) */
@@ -1892,7 +3666,7 @@ static bool world_load_payload(world_t *w, FILE *f) {
     }
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_manifest_bootstrap(&w->stations[i])) {
-            return false;
+            return world_load_record_oom(result);
         }
     }
     /* v37+: belt_seed + destroyed_rocks ledger (#285 slice 1). v38
@@ -1927,23 +3701,37 @@ static bool world_load_payload(world_t *w, FILE *f) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         world_npc_ship_slot_release(w, i);
         memset(&w->npc_ships[i], 0, sizeof(w->npc_ships[i]));
-        if (!world_npc_ship_slot_activate(w, i)) return false;
+        if (!world_npc_ship_slot_activate(w, i))
+            return world_load_record_oom(result);
         if (!read_npc(f, &w->npc_ships[i])) return false;
         if (!w->npc_ships[i].active)
             world_npc_ship_slot_release(w, i);
     }
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
-        if (!read_contract(f, &w->contracts[i])) return false;
+        if (!read_contract(
+                f, &w->contracts[i],
+                &ownership_migration, i)) {
+            return false;
+        }
     }
     memset(w->delivery_shipments, 0, sizeof(w->delivery_shipments));
     w->next_delivery_shipment_id = 1;
+    if (version < 59) {
+        for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
+            ownership_migration.legacy_delivery_present[i] = true;
+            ownership_migration.legacy_delivery_actor_code[i] =
+                UINT8_MAX;
+        }
+    }
     if (version >= 59) {
         READ_FIELD(f, w->next_delivery_shipment_id);
         if (w->next_delivery_shipment_id == 0)
             w->next_delivery_shipment_id = 1;
         for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++) {
-            if (!read_delivery_shipment(f, &w->delivery_shipments[i], version)) {
+            if (!read_delivery_shipment(
+                    f, &w->delivery_shipments[i], version,
+                    &ownership_migration, i)) {
                 return false;
             }
         }
@@ -1988,7 +3776,8 @@ static bool world_load_payload(world_t *w, FILE *f) {
             ship_t *ship = NULL;
             if (w->npc_ships[i].active)
                 ship = world_npc_ship_for(w, i);
-            if (!read_npc_ship_manifest_payload(f, ship)) {
+            if (!read_npc_ship_manifest_payload(
+                    f, ship, result)) {
                 return false;
             }
             ship_retire_finished_cargo_slots(ship);
@@ -2005,7 +3794,9 @@ static bool world_load_payload(world_t *w, FILE *f) {
         if (w->next_ship_asset_id == SHIP_ASSET_ID_NONE)
             w->next_ship_asset_id = 1;
         for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
-            if (!read_ship_asset(f, &w->ship_assets[i])) {
+            if (!read_ship_asset(
+                    f, &w->ship_assets[i],
+                    &ownership_migration, i, result)) {
                 return false;
             }
         }
@@ -2019,10 +3810,21 @@ static bool world_load_payload(world_t *w, FILE *f) {
             return false;
         }
         for (uint16_t i = 0; i < pod_count; i++) {
-            if (!read_cargo_pod(f, w, version)) {
+            if (!read_cargo_pod(
+                    f, w, version,
+                    &ownership_migration)) {
                 return false;
             }
         }
+    }
+
+    if (version >= 78) {
+        if (!read_ownership_quarantine(
+                f, &w->ownership_quarantine)) {
+            return false;
+        }
+    } else {
+        ownership_quarantine_clear(&w->ownership_quarantine);
     }
 
     /* Every supported world-save version has a CRC32 trailer. Require it at
@@ -2032,10 +3834,22 @@ static bool world_load_payload(world_t *w, FILE *f) {
         long data_end = ftell(f);
         uint32_t trail_magic = 0;
         uint32_t stored_crc = 0;
+        if (data_end >= 0 &&
+            g_loaded_save_payload_end >= 0 &&
+            data_end < g_loaded_save_payload_end) {
+            printf("[save] trailing data after CRC32 trailer\n");
+            *result = WORLD_LOAD_RESULT_TRAILING_DATA;
+            return false;
+        }
+        if (data_end < 0 ||
+            data_end != g_loaded_save_payload_end) {
+            return false;
+        }
         if (fread(&trail_magic, sizeof(trail_magic), 1, f) != 1 ||
             trail_magic != SAVE_CRC_MAGIC ||
             fread(&stored_crc, sizeof(stored_crc), 1, f) != 1) {
             printf("[save] missing or truncated CRC32 trailer\n");
+            *result = WORLD_LOAD_RESULT_TRUNCATED;
             return false;
         }
         uint32_t crc = 0;
@@ -2045,9 +3859,27 @@ static bool world_load_payload(world_t *w, FILE *f) {
         if (crc != stored_crc) {
             printf("[save] CRC32 mismatch: computed=0x%08x stored=0x%08x -- save may be corrupt\n",
                    crc, stored_crc);
+            *result = WORLD_LOAD_RESULT_CHECKSUM;
             return false;
         }
     }
+
+    /*
+     * Freeze stable station actors from the saved pre-rekey public identity,
+     * then migrate every legacy hull/build owner against that immutable
+     * namespace. Signing authority may rotate later in this load.
+     */
+    if (version >= 79) {
+        if (!world_validate_station_actor_ids(w)) return false;
+    } else {
+        if (!world_migrate_legacy_station_actor_ids(w)) return false;
+    }
+    if (version < 82 &&
+        !migrate_legacy_ownership(
+            w, &ownership_migration, version)) {
+        return false;
+    }
+    if (!validate_v79_ownership(w)) return false;
 
     /* ---- Version migrations ----
      * Each block migrates from version N to N+1.  They run in sequence so
@@ -2272,7 +4104,12 @@ static bool world_load_payload(world_t *w, FILE *f) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         world_player_ship_slot_release(w, i);
         world_player_runtime_slot_reset(w, i);
-        if (!world_player_ship_slot_activate(w, i)) return false;
+        if (!world_player_ship_slot_activate(w, i))
+            return world_load_record_oom(result);
+    }
+    if (!world_ship_birth_rebind_saved_assemblies(w) ||
+        !validate_ship_birth_provenance_uniqueness(w)) {
+        return false;
     }
 
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
@@ -2284,8 +4121,9 @@ static bool world_load_payload(world_t *w, FILE *f) {
      * operator-held station authority secret plus persisted provenance.
      * The secret was never written to disk — this is what makes a save
      * leak NOT a key leak. v39 and earlier saves additionally rederive
-     * the pubkey itself (seeded indices 0/1/2 from world seed; outposts
-     * from a zero-founder placeholder, accepted v39 provenance gap).
+     * the pubkey itself (indices below SIGNAL_SEEDED_STATION_COUNT from the
+     * world seed; outposts from a zero-founder placeholder, accepted v39
+     * provenance gap).
      *
      * We rederive seeded slots unconditionally — they always exist in
      * any reachable world state — and also any outpost slot
@@ -2297,9 +4135,18 @@ static bool world_load_payload(world_t *w, FILE *f) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (i < SIGNAL_SEEDED_STATION_COUNT ||
             memcmp(w->stations[i].station_pubkey, zero_pub, 32) != 0) {
-            bool rekeyed = station_authority_rederive_secret(&w->stations[i],
-                                                             w->belt_seed, i);
-            if (rekeyed) {
+            station_authority_rederive_result_t rederive_result =
+                station_authority_rederive_secret(&w->stations[i],
+                                                  w->belt_seed, i);
+            if (rederive_result ==
+                STATION_AUTHORITY_REDERIVE_REJECTED) {
+                SIM_LOG("[chain] station %d (%s): configured authority "
+                        "rekey rejected by lifecycle registry\n",
+                        i, w->stations[i].name);
+                return false;
+            }
+            if (rederive_result ==
+                STATION_AUTHORITY_REDERIVE_REKEYED) {
                 station_t *st = &w->stations[i];
                 st->chain_event_count = 0;
                 memset(st->chain_last_hash, 0, sizeof(st->chain_last_hash));
@@ -2342,30 +4189,30 @@ static bool world_load_payload(world_t *w, FILE *f) {
                     i, st->name, msg);
             continue;
         }
-        /* The disk-walked tail is the authoritative continuation point.
-         * If the server crashed (or was killed) after a chain emit but
-         * before the next world.sav write, the saved chain_event_count
-         * lags the disk by N events. The next chain_log_emit reads from
-         * st->chain_last_hash and links its prev_hash to whatever lives
-         * in-memory — so if we don't adopt the disk tail here, the very
-         * first emit after boot forks the chain. Adopt-on-verify keeps
-         * the chain monotonic across crash recovery. */
+        /*
+         * A verified disk tail ahead of the selected snapshot is not safe to
+         * adopt. Durable chain append happens before several gameplay commits
+         * (cargo moves, ledger updates, construction progress, production),
+         * so the extra records do not prove that their mutations reached the
+         * selected world/player generation. Advancing only the continuation
+         * pointer would silently bless an event whose gameplay effect may be
+         * absent. Preserve both sides for recovery and block further appends
+         * until a matching generation is restored or an exactly-once
+         * replay/rollback path resolves the tail.
+         */
         uint64_t saved_count = st->chain_event_count;
         if (walked > saved_count) {
-            SIM_LOG("[chain] station %d: adopting disk tail "
-                    "(disk: %llu events, save: %llu) - extra events "
-                    "preserved from unsaved appends\n",
-                    i, (unsigned long long)walked,
-                    (unsigned long long)saved_count);
-            st->chain_event_count = walked;
-            memcpy(st->chain_last_hash, walked_last, 32);
             char msg[128];
             snprintf(msg, sizeof(msg),
-                     "adopted verified disk tail (%llu events; save had %llu)",
+                     "verified tail ahead of snapshot "
+                     "(disk: %llu events, save: %llu; mutation not replayed)",
                      (unsigned long long)walked,
                      (unsigned long long)saved_count);
-            chain_log_health_set(st, CHAIN_HEALTH_ADOPTED, false,
+            chain_log_health_set(st, CHAIN_HEALTH_MISMATCH, true,
                                  walked, walked_last, msg);
+            SIM_LOG("[chain] OPERATOR WARNING station %d (%s): %s; "
+                    "chain appends blocked, log untouched\n",
+                    i, st->name, msg);
         } else if (walked < saved_count
                    || memcmp(walked_last, st->chain_last_hash, 32) != 0) {
             /* Save claims more events than disk, or same length but a
@@ -2393,16 +4240,111 @@ static bool world_load_payload(world_t *w, FILE *f) {
     /* Gossip pools are ephemeral (not serialized). Rebuild each
      * station's local view from loaded station/contract state so
      * reset/load does not invent peer-station radio. */
+    for (int i = 0; i < MAX_CONTRACTS; i++)
+        contract_ownership_refresh_projection(
+            w, &w->contracts[i]);
+    for (int i = 0; i < MAX_DELIVERY_SHIPMENTS; i++)
+        delivery_ownership_refresh_projection(
+            w, &w->delivery_shipments[i]);
+    /* Physical pod stock is derived and deliberately absent from the save.
+     * Rebuild it from the loaded custody/manifest state before any UI,
+     * pricing, replay digest, or automation can observe the world. */
+    world_refresh_station_physical_inventories(w);
     gossip_bootstrap_world_stations(w);
+    *result = WORLD_LOAD_RESULT_OK;
     return true;
 }
 
-static bool world_load_precheck_crc(FILE *f) {
-    if (!f || fseek(f, 0, SEEK_END) != 0) return false;
-    long len = ftell(f);
+const char *world_load_result_name(world_load_result_t result) {
+    switch (result) {
+    case WORLD_LOAD_RESULT_OK:
+        return "ok";
+    case WORLD_LOAD_RESULT_INVALID_ARGUMENT:
+        return "invalid-argument";
+    case WORLD_LOAD_RESULT_IO:
+        return "io";
+    case WORLD_LOAD_RESULT_TOO_LARGE:
+        return "too-large";
+    case WORLD_LOAD_RESULT_TRUNCATED:
+        return "truncated";
+    case WORLD_LOAD_RESULT_CHECKSUM:
+        return "checksum";
+    case WORLD_LOAD_RESULT_UNSUPPORTED_VERSION:
+        return "unsupported-version";
+    case WORLD_LOAD_RESULT_MALFORMED:
+        return "malformed";
+    case WORLD_LOAD_RESULT_TRAILING_DATA:
+        return "trailing-data";
+    case WORLD_LOAD_RESULT_OUT_OF_MEMORY:
+        return "out-of-memory";
+    default:
+        return "unknown";
+    }
+}
+
+static bool world_load_size_error_is_too_large(void) {
+#ifdef EOVERFLOW
+    if (errno == EOVERFLOW) return true;
+#endif
+#ifdef EFBIG
+    if (errno == EFBIG) return true;
+#endif
+    return false;
+}
+
+/*
+ * Measure with the platform's 64-bit seek API before entering the legacy
+ * long-offset CRC/parser path. This keeps an LLP64 path above LONG_MAX from
+ * being misreported as generic I/O; the public cap guarantees that the cast
+ * to long below is safe after this check succeeds.
+ */
+static world_load_result_t world_load_stream_size(
+    FILE *f,
+    uint64_t *out_size) {
+    if (!f || !out_size) return WORLD_LOAD_RESULT_INVALID_ARGUMENT;
+    *out_size = 0;
+    errno = 0;
+#ifdef _WIN32
+    if (_fseeki64(f, 0, SEEK_END) != 0) {
+        return world_load_size_error_is_too_large()
+            ? WORLD_LOAD_RESULT_TOO_LARGE
+            : WORLD_LOAD_RESULT_IO;
+    }
+    errno = 0;
+    __int64 end = _ftelli64(f);
+#else
+    if (fseeko(f, (off_t)0, SEEK_END) != 0) {
+        return world_load_size_error_is_too_large()
+            ? WORLD_LOAD_RESULT_TOO_LARGE
+            : WORLD_LOAD_RESULT_IO;
+    }
+    errno = 0;
+    off_t end = ftello(f);
+#endif
+    if (end < 0) {
+        return world_load_size_error_is_too_large()
+            ? WORLD_LOAD_RESULT_TOO_LARGE
+            : WORLD_LOAD_RESULT_IO;
+    }
+    *out_size = (uint64_t)end;
+    if (*out_size > WORLD_SAVE_MAX_BYTES)
+        return WORLD_LOAD_RESULT_TOO_LARGE;
+    return WORLD_LOAD_RESULT_OK;
+}
+
+static world_load_result_t world_load_precheck_crc(
+    FILE *f,
+    long *payload_end) {
+    if (!f || !payload_end) return WORLD_LOAD_RESULT_INVALID_ARGUMENT;
+    *payload_end = -1;
+    uint64_t stream_size = 0;
+    world_load_result_t size_result =
+        world_load_stream_size(f, &stream_size);
+    if (size_result != WORLD_LOAD_RESULT_OK) return size_result;
+    long len = (long)stream_size;
     if (len < (long)(sizeof(uint32_t) * 4)) {
         printf("[save] missing or truncated CRC32 trailer\n");
-        return false;
+        return WORLD_LOAD_RESULT_TRUNCATED;
     }
 
     long trailer = len - (long)(sizeof(uint32_t) * 2);
@@ -2411,28 +4353,189 @@ static bool world_load_precheck_crc(FILE *f) {
     if (fseek(f, trailer, SEEK_SET) != 0 ||
         fread(&magic, sizeof(magic), 1, f) != 1 ||
         fread(&stored_crc, sizeof(stored_crc), 1, f) != 1) {
-        return false;
+        return WORLD_LOAD_RESULT_IO;
     }
     if (magic != SAVE_CRC_MAGIC) {
         printf("[save] missing or truncated CRC32 trailer\n");
-        return false;
+        return WORLD_LOAD_RESULT_TRUNCATED;
     }
     uint32_t crc = 0;
-    if (!crc32_file_prefix(f, trailer, &crc) || crc != stored_crc) {
+    if (!crc32_file_prefix(f, trailer, &crc)) {
+        return WORLD_LOAD_RESULT_IO;
+    }
+    if (crc != stored_crc) {
         printf("[save] CRC32 mismatch before decode: computed=0x%08x stored=0x%08x\n",
                crc, stored_crc);
-        return false;
+        return WORLD_LOAD_RESULT_CHECKSUM;
     }
-    return fseek(f, 0, SEEK_SET) == 0;
+    if (fseek(f, 0, SEEK_SET) != 0) return WORLD_LOAD_RESULT_IO;
+    *payload_end = trailer;
+    return WORLD_LOAD_RESULT_OK;
+}
+
+static world_t *world_load_candidate_create(const world_t *source) {
+    if (!source) return NULL;
+    world_t *candidate = calloc(1, sizeof(*candidate));
+    if (!candidate) return NULL;
+
+    /*
+     * Supported legacy saves intentionally overlay a reset/catalog baseline:
+     * fields introduced after their version retain those baseline defaults.
+     * Start from the exact caller state, but detach every owned allocation
+     * before cloning so candidate cleanup can never free source storage.
+     */
+    *candidate = *source;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        candidate->stations[i].cargo_store = (cargo_store_t){0};
+    }
+    for (int i = 0; i < WORLD_SHIP_CAP; i++) {
+        candidate->ships[i].component.cargo_store =
+            (cargo_store_t){0};
+    }
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        candidate->ship_assets[i].stored_ship.cargo_store =
+            (cargo_store_t){0};
+    }
+    memset(&candidate->signal_cache, 0,
+           sizeof(candidate->signal_cache));
+    memset(&candidate->asteroid_grid, 0,
+           sizeof(candidate->asteroid_grid));
+
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!station_copy(&candidate->stations[i],
+                          &source->stations[i])) {
+            world_cleanup(candidate);
+            free(candidate);
+            return NULL;
+        }
+    }
+    for (int i = 0; i < WORLD_SHIP_CAP; i++) {
+        if (!ship_copy(&candidate->ships[i].component,
+                       &source->ships[i].component)) {
+            world_cleanup(candidate);
+            free(candidate);
+            return NULL;
+        }
+    }
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        if (!ship_copy(
+                &candidate->ship_assets[i].stored_ship,
+                &source->ship_assets[i].stored_ship)) {
+            world_cleanup(candidate);
+            free(candidate);
+            return NULL;
+        }
+    }
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        candidate->players[i].connection =
+            &candidate->connections[i];
+        candidate->players[i].replication =
+            &candidate->replications[i];
+    }
+    world_rebind_ship_controllers(candidate);
+    return candidate;
+}
+
+world_t *world_snapshot_clone_create(const world_t *source) {
+    return world_load_candidate_create(source);
+}
+
+void world_snapshot_clone_destroy(world_t *snapshot) {
+    if (!snapshot) return;
+    world_cleanup(snapshot);
+    free(snapshot);
+}
+
+static world_load_result_t world_load_owned_stream(
+    world_t *w,
+    FILE *f) {
+    if (!w || !f) {
+        if (f) (void)fclose(f);
+        return WORLD_LOAD_RESULT_INVALID_ARGUMENT;
+    }
+
+    long payload_end = -1;
+    world_load_result_t result =
+        world_load_precheck_crc(f, &payload_end);
+    if (result != WORLD_LOAD_RESULT_OK) {
+        (void)fclose(f);
+        return result;
+    }
+
+    world_t *candidate = world_load_candidate_create(w);
+    if (!candidate) {
+        (void)fclose(f);
+        return WORLD_LOAD_RESULT_OUT_OF_MEMORY;
+    }
+    int previous_loaded_version = g_loaded_save_version;
+    long previous_payload_end = g_loaded_save_payload_end;
+    g_loaded_save_payload_end = payload_end;
+    bool decoded = world_load_payload(candidate, f, &result);
+    bool closed = fclose(f) == 0;
+    g_loaded_save_version = previous_loaded_version;
+    g_loaded_save_payload_end = previous_payload_end;
+    if (!decoded && result == WORLD_LOAD_RESULT_OK)
+        result = WORLD_LOAD_RESULT_MALFORMED;
+    if (!closed && result == WORLD_LOAD_RESULT_OK)
+        result = WORLD_LOAD_RESULT_IO;
+
+    if (decoded && result == WORLD_LOAD_RESULT_OK) {
+        spatial_grid_build(candidate);
+        world_cleanup(w);
+        *w = *candidate;
+        memset(candidate, 0, sizeof(*candidate));
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            w->players[i].connection = &w->connections[i];
+            w->players[i].replication = &w->replications[i];
+        }
+        world_rebind_ship_controllers(w);
+        if (w->ownership_quarantine.count > 0) {
+            (void)ownership_quarantine_report_bounded(
+                stderr, &w->ownership_quarantine,
+                OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS);
+        }
+    } else {
+        world_cleanup(candidate);
+    }
+    free(candidate);
+    return result;
+}
+
+world_load_result_t world_load_path(world_t *w, const char *path) {
+    if (!w || !path || !path[0])
+        return WORLD_LOAD_RESULT_INVALID_ARGUMENT;
+    FILE *f = fopen(path, "rb");
+    if (!f) return WORLD_LOAD_RESULT_IO;
+    return world_load_owned_stream(w, f);
+}
+
+world_load_result_t world_load_bytes(
+    world_t *w,
+    const uint8_t *bytes,
+    size_t size) {
+    if (!w || (!bytes && size > 0))
+        return WORLD_LOAD_RESULT_INVALID_ARGUMENT;
+    if ((uint64_t)size > WORLD_SAVE_MAX_BYTES)
+        return WORLD_LOAD_RESULT_TOO_LARGE;
+    if (size == 0) return WORLD_LOAD_RESULT_TRUNCATED;
+
+#ifdef _WIN32
+    FILE *f = tmpfile();
+    if (!f) return WORLD_LOAD_RESULT_IO;
+    if (fwrite(bytes, 1, size, f) != size ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        (void)fclose(f);
+        return WORLD_LOAD_RESULT_IO;
+    }
+#else
+    FILE *f = fmemopen((void *)bytes, size, "rb");
+    if (!f) return WORLD_LOAD_RESULT_IO;
+#endif
+    return world_load_owned_stream(w, f);
 }
 
 bool world_load(world_t *w, const char *path) {
-    if (!w || !path) return false;
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    bool ok = world_load_precheck_crc(f) && world_load_payload(w, f);
-    if (fclose(f) != 0) ok = false;
-    return ok;
+    return world_load_path(w, path) == WORLD_LOAD_RESULT_OK;
 }
 
 /* ================================================================== */
@@ -2451,7 +4554,10 @@ bool world_load(world_t *w, const char *path) {
  * can read older files without depending on the current ship_t layout. */
 typedef struct {
     vec2 pos; vec2 vel; float angle; float hull;
-    float cargo[COMMODITY_COUNT];
+    /* PLY1-PLY7 fixed ship blobs predate Engine Modules. Finished cargo is
+     * authoritative in the manifest tail, so keep the historical snapshot
+     * width stable and let new commodities live in that tail. */
+    float cargo[SAVE_V82_COMMODITY_COUNT];
     hull_class_t hull_class;
     int mining_level, hold_level, tractor_level;
     int16_t towed_fragments[10]; uint8_t towed_count;
@@ -2481,7 +4587,7 @@ static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    memcpy(dst->cargo, src->cargo, sizeof(src->cargo));
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -2505,7 +4611,7 @@ static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
  * stable for old saves. */
 typedef struct {
     vec2 pos; vec2 vel; float angle; float hull;
-    float cargo[COMMODITY_COUNT];
+    float cargo[SAVE_V82_COMMODITY_COUNT];
     hull_class_t hull_class;
     int mining_level, hold_level, tractor_level;
     int16_t towed_fragments[10]; uint8_t towed_count;
@@ -2533,7 +4639,9 @@ static void encode_v4_ship(ship_v4_t *dst, const ship_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    ship_cargo_snapshot(src, dst->cargo);
+    float cargo_snapshot[COMMODITY_COUNT] = {0};
+    ship_cargo_snapshot(src, cargo_snapshot);
+    memcpy(dst->cargo, cargo_snapshot, sizeof(dst->cargo));
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -2562,7 +4670,7 @@ static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    memcpy(dst->cargo, src->cargo, sizeof(src->cargo));
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -2606,7 +4714,7 @@ static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
 /* Old ship layout with global credits field — for PLY2 migration */
 typedef struct {
     vec2 pos; vec2 vel; float angle; float hull;
-    float cargo[COMMODITY_COUNT];
+    float cargo[SAVE_V82_COMMODITY_COUNT];
     float credits; /* REMOVED in PLY3 */
     hull_class_t hull_class;
     int mining_level, hold_level, tractor_level;
@@ -2660,183 +4768,99 @@ static bool pubkey_is_zero32(const uint8_t pk[32]) {
     return true;
 }
 
+#ifdef _WIN32
+static void player_save_windows_namespace_close(
+    HANDLE handles[2]) {
+    if (!handles) return;
+    for (size_t i = 0; i < 2; i++) {
+        if (handles[i] != INVALID_HANDLE_VALUE) {
+            CloseHandle(handles[i]);
+            handles[i] = INVALID_HANDLE_VALUE;
+        }
+    }
+}
+
+static bool player_save_windows_namespace_lock(
+    const char *player_dir,
+    const char *subdir,
+    HANDLE handles[2]) {
+    if (!player_dir || !subdir || !handles) return false;
+    handles[0] = INVALID_HANDLE_VALUE;
+    handles[1] = INVALID_HANDLE_VALUE;
+    char namespace_path[256];
+    int n = snprintf(
+        namespace_path, sizeof(namespace_path),
+        "%s/%s", player_dir, subdir);
+    if (n <= 0 || (size_t)n >= sizeof(namespace_path))
+        return false;
+    const char *paths[2] = {player_dir, namespace_path};
+    for (size_t i = 0; i < 2; i++) {
+        handles[i] = CreateFileA(
+            paths[i], FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS |
+                FILE_FLAG_OPEN_REPARSE_POINT,
+            NULL);
+        BY_HANDLE_FILE_INFORMATION info = {0};
+        if (handles[i] == INVALID_HANDLE_VALUE ||
+            !GetFileInformationByHandle(handles[i], &info) ||
+            (info.dwFileAttributes &
+             FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            (info.dwFileAttributes &
+             FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            player_save_windows_namespace_close(handles);
+            return false;
+        }
+    }
+    return true;
+}
+#endif
+
 /* Compute the on-disk save path for this player. Returns true if a path
  * was produced; false only if the player has neither a pubkey nor a
  * session_token (a wholly fresh slot — nothing to persist yet). */
 bool player_save_path(char *out, size_t outlen, const char *dir,
                       const server_player_t *sp, int slot) {
     static const uint8_t zero_token[8] = {0};
+    if (!out || outlen == 0 || !dir || !sp) return false;
+    int n = 0;
     if (server_player_can_use_pubkey_persistence(sp)) {
         char b58[64];
         if (base58_encode(sp->pubkey, 32, b58, sizeof(b58)) == 0) return false;
-        snprintf(out, outlen, "%s/%s/%s.sav", dir, PUBKEY_SUBDIR, b58);
-        return true;
+        n = snprintf(out, outlen, "%s/%s/%s.sav",
+                     dir, PUBKEY_SUBDIR, b58);
+        return n > 0 && (size_t)n < outlen;
     }
     if (sp->session_ready && memcmp(sp->session_token, zero_token, 8) != 0) {
         char hex[17];
         session_token_to_hex(sp->session_token, hex);
-        snprintf(out, outlen, "%s/%s/player_%s.sav", dir, LEGACY_SUBDIR, hex);
-        return true;
+        n = snprintf(out, outlen, "%s/%s/player_%s.sav",
+                     dir, LEGACY_SUBDIR, hex);
+        return n > 0 && (size_t)n < outlen;
     }
     /* Fully anonymous fresh slot — fall back to the slot-numbered path,
      * also under legacy/, so non-token disconnects don't pollute the
      * top-level directory. */
-    snprintf(out, outlen, "%s/%s/player_%d.sav", dir, LEGACY_SUBDIR, slot);
-    return true;
+    n = snprintf(out, outlen, "%s/%s/player_%d.sav",
+                 dir, LEGACY_SUBDIR, slot);
+    return n > 0 && (size_t)n < outlen;
 }
 
-/* One-shot startup migration: any top-level .sav files left behind from
- * the v39-and-earlier layout get moved into <dir>/legacy/ so the new
- * layout takes effect. Idempotent: missing source dir or missing files
- * are no-ops. Files already in legacy/ or pubkey/ are untouched. */
-void player_save_migrate_legacy_layout(const char *dir) {
-    ensure_save_subdirs(dir);
-#ifdef _WIN32
-    /* Win32 dir scan is OS-specific; we don't ship the dedicated server
-     * on Windows. Document the limitation and skip — operators on Win32
-     * with v39 saves will need to move them into legacy/ by hand. */
-    (void)dir;
-#else
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        const char *name = de->d_name;
-        if (name[0] == '.') continue;
-        size_t len = strlen(name);
-        if (len < 5) continue;
-        if (strcmp(name + len - 4, ".sav") != 0) continue;
-        char src[512], dst[512];
-        snprintf(src, sizeof(src), "%s/%s", dir, name);
-        snprintf(dst, sizeof(dst), "%s/" LEGACY_SUBDIR "/%s", dir, name);
-        struct stat sst;
-        if (stat(src, &sst) != 0) continue;
-        if (!S_ISREG(sst.st_mode)) continue;
-        if (rename(src, dst) == 0) {
-            SIM_LOG("[sim] migrated legacy save %s -> %s\n", src, dst);
-        } else if (errno != ENOENT) {
-            /* If destination already exists, leave the source — operator
-             * can resolve. */
-        }
-    }
-    closedir(d);
-#endif
-}
-
-/* Enumerate up to `cap` legacy saves. Each entry's prefix
- * (LEGACY_SAVES_PREFIX_LEN chars) and the full base name (without .sav
- * suffix) are written into the parallel arrays. Returns the count. */
-int player_save_list_legacy(const char *dir,
-                            char prefixes[][LEGACY_SAVES_PREFIX_LEN + 1],
-                            char names[][64],
-                            int cap) {
-    int count = 0;
-#ifdef _WIN32
-    (void)dir; (void)prefixes; (void)names; (void)cap; (void)count;
-    return 0;
-#else
-    char path[512];
-    snprintf(path, sizeof(path), "%s/" LEGACY_SUBDIR, dir);
-    DIR *d = opendir(path);
-    if (!d) return 0;
-    struct dirent *de;
-    while (count < cap && (de = readdir(d)) != NULL) {
-        const char *name = de->d_name;
-        if (name[0] == '.') continue;
-        size_t len = strlen(name);
-        if (len < 5) continue;
-        if (strcmp(name + len - 4, ".sav") != 0) continue;
-        size_t base_len = len - 4;
-        if (base_len >= 64) base_len = 63;
-        memcpy(names[count], name, base_len);
-        names[count][base_len] = '\0';
-        size_t pre = base_len < LEGACY_SAVES_PREFIX_LEN ?
-                     base_len : (size_t)LEGACY_SAVES_PREFIX_LEN;
-        memcpy(prefixes[count], names[count], pre);
-        prefixes[count][pre] = '\0';
-        count++;
-    }
-    closedir(d);
-    return count;
-#endif
-}
-
-/* Attempt to rename saves/legacy/<basename>.sav into
- * saves/pubkey/<base58(pubkey)>.sav. Returns true on success, false on
- * any failure (missing source, target exists, rename error, etc.).
- * The caller is responsible for verifying the claim signature first. */
-bool player_save_rename_legacy_to_pubkey(const char *dir,
-                                         const char *basename,
-                                         const uint8_t pubkey[32]) {
-    if (!basename || !basename[0]) return false;
-    if (pubkey_is_zero32(pubkey)) return false;
-    /* Reject path traversal in the basename. */
-    for (const char *p = basename; *p; p++) {
-        if (*p == '/' || *p == '\\') return false;
-        if (*p == '.' && p[1] == '.') return false;
-    }
-    char b58[64];
-    if (base58_encode(pubkey, 32, b58, sizeof(b58)) == 0) return false;
-    char src[512], dst[512];
-    snprintf(src, sizeof(src), "%s/" LEGACY_SUBDIR "/%s.sav", dir, basename);
-    snprintf(dst, sizeof(dst), "%s/" PUBKEY_SUBDIR "/%s.sav", dir, b58);
-    ensure_save_subdirs(dir);
-    /* Refuse to clobber an existing pubkey save — first-claim-wins, and
-     * the player on this pubkey already has a record. */
-    struct stat dst_st;
-    if (stat(dst, &dst_st) == 0) return false;
-    if (rename(src, dst) != 0) return false;
-    SIM_LOG("[sim] claimed legacy save %s -> %s\n", src, dst);
-    return true;
-}
-
-bool player_save_audit_legacy_claim(const char *dir,
-                                    const char *basename,
-                                    const uint8_t pubkey[32],
-                                    bool success,
-                                    const char *reason) {
-    if (!dir || !basename || !basename[0]) return false;
-    if (pubkey_is_zero32(pubkey)) return false;
-    for (const char *p = basename; *p; p++) {
-        bool ok = (*p >= '0' && *p <= '9') ||
-                  (*p >= 'a' && *p <= 'z') ||
-                  (*p >= 'A' && *p <= 'Z') ||
-                  *p == '_' || *p == '-';
-        if (!ok) return false;
-    }
-    char b58[64];
-    if (base58_encode(pubkey, 32, b58, sizeof(b58)) == 0) return false;
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/legacy_claims.log", dir);
-    ensure_save_subdirs(dir);
-    FILE *f = fopen(path, "ab");
-    if (!f) return false;
-    if (!reason || !reason[0]) reason = success ? "renamed" : "failed";
-    for (const char *p = reason; *p; p++) {
-        bool ok = (*p >= '0' && *p <= '9') ||
-                  (*p >= 'a' && *p <= 'z') ||
-                  (*p >= 'A' && *p <= 'Z') ||
-                  *p == '_' || *p == '-';
-        if (!ok) {
-            fclose(f);
-            return false;
-        }
-    }
-    int wrote = fprintf(f, "%s basename=%s claimant=%s result=%s reason=%s\n",
-                        CLAIM_LEGACY_SAVE_DOMAIN, basename, b58,
-                        success ? "success" : "failure", reason);
-    bool ok = wrote > 0 && fflush(f) == 0;
-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    if (ok) ok = fsync(fileno(f)) == 0;
-#endif
-    if (fclose(f) != 0) ok = false;
-    return ok;
-}
-
-bool player_save(const server_player_t *sp, const char *dir, int slot) {
+static player_save_create_result_t player_save_internal(
+    const server_player_t *sp, const char *dir, int slot,
+    bool no_replace) {
     char path[256];
     char tmp_path[272];
+    char final_leaf[80] = {0};
+    char temporary_leaf[96] = {0};
+#ifdef _WIN32
+    HANDLE no_replace_parents[2] = {
+        INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE
+    };
+#else
+    int no_replace_namespace_fd = -1;
+#endif
     ship_v4_t ship_disk;
     /* #339 slice A.2: PLY5 format lifts the empty-manifest guard and
      * appends a manifest tail (count + packed cargo_unit_t entries)
@@ -2844,10 +4868,113 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
      * #479 A.4: filename keyed by pubkey when registered, else by
      * legacy session_token under saves/legacy/. */
     ensure_save_subdirs(dir);
-    if (!player_save_path(path, sizeof(path), dir, sp, slot)) return false;
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) return false;
+    if (!player_save_path(path, sizeof(path), dir, sp, slot))
+        return PLAYER_SAVE_CREATE_IO_FAILURE;
+    if (no_replace) {
+        const char *leaf = strrchr(path, '/');
+        if (!leaf || !leaf[1]) {
+            return PLAYER_SAVE_CREATE_IO_FAILURE;
+        }
+        leaf++;
+        int final_len = snprintf(
+            final_leaf, sizeof(final_leaf), "%s", leaf);
+        int temporary_leaf_len = snprintf(
+            temporary_leaf, sizeof(temporary_leaf),
+            "%s.recovery-tmp", leaf);
+        if (final_len <= 0 ||
+            (size_t)final_len >= sizeof(final_leaf) ||
+            temporary_leaf_len <= 0 ||
+            (size_t)temporary_leaf_len >=
+                sizeof(temporary_leaf)) {
+            return PLAYER_SAVE_CREATE_IO_FAILURE;
+        }
+#ifdef _WIN32
+        if (!player_save_windows_namespace_lock(
+                dir, PUBKEY_SUBDIR,
+                no_replace_parents)) {
+            return PLAYER_SAVE_CREATE_IO_FAILURE;
+        }
+#else
+#ifndef O_NOFOLLOW
+        return PLAYER_SAVE_CREATE_IO_FAILURE;
+#else
+        int directory_flags =
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
+#ifdef O_CLOEXEC
+        directory_flags |= O_CLOEXEC;
+#endif
+        int player_dir_fd = open(dir, directory_flags);
+        if (player_dir_fd >= 0) {
+            no_replace_namespace_fd = openat(
+                player_dir_fd, PUBKEY_SUBDIR,
+                directory_flags);
+            close(player_dir_fd);
+        }
+        if (no_replace_namespace_fd < 0)
+            return PLAYER_SAVE_CREATE_IO_FAILURE;
+#endif
+#endif
+    }
+    int temporary_len = snprintf(
+        tmp_path, sizeof(tmp_path), "%s%s", path,
+        no_replace ? ".recovery-tmp" : ".tmp");
+    if (temporary_len <= 0 ||
+        (size_t)temporary_len >= sizeof(tmp_path)) {
+#ifdef _WIN32
+        player_save_windows_namespace_close(
+            no_replace_parents);
+#else
+        if (no_replace_namespace_fd >= 0)
+            close(no_replace_namespace_fd);
+#endif
+        return PLAYER_SAVE_CREATE_IO_FAILURE;
+    }
+    FILE *f = NULL;
+    if (no_replace) {
+#ifdef _WIN32
+        int fd = _open(
+            tmp_path,
+            _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY,
+            _S_IREAD | _S_IWRITE);
+#else
+        int flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_CLOEXEC
+        flags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+        flags |= O_NOFOLLOW;
+#endif
+        int fd = openat(
+            no_replace_namespace_fd,
+            temporary_leaf, flags, 0600);
+#endif
+        if (fd >= 0) {
+#ifdef _WIN32
+            f = _fdopen(fd, "wb");
+#else
+            f = fdopen(fd, "wb");
+#endif
+            if (!f) {
+#ifdef _WIN32
+                _close(fd);
+#else
+                close(fd);
+#endif
+            }
+        }
+    } else {
+        f = fopen(tmp_path, "wb");
+    }
+    if (!f) {
+#ifdef _WIN32
+        player_save_windows_namespace_close(
+            no_replace_parents);
+#else
+        if (no_replace_namespace_fd >= 0)
+            close(no_replace_namespace_fd);
+#endif
+        return PLAYER_SAVE_CREATE_IO_FAILURE;
+    }
     encode_v4_ship(&ship_disk, sp->ship);
     player_save_data_t data = {
         .magic = PLAYER_MAGIC,
@@ -2910,17 +5037,81 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
     if (ok) ok = save_flush_durable(f);
     if (fclose(f) != 0) ok = false;
     if (!ok) {
-        remove(tmp_path);
-        return false;
+        if (no_replace) {
+#ifdef _WIN32
+            remove(tmp_path);
+            player_save_windows_namespace_close(
+                no_replace_parents);
+#else
+            (void)unlinkat(
+                no_replace_namespace_fd,
+                temporary_leaf, 0);
+            close(no_replace_namespace_fd);
+#endif
+        } else {
+            remove(tmp_path);
+        }
+        return PLAYER_SAVE_CREATE_IO_FAILURE;
     }
-    /* Atomic rename matches world_save(): never remove the previous
-     * player save before the replacement is complete. */
-    if (!save_replace_file(tmp_path, path)) {
+    if (no_replace) {
+#ifdef _WIN32
+        persistence_publish_no_replace_result_t publish =
+            persistence_publish_file_no_replace(tmp_path, path);
+        player_save_windows_namespace_close(
+            no_replace_parents);
+#else
+        persistence_publish_no_replace_result_t publish =
+            PERSISTENCE_PUBLISH_NO_REPLACE_IO_FAILURE;
+        if (linkat(
+                no_replace_namespace_fd, temporary_leaf,
+                no_replace_namespace_fd, final_leaf, 0) == 0) {
+            if (unlinkat(
+                    no_replace_namespace_fd,
+                    temporary_leaf, 0) == 0 &&
+                fsync(no_replace_namespace_fd) == 0) {
+                publish =
+                    PERSISTENCE_PUBLISH_NO_REPLACE_OK;
+            }
+        } else if (errno == EEXIST) {
+            publish =
+                PERSISTENCE_PUBLISH_NO_REPLACE_CONFLICT;
+        }
+        if (publish != PERSISTENCE_PUBLISH_NO_REPLACE_OK) {
+            (void)unlinkat(
+                no_replace_namespace_fd,
+                temporary_leaf, 0);
+        }
+        close(no_replace_namespace_fd);
+#endif
+        if (publish != PERSISTENCE_PUBLISH_NO_REPLACE_OK) {
+#ifdef _WIN32
+            remove(tmp_path);
+#endif
+            return publish ==
+                       PERSISTENCE_PUBLISH_NO_REPLACE_CONFLICT
+                ? PLAYER_SAVE_CREATE_DESTINATION_CONFLICT
+                : PLAYER_SAVE_CREATE_IO_FAILURE;
+        }
+    } else if (!save_replace_file(tmp_path, path)) {
+        /* Atomic rename matches world_save(): never remove the previous
+         * player save before the replacement is complete. */
         remove(tmp_path);
-        return false;
+        return PLAYER_SAVE_CREATE_IO_FAILURE;
     }
     if (ok) SIM_LOG("[sim] saved player %d\n", slot);
-    return ok;
+    return PLAYER_SAVE_CREATE_OK;
+}
+
+bool player_save(const server_player_t *sp, const char *dir, int slot) {
+    return player_save_internal(sp, dir, slot, false) ==
+           PLAYER_SAVE_CREATE_OK;
+}
+
+player_save_create_result_t player_save_no_replace(
+    const server_player_t *sp, const char *dir, int slot) {
+    if (!server_player_can_use_pubkey_persistence(sp))
+        return PLAYER_SAVE_CREATE_IO_FAILURE;
+    return player_save_internal(sp, dir, slot, true);
 }
 
 /* Migrate PLY2 (old ship_t with global credits) to current ship_t */
@@ -2932,7 +5123,7 @@ static void migrate_v2_ship(ship_t *dst, const ship_v2_t *src) {
     dst->vel = src->vel;
     dst->angle = src->angle;
     dst->hull = src->hull;
-    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    memcpy(dst->cargo, src->cargo, sizeof(src->cargo));
     dst->hull_class = src->hull_class;
     dst->mining_level = src->mining_level;
     dst->hold_level = src->hold_level;
@@ -2975,26 +5166,21 @@ static bool player_save_verify_crc32_trailer(FILE *f, const char *path) {
         return false;
     }
     if (crc != stored_crc) {
-        SIM_LOG("[sim] player save CRC mismatch for %s\n", path ? path : "(unknown)");
+        SIM_LOG("[sim] player save CRC mismatch\n");
         (void)fseek(f, start, SEEK_SET);
         return false;
     }
     return fseek(f, start, SEEK_SET) == 0;
 }
 
-static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const char *path, int slot) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
-
-    /* Peek at magic to determine format */
-    uint32_t magic;
-    if (fread(&magic, sizeof(magic), 1, f) != 1) { fclose(f); return false; }
-    rewind(f);
-    if (magic == PLAYER_MAGIC && !player_save_verify_crc32_trailer(f, path)) {
-        fclose(f);
-        return false;
-    }
-
+static bool player_load_from_file_decode(
+    server_player_t *sp,
+    world_t *w,
+    FILE *f,
+    uint32_t magic,
+    uint64_t file_size,
+    int slot) {
+    if (!sp || !w || !f || !sp->ship) return false;
     float migrated_credits = 0.0f;
     bool is_v1 = false;
     bool manifest_already_loaded = false;
@@ -3005,7 +5191,7 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
         /* PLY5 (manifest tail), PLY6 (manifest + last_signed_nonce),
          * PLY7 (manifest + last_signed_nonce + receipt chains). */
         player_save_data_t data;
-        if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
+        if (fread(&data, sizeof(data), 1, f) != 1) return false;
         migrate_v4_ship(sp->ship, &data.ship);
         sp->current_station = data.last_station;
         sp->ship->pos = data.last_pos;
@@ -3013,16 +5199,16 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
         /* Read manifest tail. Bootstrap was called by migrate_v4_ship. */
         uint16_t manifest_count = 0;
         if (fread(&manifest_count, sizeof(manifest_count), 1, f) != 1) {
-            fclose(f); return false;
+            return false;
         }
         if (manifest_count > 0) {
             if (!manifest_reserve(&sp->ship->manifest, manifest_count)) {
-                fclose(f); return false;
+                return false;
             }
             for (uint16_t u = 0; u < manifest_count; u++) {
                 cargo_unit_t cu;
                 if (fread(&cu, sizeof(cu), 1, f) != 1) {
-                    fclose(f); return false;
+                    return false;
                 }
                 sp->ship->manifest.units[u] = cu;
             }
@@ -3039,7 +5225,7 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
         if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V6) {
             uint64_t nonce = 0;
             if (fread(&nonce, sizeof(nonce), 1, f) != 1) {
-                fclose(f); return false;
+                return false;
             }
             sp->last_signed_nonce = nonce;
         }
@@ -3051,46 +5237,49 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
          * origin-attested receipt (one-time migration cost). */
         if (magic == PLAYER_MAGIC) {
             ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
-            if (!rcpts) { fclose(f); return false; }
+            if (!rcpts) return false;
             ship_receipts_clear(rcpts);
             if (manifest_count > 0) {
                 if (!ship_receipts_reserve(rcpts, manifest_count)) {
-                    fclose(f); return false;
+                    return false;
                 }
                 for (uint16_t u = 0; u < manifest_count; u++) {
                     uint8_t link_count = 0;
                     if (fread(&link_count, sizeof(link_count), 1, f) != 1) {
-                        fclose(f); return false;
+                        return false;
                     }
                     if (link_count > CARGO_RECEIPT_CHAIN_MAX_LEN) {
-                        fclose(f); return false; /* corrupt */
+                        return false; /* corrupt */
                     }
                     cargo_receipt_t links[CARGO_RECEIPT_CHAIN_MAX_LEN];
                     for (uint8_t k = 0; k < link_count; k++) {
                         if (fread(&links[k], sizeof(cargo_receipt_t), 1, f) != 1) {
-                            fclose(f); return false;
+                            return false;
                         }
                     }
                     if (link_count > 0) {
                         if (!ship_receipts_push_chain(rcpts, links, link_count)) {
-                            fclose(f); return false;
+                            return false;
                         }
                     } else {
                         if (!ship_receipts_push_empty(rcpts)) {
-                            fclose(f); return false;
+                            return false;
                         }
                     }
                 }
             }
+            long decoded_end = ftell(f);
+            if (decoded_end < 0 || file_size < 8u ||
+                (uint64_t)decoded_end != file_size - 8u) {
+                return false;
+            }
         }
         manifest_already_loaded = true;
-        fclose(f);
     } else if (magic == PLAYER_MAGIC_V4) {
         /* PLY4 → PLY5: read ship blob; manifest stays empty (was never
          * persisted in PLY4, lived only at runtime). */
         player_save_data_t data;
-        if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
-        fclose(f);
+        if (fread(&data, sizeof(data), 1, f) != 1) return false;
         migrate_v4_ship(sp->ship, &data.ship);
         sp->current_station = data.last_station;
         sp->ship->pos = data.last_pos;
@@ -3098,8 +5287,7 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
     } else if (magic == PLAYER_MAGIC_V3) {
         /* PLY3 → PLY4: migrate ship_v3_t → ship_t, zero-init hold_ingots. */
         player_save_v3_t data;
-        if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
-        fclose(f);
+        if (fread(&data, sizeof(data), 1, f) != 1) return false;
         migrate_v3_ship(sp->ship, &data.ship);
         sp->current_station = data.last_station;
         sp->ship->pos = data.last_pos;
@@ -3107,8 +5295,7 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
     } else if (magic == PLAYER_MAGIC_V2 || magic == PLAYER_MAGIC_V1) {
         /* PLY2 or PLY1 — old ship_t with global credits */
         player_save_v2_t data;
-        if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
-        fclose(f);
+        if (fread(&data, sizeof(data), 1, f) != 1) return false;
         is_v1 = (magic == PLAYER_MAGIC_V1);
         migrate_v2_ship(sp->ship, &data.ship);
         migrated_credits = data.ship.credits;
@@ -3116,7 +5303,6 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
         sp->ship->pos = data.last_pos;
         sp->ship->angle = data.last_angle;
     } else {
-        fclose(f);
         return false;
     }
 
@@ -3187,31 +5373,39 @@ static bool player_load_from_path_decode(server_player_t *sp, world_t *w, const 
 static bool ship_asset_owner_matches_player_save(const ship_asset_t *asset,
                                                  const server_player_t *sp) {
     if (!asset || !sp) return false;
-    if (asset->owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY &&
-        server_player_can_use_pubkey_persistence(sp)) {
-        return memcmp(asset->owner_pubkey, sp->pubkey, 32) == 0;
-    }
-    if (asset->owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION) {
-        bool nonzero = false;
-        for (int i = 0; i < 8; i++) if (sp->session_token[i]) nonzero = true;
-        return nonzero && memcmp(asset->owner_session, sp->session_token, 8) == 0;
-    }
-    return false;
+    actor_principal_t player = actor_principal_none();
+    return actor_principal_from_verified_player(sp, &player) &&
+           actor_principal_equal(
+               &asset->owner_principal, &player);
 }
 
-static bool ship_asset_load_candidate_assignable(const ship_asset_t *asset,
-                                                 int slot) {
+static bool ship_asset_load_candidate_assignable(
+    const ship_asset_t *asset) {
     if (!asset || !asset->active || asset->destroyed) return false;
-    if (asset->status == SHIP_ASSET_STATUS_STORED) return true;
-    return asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
-           asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
-           asset->operator_slot == slot;
+    return asset->status == SHIP_ASSET_STATUS_STORED;
 }
 
-static bool ship_asset_is_station_loaner_for_slot(const ship_asset_t *asset,
-                                                  int slot) {
-    return asset && asset->active && !asset->destroyed &&
-           asset->owner_kind == SHIP_ASSET_OWNER_STATION &&
+static bool ship_asset_load_bound_candidate_assignable(
+    const ship_asset_t *asset,
+    int slot) {
+    if (!asset || !asset->active || asset->destroyed) return false;
+    return asset->status == SHIP_ASSET_STATUS_STORED ||
+           (asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
+            asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+            asset->operator_slot == slot);
+}
+
+static bool ship_asset_is_station_loaner_for_slot(
+    const ship_asset_t *asset,
+    const world_t *w,
+    int slot) {
+    actor_principal_t station = actor_principal_none();
+    return asset && w &&
+           asset->active && !asset->destroyed &&
+           actor_principal_from_station(
+               w, asset->custody_station, &station) &&
+           actor_principal_equal(
+               &asset->owner_principal, &station) &&
            asset->loaner &&
            asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
            asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
@@ -3219,8 +5413,12 @@ static bool ship_asset_is_station_loaner_for_slot(const ship_asset_t *asset,
 }
 
 static void ship_asset_release_loaded_provisional(ship_asset_t *asset,
+                                                  const world_t *w,
                                                   int slot) {
-    if (!ship_asset_is_station_loaner_for_slot(asset, slot)) return;
+    if (!ship_asset_is_station_loaner_for_slot(
+            asset, w, slot)) {
+        return;
+    }
     asset->status = SHIP_ASSET_STATUS_STORED;
     asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
     asset->operator_slot = -1;
@@ -3229,41 +5427,52 @@ static void ship_asset_release_loaded_provisional(ship_asset_t *asset,
 static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int slot) {
     if (!sp || !w || slot < 0 || slot >= MAX_PLAYERS) return;
     if (sp != &w->players[slot]) return;
-    ship_asset_owner_kind_t owner_kind =
-        server_player_can_use_pubkey_persistence(sp)
-            ? SHIP_ASSET_OWNER_PLAYER_PUBKEY
-            : SHIP_ASSET_OWNER_PLAYER_SESSION;
-    const uint8_t *owner_pubkey =
-        owner_kind == SHIP_ASSET_OWNER_PLAYER_PUBKEY ? sp->pubkey : NULL;
-    const uint8_t *owner_session =
-        owner_kind == SHIP_ASSET_OWNER_PLAYER_SESSION ? sp->session_token : NULL;
+    actor_principal_t owner = actor_principal_none();
+    bool has_stable_owner =
+        actor_principal_from_verified_player(sp, &owner);
 
     ship_asset_t *asset = NULL;
     ship_asset_t *prior = world_ship_asset_by_id(w, sp->ship_asset_id);
-    if (ship_asset_load_candidate_assignable(prior, slot) &&
+    if (has_stable_owner &&
+        ship_asset_load_bound_candidate_assignable(prior, slot) &&
         ship_asset_owner_matches_player_save(prior, sp)) {
         asset = prior;
     }
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         if (asset) break;
         ship_asset_t *candidate = &w->ship_assets[i];
-        if (!ship_asset_load_candidate_assignable(candidate, slot)) continue;
+        if (!has_stable_owner ||
+            !ship_asset_load_candidate_assignable(candidate)) {
+            continue;
+        }
         if (!ship_asset_owner_matches_player_save(candidate, sp)) continue;
         asset = candidate;
         break;
     }
-    if (!asset) {
+    if (!asset && has_stable_owner) {
         asset = world_ship_asset_mint(
-            w, sp->ship->hull_class, owner_kind, -1, sp->current_station,
-            SHIP_ASSET_PROVENANCE_LEGACY, false, -1,
-            owner_pubkey, owner_session);
+            w, sp->ship->hull_class, &owner,
+            sp->current_station,
+            SHIP_ASSET_PROVENANCE_LEGACY, false, -1);
     }
-    if (!asset && ship_asset_is_station_loaner_for_slot(prior, slot)) {
+    if (!asset &&
+        ship_asset_is_station_loaner_for_slot(
+            prior, w, slot) &&
+        prior->custody_station == sp->current_station) {
         asset = prior;
     }
-    if (!asset) return;
+    if (!asset) {
+        if (ship_asset_is_station_loaner_for_slot(
+                prior, w, slot)) {
+            ship_asset_release_loaded_provisional(
+                prior, w, slot);
+            sp->ship_asset_id = SHIP_ASSET_ID_NONE;
+        }
+        return;
+    }
     if (prior && prior != asset)
-        ship_asset_release_loaded_provisional(prior, slot);
+        ship_asset_release_loaded_provisional(
+            prior, w, slot);
     asset->hull_class = sp->ship->hull_class;
     asset->status = SHIP_ASSET_STATUS_ASSIGNED;
     asset->operator_kind = SHIP_ASSET_OPERATOR_PLAYER;
@@ -3284,15 +5493,12 @@ static void player_restore_tow_links(server_player_t *sp,
     int saved_fragment_count = ship_towed_fragment_count(sp->ship);
     memcpy(saved_fragments, sp->ship->towed_fragments,
            (size_t)saved_fragment_count * sizeof(saved_fragments[0]));
-    int16_t saved_pods[10];
-    int saved_pod_count = ship_towed_pod_count(sp->ship);
-    memcpy(saved_pods, sp->ship->towed_pods,
-           (size_t)saved_pod_count * sizeof(saved_pods[0]));
     int saved_scaffold = sp->ship->towed_scaffold;
 
     /* World saves decode historical target bindings and player saves decode
-     * historical ship arrays. Reconcile the target side into authoritative
-     * links, then import any remaining player-only projection rows once. */
+     * historical fragment/scaffold arrays. Cargo pods are deliberately
+     * excluded: v82 world-side actor principals are their sole durable owner,
+     * and reconcile projects them only after an exact verified match. */
     world_tow_links_reconcile(w);
     for (int t = 0; t < saved_fragment_count; t++) {
         int idx = saved_fragments[t];
@@ -3301,14 +5507,6 @@ static void player_restore_tow_links(server_player_t *sp,
             continue;
         }
         (void)world_asteroid_set_player_tractor(w, idx, slot);
-    }
-    for (int t = 0; t < saved_pod_count; t++) {
-        int idx = saved_pods[t];
-        if (idx < 0 || idx >= MAX_CARGO_PODS || !w->cargo_pods[idx].active ||
-            w->cargo_pods[idx].tractor.kind != TRACTOR_SOURCE_NONE) {
-            continue;
-        }
-        (void)world_cargo_pod_set_player_tractor(w, idx, slot);
     }
     if (saved_scaffold >= 0 && saved_scaffold < MAX_SCAFFOLDS &&
         w->scaffolds[saved_scaffold].active &&
@@ -3328,19 +5526,29 @@ static void player_restore_tow_links(server_player_t *sp,
     }
 }
 
-static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
-    if (!sp || !w || !path) return false;
+static bool player_load_from_open_file(
+    server_player_t *sp,
+    world_t *w,
+    FILE *f,
+    uint32_t magic,
+    uint64_t file_size,
+    int slot) {
+    if (!sp || !w || !f) return false;
     ship_t *live_ship = sp->ship;
     entity_ref_t live_ship_ref = sp->ship_ref;
+    uint64_t live_last_signed_nonce = sp->last_signed_nonce;
     if (!live_ship) return false;
     ship_t staged_ship = {0};
     server_player_t staged = *sp;
     staged.ship = &staged_ship;
-    bool ok = player_load_from_path_decode(&staged, w, path, slot);
+    bool ok = player_load_from_file_decode(
+        &staged, w, f, magic, file_size, slot);
     if (!ok) {
         ship_cleanup(staged.ship);
         return false;
     }
+    if (staged.last_signed_nonce < live_last_signed_nonce)
+        staged.last_signed_nonce = live_last_signed_nonce;
     ship_cleanup(live_ship);
     *live_ship = staged_ship;
     memset(&staged_ship, 0, sizeof(staged_ship));
@@ -3351,6 +5559,35 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     player_bind_loaded_ship_asset(sp, w, slot);
     player_restore_tow_links(sp, w, slot);
     return true;
+}
+
+static bool player_load_from_path(
+    server_player_t *sp,
+    world_t *w,
+    const char *path,
+    int slot) {
+    if (!sp || !w || !path) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    bool ok = false;
+    uint32_t magic = 0;
+    uint64_t file_size = 0;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long end = ftell(f);
+        if (end >= 0) file_size = (uint64_t)end;
+    }
+    if (file_size > 0 &&
+        fseek(f, 0, SEEK_SET) == 0 &&
+        fread(&magic, sizeof(magic), 1, f) == 1 &&
+        fseek(f, 0, SEEK_SET) == 0 &&
+        (magic != PLAYER_MAGIC ||
+         player_save_verify_crc32_trailer(f, path)) &&
+        fseek(f, 0, SEEK_SET) == 0) {
+        ok = player_load_from_open_file(
+            sp, w, f, magic, file_size, slot);
+    }
+    if (fclose(f) != 0) ok = false;
+    return ok;
 }
 
 bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
@@ -3387,3 +5624,865 @@ bool player_load_by_pubkey(server_player_t *sp, world_t *w, const char *dir,
     snprintf(path, sizeof(path), "%s/" PUBKEY_SUBDIR "/%s.sav", dir, b58);
     return player_load_from_path(sp, w, path, (int)sp->id);
 }
+
+/* ================================================================== */
+/* Authenticated one-time legacy player-save recovery                  */
+/* ================================================================== */
+
+#if defined(SIGNAL_SERVER_PERSISTENCE)
+
+enum {
+    LEGACY_RECOVERY_PLAYER_SAVE_MAX_BYTES = 8 * 1024 * 1024,
+    LEGACY_RECOVERY_PLAYER_MANIFEST_MAX = 4096,
+};
+
+static bool legacy_recovery_selected_player_dir(
+    const char *generation_root,
+    const char *legacy_player_dir,
+    char out[PERSISTENCE_GENERATION_PATH_MAX]) {
+    if (!generation_root || !generation_root[0] ||
+        !legacy_player_dir || !legacy_player_dir[0] || !out) {
+        return false;
+    }
+    persistence_generation_paths_t selected = {0};
+    persistence_generation_status_t status =
+        persistence_generation_resolve(generation_root, &selected);
+    const char *source = status == PERSISTENCE_GENERATION_NONE
+        ? legacy_player_dir
+        : (status == PERSISTENCE_GENERATION_CURRENT ||
+           status == PERSISTENCE_GENERATION_PREVIOUS)
+            ? selected.player_dir : NULL;
+    if (!source) return false;
+    int n = snprintf(out, PERSISTENCE_GENERATION_PATH_MAX,
+                     "%s", source);
+    return n > 0 && n < PERSISTENCE_GENERATION_PATH_MAX;
+}
+
+static bool legacy_recovery_paths(
+    const char *player_dir,
+    const uint8_t token[8],
+    const uint8_t pubkey[32],
+    char source[PERSISTENCE_GENERATION_PATH_MAX],
+    char destination[PERSISTENCE_GENERATION_PATH_MAX]) {
+    if (!player_dir || !token || !pubkey || !source || !destination ||
+        pubkey_is_zero32(pubkey)) {
+        return false;
+    }
+    char token_hex[17];
+    session_token_to_hex(token, token_hex);
+    char pubkey_base58[64];
+    if (base58_encode(
+            pubkey, 32, pubkey_base58,
+            sizeof(pubkey_base58)) == 0) {
+        return false;
+    }
+    int source_len = snprintf(
+        source, PERSISTENCE_GENERATION_PATH_MAX,
+        "%s/" LEGACY_SUBDIR "/player_%s.sav",
+        player_dir, token_hex);
+    int destination_len = snprintf(
+        destination, PERSISTENCE_GENERATION_PATH_MAX,
+        "%s/" PUBKEY_SUBDIR "/%s.sav",
+        player_dir, pubkey_base58);
+    return source_len > 0 &&
+           source_len < PERSISTENCE_GENERATION_PATH_MAX &&
+           destination_len > 0 &&
+           destination_len < PERSISTENCE_GENERATION_PATH_MAX;
+}
+
+#ifdef _WIN32
+static void legacy_recovery_windows_close_parents(
+    HANDLE handles[2]) {
+    if (!handles) return;
+    for (size_t i = 0; i < 2; i++) {
+        if (handles[i] != INVALID_HANDLE_VALUE) {
+            CloseHandle(handles[i]);
+            handles[i] = INVALID_HANDLE_VALUE;
+        }
+    }
+}
+
+static bool legacy_recovery_windows_lock_namespace(
+    const char *player_dir,
+    const char *subdir,
+    HANDLE handles[2]) {
+    if (!player_dir || !subdir || !handles ||
+        strchr(subdir, '/') || strchr(subdir, '\\')) {
+        return false;
+    }
+    handles[0] = INVALID_HANDLE_VALUE;
+    handles[1] = INVALID_HANDLE_VALUE;
+    char namespace_path[PERSISTENCE_GENERATION_PATH_MAX];
+    int n = snprintf(
+        namespace_path, sizeof(namespace_path),
+        "%s/%s", player_dir, subdir);
+    if (n <= 0 || (size_t)n >= sizeof(namespace_path))
+        return false;
+    const char *paths[2] = {player_dir, namespace_path};
+    for (size_t i = 0; i < 2; i++) {
+        handles[i] = CreateFileA(
+            paths[i], FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+            NULL, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS |
+                FILE_FLAG_OPEN_REPARSE_POINT,
+            NULL);
+        BY_HANDLE_FILE_INFORMATION info = {0};
+        if (handles[i] == INVALID_HANDLE_VALUE ||
+            !GetFileInformationByHandle(handles[i], &info) ||
+            (info.dwFileAttributes &
+             FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            (info.dwFileAttributes &
+             FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            legacy_recovery_windows_close_parents(handles);
+            return false;
+        }
+    }
+    return true;
+}
+
+static legacy_recovery_source_status_t
+legacy_recovery_windows_node_status(
+    const char *player_dir,
+    const char *subdir,
+    const char *name,
+    bool source) {
+    if (!name || !name[0] ||
+        strchr(name, '/') || strchr(name, '\\')) {
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+    HANDLE parents[2];
+    if (!legacy_recovery_windows_lock_namespace(
+            player_dir, subdir, parents)) {
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+    char path[PERSISTENCE_GENERATION_PATH_MAX];
+    int path_len = snprintf(
+        path, sizeof(path), "%s/%s/%s",
+        player_dir, subdir, name);
+    if (path_len <= 0 ||
+        (size_t)path_len >= sizeof(path)) {
+        legacy_recovery_windows_close_parents(parents);
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+    DWORD attributes = GetFileAttributesA(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        DWORD error = GetLastError();
+        legacy_recovery_windows_close_parents(parents);
+        return error == ERROR_FILE_NOT_FOUND ||
+               error == ERROR_PATH_NOT_FOUND
+            ? LEGACY_RECOVERY_SOURCE_NO_MATCH
+            : LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+    if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        legacy_recovery_windows_close_parents(parents);
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+    if (!source) {
+        legacy_recovery_windows_close_parents(parents);
+        return LEGACY_RECOVERY_SOURCE_DESTINATION_CONFLICT;
+    }
+    HANDLE handle = CreateFileA(
+        path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        legacy_recovery_windows_close_parents(parents);
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+    BY_HANDLE_FILE_INFORMATION info = {0};
+    bool ok = GetFileInformationByHandle(handle, &info) != 0 &&
+              (info.dwFileAttributes &
+               FILE_ATTRIBUTE_REPARSE_POINT) == 0 &&
+              info.nNumberOfLinks == 1;
+    uint64_t size =
+        ((uint64_t)info.nFileSizeHigh << 32) |
+        (uint64_t)info.nFileSizeLow;
+    CloseHandle(handle);
+    legacy_recovery_windows_close_parents(parents);
+    return ok && size >= 12u &&
+           size <= LEGACY_RECOVERY_PLAYER_SAVE_MAX_BYTES
+        ? LEGACY_RECOVERY_SOURCE_CANDIDATE
+        : LEGACY_RECOVERY_SOURCE_INVALID;
+}
+#else
+/*
+ * Treat the configured/selected player directory as the trusted anchor, then
+ * walk the security-sensitive namespace component through directory
+ * descriptors. O_NOFOLLOW on only the final save is insufficient because a
+ * replaced legacy/ or pubkey/ directory could redirect the canonical name.
+ */
+static int legacy_recovery_posix_namespace_fd(
+    const char *player_dir, const char *subdir) {
+    if (!player_dir || !player_dir[0] ||
+        !subdir || !subdir[0] || strchr(subdir, '/')) {
+        return -1;
+    }
+#ifndef O_NOFOLLOW
+    return -1;
+#else
+    int directory_flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
+#ifdef O_CLOEXEC
+    directory_flags |= O_CLOEXEC;
+#endif
+    int player_fd = open(player_dir, directory_flags);
+    if (player_fd < 0) return -1;
+    int namespace_fd = openat(
+        player_fd, subdir, directory_flags);
+    close(player_fd);
+    return namespace_fd;
+#endif
+}
+
+/*
+ * Return 1 with a no-follow stat, 0 for an absent final component, and -1
+ * for an invalid/error path. Missing parents are invalid because the
+ * canonical player namespace itself must already exist.
+ */
+static int legacy_recovery_posix_secure_lstat(
+    const char *player_dir,
+    const char *subdir,
+    const char *leaf,
+    struct stat *st) {
+    if (!leaf || !leaf[0] || strchr(leaf, '/') || !st)
+        return -1;
+    int parent_fd = legacy_recovery_posix_namespace_fd(
+        player_dir, subdir);
+    if (parent_fd < 0) return -1;
+    int result = fstatat(
+        parent_fd, leaf, st, AT_SYMLINK_NOFOLLOW);
+    int saved_errno = errno;
+    close(parent_fd);
+    if (result == 0) return 1;
+    return saved_errno == ENOENT ? 0 : -1;
+}
+
+static int legacy_recovery_posix_secure_open_read(
+    const char *player_dir,
+    const char *subdir,
+    const char *leaf) {
+    if (!leaf || !leaf[0] || strchr(leaf, '/')) return -1;
+    int parent_fd = legacy_recovery_posix_namespace_fd(
+        player_dir, subdir);
+    if (parent_fd < 0) return -1;
+    int flags = O_RDONLY | O_NOFOLLOW;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int fd = openat(parent_fd, leaf, flags);
+    close(parent_fd);
+    return fd;
+}
+
+static legacy_recovery_source_status_t
+legacy_recovery_posix_node_status(
+    const char *player_dir,
+    const char *subdir,
+    const char *name,
+    bool source) {
+    struct stat st;
+    int found = legacy_recovery_posix_secure_lstat(
+        player_dir, subdir, name, &st);
+    if (found <= 0)
+        return found == 0
+            ? LEGACY_RECOVERY_SOURCE_NO_MATCH
+            : LEGACY_RECOVERY_SOURCE_INVALID;
+    bool canonical_file =
+        S_ISREG(st.st_mode) && st.st_nlink == 1;
+    if (!source) {
+        return canonical_file
+            ? LEGACY_RECOVERY_SOURCE_DESTINATION_CONFLICT
+            : LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+    return canonical_file &&
+           st.st_size >= 12 &&
+           (uint64_t)st.st_size <=
+               LEGACY_RECOVERY_PLAYER_SAVE_MAX_BYTES
+        ? LEGACY_RECOVERY_SOURCE_CANDIDATE
+        : LEGACY_RECOVERY_SOURCE_INVALID;
+}
+#endif
+
+legacy_recovery_source_status_t legacy_recovery_source_probe(
+    const char *generation_root,
+    const char *legacy_player_dir,
+    const uint8_t session_token[8],
+    const uint8_t pubkey[32]) {
+    if (!session_token || !pubkey)
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    char player_dir[PERSISTENCE_GENERATION_PATH_MAX];
+    char source[PERSISTENCE_GENERATION_PATH_MAX];
+    char destination[PERSISTENCE_GENERATION_PATH_MAX];
+    if (!legacy_recovery_selected_player_dir(
+            generation_root, legacy_player_dir, player_dir) ||
+        !legacy_recovery_paths(
+            player_dir, session_token, pubkey,
+            source, destination)) {
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+#ifdef _WIN32
+    const char *source_name = strrchr(source, '/');
+    const char *destination_name = strrchr(destination, '/');
+    if (!source_name || !destination_name)
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    source_name++;
+    destination_name++;
+    legacy_recovery_source_status_t source_status =
+        legacy_recovery_windows_node_status(
+            player_dir, LEGACY_SUBDIR, source_name, true);
+    if (source_status != LEGACY_RECOVERY_SOURCE_CANDIDATE)
+        return source_status;
+    legacy_recovery_source_status_t destination_status =
+        legacy_recovery_windows_node_status(
+            player_dir, PUBKEY_SUBDIR,
+            destination_name, false);
+    return destination_status == LEGACY_RECOVERY_SOURCE_NO_MATCH
+        ? LEGACY_RECOVERY_SOURCE_CANDIDATE
+        : destination_status;
+#else
+    const char *source_name = strrchr(source, '/');
+    const char *destination_name = strrchr(destination, '/');
+    if (!source_name || !destination_name)
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    source_name++;
+    destination_name++;
+    legacy_recovery_source_status_t source_status =
+        legacy_recovery_posix_node_status(
+            player_dir, LEGACY_SUBDIR, source_name, true);
+    if (source_status != LEGACY_RECOVERY_SOURCE_CANDIDATE)
+        return source_status;
+    legacy_recovery_source_status_t destination_status =
+        legacy_recovery_posix_node_status(
+            player_dir, PUBKEY_SUBDIR,
+            destination_name, false);
+    return destination_status == LEGACY_RECOVERY_SOURCE_NO_MATCH
+        ? LEGACY_RECOVERY_SOURCE_CANDIDATE
+        : destination_status;
+#endif
+}
+
+legacy_recovery_source_status_t legacy_recovery_destination_probe(
+    const char *generation_root,
+    const char *legacy_player_dir,
+    const uint8_t pubkey[32]) {
+    if (!pubkey || pubkey_is_zero32(pubkey))
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    char player_dir[PERSISTENCE_GENERATION_PATH_MAX];
+    if (!legacy_recovery_selected_player_dir(
+            generation_root, legacy_player_dir, player_dir)) {
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+    char destination_name[72];
+    char encoded[64];
+    size_t encoded_len =
+        base58_encode(pubkey, 32, encoded, sizeof(encoded));
+    int name_len = encoded_len > 0
+        ? snprintf(destination_name, sizeof(destination_name),
+                   "%s.sav", encoded)
+        : -1;
+    if (name_len <= 0 ||
+        (size_t)name_len >= sizeof(destination_name)) {
+        return LEGACY_RECOVERY_SOURCE_INVALID;
+    }
+#ifdef _WIN32
+    return legacy_recovery_windows_node_status(
+        player_dir, PUBKEY_SUBDIR, destination_name, false);
+#else
+    return legacy_recovery_posix_node_status(
+        player_dir, PUBKEY_SUBDIR, destination_name, false);
+#endif
+}
+
+static bool legacy_recovery_read_source_snapshot_posix(
+    const char *player_dir,
+    const char *path,
+    uint8_t **bytes_out,
+    size_t *size_out) {
+#ifdef _WIN32
+    (void)player_dir;
+    (void)path;
+    (void)bytes_out;
+    (void)size_out;
+    return false;
+#else
+    if (!path || !bytes_out || !size_out) return false;
+    *bytes_out = NULL;
+    *size_out = 0;
+    const char *source_name = strrchr(path, '/');
+    if (!source_name) return false;
+    source_name++;
+    int fd = legacy_recovery_posix_secure_open_read(
+        player_dir, LEGACY_SUBDIR, source_name);
+    if (fd < 0) return false;
+    struct stat before;
+    bool ok = fstat(fd, &before) == 0 &&
+              S_ISREG(before.st_mode) &&
+              before.st_nlink == 1 &&
+              before.st_size >= 12 &&
+              (uint64_t)before.st_size <=
+                  LEGACY_RECOVERY_PLAYER_SAVE_MAX_BYTES;
+    size_t size = ok ? (size_t)before.st_size : 0;
+    uint8_t *bytes = ok ? malloc(size) : NULL;
+    if (ok && !bytes) ok = false;
+    size_t offset = 0;
+    while (ok && offset < size) {
+        ssize_t count = read(fd, bytes + offset, size - offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) {
+            ok = false;
+            break;
+        }
+        offset += (size_t)count;
+    }
+    struct stat after;
+    if (ok) {
+        ok = fstat(fd, &after) == 0 &&
+             S_ISREG(after.st_mode) &&
+             after.st_nlink == 1 &&
+             before.st_dev == after.st_dev &&
+             before.st_ino == after.st_ino &&
+             before.st_size == after.st_size;
+    }
+    if (close(fd) != 0) ok = false;
+    if (!ok) {
+        free(bytes);
+        return false;
+    }
+    *bytes_out = bytes;
+    *size_out = size;
+    return true;
+#endif
+}
+
+#ifdef _WIN32
+static bool legacy_recovery_read_source_snapshot_windows(
+    const char *player_dir,
+    const char *path,
+    uint8_t **bytes_out,
+    size_t *size_out) {
+    if (!player_dir || !path || !bytes_out || !size_out)
+        return false;
+    *bytes_out = NULL;
+    *size_out = 0;
+    HANDLE parents[2];
+    if (!legacy_recovery_windows_lock_namespace(
+            player_dir, LEGACY_SUBDIR, parents)) {
+        return false;
+    }
+    HANDLE handle = CreateFileA(
+        path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        legacy_recovery_windows_close_parents(parents);
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION before = {0};
+    bool ok = GetFileInformationByHandle(handle, &before) != 0 &&
+              (before.dwFileAttributes &
+               FILE_ATTRIBUTE_REPARSE_POINT) == 0 &&
+              (before.dwFileAttributes &
+               FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+              before.nNumberOfLinks == 1;
+    uint64_t size64 =
+        ((uint64_t)before.nFileSizeHigh << 32) |
+        (uint64_t)before.nFileSizeLow;
+    if (!ok || size64 < 12u ||
+        size64 > LEGACY_RECOVERY_PLAYER_SAVE_MAX_BYTES ||
+        size64 > SIZE_MAX) {
+        CloseHandle(handle);
+        legacy_recovery_windows_close_parents(parents);
+        return false;
+    }
+    size_t size = (size_t)size64;
+    uint8_t *bytes = malloc(size);
+    if (!bytes) {
+        CloseHandle(handle);
+        legacy_recovery_windows_close_parents(parents);
+        return false;
+    }
+    size_t offset = 0;
+    while (ok && offset < size) {
+        DWORD chunk = (DWORD)(
+            size - offset > 0x7fffffffu
+                ? 0x7fffffffu : size - offset);
+        DWORD count = 0;
+        if (!ReadFile(handle, bytes + offset, chunk, &count, NULL) ||
+            count == 0) {
+            ok = false;
+            break;
+        }
+        offset += count;
+    }
+    BY_HANDLE_FILE_INFORMATION after = {0};
+    if (ok) {
+        ok = GetFileInformationByHandle(handle, &after) != 0 &&
+             after.nNumberOfLinks == 1 &&
+             before.dwVolumeSerialNumber ==
+                 after.dwVolumeSerialNumber &&
+             before.nFileIndexHigh == after.nFileIndexHigh &&
+             before.nFileIndexLow == after.nFileIndexLow &&
+             before.nFileSizeHigh == after.nFileSizeHigh &&
+             before.nFileSizeLow == after.nFileSizeLow;
+    }
+    if (!CloseHandle(handle)) ok = false;
+    legacy_recovery_windows_close_parents(parents);
+    if (!ok) {
+        free(bytes);
+        return false;
+    }
+    *bytes_out = bytes;
+    *size_out = size;
+    return true;
+}
+#endif
+
+static bool legacy_recovery_save_snapshot_valid(
+    const uint8_t *bytes, size_t size, uint32_t *magic_out) {
+    if (magic_out) *magic_out = 0;
+    if (!bytes || size < sizeof(uint32_t) ||
+        size > LEGACY_RECOVERY_PLAYER_SAVE_MAX_BYTES) {
+        return false;
+    }
+    uint32_t magic = 0;
+    memcpy(&magic, bytes, sizeof(magic));
+    if (magic != PLAYER_MAGIC &&
+        magic != PLAYER_MAGIC_V6 &&
+        magic != PLAYER_MAGIC_V5 &&
+        magic != PLAYER_MAGIC_V4) {
+        return false;
+    }
+    size_t payload_end = size;
+    if (magic == PLAYER_MAGIC) {
+        if (size < 8u) return false;
+        uint32_t crc_magic = 0;
+        uint32_t stored_crc = 0;
+        memcpy(&crc_magic, bytes + size - 8u, sizeof(crc_magic));
+        memcpy(&stored_crc, bytes + size - 4u, sizeof(stored_crc));
+        if (crc_magic != 0x43524332u ||
+            persistence_crc32_update(0, bytes, size - 8u) != stored_crc) {
+            return false;
+        }
+        payload_end -= 8u;
+    }
+    if (payload_end < sizeof(player_save_data_t)) return false;
+
+    player_save_data_t fixed;
+    memcpy(&fixed, bytes, sizeof(fixed));
+    const ship_v4_t *ship = &fixed.ship;
+    if (!isfinite(ship->pos.x) || !isfinite(ship->pos.y) ||
+        !isfinite(ship->vel.x) || !isfinite(ship->vel.y) ||
+        !isfinite(ship->angle) || !isfinite(ship->hull) ||
+        !isfinite(fixed.last_pos.x) ||
+        !isfinite(fixed.last_pos.y) ||
+        !isfinite(fixed.last_angle) ||
+        fixed.last_station < 0 ||
+        fixed.last_station >= MAX_STATIONS ||
+        ship->hull_class < 0 ||
+        ship->hull_class >= HULL_CLASS_COUNT ||
+        ship->mining_level < 0 ||
+        ship->mining_level > SHIP_UPGRADE_MAX_LEVEL ||
+        ship->hold_level < 0 ||
+        ship->hold_level > SHIP_UPGRADE_MAX_LEVEL ||
+        ship->tractor_level < 0 ||
+        ship->tractor_level > SHIP_UPGRADE_MAX_LEVEL ||
+        ship->towed_count > 10 ||
+        ship->hold_ingots_count < 0 ||
+        ship->hold_ingots_count >
+            LEGACY_SHIP_HOLD_INGOTS_MAX) {
+        return false;
+    }
+    for (int commodity = 0;
+         commodity < SAVE_V82_COMMODITY_COUNT; commodity++) {
+        if (!isfinite(ship->cargo[commodity]) ||
+            ship->cargo[commodity] < 0.0f ||
+            ship->cargo[commodity] >
+                (float)LEGACY_RECOVERY_PLAYER_MANIFEST_MAX) {
+            return false;
+        }
+    }
+    for (int i = 0; i < ship->hold_ingots_count; i++) {
+        const legacy_named_ingot_t *ingot =
+            &ship->hold_ingots[i];
+        if (pubkey_is_zero32(ingot->pubkey)) continue;
+        if (ingot->prefix_class >= INGOT_PREFIX_COUNT ||
+            ingot->metal >= COMMODITY_COUNT ||
+            ingot->origin_station >= MAX_STATIONS) {
+            return false;
+        }
+    }
+
+    /*
+     * PLY4 predates the variable manifest and has no checksum. Its exact
+     * fixed layout plus the source SHA-256 binding is the complete accepted
+     * envelope. PLY1-PLY3 remain ineligible because their raw ABI/global
+     * credit layouts do not provide a bounded ownership-safe migration.
+     */
+    if (magic == PLAYER_MAGIC_V4) {
+        if (payload_end != sizeof(fixed)) return false;
+        if (magic_out) *magic_out = magic;
+        return true;
+    }
+    if (payload_end <
+        sizeof(fixed) + sizeof(uint16_t)) {
+        return false;
+    }
+    uint16_t manifest_count = 0;
+    memcpy(&manifest_count, bytes + sizeof(fixed),
+           sizeof(manifest_count));
+    if (manifest_count >
+        LEGACY_RECOVERY_PLAYER_MANIFEST_MAX) {
+        return false;
+    }
+
+    size_t offset = sizeof(fixed) + sizeof(manifest_count);
+    size_t units_size =
+        (size_t)manifest_count * sizeof(cargo_unit_t);
+    if (units_size > payload_end ||
+        offset > payload_end - units_size) {
+        return false;
+    }
+    for (uint16_t i = 0; i < manifest_count; i++) {
+        cargo_unit_t unit;
+        memcpy(&unit, bytes + offset +
+                      (size_t)i * sizeof(unit), sizeof(unit));
+        if (unit.kind >= CARGO_KIND_COUNT ||
+            unit.commodity >= COMMODITY_COUNT ||
+            unit.grade >= MINING_GRADE_COUNT ||
+            unit.prefix_class >= INGOT_PREFIX_COUNT ||
+            unit.recipe_id >= RECIPE_COUNT ||
+            unit.origin_station >= MAX_STATIONS ||
+            (magic == PLAYER_MAGIC &&
+             unit.quantity == 0) ||
+            pubkey_is_zero32(unit.pub)) {
+            return false;
+        }
+    }
+    offset += units_size;
+    if (magic == PLAYER_MAGIC_V5) {
+        if (offset != payload_end) return false;
+        if (magic_out) *magic_out = magic;
+        return true;
+    }
+    if (sizeof(uint64_t) > payload_end - offset) return false;
+    offset += sizeof(uint64_t);
+    if (magic == PLAYER_MAGIC_V6) {
+        if (offset != payload_end) return false;
+        if (magic_out) *magic_out = magic;
+        return true;
+    }
+    for (uint16_t i = 0; i < manifest_count; i++) {
+        if (offset >= payload_end) return false;
+        uint8_t chain_len = bytes[offset++];
+        if (chain_len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+            return false;
+        size_t chain_size =
+            (size_t)chain_len * sizeof(cargo_receipt_t);
+        if (chain_size > payload_end ||
+            offset > payload_end - chain_size) {
+            return false;
+        }
+        offset += chain_size;
+    }
+    if (offset != payload_end) return false;
+    if (magic_out) *magic_out = magic;
+    return true;
+}
+
+static bool legacy_recovery_load_snapshot(
+    server_player_t *player,
+    world_t *world,
+    int player_idx,
+    const uint8_t *bytes,
+    size_t size) {
+    uint32_t magic = 0;
+    if (!player || !world || !bytes ||
+        !legacy_recovery_save_snapshot_valid(
+            bytes, size, &magic)) {
+        return false;
+    }
+    FILE *snapshot = tmpfile();
+    if (!snapshot) return false;
+    bool ok = fwrite(bytes, 1, size, snapshot) == size &&
+              fflush(snapshot) == 0 &&
+              fseek(snapshot, 0, SEEK_SET) == 0 &&
+              player_load_from_open_file(
+                  player, world, snapshot, magic,
+                  (uint64_t)size, player_idx);
+    if (fclose(snapshot) != 0) ok = false;
+    return ok;
+}
+
+static bool legacy_recovery_read_source_snapshot(
+    const char *player_dir,
+    const char *path,
+    uint8_t **bytes_out,
+    size_t *size_out) {
+#ifdef _WIN32
+    return legacy_recovery_read_source_snapshot_windows(
+        player_dir, path, bytes_out, size_out);
+#else
+    return legacy_recovery_read_source_snapshot_posix(
+        player_dir, path, bytes_out, size_out);
+#endif
+}
+
+static void legacy_recovery_candidate_dispose(world_t *candidate) {
+    if (!candidate) return;
+    world_cleanup(candidate);
+    free(candidate);
+}
+
+static void legacy_recovery_adopt_candidate(
+    world_t *destination, world_t *candidate) {
+    world_cleanup(destination);
+    *destination = *candidate;
+    memset(candidate, 0, sizeof(*candidate));
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        destination->players[i].connection =
+            &destination->connections[i];
+        destination->players[i].replication =
+            &destination->replications[i];
+    }
+    world_rebind_ship_controllers(destination);
+}
+
+/*
+ * v81 quarantine rows intentionally omit bearer/session material. There is
+ * therefore no sound way to decide which claimant owns an unresolved legacy
+ * contract, delivery, build, scaffold, asset, or transient ownership row.
+ * Refuse partial promotion instead of rebinding by recycled player slot.
+ */
+static bool legacy_recovery_ownership_fully_attributable(
+    const world_t *world) {
+    return world &&
+           ownership_quarantine_validate(
+               &world->ownership_quarantine) &&
+           world->ownership_quarantine.count == 0;
+}
+
+legacy_recovery_result_status_t legacy_recovery_execute(
+    world_t *world,
+    int player_idx,
+    uint64_t confirmed_nonce,
+    const char *generation_root,
+    const char *legacy_player_dir,
+    const bool save_player_slot[MAX_PLAYERS],
+    persistence_generation_fault_t fault,
+    persistence_generation_paths_t *published) {
+    if (published) memset(published, 0, sizeof(*published));
+    persistence_generation_paths_t published_scratch = {0};
+    persistence_generation_paths_t *commit_published =
+        published ? published : &published_scratch;
+    if (!world || player_idx < 0 || player_idx >= MAX_PLAYERS ||
+        confirmed_nonce == 0 || !generation_root ||
+        !legacy_player_dir || !save_player_slot ||
+        !save_player_slot[player_idx]) {
+        return LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE;
+    }
+    const server_player_t *live = &world->players[player_idx];
+    if (!server_player_can_use_pubkey_persistence(live) ||
+        confirmed_nonce <= live->last_signed_nonce) {
+        return LEGACY_RECOVERY_RESULT_REPLAY;
+    }
+    if (!legacy_recovery_ownership_fully_attributable(world))
+        return LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE;
+    uint8_t token[8];
+    uint8_t pubkey[32];
+    memcpy(token, live->session_token, sizeof(token));
+    memcpy(pubkey, live->pubkey, sizeof(pubkey));
+
+    legacy_recovery_source_status_t probe =
+        legacy_recovery_source_probe(
+            generation_root, legacy_player_dir, token, pubkey);
+    if (probe == LEGACY_RECOVERY_SOURCE_NO_MATCH)
+        return LEGACY_RECOVERY_RESULT_NO_MATCH;
+    if (probe == LEGACY_RECOVERY_SOURCE_DESTINATION_CONFLICT)
+        return LEGACY_RECOVERY_RESULT_DESTINATION_CONFLICT;
+    if (probe != LEGACY_RECOVERY_SOURCE_CANDIDATE)
+        return LEGACY_RECOVERY_RESULT_INVALID_SOURCE;
+
+    char player_dir[PERSISTENCE_GENERATION_PATH_MAX];
+    char source[PERSISTENCE_GENERATION_PATH_MAX];
+    char destination[PERSISTENCE_GENERATION_PATH_MAX];
+    if (!legacy_recovery_selected_player_dir(
+            generation_root, legacy_player_dir, player_dir) ||
+        !legacy_recovery_paths(
+            player_dir, token, pubkey, source, destination)) {
+        return LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE;
+    }
+    (void)destination;
+
+    uint8_t *source_bytes = NULL;
+    size_t source_size = 0;
+    if (!legacy_recovery_read_source_snapshot(
+            player_dir, source,
+            &source_bytes, &source_size)) {
+        return LEGACY_RECOVERY_RESULT_INVALID_SOURCE;
+    }
+    uint8_t source_sha256[32];
+    sha256_bytes(source_bytes, source_size, source_sha256);
+
+    world_t *candidate = world_load_candidate_create(world);
+    if (!candidate) {
+        free(source_bytes);
+        return LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE;
+    }
+    server_player_t *staged = &candidate->players[player_idx];
+    staged->last_signed_nonce = confirmed_nonce;
+    bool activated =
+        staged->ship != NULL ||
+        (world_player_ship_slot_activate(candidate, player_idx) &&
+         world_character_bind_player(candidate, player_idx));
+    bool loaded = activated &&
+        legacy_recovery_load_snapshot(
+            staged, candidate, player_idx, source_bytes, source_size);
+    free(source_bytes);
+    if (!loaded ||
+        memcmp(staged->session_token, token, sizeof(token)) != 0 ||
+        memcmp(staged->pubkey, pubkey, sizeof(pubkey)) != 0 ||
+        staged->last_signed_nonce < confirmed_nonce ||
+        !server_finalize_pubkey_identity(candidate, player_idx)) {
+        legacy_recovery_candidate_dispose(candidate);
+        return loaded
+            ? LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE
+            : LEGACY_RECOVERY_RESULT_INVALID_SOURCE;
+    }
+    player_bind_loaded_ship_asset(
+        staged, candidate, player_idx);
+    if (staged->ship_asset_id == SHIP_ASSET_ID_NONE ||
+        !world_ship_asset_sync_from_player(candidate, staged)) {
+        legacy_recovery_candidate_dispose(candidate);
+        return loaded
+            ? LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE
+            : LEGACY_RECOVERY_RESULT_INVALID_SOURCE;
+    }
+    staged->legacy_recovery_save_pending = false;
+    rebuild_signal_chain(candidate);
+    spatial_grid_build(candidate);
+
+    persistence_recovery_commit_result_t commit_result =
+        persistence_generation_commit_recovery(
+            generation_root, legacy_player_dir, candidate,
+            save_player_slot, player_idx, token, pubkey,
+            (uint64_t)source_size, source_sha256,
+            fault, commit_published);
+    if (commit_result != PERSISTENCE_RECOVERY_COMMIT_OK) {
+        legacy_recovery_candidate_dispose(candidate);
+        if (commit_result == PERSISTENCE_RECOVERY_COMMIT_NO_SOURCE)
+            return LEGACY_RECOVERY_RESULT_NO_MATCH;
+        if (commit_result ==
+            PERSISTENCE_RECOVERY_COMMIT_DESTINATION_CONFLICT) {
+            return LEGACY_RECOVERY_RESULT_DESTINATION_CONFLICT;
+        }
+        if (commit_result ==
+            PERSISTENCE_RECOVERY_COMMIT_SOURCE_CHANGED) {
+            return LEGACY_RECOVERY_RESULT_INVALID_SOURCE;
+        }
+        return LEGACY_RECOVERY_RESULT_MIGRATION_FAILURE;
+    }
+
+    legacy_recovery_adopt_candidate(world, candidate);
+    free(candidate);
+    return LEGACY_RECOVERY_RESULT_SUCCESS;
+}
+
+#endif /* SIGNAL_SERVER_PERSISTENCE */

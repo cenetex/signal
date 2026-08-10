@@ -7,6 +7,8 @@
     "test:rati-anchor-batch": "node scripts/test-rati-anchor-batch.mjs",
     "test:rati-anchor-stamp": "node scripts/test-rati-anchor-stamp.mjs",
     "test:relay-broker": "node scripts/test-relay-region-broker.mjs",
+    "test:relay-probe": "node --test scripts/test-relay-traffic-probe.mjs",
+    "test:rtc-gateway": "node scripts/test-webrtc-gateway.mjs",
     "rtc-gateway": "node scripts/webrtc-gateway.mjs",
     "brain:shadow": "node scripts/analyze-signal-client-brain-shadow.mjs",
     "hnn:shadow": "node scripts/analyze-signal-hnn-shadow.mjs"
