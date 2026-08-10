@@ -1,3 +1,7 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 /*
  * game_sim.c -- Game simulation for Signal Space Miner.
  * Used by both the authoritative server and the client (local sim).
@@ -13852,8 +13856,8 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
                 int rate_units =
                     (int)floorf((nascent->age + dt) * rate + 0.0001f) -
                     (int)floorf(nascent->age * rate + 0.0001f);
-                int room_units = (int)ceilf(room - 0.0001f);
-                if (rate_units > room_units) rate_units = room_units;
+                int remaining_units = (int)ceilf(room - 0.0001f);
+                if (rate_units > remaining_units) rate_units = remaining_units;
                 if (rate_units > 0) {
                     int stored_units =
                         shipyard_feed_nascent_from_station_store(
@@ -14417,7 +14421,8 @@ static bool signal_chain_persist(const uint8_t prev_hash[32],
                 (void)fclose(rollback);
             }
 #else
-            (void)truncate(SIGNAL_CHAIN_PATH, (off_t)original_end);
+            if (truncate(SIGNAL_CHAIN_PATH, (off_t)original_end) != 0)
+                ok = false;
 #endif
         }
     }

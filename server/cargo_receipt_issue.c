@@ -552,8 +552,8 @@ cargo_receipt_origin_cache_begin_trusted_append(
     }
 
     FILE *snapshot = fopen(token.path, "rb");
-    cargo_receipt_origin_file_state_t opened;
-    cargo_receipt_origin_file_state_t path_state;
+    cargo_receipt_origin_file_state_t opened = {0};
+    cargo_receipt_origin_file_state_t path_state = {0};
     bool exact =
         snapshot &&
         cargo_receipt_origin_file_state_open(snapshot, &opened) &&

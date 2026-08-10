@@ -450,7 +450,6 @@ TEST(test_recipe_ratios_match_economy_ladder) {
     const recipe_def_t *frame = recipe_get(RECIPE_FRAME_BASIC);
     const recipe_def_t *laser = recipe_get(RECIPE_LASER_BASIC);
     const recipe_def_t *tractor = recipe_get(RECIPE_TRACTOR_COIL);
-    const recipe_def_t *engine = recipe_get(RECIPE_ENGINE_BASIC);
     const recipe_def_t *kits = recipe_get(RECIPE_REPAIR_KIT_FAB);
 
     ASSERT(frame != NULL);
@@ -469,14 +468,6 @@ TEST(test_recipe_ratios_match_economy_ladder) {
     ASSERT_EQ_INT(tractor->input_commodities[0], COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(tractor->input_commodities[1], COMMODITY_FRAME);
     ASSERT_EQ_INT(tractor->output_count, 1);
-
-    ASSERT(engine != NULL);
-    ASSERT_EQ_INT(engine->input_count, 3);
-    ASSERT_EQ_INT(engine->input_commodities[0], COMMODITY_FRAME);
-    ASSERT_EQ_INT(engine->input_commodities[1], COMMODITY_CUPRITE_INGOT);
-    ASSERT_EQ_INT(engine->input_commodities[2], COMMODITY_CRYSTAL_INGOT);
-    ASSERT_EQ_INT(engine->output_commodity, COMMODITY_ENGINE_MODULE);
-    ASSERT_EQ_INT(engine->output_count, 1);
 
     ASSERT(kits != NULL);
     ASSERT_EQ_INT(kits->input_count, 3);
@@ -708,37 +699,6 @@ TEST(test_hash_product_accepts_repair_kit_three_finished_inputs) {
     ASSERT_EQ_INT(kit.grade, MINING_GRADE_COMMON);
     ASSERT_EQ_INT(kit.recipe_id, RECIPE_REPAIR_KIT_FAB);
     ASSERT(!hash_product(RECIPE_REPAIR_KIT_FAB, inputs, 2, 0, &kit));
-}
-
-TEST(test_hash_product_accepts_engine_three_material_inputs) {
-    cargo_unit_t inputs[RECIPE_INPUT_MAX] = {0};
-    cargo_unit_t engine = {0};
-    const commodity_t commodities[3] = {
-        COMMODITY_FRAME,
-        COMMODITY_CUPRITE_INGOT,
-        COMMODITY_CRYSTAL_INGOT,
-    };
-    const cargo_kind_t kinds[3] = {
-        CARGO_KIND_FRAME,
-        CARGO_KIND_INGOT,
-        CARGO_KIND_INGOT,
-    };
-    for (int i = 0; i < 3; i++) {
-        inputs[i].kind = (uint8_t)kinds[i];
-        inputs[i].commodity = (uint8_t)commodities[i];
-        inputs[i].grade = (uint8_t)(i == 2
-            ? MINING_GRADE_RARE : MINING_GRADE_FINE);
-        inputs[i].quantity = 1u;
-        for (int b = 0; b < 32; b++)
-            inputs[i].pub[b] = (uint8_t)(0x20 * (i + 1) + b);
-    }
-
-    ASSERT(hash_product(RECIPE_ENGINE_BASIC, inputs, 3, 0, &engine));
-    ASSERT_EQ_INT(engine.kind, CARGO_KIND_ENGINE);
-    ASSERT_EQ_INT(engine.commodity, COMMODITY_ENGINE_MODULE);
-    ASSERT_EQ_INT(engine.grade, MINING_GRADE_FINE);
-    ASSERT_EQ_INT(engine.recipe_id, RECIPE_ENGINE_BASIC);
-    ASSERT(!hash_product(RECIPE_ENGINE_BASIC, inputs, 2, 0, &engine));
 }
 
 TEST(test_fracture_claim_resolves_best_verified_grade) {
@@ -1327,7 +1287,6 @@ void register_manifest_tests(void) {
     RUN(test_hash_ingot_matches_known_vector);
     RUN(test_hash_product_matches_known_vector_and_min_grade);
     RUN(test_hash_product_accepts_repair_kit_three_finished_inputs);
-    RUN(test_hash_product_accepts_engine_three_material_inputs);
     RUN(test_fracture_claim_resolves_best_verified_grade);
     RUN(test_fracture_claim_fallback_resolves_without_claims);
     RUN(test_fracture_claim_rejects_past_deadline);

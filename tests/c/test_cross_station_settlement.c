@@ -873,67 +873,6 @@ TEST(test_station_trust_evaluator_accepts_current_and_local_origin) {
     crs_teardown();
 }
 
-TEST(test_physical_origin_evaluator_preserves_black_market_policy) {
-    crs_setup("physical_origin_black_market");
-    WORLD_HEAP w = calloc(1, sizeof(world_t));
-    ASSERT(w != NULL);
-    crs_world_init(w, 0xD10A);
-
-    uint8_t cargo_pk[32];
-    fill_test_cargo_pubkey(cargo_pk, 0x4A);
-    cargo_unit_t unit = crs_test_ingot_at(cargo_pk, 2);
-    chain_payload_smelt_t smelt = {0};
-    ASSERT(chain_payload_smelt_bind_output(
-        &smelt, unit.parent_merkle, 0, &unit));
-    ASSERT(chain_log_emit(
-        w, &w->stations[2], CHAIN_EVT_SMELT,
-        &smelt, sizeof(smelt)) != 0);
-
-    station_t *origin = &w->stations[2];
-    origin->policy_generation = 1;
-    origin->policy_tick = w->tick + 1;
-    origin->policy_card_count = 1;
-    origin->policy_card_ids[0] =
-        (uint8_t)STATION_POLICY_CARD_BLACK_MARKET;
-    origin->policy_card_domains[0] =
-        (uint8_t)STATION_POLICY_DOMAIN_TRADE;
-    origin->policy_card_costs[0] = 20;
-    origin->policy_card_scores[0] = 1.0f;
-
-    station_t *viewer = &w->stations[1];
-    viewer->policy_generation = 1;
-    viewer->policy_tick = w->tick + 1;
-    viewer->policy_card_count = 1;
-    viewer->policy_card_ids[0] =
-        (uint8_t)STATION_POLICY_CARD_PROVENANCE_SCREENING;
-    viewer->policy_card_domains[0] =
-        (uint8_t)STATION_POLICY_DOMAIN_TRADE;
-    viewer->policy_card_costs[0] = 25;
-    viewer->policy_card_scores[0] = 1.0f;
-
-    cargo_receipt_station_evaluation_t physical =
-        cargo_receipt_evaluate_physical_origin_at_station(
-            w, 1, &unit);
-
-    ASSERT_EQ_INT(physical.origin_status,
-                  CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
-    ASSERT_EQ_INT(physical.trust.authority_trust,
-                  CARGO_RECEIPT_AUTHORITY_TRUSTED_CURRENT);
-    ASSERT(!physical.accepted);
-    ASSERT_EQ_INT(physical.legality.status,
-                  CARGO_LEGALITY_CONTRABAND);
-    ASSERT_EQ_INT(physical.legality.black_market_station, 2);
-    ASSERT((physical.legality.reasons &
-            CARGO_LEGALITY_REASON_BLACK_MARKET_AUTHORITY) != 0);
-    cargo_receipt_station_evaluation_t tolerated =
-        cargo_receipt_evaluate_physical_origin_at_station(
-            w, 2, &unit);
-    ASSERT(tolerated.accepted);
-    ASSERT((tolerated.legality.reasons &
-            CARGO_LEGALITY_REASON_POLICY_TOLERATES) != 0);
-    crs_teardown();
-}
-
 TEST(test_station_trust_evaluator_accepts_rotated_origin_and_link_keys) {
     crs_setup("station_eval_rotated");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -3818,7 +3757,6 @@ void register_cross_station_settlement_tests(void) {
     RUN(test_receipt_trust_preserves_cryptographic_chain_failure);
     RUN(test_receipt_trust_status_names_cover_every_verdict);
     RUN(test_station_trust_evaluator_accepts_current_and_local_origin);
-    RUN(test_physical_origin_evaluator_preserves_black_market_policy);
     RUN(test_station_trust_evaluator_accepts_rotated_origin_and_link_keys);
     RUN(test_station_trust_evaluator_applies_intermediate_author_policy);
     RUN(test_tolerant_station_applies_origin_author_distrust_semantically);

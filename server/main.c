@@ -5324,7 +5324,7 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         "ferrite_ore","cuprite_ore","crystal_ore",
         "ferrite_ingot","cuprite_ingot","crystal_ingot",
         "frame","laser_module","tractor_module",
-        "repair_kit",
+        "repair_kit","engine_module",
     };
     _Static_assert(sizeof(cnames)/sizeof(cnames[0]) == COMMODITY_COUNT,
                    "cnames must stay in sync with commodity_t");
