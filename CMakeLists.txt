@@ -386,6 +386,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_tow_presentation_diagnostics.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
+        tests/c/test_hud_attention.c
         client/identity.c
         client/public_actor_presentation.c
         client/client_log.c

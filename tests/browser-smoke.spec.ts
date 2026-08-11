@@ -566,6 +566,37 @@ async function hudActionText(page: Page): Promise<string> {
   });
 }
 
+async function hudAttentionSurface(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_hud_attention_surface', 'string', [], []) || '';
+  });
+}
+
+async function hudAttentionTelemetry(page: Page): Promise<{
+  debugVisible: number;
+  asteroidBudget: number;
+  npcBudget: number;
+}> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    const read = (name: string) => {
+      if (!mod || typeof mod.ccall !== 'function') return 0;
+      return mod.ccall(name, 'number', [], []) | 0;
+    };
+    return {
+      debugVisible: read('signal_hud_debug_visible'),
+      asteroidBudget: read('signal_hud_scan_asteroid_budget'),
+      npcBudget: read('signal_hud_scan_npc_budget'),
+    };
+  });
+}
+
 async function laserRefitSummary(page: Page): Promise<string> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -3098,6 +3129,49 @@ test.describe('Browser smoke tests', () => {
       .poll(async () => (await readCanvasStats(canvas)).nonBlackRatio, { timeout: 5_000 })
       .toBeGreaterThan(0.05);
 
+    expectNoFatalErrors(logs);
+  });
+
+  rootBundleSmokeTest('HUD attention keeps one primary surface and semantic scan budgets on desktop and narrow layouts', async ({ page }, testInfo) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const canvas = await loadGame(page, false, { singleplayer: true });
+
+    await expect.poll(async () => hudAttentionSurface(page)).toBe('station');
+    expect(await hudAttentionTelemetry(page)).toEqual({
+      debugVisible: 0,
+      asteroidBudget: 8,
+      npcBudget: 4,
+    });
+    await attachPerceptionReview(testInfo, canvas, 'hud-attention-station', 'desktop');
+
+    await page.setViewportSize({ width: 390, height: 760 });
+    await setSmokeLoopState(page, smokeLoopState.narrowCameraOffset);
+    await expect.poll(async () => hudAttentionSurface(page)).toBe('message');
+    expect(await hudAttentionTelemetry(page)).toEqual({
+      debugVisible: 0,
+      asteroidBudget: 4,
+      npcBudget: 2,
+    });
+    await attachPerceptionReview(testInfo, canvas, 'hud-attention-message', 'narrow');
+
+    await canvas.click();
+    await tap(page, 'Tab');
+    await expect.poll(async () => hudAttentionSurface(page)).toBe('scoreboard');
+    await attachPerceptionReview(testInfo, canvas, 'hud-attention-scoreboard', 'narrow');
+
+    await tap(page, 'F3');
+    await expect.poll(async () => (await hudAttentionTelemetry(page)).debugVisible).toBe(1);
+    await tap(page, 'F3');
+    await expect.poll(async () => (await hudAttentionTelemetry(page)).debugVisible).toBe(0);
+
+    await setSmokeLoopState(page, smokeLoopState.npcMotiveCrisp);
+    await expect.poll(async () => hudAttentionSurface(page)).toBe('inspect');
+    await attachPerceptionReview(testInfo, canvas, 'hud-attention-inspect', 'narrow');
+
+    await expect
+      .poll(async () => (await readCanvasStats(canvas)).nonBlackRatio, { timeout: 5_000 })
+      .toBeGreaterThan(0.05);
     expectNoFatalErrors(logs);
   });
 

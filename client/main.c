@@ -25,6 +25,7 @@
 #include "net_input_lead.h"
 #include "net_clock.h"
 #include "client_log.h"
+#include "hud_attention.h"
 #include "legacy_recovery_ui.h"
 
 
@@ -1777,6 +1778,12 @@ static void sim_step(float dt) {
         music_next_track(&g.music);
     if (g.input.key_pressed[SAPP_KEYCODE_LEFT_BRACKET] && g.music.playing)
         music_prev_track(&g.music);
+    if (g.input.key_pressed[SAPP_KEYCODE_F3]) {
+        g.hud_debug_visible = !g.hud_debug_visible;
+        set_notice(g.hud_debug_visible
+            ? "Network/build telemetry shown."
+            : "Network/build telemetry hidden.");
+    }
 
     step_notice_timer(dt);
     update_sell_fx(dt);
@@ -1810,6 +1817,12 @@ static void sim_step(float dt) {
     /* Tab while undocked opens/pages visible inspect provenance first. Without
      * an active scan pane it keeps its older session-scoreboard behavior.
      * Docked Tab is already taken for station panels. */
+    bool inspect_surface_active =
+        g.inspect_station >= 0 ||
+        (g.inspect_snapshot_timer > 0.0f &&
+         g.inspect_snapshot.target_type != INSPECT_TARGET_NONE);
+    if (inspect_surface_active)
+        g.scoreboard.show = false;
     if (!LOCAL_PLAYER.docked && g.input.key_pressed[SAPP_KEYCODE_TAB]) {
         if (g.inspect_snapshot_timer > 0.0f &&
             g.inspect_snapshot.target_type != INSPECT_TARGET_NONE) {
@@ -5367,6 +5380,26 @@ EMSCRIPTEN_KEEPALIVE
 const char *signal_station_panel_label(void) {
     const station_panel_descriptor_t *panel = mobile_active_station_panel();
     return (panel && panel->label) ? panel->label : "";
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_hud_attention_surface(void) {
+    return hud_attention_current_surface_name();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hud_debug_visible(void) {
+    return g.hud_debug_visible ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hud_scan_asteroid_budget(void) {
+    return hud_scan_asteroid_budget(ui_screen_width());
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hud_scan_npc_budget(void) {
+    return hud_scan_npc_budget(ui_screen_width());
 }
 
 EMSCRIPTEN_KEEPALIVE
