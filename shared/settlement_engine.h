@@ -2,7 +2,9 @@
 #define SHARED_SETTLEMENT_ENGINE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include "cargo_receipt.h"
 #include "types.h"
 
 #ifdef __cplusplus
@@ -90,22 +92,100 @@ typedef struct {
     uint32_t event_count;
 } settlement_checkpoint_t;
 
+/*
+ * Caller-owned provenance for one cargo identity referenced by a settlement
+ * event.  The settlement engine borrows these pointers only for the duration
+ * of settlement_apply_segment_trusted(); neither the pointers nor any receipt
+ * bytes are retained in settlement_state_t.
+ */
+typedef struct {
+    const cargo_receipt_t *receipt_chain;
+    size_t receipt_count;
+    const cargo_receipt_origin_proof_t *origin;
+    cargo_receipt_authority_trust_t authority_trust;
+} settlement_cargo_trust_evidence_t;
+
+/*
+ * Evidence is indexed exactly like the segment's event array.  Transfer and
+ * sell events require one cargo entry; construction-input events require one
+ * entry per input_pub in payload order.  Other events require zero entries.
+ */
+typedef struct {
+    const settlement_cargo_trust_evidence_t *cargo;
+    uint8_t cargo_count;
+} settlement_event_trust_evidence_t;
+
+typedef enum {
+    SETTLEMENT_APPLY_OK = 0,
+    SETTLEMENT_APPLY_REJECT_BAD_ARGUMENTS,
+    SETTLEMENT_APPLY_REJECT_PAYLOAD_HASH,
+    SETTLEMENT_APPLY_REJECT_MISSING_TRUST_EVIDENCE,
+    SETTLEMENT_APPLY_REJECT_TRUST_EVIDENCE_COUNT,
+    SETTLEMENT_APPLY_REJECT_CARGO_TRUST,
+    SETTLEMENT_APPLY_REJECT_RECEIPT_HOLDER,
+    SETTLEMENT_APPLY_REJECT_RESOURCE,
+    SETTLEMENT_APPLY_REJECT_EVENT,
+    SETTLEMENT_APPLY_STATUS_COUNT
+} settlement_apply_status_t;
+
+/*
+ * Stable semantic rejection detail.  For REJECT_CARGO_TRUST, cargo_trust
+ * preserves the shared verifier's exact missing-origin, cargo-mismatch,
+ * unknown, untrusted, revoked, lifecycle, and cryptographic verdict.
+ */
+typedef struct {
+    settlement_apply_status_t status;
+    uint32_t event_index;
+    uint8_t cargo_index;
+    uint8_t _reserved[3];
+    cargo_receipt_trust_result_t cargo_trust;
+} settlement_apply_result_t;
+
 void settlement_state_init(settlement_state_t *s);
 void settlement_compute_root(const settlement_state_t *s, uint8_t root_out[32]);
 
-/* Apply one settlement event. hdr points to a chain_event_header_t
- * (from server/chain_log.h — opaque here to avoid include dependency). */
+/*
+ * Apply one non-provenance-sensitive settlement event. hdr points to a
+ * chain_event_header_t (from server/chain_log.h — opaque here to avoid an
+ * include dependency).  The payload hash is verified first.  Transfer, sell,
+ * and construction-input events fail closed here because this legacy surface
+ * has no trust-evidence parameter; import them through the trusted segment
+ * API below.
+ */
 bool settlement_apply_event(settlement_state_t *s,
                             const void *hdr,
                             const uint8_t *payload,
                             uint16_t payload_len);
 
+/*
+ * Compatibility wrapper.  Segments without provenance-sensitive events keep
+ * working; transfer, sell, and construction-input events reject because no
+ * trust evidence is supplied.
+ */
 bool settlement_apply_segment(settlement_state_t *s,
                               const void *events,
                               const uint8_t **payloads,
                               const uint16_t *payload_lens,
                               uint32_t event_count,
                               settlement_checkpoint_t *cp_out);
+
+/*
+ * Validate every payload hash and every required cargo trust proof before
+ * mutating state, then apply the segment transactionally.  On any rejection,
+ * settlement state and cp_out remain byte-identical to their caller-provided
+ * values.  result_out is optional and receives stable failure detail.
+ */
+bool settlement_apply_segment_trusted(
+    settlement_state_t *s,
+    const void *events,
+    const uint8_t **payloads,
+    const uint16_t *payload_lens,
+    const settlement_event_trust_evidence_t *trust_evidence,
+    uint32_t event_count,
+    settlement_checkpoint_t *cp_out,
+    settlement_apply_result_t *result_out);
+
+const char *settlement_apply_status_name(settlement_apply_status_t status);
 
 #ifdef __cplusplus
 }

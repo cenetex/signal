@@ -19,9 +19,9 @@
 | Audio Decode | minimp3 (MP3 music), pl_mpeg (MPEG-1 video episodes) |
 | Image Decode | stb_image (PNG station avatars) |
 | Testing | Custom C test framework (`tests/c/test_harness.h`), Playwright (browser smoke) |
-| Static Analysis | cppcheck, clang-tidy, CRAP scoring, banned-API checker |
+| Static Analysis | cppcheck, CRAP scoring, banned-API checker (`.clang-tidy` is editor/local-only) |
 | Build | CMake, Ninja (optional), Make (wrapper) |
-| CI | GitHub Actions (release, Valgrind); Emscripten/Windows/sanitizers in remediation |
+| CI | Required path-aware GitHub Actions for native, web/browser, container, fuzz, soak, macOS, and Windows; scheduled sanitizer/Valgrind workflows |
 
 ---
 
@@ -35,7 +35,7 @@ One CMake project file ([CMakeLists.txt](CMakeLists.txt)), multiple targets:
 |---|---|---|
 | `signal` | `build/signal` | Native desktop client (Sokol + Metal/GL), singleplayer via in-process `local_server.c` |
 | `signal_server` | `build/signal_server` | Headless authoritative relay (Mongoose WebSocket) |
-| `signal_test` | `build/signal_test` | 340+ C test cases across 40+ files |
+| `signal_test` | `build/signal_test` | Native fast and `RUN_SOAK` suites across `tests/c/` |
 | `signal_verify` | `build/signal_verify` | Standalone chain-log validator |
 | `signal_chain_assets` | `build/signal_chain_assets` | Chain-log asset inventory exporter |
 | `flight_trace` | `build/flight_trace` | Offline neural training trace generator |
@@ -165,29 +165,28 @@ signal/
 │   └── holographic_nn.c/h   # 1024-dim hyperdimensional vector associative memory
 │
 ├── tests/                   # Test suite
-│   ├── c/                   # 40+ C test files (test_*.c)
+│   ├── c/                   # Native test files (test_*.c)
 │   │   ├── test_main.c      # Test runner, sharding, fixtures
 │   │   ├── test_harness.c/h # Test assertion macros, world helpers
-│   │   ├── test_world_sim.c # Broad integration tests (3,627 lines)
-│   │   ├── test_construction.c # Construction cycle tests (2,855 lines)
+│   │   ├── test_world_sim.c # Broad integration tests
+│   │   ├── test_construction.c # Construction cycle tests
 │   │   ├── test_economy.c   # Price scaling, station buy/sell
 │   │   ├── test_commodity.c # Commodity volume, density, accessors
 │   │   ├── test_ship.c      # Ship state lifecycle
 │   │   ├── test_asteroid.c  # Spawn, fracture, fragment identity
 │   │   ├── test_mining.c    # Beam targeting, damage, fracture
 │   │   ├── test_crypto.c    # Ed25519 sign/verify
-│   │   ├── test_chain.c     # Chain log emit/verify
-│   │   ├── test_chain_log.c # Chain log walker
+│   │   ├── test_chain.c     # Persisted signal-channel load/walk
+│   │   ├── test_chain_log.c # Signed chain emit/verify/health
 │   │   ├── test_gossip.c    # Contract gossip protocol
 │   │   ├── test_settlement_engine.c # Settlement state + Merkle roots
 │   │   ├── test_manifest.c  # Crate push/remove/hash lifecycle
 │   │   ├── test_station_authority.c # Keypair derivation
 │   │   ├── test_signal_verify.c # CLI verifier integration
-│   │   ├── test_navigation.c  # A* pathfinding
-│   │   ├── test_autopilot.c   # Autopilot scenarios (soak)
+│   │   ├── test_navigation.c  # Navigation, dense physics, autopilot soaks
 │   │   ├── test_identity.c    # Player identity lifecycle
 │   │   ├── test_save.c        # Save serialization + migration
-│   │   └── ... (23 more)
+│   │   └── ...
 │   └── browser-smoke.spec.ts # Playwright browser smoke + latency assertions
 │
 ├── tools/                   # Standalone CLI tools
@@ -218,7 +217,8 @@ signal/
 │   └── ...
 │
 ├── scripts/                 # Build/CI/dev scripts
-│   ├── sync-assets.sh       # CDN asset sync
+│   ├── run_signal_test.sh   # Linux-safe 64 MiB test launcher
+│   ├── check_vendor_drift.sh # Docker vendor-context invariant
 │   ├── ws-latency-proxy.mjs # WebSocket latency injection proxy
 │   ├── neural-gap-ab.py     # Neural vs heuristic A/B gap harness
 │   ├── protocol-check.py    # Wire protocol validator
@@ -227,11 +227,11 @@ signal/
 │   ├── smoke-latency-suite.mjs # Full latency smoke integration
 │   └── deploy-arweave.mjs   # Arweave permaweb deploy
 │
-├── assets/                  # Runtime media (not in git; synced via manifest.txt)
-│   ├── music/               # MP3 music tracks
-│   ├── avatars/             # Station PNG portraits
-│   ├── episodes/            # MPEG-1 episode cutscenes
-│   └── motd/                # Station MOTD JSON
+├── assets/                  # Runtime media + external-media inventory
+│   ├── manifest.txt         # Required/optional station, music, episode paths
+│   ├── anime/               # Ignored/local MPEG-1 episode cutscenes
+│   ├── music/               # Externally supplied MP3 tracks when provisioned
+│   └── stations/            # Externally supplied portraits/MOTD when provisioned
 │
 ├── stations/                # Per-station identity catalog (.cat files)
 ├── chain/                   # Per-station signed chain logs (.log files)
@@ -292,21 +292,22 @@ future RATi vessel-birth events.
 
 ### 4.2 Backlog Dependency Graph
 
-The active backlog is ordered by dependency, not by excitement:
+The active dependency is player-first: a trustworthy economic action, a smooth
+rock, and a complete loop come before broader substrate expansion.
 
-1. **#588 determinism acceptance:** full `q32.32` migration or explicit promotion of the strict native↔WASM replay ratchet with broader platform coverage.
-2. **#340 / #339 manifest authority:** make trade, delivery, and production move concrete `cargo_unit_t` rows by default and retire finished-goods float authority.
-3. **Visible matter algebra:** migrate conserved production to the quartering rule: fragment -> 4 ingots, ingot -> 4 frames, ingot+frame -> module, and 4 frames -> station block. Preserve effective rock costs by restating frame costs at 16/20 and ingot costs at 4/10 of their legacy values; route repair work away from the 100-kit path toward block-count hull/station repair.
-4. **Lineage view:** CLI cargo lineage exists; next expose rock -> fragment -> ingot -> frame -> outpost/gate contribution as a first-class UI query over manifests, receipts, and chain logs.
-5. **#587 typed provenance contracts:** contract targets become explicit object/event pubkeys, including fracture/death fulfillment.
-6. **#354 / #355 / #356 settlement bridge:** game-sim validation emits canonical settlement events and signal-channel roots.
-7. **Player-facing legibility:** cargo lineage and station history become first-class UI surfaces.
-8. **Institution tooling:** shared contracts, escrowed cargo, station-endorsed bounties, route health dashboards, and public construction manifests.
-9. **#294 unified ship/controller model:** NPC and player cargo semantics converge on the same `ship_t`/`character_t` substrate.
-10. **#590 / #591 / #589 permaweb/P2P:** client Arweave reads, peer anchoring, and WebRTC quorum behavior.
-11. **#496 RATi vessel identity:** RATi-bearing vessels become substrate-born identities after manifest and settlement semantics are canonical.
-12. **#343 / #603 hull/station blocks:** unify hull-as-merkle, sheared blocks, and ship/station repair so damage removes visible blocks and repair welds matter back on; repair kits disappear as a player-facing unit.
-13. **#285 streaming entity pool:** cap lifting and `game_sim.c` extraction once economic/provenance invariants are stable.
+1. **#686:** at-most-once station payout commit.
+2. **#685 / #687:** asteroid-motion correction and measured frame pacing.
+3. **#617:** canonical atomic tow relation and smooth presentation.
+4. **#674:** receipt-preserving physical handoff for normal outpost founding.
+5. **#684:** measured physics-feel review.
+6. **#666:** crash-consistent persistence off the simulation loop.
+7. **#619 / #688 / #689:** interaction clarity, first-hour progression, and
+   rock combat/reward feel.
+
+These items form milestone #690. #588's strict replay profile is accepted and
+remains a gate. #339/#340 are complete. Settlement expansion, broad authority
+or controller rewrites, permaweb/P2P, RATi identity, and cap lifting are gated
+until Playable Core passes.
 
 ---
 
@@ -886,7 +887,15 @@ contract `target_pub`; v62 expands each station's player ledger from 16 to
 [UNLOCKED_MODULES] bitmask:u32
 ```
 
-Keyed by `saves/pubkey/<base58(pubkey)>.sav` (canonical) or `saves/legacy/<token_hex>.sav` (auto-migrated at startup). Legacy saves can be claimed via signed `"claim-legacy-save-v1" || <token_hex>` challenge; verified attempts append `legacy_claims.log` so operators can audit first-claim-wins imports.
+Keyed by `saves/pubkey/<base58(pubkey)>.sav` (canonical) or
+`saves/legacy/player_<token_hex>.sav` for an anonymous same-token reconnect.
+The claimant-chosen legacy basename protocol is retired: the server does not
+enumerate that namespace, its old claim wire value is inert, and the client
+sender is disabled. Authenticated recovery derives one exact canonical source,
+uses an opaque signed one-time offer, and publishes a crash-consistent
+no-replace generation. Worlds with unattributable v81 ownership-quarantine
+rows fail closed. See `docs/legacy-save-recovery.md`; #672 remains open on
+that historical reconciliation limit and #658 remains blocked.
 
 ---
 
@@ -913,16 +922,16 @@ Tests declare `RUN_FAST` or `RUN_SOAK` macros for filtering. Sharding splits the
 
 ### 14.2 Key Test Files
 
-| File | Lines | Focus |
-|---|---|---|
-| `test_world_sim.c` | 3,627 | Broad integration: full world lifecycle, multi-player, contracts, death, highscore |
-| `test_construction.c` | 2,855 | Construction cycle: plan, order, tow, place, supply, activate, outpost founding |
-| `test_economy.c` | ~800 | Dynamic pricing, prefix-class multipliers, station buy/sell, credit pool |
-| `test_chain.c` | ~700 | Chain log emit/verify, signature validation, segments, migration |
-| `test_settlement_engine.c` | ~600 | Settlement state, Merkle roots, event application |
-| `test_manifest.c` | ~500 | Crate lifecycle, push/remove/find, hash_ingot/hash_product, receipt chains |
-| `test_navigation.c` | ~400 | A* pathfinding, signal-connected routing, obstacle avoidance |
-| `test_autopilot.c` | ~400 | Autopilot mining→dock→sell cycle (soak) |
+| File | Focus |
+|---|---|
+| `test_world_sim.c` | Broad integration: world lifecycle, multiplayer, contracts, death, and highscores |
+| `test_construction.c` | Construction cycle: plan, order, tow, place, supply, activation, and outpost founding |
+| `test_economy.c` | Dynamic pricing, prefix-class multipliers, station trade, and credit accounting |
+| `test_chain.c` | Persisted signal-channel loading, ordering, truncation, and corruption handling |
+| `test_chain_log.c` | Signed chain emit/verify, health, and persistence reconciliation |
+| `test_settlement_engine.c` | Settlement state, deterministic roots, provenance preflight, and atomic rollback |
+| `test_manifest.c` | Cargo lifecycle, push/remove/find, identity hashes, and receipt chains |
+| `test_navigation.c` | Navigation, dense asteroid pairing, and autopilot mining/signal soaks |
 
 ### 14.3 Browser Smoke
 
@@ -938,10 +947,16 @@ Playwright test (`tests/browser-smoke.spec.ts`):
 
 | Workflow | Trigger | What |
 |---|---|---|
-| `release.yml` | Push to main, tag `v*` | Native build + test + Arweave deploy |
-| `valgrind.yml` | Manual / schedule | Valgrind memcheck on full test suite |
+| `ci.yml` | Pull request, manual | Path-aware required aggregate covering policy checks, Linux native/ASan+UBSan, functional soak, fuzzing, release WASM + Chromium, production container, macOS, and Windows |
+| `soak.yml` | Weekly, manual | Functional soak under ASan+UBSan plus focused MemorySanitizer and ThreadSanitizer lanes |
+| `valgrind.yml` | Schedule, manual | Valgrind memcheck against the supported native test launcher |
+| `release.yml` | Version tag, manual | Rebuilds and verifies native/web artifacts, replay and soak gates into a draft release before publication |
+| `deploy-fly.yml` | Main push, manual | Re-runs the required native, soak, policy, web-memory, and browser checks before rollout |
 
-Remediation targets: keep native/WASM replay gates on the blocking path, add Linux x86 and Windows coverage for determinism-critical targets, add ASan+UBSan and clang-tidy to CI, and add fuzzing harnesses for protocol decode, save load, and chain-log parsing.
+Cppcheck is the blocking general-purpose static analyzer. The checked
+`.clang-tidy` configuration is intentionally editor/local-only until a pinned
+toolchain and clean diagnostic baseline exist; `docs/c_safety_policy.md`
+defines the authoritative gate set.
 
 ---
 

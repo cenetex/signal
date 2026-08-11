@@ -177,6 +177,7 @@
 #define PAL_COMMODITY_LASER_MODULE    0.50f, 0.56f, 0.64f  /* metal + cuprite */
 #define PAL_COMMODITY_TRACTOR_MODULE  0.49f, 0.62f, 0.58f  /* metal + crystal */
 #define PAL_COMMODITY_REPAIR_KIT      0.62f, 0.50f, 0.48f  /* metal + repair red */
+#define PAL_COMMODITY_ENGINE_MODULE   0.72f, 0.57f, 0.34f  /* hot propulsion metal */
 
 /* Kepler modules */
 #define PAL_MODULE_FRAME_PRESS 0.62f, 0.66f, 0.70f
@@ -185,6 +186,7 @@
 /* Shared neutral modules */
 #define PAL_MODULE_LASER_FAB   0.46f, 0.50f, 0.58f
 #define PAL_MODULE_TRACTOR_FAB 0.40f, 0.54f, 0.50f
+#define PAL_MODULE_ENGINE_FAB  0.66f, 0.48f, 0.28f
 #define PAL_MODULE_SIGNAL_RELAY 0.86f, 0.66f, 0.22f
 #define PAL_MODULE_REPAIR_BAY  0.45f, 0.56f, 0.52f
 #define PAL_MODULE_GENERIC     0.34f, 0.38f, 0.42f

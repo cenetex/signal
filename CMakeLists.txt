@@ -19,10 +19,17 @@ if(NOT SIGNAL_CRYPTO_BACKEND STREQUAL "tweetnacl")
         "use 'tweetnacl'.")
 endif()
 
-set(SIGNAL_CRYPTO_SOURCES
+set(SIGNAL_CRYPTO_UPSTREAM_SOURCES
     vendor/tweetnacl/tweetnacl.c
+)
+set(SIGNAL_CRYPTO_OWNED_SOURCES
     vendor/tweetnacl/randombytes.c
     vendor/tweetnacl/signal_crypto_tweetnacl.c
+    shared/signal_memzero.c
+)
+set(SIGNAL_CRYPTO_SOURCES
+    ${SIGNAL_CRYPTO_UPSTREAM_SOURCES}
+    ${SIGNAL_CRYPTO_OWNED_SOURCES}
 )
 set(SIGNAL_CRYPTO_INCLUDE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/tweetnacl"
@@ -34,14 +41,15 @@ set(SIGNAL_CRYPTO_INCLUDE_DIR
 # UBSan flags also need to be loosened: tweetnacl.c does signed left
 # shifts that are UB by the letter of C99 but are deliberate in
 # reference crypto (matching what NaCl, libsodium, Bitcoin all ship).
-# Disable shift + signed-overflow sanitizers for these files only —
-# the project's own code remains under full UBSan scrutiny.
+# Disable shift + signed-overflow sanitizers for that upstream file only.
+# Project-owned entropy, wrapper, and wipe code remain under the normal
+# warning policy and full sanitizer instrumentation.
 # `-fno-sanitize=...` is silently accepted in non-sanitized builds.
 if(MSVC)
-    set_source_files_properties(${SIGNAL_CRYPTO_SOURCES}
+    set_source_files_properties(${SIGNAL_CRYPTO_UPSTREAM_SOURCES}
         PROPERTIES COMPILE_OPTIONS "/W0")
 else()
-    set_source_files_properties(${SIGNAL_CRYPTO_SOURCES}
+    set_source_files_properties(${SIGNAL_CRYPTO_UPSTREAM_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-w;-fno-sanitize=shift;-fno-sanitize=signed-integer-overflow")
 endif()
 
@@ -60,6 +68,10 @@ option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_replay)" ON)
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 option(SIGNAL_SIM_PROFILE "Compile world_sim_step phase profiling timers" OFF)
+
+if(NOT EMSCRIPTEN)
+    find_package(Threads REQUIRED)
+endif()
 
 function(signal_apply_sim_profile target_name)
     if(SIGNAL_SIM_PROFILE)
@@ -116,6 +128,17 @@ endif()
 # local_server.c). New server sim files go here.
 set(SIGNAL_SIM_SOURCES
     server/game_sim.c
+    server/state_digest.c
+    server/actor_principal.c
+    server/public_actor_resolver.c
+    server/contract_ownership.c
+    server/ownership_quarantine.c
+    server/player_identity_registry.c
+    server/cargo_legacy_classify.c
+    server/cargo_legacy_inventory.c
+    server/cargo_craft_provenance.c
+    server/cargo_smelt_provenance.c
+    server/ship_birth_reservation.c
     server/sim_ai.c
     server/gossip.c
     server/sim_autopilot.c
@@ -131,6 +154,7 @@ set(SIGNAL_SIM_SOURCES
     server/chain_log.c
     server/chain_log_verify.c
     server/cargo_receipt_issue.c
+    server/cargo_receipt_trust.c
     server/handoff_flow.c
     server/sim_asteroid.c
     server/sim_physics.c
@@ -141,9 +165,19 @@ set(SIGNAL_SIM_SOURCES
     server/sim_ship.c
 )
 
+# Native authoritative persistence orchestration.  This is intentionally not
+# part of SIGNAL_SIM_SOURCES: browser/single-player simulations do not own the
+# server's crash-consistent generation directory.
+set(SIGNAL_SERVER_PERSISTENCE_SOURCES
+    server/legacy_save_recovery.c
+    server/persistence_generation.c
+)
+
 # Shared libraries used by both sim and client render — pure C, no
 # sokol / audio / GL dependencies.
 set(SIGNAL_SIM_HELPERS
+    shared/actor_principal.c
+    shared/public_actor_id.c
     shared/cell_geometry.c
     shared/cell_stress.c
     shared/cargo_package.c
@@ -173,7 +207,15 @@ set(SIGNAL_SIM_HELPERS
 # compiled into signal_server or signal_test.
 set(SIGNAL_CLIENT_SOURCES
     client/main.c
+    client/public_actor_presentation.c
+    client/legacy_recovery_ui.c
+    client/legacy_recovery_view.c
     client/client_log.c
+    client/reconciliation_diagnostics.c
+    client/asteroid_presentation.c
+    client/tow_presentation_diagnostics.c
+    client/tow_adverse_gate.c
+    client/zero_latency_gate.c
     client/net.c
     client/station_ui.c
     client/hud.c
@@ -188,9 +230,12 @@ set(SIGNAL_CLIENT_SOURCES
     client/integration/work/signal/signal_client_flight.c
     client/integration/work/signal/signal_client_tactical.c
     client/integration/work/signal/signal_client_strategic.c
+    client/local_authority.c
     client/local_server.c
     client/onboarding.c
     client/contract_objective.c
+    client/episode_lifecycle.c
+    client/episode_media.c
     client/episode.c
     client/music.c
     client/avatar.c
@@ -215,6 +260,9 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
         server/main.c
         server/mongoose.c
         server/highscore.c
+        server/ws_outbox.c
+        server/persistence_writer.c
+        ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
         ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
@@ -226,17 +274,19 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
     target_compile_definitions(signal_server PRIVATE
         GIT_HASH="${GIT_HASH}"
         MG_ENABLE_LOG=0    # silence mongoose's internal [INFO]/[ERROR] spam
+        SIGNAL_SERVER_PERSISTENCE=1
         GAME_SIM_VERBOSE   # enable [sim] log lines (matches prod Docker)
     )
     signal_apply_sim_profile(signal_server)
     if(NOT MSVC)
-        target_link_libraries(signal_server PRIVATE m)
+        target_link_libraries(signal_server PRIVATE m Threads::Threads)
         target_compile_options(signal_server PRIVATE
             -Wall -Wextra -Wpedantic -Werror -fstack-protector-strong -ffp-contract=off -fno-fast-math)
         # _FORTIFY_SOURCE requires optimization; only set for Release-ish.
         target_compile_definitions(signal_server PRIVATE
             $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
     else()
+        target_link_libraries(signal_server PRIVATE Threads::Threads)
         # Mirror GCC/Clang -Werror so Windows CI fails on regressions.
         # Selective /wd* mirror the -Wno-* we accept on GCC/Clang:
         #   4127 = constant conditional (common in ASSERT/while(true))
@@ -265,6 +315,9 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_math.c
         tests/c/test_ship.c
         tests/c/test_client_log.c
+        tests/c/test_episode_lifecycle.c
+        tests/c/test_local_authority.c
+        tests/c/test_legacy_recovery_ui.c
         tests/c/test_cell_geometry.c
         tests/c/test_cell_stress.c
         tests/c/test_cargo_package.c
@@ -272,8 +325,22 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_economy.c
         tests/c/test_world_sim.c
         tests/c/test_protocol.c
+        tests/c/test_actor_principal.c
+        tests/c/test_public_actor_id.c
+        tests/c/test_public_actor_resolver.c
+        tests/c/test_public_actor_presentation.c
+        tests/c/test_contract_ownership.c
+        tests/c/test_station_catalog.c
+        tests/c/test_ownership_quarantine.c
+        tests/c/test_player_identity_registry.c
+        tests/c/test_cargo_legacy_classify.c
+        tests/c/test_cargo_legacy_inventory.c
+        tests/c/test_cargo_craft_provenance.c
+        tests/c/test_cargo_smelt_provenance.c
+        tests/c/test_ship_birth_reservation.c
         tests/c/test_bug_regression.c
         tests/c/test_save.c
+        tests/c/test_persistence_generation.c
         tests/c/test_construction.c
         tests/c/test_settlement_engine.c
         tests/c/test_tractor.c
@@ -308,12 +375,30 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_inspect_labels.c
         tests/c/test_route_history_labels.c
         tests/c/test_rock_usefulness.c
+        tests/c/test_ws_outbox.c
+        server/mongoose.c
+        server/ws_outbox.c
+        server/persistence_writer.c
         tests/c/test_signal_field.c
+        tests/c/test_state_digest.c
+        tests/c/test_reconciliation_diagnostics.c
+        tests/c/test_asteroid_presentation.c
+        tests/c/test_tow_presentation_diagnostics.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
         tests/c/test_ai_feature_contract.c
+        tests/c/test_hud_attention.c
         client/identity.c
+        client/public_actor_presentation.c
         client/client_log.c
+        client/reconciliation_diagnostics.c
+        client/asteroid_presentation.c
+        client/tow_presentation_diagnostics.c
+        client/episode_lifecycle.c
+        client/episode_media.c
+        client/local_authority.c
+        client/legacy_recovery_ui.c
+        ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
         ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
@@ -322,7 +407,20 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
     target_include_directories(signal_test PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_definitions(signal_test PRIVATE
+        MG_ENABLE_LOG=0
+        SIGNAL_CRYPTO_TESTING=1
+        SIGNAL_CARGO_RECEIPT_TESTING=1
+        SIGNAL_CHAIN_LOG_TESTING=1
+        SIGNAL_SAVE_TESTING=1
+        SIGNAL_SERVER_PERSISTENCE=1
+        SIGNAL_LOCAL_AUTHORITY_TESTING=1
+        SIGNAL_SPATIAL_GRID_TESTING=1)
+    if(UNIX AND NOT APPLE)
+        target_compile_definitions(signal_test PRIVATE _GNU_SOURCE)
+    endif()
     signal_apply_sim_profile(signal_test)
+    target_link_libraries(signal_test PRIVATE Threads::Threads)
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
@@ -340,6 +438,27 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
     endif()
 endif()
 
+# A tiny native layout probe enforces and reports the client-resident struct
+# budgets without starting a window or linking the full client.
+if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
+    add_executable(signal_client_memory tools/signal_client_memory.c)
+    target_include_directories(signal_client_memory SYSTEM PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol"
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
+    )
+    target_include_directories(signal_client_memory PRIVATE
+        ${SIGNAL_INCLUDE_DIRS})
+    if(NOT MSVC)
+        target_compile_options(signal_client_memory PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    else()
+        target_compile_options(signal_client_memory PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_client_memory PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
+    endif()
+endif()
+
 # ------------------------------------------------------------------
 # signal_verify / signal_chain_assets — standalone post-mortem chain-log
 # tools. Pure C, no sim / world_t / sokol deps. Can run on archived logs,
@@ -348,6 +467,8 @@ endif()
 if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     add_executable(signal_verify
         tools/signal_verify.c
+        server/cargo_craft_provenance.c
+        server/cargo_legacy_classify.c
         server/chain_log_verify.c
         ${SIGNAL_CRYPTO_SOURCES}
     )
@@ -365,6 +486,8 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
 
     add_executable(signal_chain_assets
         tools/signal_chain_assets.c
+        server/cargo_craft_provenance.c
+        server/cargo_legacy_classify.c
         ${SIGNAL_CRYPTO_SOURCES}
     )
     target_include_directories(signal_chain_assets PRIVATE
@@ -381,6 +504,9 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
 
     add_executable(signal_rati_receipt
         tools/signal_rati_receipt.c
+        server/cargo_craft_provenance.c
+        server/cargo_smelt_provenance.c
+        server/cargo_legacy_classify.c
         server/chain_log_verify.c
         ${SIGNAL_CRYPTO_SOURCES}
     )
@@ -399,6 +525,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     add_executable(flight_trace
         tools/flight_trace.c
         ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
         ${SIGNAL_SIM_HELPERS}
         ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
         ${SIGNAL_CRYPTO_SOURCES}
@@ -406,6 +533,8 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     target_include_directories(flight_trace PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_definitions(
+        flight_trace PRIVATE SIGNAL_SERVER_PERSISTENCE=1)
     signal_apply_sim_profile(flight_trace)
     if(NOT MSVC)
         target_link_libraries(flight_trace PRIVATE m)
@@ -419,6 +548,7 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     add_executable(signal_replay
         tools/signal_replay.c
         ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
         ${SIGNAL_SIM_HELPERS}
         ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
         ${SIGNAL_CRYPTO_SOURCES}
@@ -426,6 +556,8 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     target_include_directories(signal_replay PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_definitions(
+        signal_replay PRIVATE SIGNAL_SERVER_PERSISTENCE=1)
     signal_apply_sim_profile(signal_replay)
     if(NOT MSVC)
         target_link_libraries(signal_replay PRIVATE m)
@@ -439,18 +571,29 @@ endif()
 
 # ------------------------------------------------------------------
 # Fuzz targets (libFuzzer, clang only). Off by default; enable with
-# -DSIGNAL_BUILD_FUZZERS=ON. Harnesses live in tests/fuzz/ and probe
+# -DSIGNAL_BUILD_FUZZERS=ON. Headless builders should also set
+# -DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=OFF so decoder fuzzing never discovers
+# desktop audio/window dependencies. Harnesses live in tests/fuzz/ and probe
 # untrusted decode paths (cargo receipts, handoff tickets/snapshots).
 # See REMEDIATION_PLAN.md §12.
 # ------------------------------------------------------------------
 option(SIGNAL_BUILD_FUZZERS "Build libFuzzer harnesses (clang only)" OFF)
 if(SIGNAL_BUILD_FUZZERS)
+    if(NOT BUILD_TESTS_ONLY OR BUILD_TOOLS)
+        message(FATAL_ERROR
+            "SIGNAL_BUILD_FUZZERS is a headless decoder configuration. "
+            "Reconfigure with -DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=OFF; "
+            "desktop ALSA/X11/OpenGL dependencies must not enter this graph.")
+    endif()
     if(EMSCRIPTEN OR MSVC OR NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR
             "SIGNAL_BUILD_FUZZERS requires a non-MSVC clang toolchain "
             "(got ${CMAKE_C_COMPILER_ID}). Configure with "
             "-DCMAKE_C_COMPILER=clang.")
     endif()
+    message(STATUS
+        "Configuring headless receipt/handoff fuzzing "
+        "(desktop dependency discovery disabled)")
     add_executable(fuzz_cargo_receipt
         tests/fuzz/fuzz_cargo_receipt.c
         shared/cargo_receipt.c
@@ -552,7 +695,7 @@ if(MSVC)
     # TUs that host them with /W0 so those lines don't fail /WX, while every
     # other client source file still builds under the full /W4 strictness.
     set_source_files_properties(
-        client/episode.c       # includes pl_mpeg.h
+        client/episode_media.c # includes pl_mpeg implementation
         client/music.c         # includes minimp3.h
         server/mongoose.c   # vendor single-file WebSocket server
         PROPERTIES COMPILE_OPTIONS "/W0"
@@ -585,6 +728,9 @@ endif()
 
 if(NOT MSVC)
     target_link_libraries(signal PRIVATE m)
+endif()
+if(NOT EMSCRIPTEN)
+    target_link_libraries(signal PRIVATE Threads::Threads)
 endif()
 
 if(EMSCRIPTEN)
@@ -745,16 +891,64 @@ if(EMSCRIPTEN)
         "'_get_net_motion_replay_depth'"
         "'_get_net_motion_unacked_inputs'"
         "'_get_net_motion_action_queue_depth'"
+        "'_reset_local_asteroid_motion_telemetry'"
+        "'_get_local_asteroid_motion_feed_active'"
+        "'_get_local_asteroid_motion_frame_samples'"
+        "'_get_local_asteroid_motion_presented_samples'"
+        "'_get_local_asteroid_motion_starvation_events'"
+        "'_get_local_asteroid_motion_max_correction'"
+        "'_get_local_asteroid_motion_max_velocity_discontinuity'"
+        "'_get_local_asteroid_motion_max_screen_jerk'"
+        "'_get_local_asteroid_motion_max_avoided_correction'"
+        "'_get_local_asteroid_motion_class_samples'"
+        "'_local_asteroid_motion_within_thresholds'"
+        "'_signal_zero_latency_gate_run'"
+        "'_signal_zero_latency_gate_perturb'"
+        "'_signal_zero_latency_gate_ready'"
+        "'_signal_zero_latency_gate_status'"
+        "'_signal_zero_latency_gate_scenario_mask'"
+        "'_get_net_reconcile_exact_samples'"
+        "'_get_net_reconcile_bootstrap_samples'"
+        "'_get_net_reconcile_input_frontier_samples'"
+        "'_get_net_reconcile_semantic_samples'"
+        "'_get_net_reconcile_transport_recovery_samples'"
+        "'_get_net_reconcile_numeric_drift_samples'"
+        "'_get_net_reconcile_asteroid_motion_samples'"
+        "'_get_net_reconcile_npc_motion_samples'"
+        "'_get_net_reconcile_death_respawn_events'"
+        "'_get_net_reconcile_first_drift_json'"
+        "'_signal_zero_latency_gate_report_json'"
+        "'_signal_smoke_adverse_towable_gate'"
+        "'_signal_smoke_adverse_towable_report'"
         "'_get_hud_hint_text'"
         "'_get_hud_action_text'"
         "'_set_smoke_loop_state'"
+        "'_signal_smoke_episode_prepare'"
+        "'_signal_smoke_episode_trigger'"
+        "'_signal_smoke_episode_state'"
         "'_neural_singleplayer_init'"
         "'_neural_singleplayer_ready'"
         "'_signal_mobile_control_flags'"
         "'_signal_mobile_digit_mask'"
         "'_signal_mobile_key'"
         "'_signal_mobile_clear'"
+        "'_signal_legacy_recovery_ui_flags'"
+        "'_signal_legacy_recovery_ui_semantic'"
+        "'_signal_legacy_recovery_ui_copy'"
+        "'_signal_smoke_legacy_recovery_offer'"
+        "'_signal_smoke_legacy_recovery_result'"
+        "'_signal_smoke_legacy_recovery_set_send_admitted'"
+        "'_signal_smoke_legacy_recovery_confirm_count'"
+        "'_signal_smoke_legacy_recovery_cancel_count'"
+        "'_signal_smoke_legacy_recovery_expire_count'"
+        "'_signal_smoke_legacy_recovery_reset'"
         "'_signal_debug_held_control_mask'"
+        "'_signal_debug_identity_available'"
+        "'_signal_debug_auth_available'"
+        "'_signal_debug_local_authority_state'"
+        "'_signal_debug_local_authority_generation'"
+        "'_signal_debug_restart_local_authority'"
+        "'_signal_debug_auth_transport_closes'"
         "'_signal_net_transport_open'"
         "'_signal_net_transport_message'"
         "'_signal_net_transport_close'"
@@ -844,7 +1038,6 @@ else()
         ${X11_LIBRARIES}
         ${X11_Xi_LIB}
         ${X11_Xcursor_LIB}
-        pthread
         dl
     )
 endif()

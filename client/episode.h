@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define EPISODE_COUNT 10
+#include "episode_lifecycle.h"
 
 typedef struct {
     const char *filename;
@@ -13,14 +13,14 @@ typedef struct {
 } episode_info_t;
 
 typedef struct {
-    bool active;
-    bool loading;       /* async download in progress (Emscripten) */
-    bool watched[EPISODE_COUNT];
-    int current;
-    int pending;        /* episode index queued for download, -1 = none */
+    bool active;        /* decoder is running, including pre-commit startup */
+    bool loading;       /* fetch/decode is waiting for its first usable frame */
+    episode_lifecycle_t lifecycle;
     float fade_timer;
     float fade_duration;
     bool loaded;
+    episode_failure_t deferred_failure;
+    int deferred_failure_index;
 
     /* pl_mpeg handle (void* to avoid exposing pl_mpeg.h in header) */
     void *plm;
@@ -59,12 +59,19 @@ void episode_init(episode_state_t *ep);
 void episode_load(episode_state_t *ep);
 void episode_save(episode_state_t *ep);
 void episode_trigger(episode_state_t *ep, int index);
+/* Explicit skip is accepted only after the first usable video frame. */
 void episode_skip(episode_state_t *ep);
+/* Cancels active/pending work and invalidates callbacks; preserves watched. */
+void episode_reset(episode_state_t *ep);
 void episode_update(episode_state_t *ep, float dt);
 void episode_upload_frame(episode_state_t *ep);
 void episode_render(episode_state_t *ep, float screen_w, float screen_h);
 void episode_shutdown(episode_state_t *ep);
 bool episode_is_active(episode_state_t *ep);
+bool episode_was_watched(const episode_state_t *ep, int index);
+/* In-memory mutation; call episode_save separately when persistence is wanted. */
+void episode_set_watched(episode_state_t *ep, int index, bool watched);
+void episode_clear_watched(episode_state_t *ep);
 
 /* Called by audio_generate_stream to mix episode audio into output */
 int episode_read_audio(episode_state_t *ep, float *buffer, int frames, int channels);

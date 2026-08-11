@@ -156,6 +156,128 @@ TEST(test_tow_target_generation_changes_after_recycle) {
     ASSERT(second.generation != first.generation);
 }
 
+TEST(test_tow_link_revision_is_monotonic_and_idempotent) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+
+    int pod = MAX_CARGO_PODS - 2;
+    w.cargo_pods[pod].active = true;
+    w.cargo_pods[pod].kind = CARGO_POD_CARGO;
+    w.tick = 1234;
+    entity_ref_t target = world_entity_ref_for_slot(
+        &w, ENTITY_KIND_CARGO_POD, pod, -1);
+    ASSERT(world_tow_link_set(
+        &w, sp->ship_ref, target, TOW_PROFILE_SHIP_POD, 0, TOW_LINK_HELD));
+    const tow_link_t *link = world_tow_link_for_target_const(&w, target);
+    ASSERT(link != NULL);
+    uint32_t first_world_revision = w.tow_revision;
+    uint32_t first_link_revision = link->revision;
+    ASSERT(first_world_revision != 0);
+    ASSERT(first_link_revision == first_world_revision);
+    ASSERT(link->attached_tick == 1234u);
+    ASSERT(w.tow_revision_tick == 1234u);
+
+    w.tick = 1235;
+    ASSERT(world_tow_link_set(
+        &w, sp->ship_ref, target, TOW_PROFILE_SHIP_POD, 0, TOW_LINK_HELD));
+    link = world_tow_link_for_target_const(&w, target);
+    ASSERT(link != NULL);
+    ASSERT(w.tow_revision == first_world_revision);
+    ASSERT(link->revision == first_link_revision);
+    ASSERT(link->attached_tick == 1234u);
+    ASSERT(w.tow_revision_tick == 1234u);
+
+    ASSERT(world_tow_link_set(
+        &w, sp->ship_ref, target, TOW_PROFILE_SHIP_POD, 0,
+        TOW_LINK_RELEASING));
+    link = world_tow_link_for_target_const(&w, target);
+    ASSERT(link != NULL);
+    ASSERT(w.tow_revision > first_world_revision);
+    ASSERT(link->revision == w.tow_revision);
+    ASSERT(link->attached_tick == 1234u);
+    ASSERT(w.tow_revision_tick == 1235u);
+
+    uint32_t release_revision = w.tow_revision;
+    w.tick = 1236;
+    ASSERT(world_tow_link_clear_target(&w, target));
+    ASSERT(world_tow_link_for_target_const(&w, target) == NULL);
+    ASSERT(w.tow_revision > release_revision);
+    ASSERT(w.tow_revision_tick == 1236u);
+
+    release_revision = w.tow_revision;
+    w.tick = 1237;
+    ASSERT(!world_tow_link_clear_target(&w, target));
+    ASSERT(w.tow_revision == release_revision);
+    ASSERT(w.tow_revision_tick == 1236u);
+}
+
+TEST(test_cargo_tow_slot_teardown_preserves_owner_until_explicit_release) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
+    sp->pubkey_identity_finalized = true;
+    sp->id = 0;
+    memset(sp->pubkey, 0x5d, sizeof(sp->pubkey));
+    player_init_ship(sp, &w);
+
+    int pod_idx = MAX_CARGO_PODS - 3;
+    w.cargo_pods[pod_idx].active = true;
+    w.cargo_pods[pod_idx].kind =
+        CARGO_POD_CARGO;
+    ASSERT(world_cargo_pod_set_player_tractor(
+        &w, pod_idx, 0));
+    actor_principal_t owner =
+        w.cargo_pods[pod_idx]
+            .tow_owner_principal;
+    ASSERT_EQ_INT(
+        owner.kind, ACTOR_PRINCIPAL_PLAYER);
+    entity_ref_t target =
+        world_entity_ref_for_slot(
+            &w, ENTITY_KIND_CARGO_POD,
+            pod_idx, -1);
+    ASSERT(world_tow_link_for_target_const(
+               &w, target) != NULL);
+
+    /*
+     * Disconnect/grace-expiry slot teardown retires only the transient ship
+     * projection. A generic clear of an already-absent link must not become
+     * an ownership mutation.
+     */
+    world_player_ship_slot_release(&w, 0);
+    ASSERT(world_tow_link_for_target_const(
+               &w, target) == NULL);
+    ASSERT_EQ_INT(
+        cargo_pod_player_tractor(
+            &w.cargo_pods[pod_idx]), -1);
+    ASSERT(actor_principal_equal(
+        &w.cargo_pods[pod_idx]
+             .tow_owner_principal,
+        &owner));
+    ASSERT(!world_tow_link_clear_target(
+        &w, target));
+    ASSERT(actor_principal_equal(
+        &w.cargo_pods[pod_idx]
+             .tow_owner_principal,
+        &owner));
+
+    world_cargo_pod_clear_tractor(
+        &w, pod_idx);
+    ASSERT_EQ_INT(
+        w.cargo_pods[pod_idx]
+            .tow_owner_principal.kind,
+        ACTOR_PRINCIPAL_NONE);
+}
+
 TEST(test_tow_links_ignore_stale_projection_capacity_and_collect_stably) {
     WORLD_DECL;
     world_reset(&w);
@@ -490,6 +612,8 @@ void register_tractor_tests(void) {
     RUN(test_tractor_binding_has_one_source_at_a_time);
     RUN(test_tow_link_pool_is_authority_for_ship_projections);
     RUN(test_tow_target_generation_changes_after_recycle);
+    RUN(test_tow_link_revision_is_monotonic_and_idempotent);
+    RUN(test_cargo_tow_slot_teardown_preserves_owner_until_explicit_release);
     RUN(test_tow_links_ignore_stale_projection_capacity_and_collect_stably);
     RUN(test_ship_pointer_cache_rebinds_and_clears_stale_views);
     RUN(test_tractor_pull_engages_beyond_rest);

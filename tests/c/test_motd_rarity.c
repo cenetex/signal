@@ -128,6 +128,66 @@ TEST(test_motd_parse_handles_other_escapes) {
     ASSERT_STR_EQ(av.tiers[2].text, "slash/ok");
 }
 
+TEST(test_motd_parse_rejects_raw_control_in_target_value) {
+    const char json[] =
+        "{\"messages\":{"
+        "\"common\":\"bad\x1fvalue\","
+        "\"uncommon\":\"u\","
+        "\"rare\":\"r\","
+        "\"ultra_rare\":\"x\""
+        "}}";
+
+    avatar_cache_t av = {0};
+    ASSERT(!motd_parse(&av, json, sizeof(json) - 1));
+}
+
+TEST(test_motd_parse_rejects_raw_control_in_object_key) {
+    const char json[] =
+        "{\"ignored\x01key\":0,"
+        "\"messages\":{"
+        "\"common\":\"a\","
+        "\"uncommon\":\"u\","
+        "\"rare\":\"r\","
+        "\"ultra_rare\":\"x\""
+        "}}";
+
+    avatar_cache_t av = {0};
+    ASSERT(!motd_parse(&av, json, sizeof(json) - 1));
+}
+
+TEST(test_motd_parse_rejects_raw_control_in_skipped_string) {
+    const char json[] =
+        "{\"ignored\":{\"nested\":[\"bad\nvalue\"]},"
+        "\"messages\":{"
+        "\"common\":\"a\","
+        "\"uncommon\":\"u\","
+        "\"rare\":\"r\","
+        "\"ultra_rare\":\"x\""
+        "}}";
+
+    avatar_cache_t av = {0};
+    ASSERT(!motd_parse(&av, json, sizeof(json) - 1));
+}
+
+TEST(test_motd_parse_accepts_escaped_controls_in_values_and_skips) {
+    const char json[] =
+        "{\"ignored\":{\"escaped\":\"line\\nfeed\","
+        "\"unicode\":\"tab\\u0009ok\"},"
+        "\"messages\":{"
+        "\"common\":\"line\\nfeed\","
+        "\"uncommon\":\"back\\bspace\","
+        "\"rare\":\"form\\ffeed\","
+        "\"ultra_rare\":\"tab\\u0009ok\""
+        "}}";
+
+    avatar_cache_t av = {0};
+    ASSERT(motd_parse(&av, json, sizeof(json) - 1));
+    ASSERT_STR_EQ(av.tiers[0].text, "line\nfeed");
+    ASSERT_STR_EQ(av.tiers[1].text, "back\bspace");
+    ASSERT_STR_EQ(av.tiers[2].text, "form\ffeed");
+    ASSERT_STR_EQ(av.tiers[3].text, "tab\tok");
+}
+
 TEST(test_motd_parse_missing_messages_object_fails) {
     /* No "messages" key → parse fails entirely; the caller must NOT
      * mark motd_fetched (callers fall back to the legacy single
@@ -236,6 +296,10 @@ void register_motd_rarity_tests(void) {
     RUN(test_motd_parse_roundtrip);
     RUN(test_motd_parse_handles_escaped_quote);
     RUN(test_motd_parse_handles_other_escapes);
+    RUN(test_motd_parse_rejects_raw_control_in_target_value);
+    RUN(test_motd_parse_rejects_raw_control_in_object_key);
+    RUN(test_motd_parse_rejects_raw_control_in_skipped_string);
+    RUN(test_motd_parse_accepts_escaped_controls_in_values_and_skips);
     RUN(test_motd_parse_missing_messages_object_fails);
     RUN(test_motd_parse_missing_one_tier_fails);
     RUN(test_motd_parse_no_bands_uses_defaults);

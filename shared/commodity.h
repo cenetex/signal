@@ -30,6 +30,12 @@ float commodity_volume(commodity_t commodity);
 float station_buy_price(const station_t* station, commodity_t commodity);
 /* Station sells to player at this price (higher when understocked) */
 float station_sell_price(const station_t* station, commodity_t commodity);
+/* Authoritative material stored directly in the station.  Production and
+ * other consumers use this view so physically held pods can affect market
+ * supply without being drained as if they were unpacked inventory. */
+float station_stored_inventory_amount(const station_t* station,
+                                      commodity_t commodity);
+/* Economy-facing total: direct station storage plus station-custody pods. */
 float station_inventory_amount(const station_t* station, commodity_t commodity);
 
 /* Unit-aware pricing — multiplies the commodity-level price by the

@@ -25,11 +25,22 @@ typedef struct {
     float vec[HNN_DIM];
 } hnn_key_cache_entry_t;
 
+#if defined(_MSC_VER)
+#define SIGNAL_THREAD_LOCAL __declspec(thread)
+#else
+#define SIGNAL_THREAD_LOCAL _Thread_local
+#endif
+
 /* A tiny PRNG for deterministic key generation (xorshift32). */
-static uint32_t hnn_rand_state;
-static hnn_key_cache_entry_t g_hnn_key_cache[HNN_KEY_CACHE_SIZE];
-static float g_hnn_feature_keys[HNN_FEATURE_COUNT][HNN_DIM];
-static bool g_hnn_feature_keys_initialized = false;
+static SIGNAL_THREAD_LOCAL uint32_t hnn_rand_state;
+static SIGNAL_THREAD_LOCAL hnn_key_cache_entry_t
+    g_hnn_key_cache[HNN_KEY_CACHE_SIZE];
+static SIGNAL_THREAD_LOCAL float
+    g_hnn_feature_keys[HNN_FEATURE_COUNT][HNN_DIM];
+static SIGNAL_THREAD_LOCAL float
+    g_hnn_value_keys[HNN_FEATURE_VALUE_LEVELS][HNN_DIM];
+static SIGNAL_THREAD_LOCAL bool
+    g_hnn_feature_value_keys_initialized = false;
 
 typedef struct {
     const char *name;
@@ -323,12 +334,15 @@ float hnn_similarity(const float a[HNN_DIM], const float b[HNN_DIM]) {
     return isfinite(dot) ? dot : 0.0f;
 }
 
-static void hnn_feature_keys_init(void) {
-    if (g_hnn_feature_keys_initialized) return;
-    for (int i = 0; i < HNN_FEATURE_COUNT; i++)
-        hnn_key_vector(HNN_FEATURE_KEY_SEED_BASE + (uint64_t)i,
-                       g_hnn_feature_keys[i]);
-    g_hnn_feature_keys_initialized = true;
+static void hnn_feature_value_keys_init(void) {
+    if (g_hnn_feature_value_keys_initialized) return;
+    for (int feature = 0; feature < HNN_FEATURE_COUNT; feature++)
+        hnn_key_vector(HNN_FEATURE_KEY_SEED_BASE + (uint64_t)feature,
+                       g_hnn_feature_keys[feature]);
+    for (int level = 0; level < HNN_FEATURE_VALUE_LEVELS; level++)
+        hnn_key_vector(HNN_VALUE_KEY_SEED_BASE + (uint64_t)level,
+                       g_hnn_value_keys[level]);
+    g_hnn_feature_value_keys_initialized = true;
 }
 
 /* --- Holographic memory --- */
@@ -584,6 +598,25 @@ hnn_memory_contract_t hnn_holonet_contract(const hnn_holonet_t *net) {
 
 /* --- Pilot feature encoding --- */
 
+static void hnn_encode_feature_value(int feature,
+                                     float value,
+                                     float out[HNN_DIM]) {
+    value = hnn_clampf(value, -1.0f, 1.0f);
+    float position = (value + 1.0f) * 0.5f *
+                     (float)(HNN_FEATURE_VALUE_LEVELS - 1);
+    int lower = (int)position;
+    int upper = lower < HNN_FEATURE_VALUE_LEVELS - 1 ? lower + 1 : lower;
+    float blend = position - (float)lower;
+    const float *feature_key = g_hnn_feature_keys[feature];
+    const float *a = g_hnn_value_keys[lower];
+    const float *b = g_hnn_value_keys[upper];
+
+    for (int i = 0; i < HNN_DIM; i++)
+        out[i] = feature_key[i] *
+                 (a[i] * (1.0f - blend) + b[i] * blend);
+    hnn_normalize(out);
+}
+
 void hnn_encode_state(const hnn_pilot_features_t *f,
                       float state_out[HNN_DIM]) {
     float vals[HNN_FEATURE_COUNT];
@@ -613,17 +646,11 @@ void hnn_encode_state(const hnn_pilot_features_t *f,
     vals[23] = f->composite_dot;
 
     memset(state_out, 0, HNN_DIM * sizeof(float));
-    hnn_feature_keys_init();
+    hnn_feature_value_keys_init();
 
     for (int i = 0; i < HNN_FEATURE_COUNT; i++) {
-        const float *feat_key = g_hnn_feature_keys[i];
-        float value = isfinite(vals[i]) ? vals[i] : 0.0f;
-
-        /* Scale the key vector by the feature value */
         float feat_val[HNN_DIM];
-        for (int j = 0; j < HNN_DIM; j++)
-            feat_val[j] = feat_key[j] * value;
-        hnn_normalize(feat_val);
+        hnn_encode_feature_value(i, vals[i], feat_val);
 
         for (int j = 0; j < HNN_DIM; j++)
             state_out[j] += feat_val[j];

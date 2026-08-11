@@ -59,6 +59,7 @@ static inline const char *cargo_lineage_recipe_label(const cargo_unit_t *unit) {
         case RECIPE_TRACTOR_COIL:   return "tractor";
         case RECIPE_REPAIR_KIT_FAB: return "repair kit";
         case RECIPE_LEGACY_MIGRATE: return "legacy";
+        case RECIPE_ENGINE_BASIC:   return "engine";
         default:                    return "unknown";
     }
 }
@@ -98,19 +99,28 @@ static inline void cargo_lineage_story_label(const cargo_unit_t *unit,
         return;
     case RECIPE_FRAME_BASIC:
         snprintf(out, cap, "pressed at %s%s",
-                 origin, has_parent ? " from signed ingots" : "");
+                 origin,
+                 has_parent ? " (input lineage unproven)" : "");
         return;
     case RECIPE_LASER_BASIC:
         snprintf(out, cap, "laser fab at %s%s",
-                 origin, has_parent ? " from signed inputs" : "");
+                 origin,
+                 has_parent ? " (input lineage unproven)" : "");
         return;
     case RECIPE_TRACTOR_COIL:
         snprintf(out, cap, "tractor fab at %s%s",
-                 origin, has_parent ? " from signed inputs" : "");
+                 origin,
+                 has_parent ? " (input lineage unproven)" : "");
         return;
     case RECIPE_REPAIR_KIT_FAB:
         snprintf(out, cap, "repair kits made at %s%s",
-                 origin, has_parent ? " from signed inputs" : "");
+                 origin,
+                 has_parent ? " (input lineage unproven)" : "");
+        return;
+    case RECIPE_ENGINE_BASIC:
+        snprintf(out, cap, "engine fab at %s%s",
+                 origin,
+                 has_parent ? " (input lineage unproven)" : "");
         return;
     case RECIPE_LEGACY_MIGRATE:
         snprintf(out, cap, "legacy cargo at %s", origin);

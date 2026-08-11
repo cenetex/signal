@@ -9,12 +9,33 @@ parsing, sanitizer runs, static analysis, and review rules.
 - Normal C targets compile with `-Wall -Wextra -Wpedantic -Werror`.
 - Linux, macOS, and Windows native builds run in GitHub Actions.
 - `make test` rebuilds and runs fast `signal_test` shards.
-- `make test-soak` runs the long-horizon sim tests.
-- `make test-san` runs `signal_test` with ASan+UBSan locally.
-- `make test-tsan` is available for threaded changes.
+- `make test-soak` runs every `RUN_SOAK` long-horizon test as a distinct
+  pull-request status and is rerun before release or deployment.
+- `make test-san` runs the non-soak suite with ASan+UBSan and enables
+  LeakSanitizer on Linux; `make test-san-soak` covers every functional soak on
+  a weekly schedule. Apple's ASan runtime keeps leak detection disabled.
+- `make soak-automation` checks the exact tagged-test inventory, build and
+  registry reachability, and every required native/sanitizer workflow.
+- `make test-msan` runs a focused, fully instrumented native secret-lifecycle
+  subset under Clang MemorySanitizer.
+- `make test-tsan` runs the bounded four-thread HNN/independent-world
+  regression. Both specialized sanitizers run weekly and on manual dispatch.
 - `make banned-apis` fails on banned libc calls in owned C source.
-- `make cppcheck`, scan-build, and clang-tidy run in CI static analysis.
+- `make cppcheck` runs in CI against owned production C source.
+- `make vendor-drift` checks and mutation-tests the Docker vendor-context
+  invariant in CI.
 - Nightly Valgrind checks run against the non-soak test suite.
+
+## Static Analysis Scope
+
+Cppcheck is the repository's blocking general-purpose static-analysis gate.
+The checked-in `.clang-tidy` file provides C11 defaults for editors and local
+experiments, with diagnostics limited to owned `client/`, `server/`, and
+`shared/` headers. Clang-tidy and scan-build are not advertised as Make or CI
+gates: their current output varies across LLVM/platform versions and the
+existing diagnostic backlog has not been baselined. Promoting either tool to a
+gate requires pinning a toolchain and making its selected checks clean; until
+then, CI documentation must not claim that it ran them.
 
 ## Banned APIs
 
@@ -67,6 +88,29 @@ documented sentinel.
 a different contract.
 - Every fixed memory or bounds bug gets a regression test.
 
+## Secret Wiping
+
+Use `signal_memzero_explicit()` for secret keys, secret-derived seeds, and
+signing or verification scratch. Ordinary `memset` is not a secret wipe
+because an optimizer may remove dead stores.
+
+The shared implementation uses Windows `SecureZeroMemory`, C23
+`memset_explicit` on other conforming platforms, or a reviewed C11
+volatile-byte-store fallback. `make memzero-codegen` forces that fallback
+through an optimized LLVM build and verifies that its observable zero stores
+remain. Runtime tests separately check the byte-range contract.
+
+Only the upstream `vendor/tweetnacl/tweetnacl.c` translation unit receives
+TweetNaCl's warning and deliberate-UB sanitizer exemptions. Project-owned
+entropy, wrapper, and wipe code must remain fully instrumented.
+
+Long-lived lifecycle boundaries wipe the station authority root, station
+private keys, client identity, and the networking identity copy. Derivation,
+identity-file, base64, and network-preservation scratch is wiped before its
+stack lifetime ends. Test fixtures must use `ship_reset()`, `station_reset()`,
+or the cleanup-aware harness helpers before overwriting an object that owns a
+manifest.
+
 ## Review Checklist
 
 - Who owns every pointer crossing this function boundary?
@@ -76,3 +120,4 @@ a different contract.
 - Are parser failures tested, including short input and malformed input?
 - Does ASan+UBSan pass for code touching parsing, serialization, save/load, or
 network state?
+- Does secret scratch cross a lifecycle boundary without an explicit wipe?

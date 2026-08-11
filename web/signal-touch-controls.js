@@ -2,7 +2,9 @@
   var forced = /(?:^|[?&])touch=1(?:&|$)/.test(window.location.search);
   var coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
   var hasTouch = navigator.maxTouchPoints && navigator.maxTouchPoints > 0;
-  if (!forced && !coarse && !hasTouch) return;
+  var hasGamepadApi = typeof navigator.getGamepads === "function";
+  var installTouchUi = forced || coarse || hasTouch;
+  if (!installTouchUi && !hasGamepadApi) return;
 
   var ACTION = {
     thrust: 1,
@@ -29,7 +31,17 @@
     four: 23,
     five: 24,
     auto: 30,
-    back: 31
+    back: 31,
+    recoveryConfirm: 32
+  };
+
+  var RECOVERY_FLAG = {
+    visible: 1 << 0,
+    canConfirm: 1 << 1,
+    canCancel: 1 << 2,
+    confirming: 1 << 3,
+    result: 1 << 4,
+    success: 1 << 5
   };
 
   var FLAG = {
@@ -92,12 +104,17 @@
     23: ["4", "Digit4", 52],
     24: ["5", "Digit5", 53],
     30: ["o", "KeyO", 79],
-    31: ["Escape", "Escape", 27]
+    31: ["Escape", "Escape", 27],
+    32: ["Enter", "Enter", 13]
   };
 
   var controls = {};
   var controlsRoot = null;
+  var leftGroup = null;
+  var rightGroup = null;
+  var secondaryGroup = null;
   var stationGroup = null;
+  var recoveryGroup = null;
 
   function gameModule() {
     return window.SignalGameModule || window.Module;
@@ -179,6 +196,12 @@
     return flags === null ? fallbackFlags() : (flags | 0);
   }
 
+  function recoveryFlags() {
+    var flags = wasmCall(
+      "signal_legacy_recovery_ui_flags", "number", [], []);
+    return flags === null ? 0 : (flags | 0);
+  }
+
   function mobileDigitMask(flags) {
     if (!has(flags, FLAG.canDigits)) return 0;
     var mask = wasmCall("signal_mobile_digit_mask", "number", [], []);
@@ -236,6 +259,10 @@
       ".signal-touch-station .repair{grid-column:1/span 2;grid-row:2}.signal-touch-station .laser{grid-column:3/span 2;grid-row:2}.signal-touch-station .cargo{grid-column:5/span 3;grid-row:2}",
       ".signal-touch-station .tractorUpgrade{grid-column:1/span 2;grid-row:3}.signal-touch-station .one{grid-column:3;grid-row:3}.signal-touch-station .two{grid-column:4;grid-row:3}.signal-touch-station .three{grid-column:5;grid-row:3}.signal-touch-station .four{grid-column:6;grid-row:3}.signal-touch-station .five{grid-column:7;grid-row:3}",
       ".signal-touch-station .lineage{grid-column:1/span 3;grid-row:4}.signal-touch-station .lineageProof{grid-column:4/span 2;grid-row:4}.signal-touch-station .back{grid-column:6/span 2;grid-row:4}",
+      ".signal-touch-recovery{left:50%;bottom:var(--edge);transform:translateX(-50%);width:min(360px,calc(100vw - 24px));grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}",
+      ".signal-touch-recovery .signal-touch-button{min-width:0;min-height:52px;font-size:11px;background:rgba(8,7,6,.78)}",
+      ".signal-touch-recovery .recovery-confirm{color:#dffff4;border-color:rgba(128,255,213,.72)}",
+      ".signal-touch-recovery .recovery-cancel{color:#f7d389;border-color:rgba(247,211,137,.52)}",
       "@media (min-width:860px) and (pointer:fine){.signal-touch-controls{display:none}}",
       "@media (max-width:560px){.signal-touch-controls{--edge:max(12px,env(safe-area-inset-bottom));--side:max(10px,env(safe-area-inset-right));--left-side:max(10px,env(safe-area-inset-left));--top-edge:max(10px,env(safe-area-inset-top))}.signal-touch-button{min-width:44px;min-height:42px;font-size:9px}.signal-touch-left{grid-template-columns:repeat(2,54px);grid-template-rows:42px 54px;gap:6px}.signal-touch-left .left,.signal-touch-left .right{min-height:54px;font-size:17px}.signal-touch-right{grid-template-columns:56px 66px;grid-template-rows:48px 54px 54px 38px;gap:6px}.signal-touch-right .use{min-height:48px}.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:54px}.signal-touch-secondary{bottom:calc(var(--edge) + 218px);grid-template-columns:repeat(2,58px);gap:6px}.signal-touch-station{width:calc(100vw - 20px);grid-auto-rows:34px}}",
       "@media (max-height:520px){.signal-touch-controls{--edge:max(8px,env(safe-area-inset-bottom));--side:max(8px,env(safe-area-inset-right));--left-side:max(8px,env(safe-area-inset-left));--top-edge:max(8px,env(safe-area-inset-top))}.signal-touch-left{grid-template-columns:repeat(2,52px);grid-template-rows:40px 50px}.signal-touch-right{grid-template-columns:52px 62px;grid-template-rows:44px 50px 50px 36px}.signal-touch-left .left,.signal-touch-left .right,.signal-touch-right .thrust,.signal-touch-right .brake,.signal-touch-right .fire,.signal-touch-right .tractor{min-height:50px}.signal-touch-secondary{bottom:calc(var(--edge) + 224px);grid-template-columns:repeat(2,54px)}.signal-touch-station{grid-auto-rows:32px}.signal-touch-station .signal-touch-button{min-height:32px}}"
@@ -361,6 +388,33 @@
   }
 
   function refreshControls() {
+    var recovery = recoveryFlags();
+    var recoveryVisible = has(recovery, RECOVERY_FLAG.visible);
+    if (controlsRoot) {
+      controlsRoot.classList.toggle("is-recovery", recoveryVisible);
+    }
+    if (recoveryVisible) {
+      setButton(
+        "recoveryConfirm",
+        has(recovery, RECOVERY_FLAG.canConfirm),
+        has(recovery, RECOVERY_FLAG.confirming) ? "Verifying" : "Recover");
+      setButton(
+        "recoveryCancel",
+        has(recovery, RECOVERY_FLAG.canCancel),
+        has(recovery, RECOVERY_FLAG.result) ? "Closed" : "Leave Untouched");
+      setGroupVisible(leftGroup, false);
+      setGroupVisible(rightGroup, false);
+      setGroupVisible(secondaryGroup, false);
+      setGroupVisible(stationGroup, false);
+      setGroupVisible(recoveryGroup, true);
+      return;
+    }
+
+    setGroupVisible(recoveryGroup, false);
+    setGroupVisible(leftGroup, true);
+    setGroupVisible(rightGroup, true);
+    setGroupVisible(secondaryGroup, true);
+
     var flags = mobileFlags();
     var flight = has(flags, FLAG.canFlight);
     var docked = has(flags, FLAG.docked);
@@ -415,6 +469,53 @@
     setGroupVisible(stationGroup, docked);
   }
 
+  var gamepadPrevConfirm = false;
+  var gamepadPrevCancel = false;
+  var gamepadRecoveryArmed = false;
+  var gamepadRecoveryWasVisible = false;
+
+  function firstConnectedGamepad() {
+    if (!hasGamepadApi) return null;
+    try {
+      var pads = navigator.getGamepads() || [];
+      for (var i = 0; i < pads.length; i++) {
+        if (pads[i] && pads[i].connected !== false) return pads[i];
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function pollRecoveryGamepad() {
+    var recovery = recoveryFlags();
+    var visible = has(recovery, RECOVERY_FLAG.visible);
+    var pad = firstConnectedGamepad();
+    var confirm = !!(pad && pad.buttons && pad.buttons[0] &&
+      pad.buttons[0].pressed);
+    var cancel = !!(pad && pad.buttons && pad.buttons[1] &&
+      pad.buttons[1].pressed);
+
+    if (!visible || !pad) {
+      gamepadRecoveryArmed = false;
+    } else {
+      if (!gamepadRecoveryWasVisible) gamepadRecoveryArmed = false;
+      if (!confirm && !cancel) gamepadRecoveryArmed = true;
+      if (gamepadRecoveryArmed &&
+          cancel && !gamepadPrevCancel &&
+                 has(recovery, RECOVERY_FLAG.canCancel)) {
+        tap(ACTION.back);
+      } else if (gamepadRecoveryArmed &&
+                 confirm && !gamepadPrevConfirm &&
+                 has(recovery, RECOVERY_FLAG.canConfirm)) {
+        tap(ACTION.recoveryConfirm);
+      }
+    }
+
+    gamepadPrevConfirm = confirm;
+    gamepadPrevCancel = cancel;
+    gamepadRecoveryWasVisible = visible;
+    window.requestAnimationFrame(pollRecoveryGamepad);
+  }
+
   function installControls() {
     if (document.querySelector(".signal-touch-controls")) return;
     installStyles();
@@ -426,12 +527,14 @@
 
     var left = document.createElement("div");
     left.className = "signal-touch-stack signal-touch-left";
+    leftGroup = left;
     addButton(left, "boost", "Boost", ACTION.boost, "hold", "boost");
     addButton(left, "left", "<", ACTION.left, "hold", "left");
     addButton(left, "right", ">", ACTION.right, "hold", "right");
 
     var right = document.createElement("div");
     right.className = "signal-touch-stack signal-touch-right";
+    rightGroup = right;
     addButton(right, "use", "Use", ACTION.use, "tap", "use");
     addButton(right, "fire", "Mine", ACTION.fire, "hold", "fire");
     addButton(right, "thrust", "Accel", ACTION.thrust, "hold", "thrust");
@@ -442,6 +545,7 @@
 
     var secondary = document.createElement("div");
     secondary.className = "signal-touch-stack signal-touch-secondary";
+    secondaryGroup = secondary;
     addButton(secondary, "plan", "Plan", ACTION.plan, "tap", "plan");
     addButton(secondary, "cycle", "Type", ACTION.cycle, "tap", "cycle");
 
@@ -463,16 +567,28 @@
     addButton(station, "lineageProof", "Story / Proof", ACTION.lineageProof, "tap", "lineageProof");
     addButton(station, "back", "Market", ACTION.back, "tap", "back");
 
+    var recovery = document.createElement("div");
+    recovery.className = "signal-touch-stack signal-touch-recovery";
+    addButton(
+      recovery, "recoveryConfirm", "Recover",
+      ACTION.recoveryConfirm, "tap", "recovery-confirm");
+    addButton(
+      recovery, "recoveryCancel", "Leave Untouched",
+      ACTION.back, "tap", "recovery-cancel");
+
     root.appendChild(left);
     root.appendChild(right);
     root.appendChild(secondary);
     root.appendChild(station);
+    root.appendChild(recovery);
     document.body.appendChild(root);
 
     stationGroup = station;
+    recoveryGroup = recovery;
     Array.prototype.forEach.call(root.querySelectorAll(".signal-touch-button"), bindButton);
     refreshControls();
     window.setInterval(refreshControls, 120);
+    window.requestAnimationFrame(pollRecoveryGamepad);
 
     document.addEventListener("visibilitychange", function () {
       if (document.hidden) clearHeld();
@@ -480,7 +596,9 @@
     window.addEventListener("blur", clearHeld);
   }
 
-  if (document.readyState === "loading") {
+  if (!installTouchUi) {
+    window.requestAnimationFrame(pollRecoveryGamepad);
+  } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", installControls);
   } else {
     installControls();

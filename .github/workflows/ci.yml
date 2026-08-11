@@ -1,27 +1,134 @@
-name: Native Safety Gates
+name: Required Pre-merge CI
 
 on:
+  # Intentionally unfiltered. The classify job is the single source of truth
+  # for path-aware work, so a new path can never suppress the required check.
   pull_request:
-    paths:
-      - 'client/**'
-      - 'server/**'
-      - 'shared/**'
-      - 'tests/**'
-      - 'tools/**'
-      - 'CMakeLists.txt'
-      - 'Makefile'
-      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-safety-${{ github.workflow }}-${{ github.ref }}
+  group: required-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
-  test:
+  classify:
+    name: Classify changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      policy: ${{ steps.paths.outputs.policy }}
+      native: ${{ steps.paths.outputs.native }}
+      soak: ${{ steps.paths.outputs.soak }}
+      fuzz: ${{ steps.paths.outputs.fuzz }}
+      browser: ${{ steps.paths.outputs.browser }}
+      container: ${{ steps.paths.outputs.container }}
+      cross_platform: ${{ steps.paths.outputs.cross_platform }}
+      replay: ${{ steps.paths.outputs.replay }}
+      tools: ${{ steps.paths.outputs.tools }}
+      programs: ${{ steps.paths.outputs.programs }}
+      deployment: ${{ steps.paths.outputs.deployment }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Validate inventory and classify revision
+        id: paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          args=(--check-tracked --github-output "$GITHUB_OUTPUT")
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            args+=(--all)
+          else
+            args+=(--base "$BASE_SHA" --head "$HEAD_SHA")
+          fi
+          python3 scripts/classify_ci_paths.py "${args[@]}"
+
+  policy:
+    name: CI policy and script contracts
+    needs: classify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate workflow and script syntax
+        run: |
+          python3 scripts/check_ci_script_syntax.py
+          python3 scripts/test_check_ci_script_syntax.py
+      - name: Validate GitHub Actions semantics
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Validate required-check workflow contracts
+        run: |
+          python3 scripts/check_ci_workflow_contract.py
+          python3 scripts/test_check_ci_workflow_contract.py
+      - name: Run path and aggregate mutation tests
+        run: |
+          python3 scripts/test_classify_ci_paths.py
+          python3 scripts/test_check_ci_required.py
+      - name: Run Node script self-tests
+        run: |
+          node scripts/test-rati-anchor-batch.mjs
+          node scripts/test-rati-anchor-stamp.mjs
+          node scripts/test-relay-region-broker.mjs
+          node --test scripts/test-relay-traffic-probe.mjs
+          node scripts/test-ws-backpressure-soak.mjs
+          node scripts/test-ws-latency-proxy.mjs
+      - name: Run checked policy self-tests
+        run: |
+          python3 scripts/check_banned_apis.py
+          python3 scripts/check_cargo_trust_boundaries.py
+          python3 scripts/test_check_cargo_trust_boundaries.py
+          python3 scripts/check_deterministic_libm.py
+          python3 scripts/test_check_client_memory_budget.py
+          python3 scripts/check_make_build_isolation.py
+          python3 scripts/test_check_make_build_isolation.py
+          python3 scripts/test_check_memzero_codegen.py
+          python3 scripts/check_container_workflow_inputs.py
+          python3 scripts/test_check_container_workflow_inputs.py
+          python3 scripts/check_deployment_inputs.py
+          python3 scripts/test_check_deployment_inputs.py
+          python3 scripts/check_fly_config.py
+          python3 scripts/test_check_fly_config.py
+          python3 scripts/check_soak_automation.py
+          python3 scripts/test_check_soak_automation.py
+          python3 scripts/check_doc_freshness.py
+          python3 scripts/test_check_doc_freshness.py
+          bash scripts/check_vendor_drift.sh
+          bash scripts/test_vendor_drift_detection.sh
+
+  native:
+    name: Linux native, sanitizer, and static gates
+    needs: classify
+    if: needs.classify.outputs.native == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+      - name: Run native and policy gates
+        run: |
+          make build-server
+          make test
+          make test-san
+          make memzero-codegen
+          make cargo-trust-audit banned-apis deterministic-libm doc-freshness soak-automation vendor-drift
+          make cppcheck
+
+  soak:
+    name: Functional soak
+    needs: classify
+    if: needs.classify.outputs.soak == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -29,16 +136,21 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
-      - name: Run test and policy gates
-        run: |
-          make build-server
-          make test
-          make test-san
-          make banned-apis deterministic-libm doc-freshness
-          make cppcheck
+          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+      - name: Run functional soak suite
+        run: make test-soak TEST_FAILURE_LOG_DIR=test-results/soak
+      - name: Upload soak failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-soak-failure-logs
+          path: test-results/soak/
+          if-no-files-found: warn
 
   fuzz:
+    name: Receipt and crypto fuzz
+    needs: classify
+    if: needs.classify.outputs.fuzz == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -47,11 +159,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build clang
-      # Replays the tracked seed corpus (deterministic regression gate for
-      # the receipt/handoff decode paths), then explores for FUZZ_TIME
-      # seconds. A crash fails the job and its artifact is uploaded below.
-      - name: Fuzz receipt/handoff decode paths
-        run: make fuzz-receipts FUZZ_TIME=300
+      - name: Replay corpus and fuzz all receipt/handoff modes
+        run: make fuzz-receipts FUZZ_TIME=120 FUZZ_TIMEOUT=10
+      - name: Prove standalone corpus and artifact replay
+        run: make fuzz-receipts-standalone
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -59,3 +170,276 @@ jobs:
           name: fuzz-cargo-receipt-artifacts
           path: tests/fuzz/artifacts/
           if-no-files-found: ignore
+
+  browser:
+    name: Release WASM and Chromium smoke
+    needs: classify
+    if: needs.classify.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build release WebAssembly client
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            -e GIT_HASH="${GITHUB_SHA::7}" \
+            emscripten/emsdk:4.0.15 \
+            bash -lc '
+              emcmake cmake -S . -B build-web \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DGIT_HASH="$GIT_HASH"
+              emmake cmake --build build-web --target signal --parallel
+            '
+          python3 scripts/check_deterministic_build_flags.py \
+            build-web/compile_commands.json
+          python3 scripts/check_client_memory_budget.py \
+            build-web/signal.wasm
+      - name: Install locked browser test dependencies
+        run: |
+          npm ci
+          npx --no-install playwright install --with-deps chromium
+      - name: Run Chromium smoke
+        run: npm run smoke
+      - name: Upload browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-diagnostics-${{ github.sha }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: warn
+
+  container:
+    name: Production container lock
+    needs: classify
+    if: needs.classify.outputs.container == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build production image from a clean checkout
+        run: |
+          docker build --no-cache \
+            --file server/Dockerfile \
+            --build-arg GIT_HASH="${GITHUB_SHA::7}" \
+            --tag "signal-production:${GITHUB_SHA}" \
+            .
+      - name: Record locked production dependency tree
+        run: |
+          set -o pipefail
+          mkdir -p test-results/container
+          docker run --rm \
+            --entrypoint npm \
+            "signal-production:${GITHUB_SHA}" \
+            ls --omit=dev --all \
+            | tee test-results/container/npm-ls-production.txt
+      - name: Exercise packaged WebRTC gateway static serving
+        run: |
+          docker run --rm \
+            --volume "$PWD/scripts/test-webrtc-gateway.mjs:/app/scripts/test-webrtc-gateway.mjs:ro" \
+            --entrypoint sh \
+            "signal-production:${GITHUB_SHA}" \
+            -ec 'npm run test:rtc-gateway'
+      - name: Verify final image dependency hygiene
+        run: |
+          set -o pipefail
+          docker run --rm \
+            --entrypoint sh \
+            "signal-production:${GITHUB_SHA}" \
+            -ec '
+              test ! -e /root/.npm
+              test ! -e node_modules/@playwright/test
+            '
+          docker run --rm \
+            --entrypoint npm \
+            "signal-production:${GITHUB_SHA}" \
+            audit --omit=dev \
+            | tee test-results/container/npm-audit-production.txt
+      - name: Upload production dependency evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-container-dependencies-${{ github.sha }}
+          path: test-results/container/
+          if-no-files-found: error
+
+  cross_platform:
+    name: ${{ matrix.name }} client and server
+    needs: classify
+    if: needs.classify.outputs.cross_platform == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: Linux x64
+          - os: macos-15
+            name: macOS ARM Metal
+          - os: windows-2025-vs2026
+            name: Windows MSVC
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Linux client dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+      - name: Configure release targets
+        run: cmake -S . -B build-compile -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DGIT_HASH=${{ github.sha }}
+      - name: Compile client and authoritative server
+        run: cmake --build build-compile --config Release --target signal signal_server --parallel
+
+  tools:
+    name: Standalone tool builds and tests
+    needs: classify
+    if: needs.classify.outputs.tools == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+      - name: Compile maintained Signal tools
+        run: |
+          cmake -G Ninja -S . -B build-tools \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGIT_HASH="${GITHUB_SHA::7}"
+          cmake --build build-tools --parallel --target \
+            signal_verify signal_chain_assets signal_rati_receipt \
+            flight_trace signal_replay
+      - name: Build and run packnft tests
+        run: |
+          cmake -G Ninja -S tools/packnft -B build-packnft \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-packnft --parallel
+          ./build-packnft/packnft_test
+          ./build-packnft/test_msg
+          ./build-packnft/test_core
+
+  deployment:
+    name: Locked deployment packages and entrypoints
+    needs: classify
+    if: needs.classify.outputs.deployment == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: aws/lambda/signal-lobby/package-lock.json
+      - name: Validate credential-free deployment contracts
+        run: |
+          python3 scripts/check_deployment_inputs.py
+          python3 scripts/check_fly_config.py
+          bash -n deploy/lightsail-user-data.sh
+          sh -n docker/entrypoint.sh
+      - name: Install locked Lambda production dependencies
+        run: |
+          npm ci --ignore-scripts --omit=dev \
+            --prefix aws/lambda/signal-lobby
+          npm ls --omit=dev --all \
+            --prefix aws/lambda/signal-lobby
+      - name: Link-check Lambda and Worker modules
+        env:
+          AWS_EC2_METADATA_DISABLED: "true"
+          AWS_REGION: us-east-1
+          SIGNAL_LOBBY_TABLE: ci-contract
+        run: |
+          node --input-type=module -e "const m = await import('./aws/lambda/signal-lobby/index.mjs'); if (typeof m.handler !== 'function') throw new Error('missing Lambda handler')"
+          node --input-type=module -e "const m = await import('./workers/fly-proxy.js'); if (typeof m.default?.fetch !== 'function') throw new Error('missing Worker fetch handler')"
+
+  programs:
+    name: Burn-to-mint locked manifests
+    needs: classify
+    if: needs.classify.outputs.programs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUST_TOOLCHAIN: '1.85.0'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Check and test native reference
+        run: |
+          rustup run "$RUST_TOOLCHAIN" cargo check \
+            --manifest-path programs/burn-to-mint/native/Cargo.toml \
+            --locked
+          rustup run "$RUST_TOOLCHAIN" cargo test \
+            --manifest-path programs/burn-to-mint/native/Cargo.toml \
+            --locked
+      - name: Check and test on-chain Rust reference
+        run: |
+          rustup run "$RUST_TOOLCHAIN" cargo check \
+            --manifest-path programs/burn-to-mint/onchain/Cargo.toml \
+            --locked
+          rustup run "$RUST_TOOLCHAIN" cargo test \
+            --manifest-path programs/burn-to-mint/onchain/Cargo.toml \
+            --locked
+      # The onchain-c source requires the Solana SBF SDK and its documented
+      # `npm run build:sbf` wrapper is not present in this repository. Keep it
+      # inventoried here; adding a supported hermetic command must extend this
+      # job rather than exempting programs/** from pre-merge CI.
+
+  replay:
+    name: Deterministic replay
+    needs: classify
+    if: needs.classify.outputs.replay == 'true'
+    uses: ./.github/workflows/replay.yml
+    with:
+      scenario_set: fast
+
+  ci-required:
+    name: ci-required
+    if: always()
+    needs:
+      - classify
+      - policy
+      - native
+      - soak
+      - fuzz
+      - browser
+      - container
+      - cross_platform
+      - replay
+      - tools
+      - programs
+      - deployment
+    runs-on: ubuntu-latest
+    env:
+      CI_RESULT_CLASSIFY: ${{ needs.classify.result }}
+      CI_RESULT_POLICY: ${{ needs.policy.result }}
+      CI_RESULT_NATIVE: ${{ needs.native.result }}
+      CI_RESULT_SOAK: ${{ needs.soak.result }}
+      CI_RESULT_FUZZ: ${{ needs.fuzz.result }}
+      CI_RESULT_BROWSER: ${{ needs.browser.result }}
+      CI_RESULT_CONTAINER: ${{ needs.container.result }}
+      CI_RESULT_CROSS_PLATFORM: ${{ needs.cross_platform.result }}
+      CI_RESULT_REPLAY: ${{ needs.replay.result }}
+      CI_RESULT_TOOLS: ${{ needs.tools.result }}
+      CI_RESULT_PROGRAMS: ${{ needs.programs.result }}
+      CI_RESULT_DEPLOYMENT: ${{ needs.deployment.result }}
+      CI_SELECTED_POLICY: ${{ needs.classify.outputs.policy }}
+      CI_SELECTED_NATIVE: ${{ needs.classify.outputs.native }}
+      CI_SELECTED_SOAK: ${{ needs.classify.outputs.soak }}
+      CI_SELECTED_FUZZ: ${{ needs.classify.outputs.fuzz }}
+      CI_SELECTED_BROWSER: ${{ needs.classify.outputs.browser }}
+      CI_SELECTED_CONTAINER: ${{ needs.classify.outputs.container }}
+      CI_SELECTED_CROSS_PLATFORM: ${{ needs.classify.outputs.cross_platform }}
+      CI_SELECTED_REPLAY: ${{ needs.classify.outputs.replay }}
+      CI_SELECTED_TOOLS: ${{ needs.classify.outputs.tools }}
+      CI_SELECTED_PROGRAMS: ${{ needs.classify.outputs.programs }}
+      CI_SELECTED_DEPLOYMENT: ${{ needs.classify.outputs.deployment }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require every selected lane
+        run: python3 scripts/check_ci_required.py

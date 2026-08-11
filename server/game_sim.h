@@ -8,6 +8,7 @@
 #ifndef GAME_SIM_H
 #define GAME_SIM_H
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include "math_util.h"
@@ -21,7 +22,9 @@
 #include "signal_field.h"
 #include "cargo_receipt.h"
 #include "handoff_ticket.h"
+#include "protocol.h"
 #include "tractor.h"
+#include "ownership_quarantine.h"
 
 /* ------------------------------------------------------------------ */
 /* Constants (server-only)                                            */
@@ -34,6 +37,22 @@ enum {
     MAX_DELIVERY_BOUND_CARGO = 16,
     MAX_DESTROYED_ROCKS = 4096,
 };
+
+/*
+ * The quarantine must be able to retain every currently inventoried legacy
+ * ownership/attribution row at once. Keep this expression aligned with the
+ * pinned source tags in ownership_quarantine.h when adding a source.
+ */
+_Static_assert(
+    OWNERSHIP_QUARANTINE_CAP >=
+        3 * MAX_ASTEROIDS +
+        MAX_CONTRACTS +
+        MAX_DELIVERY_SHIPMENTS +
+        MAX_STATIONS * (2 + 4 + 4 + 8) +
+        MAX_SHIP_ASSETS +
+        MAX_CARGO_PODS +
+        MAX_SCAFFOLDS,
+    "ownership quarantine must cover the complete legacy-row inventory");
 
 enum {
     SIGNAL_BRAIN_FLIGHT_ACTION_COUNT = 9,
@@ -114,7 +133,7 @@ typedef struct {
     uint32_t capacity;            /* always power of 2 */
     uint32_t mask;                /* capacity - 1 */
     uint32_t occupied;            /* number of occupied slots */
-    uint32_t overflow_count;      /* active asteroids dropped by allocation failure */
+    uint32_t overflow_count;      /* active asteroids omitted from the sparse grid */
 } spatial_grid_t;
 
 /* Map world position to cell coordinates (unbounded). */
@@ -477,6 +496,26 @@ typedef struct {
     bool    pubkey_set;
     bool    pubkey_proof_ok;
     bool    pubkey_identity_finalized;
+    /* Runtime-only proof-of-possession challenge. It is issued once per
+     * transport, cleared after successful verification or any entropy
+     * failure, and deliberately omitted from world/player persistence. */
+    uint8_t pubkey_challenge[PUBKEY_PROOF_CHALLENGE_SIZE];
+    bool    pubkey_challenge_issued;
+    bool    pubkey_challenge_consumed;
+    /*
+     * Runtime-only digest of the successfully verified proof transcript.
+     * Recovery offers bind to this value so the later signed confirmation
+     * cannot be transplanted onto a merely-finalized or synthetic identity.
+     * It is cleared whenever a transport starts a new proof challenge and is
+     * deliberately omitted from world/player persistence and state digests.
+     */
+    uint8_t pubkey_proof_transcript[32];
+    /*
+     * Runtime-only persistence gate.  While true, the canonical token save
+     * remains the only recoverable durable state and ordinary autosaves must
+     * not create a pubkey destination from the temporary fresh ship.
+     */
+    bool    legacy_recovery_save_pending;
     /* Runtime-only reconnect latch. Session reattach can happen before
      * PROVE_PUBKEY arrives; when it does, skip the pubkey save reload that
      * would otherwise overwrite the live transferred ship state. */
@@ -489,17 +528,20 @@ typedef struct {
     uint64_t last_signed_nonce;
 } server_player_t;
 
-enum {
-    MAX_TOW_LINKS = 512,
-};
-
 typedef struct {
     bool active;
     uint16_t shipment_id;
     uint8_t origin_station;
     uint8_t destination_station;
     uint8_t contract_index;
+    /*
+     * Runtime compatibility projection only. v81+ persists debtor_principal,
+     * never this recyclable player/NPC pool code.
+     */
     uint8_t debtor_player;
+    actor_principal_t debtor_principal;
+    /* Non-zero binds an unproven legacy debtor to ownership_quarantine. */
+    uint64_t debtor_quarantine_record_id;
     uint8_t commodity;
     uint16_t quantity_total;
     uint16_t quantity_bound;
@@ -666,6 +708,8 @@ typedef struct {
     /* Live tractor ownership. Target bindings and ship tow arrays are
      * compatibility projections rebuilt from this relationship pool. */
     tow_link_t tow_links[MAX_TOW_LINKS];
+    uint32_t tow_revision;
+    uint32_t tow_revision_tick;
     uint16_t asteroid_generation[MAX_ASTEROIDS];
     uint16_t cargo_pod_generation[MAX_CARGO_PODS];
     uint16_t scaffold_generation[MAX_SCAFFOLDS];
@@ -735,6 +779,10 @@ typedef struct {
     sim_interactions_t interactions;
     contract_t contracts[MAX_CONTRACTS];
     delivery_shipment_t delivery_shipments[MAX_DELIVERY_SHIPMENTS];
+    /* Server-only, inert diagnostics for legacy owner rows that could not be
+     * rebound to a proven stable principal. Never replicated to clients and
+     * deliberately incapable of storing bearer/session material. */
+    ownership_quarantine_t ownership_quarantine;
     uint16_t next_delivery_shipment_id;
     bool player_only_mode;
     uint32_t next_fracture_id;
@@ -779,6 +827,10 @@ bool world_entity_ref_is_live(const world_t *w, entity_ref_t ref);
 tow_link_t *world_tow_link_for_target(world_t *w, entity_ref_t target);
 const tow_link_t *world_tow_link_for_target_const(const world_t *w,
                                                   entity_ref_t target);
+bool world_tow_link_canonical_before(const tow_link_t *a,
+                                     const tow_link_t *b);
+int world_tow_collect_links_canonical(
+    const world_t *w, const tow_link_t **out, int cap);
 int world_tow_link_count_for_source(const world_t *w, entity_ref_t source,
                                     tow_profile_t profile);
 int world_tow_collect_targets(const world_t *w, entity_ref_t source,
@@ -804,6 +856,9 @@ bool world_cargo_pod_set_module_tractor(world_t *w, int pod_idx,
                                         int station_idx, int module_idx);
 void world_cargo_pod_clear_tractor(world_t *w, int pod_idx);
 void world_cargo_pod_clear_module_tractor(world_t *w, int pod_idx);
+/* Rebuild only verified PLAYER tow projections from durable pod principals.
+ * Quarantined and UNATTRIBUTED rows are never auto-bound. */
+void world_cargo_pod_refresh_owner_projections(world_t *w);
 bool world_scaffold_set_player_tractor(world_t *w, int scaffold_idx,
                                        int player_idx);
 bool world_scaffold_set_npc_tractor(world_t *w, int scaffold_idx,
@@ -846,9 +901,34 @@ const ship_t *world_ship_asset_state_const(const world_t *w,
 float contract_price(const contract_t *c);
 void world_reset(world_t *w);
 void world_ensure_seeded_freeport(world_t *w);
+/*
+ * Anchor server-generated RECIPE_LEGACY_MIGRATE cargo at a station before
+ * provenance-sensitive gameplay can consume or transfer it. This is an
+ * explicit bootstrap/migration boundary, not a gameplay trust exception:
+ * each unit receives a durable zero-input CRAFT origin first, and its
+ * origin_station byte is stamped only after the append succeeds.
+ *
+ * Callers must pass cargo created inside a fresh/server-generated bootstrap
+ * boundary. A loaded save is not evidence and must never be passed here.
+ * Normal gameplay and resumed-world startup must continue to use the receipt
+ * trust evaluator and reject missing origins.
+ */
+bool world_anchor_legacy_cargo_origins(
+    world_t *w, int station_idx,
+    cargo_unit_t *const *units, size_t unit_count);
+/* Anchor one station's legacy manifest plus physical pods already marked as
+ * originating there. Safe to call after additional trusted migration stock
+ * has been materialized; already-resolved origins are left idempotent. */
+bool world_anchor_station_legacy_cargo_origins(world_t *w, int station_idx);
+/* World-wide pass for a fresh server-generated initialization boundary only.
+ * CRC-valid resumed saves must use the read-only legacy inventory report and
+ * must not mint replacement origin attestations. */
+bool world_anchor_validated_legacy_cargo_origins(world_t *w);
 /* Genesis MOTD/tier chain events for the seeded stations. Caller must
  * invoke this only on a fresh-world boot (no save loaded), AFTER
- * world_reset. See seed_station_motd_chain_events in game_sim.c. */
+ * world_reset. This also anchors server-generated legacy starter cargo
+ * before emitting presentation events. See seed_station_motd_chain_events
+ * in game_sim.c. */
 void world_seed_station_chain_genesis(world_t *w);
 void world_cleanup(world_t *w);
 void world_sim_step(world_t *w, float dt);
@@ -899,9 +979,57 @@ typedef void (*server_receipt_chain_sink_fn)(
     void *user,
     const cargo_receipt_chain_t *chain);
 
+typedef enum {
+    CARGO_POD_PRESENT_OK = 0,
+    CARGO_POD_PRESENT_REJECT_BAD_ARGS,
+    CARGO_POD_PRESENT_REJECT_IDENTITY,
+    CARGO_POD_PRESENT_REJECT_NOT_DOCKED,
+    CARGO_POD_PRESENT_REJECT_STALE,
+    CARGO_POD_PRESENT_REJECT_NOT_CARRIED,
+    CARGO_POD_PRESENT_REJECT_CUSTODY,
+    CARGO_POD_PRESENT_REJECT_WRONG_ORIGIN,
+    CARGO_POD_PRESENT_REJECT_TRUST,
+    CARGO_POD_PRESENT_REJECT_STORAGE,
+    CARGO_POD_PRESENT_REJECT_LOG,
+} cargo_pod_present_result_t;
+
 typedef struct {
     int station_identity_dirty;
+    bool pod_present_evaluated;
+    cargo_pod_present_result_t pod_present_result;
+    uint16_t pod_present_moved;
+    uint16_t pod_present_action_id;
+    bool pod_present_event_valid;
+    sim_event_t pod_present_event;
 } server_signed_action_dispatch_result_t;
+
+/*
+ * Atomically unpack one bounded batch of an authoritatively towed physical
+ * pod into the player's durable ship manifest. The source station issues the
+ * first receipt for every exact local payload identity. On any staging or
+ * chain failure, pod/tow/store/ledger/stat bytes remain unchanged.
+ */
+cargo_pod_present_result_t server_present_towed_pod(
+    world_t *w,
+    int player_idx,
+    uint8_t pod_idx,
+    const uint8_t selection_digest[32],
+    server_receipt_chain_sink_fn receipt_sink,
+    void *receipt_user,
+    uint16_t *out_moved);
+
+/* Opaque selection token advertised with live pod summaries. It binds the
+ * content digest to the current recyclable-slot generation. */
+bool server_cargo_pod_selection_token(
+    world_t *w, int pod_idx, uint8_t out[32]);
+
+/*
+ * Deliver exact receipt-backed ship cargo into matching work at the player's
+ * current dock. Returns the station-local credit committed; zero is inert.
+ */
+float server_deliver_trusted_manifest_contract_cargo(
+    world_t *w, int player_idx, commodity_t filter,
+    int max_units);
 
 typedef struct {
     bool rejected_unsigned_action;
@@ -994,16 +1122,26 @@ bool server_dispatch_handoff_present(
     void *result_user);
 void player_init_ship(server_player_t *sp, world_t *w);
 void world_player_runtime_slot_reset(world_t *w, int player_slot);
+/*
+ * Discard a proof-complete recovery claimant before it is published. The
+ * helper succeeds only while the slot has no ship, asset, character, or
+ * finalized identity, making the reset byte-neutral for global authority.
+ */
+bool world_player_abort_provisional_legacy_recovery(
+    world_t *w, int player_slot);
 bool server_player_has_live_session(const server_player_t *sp);
 bool server_player_is_gameplay_ready(const server_player_t *sp);
 void server_player_clear_live_session_identity(server_player_t *sp);
+/* Revert an unfinalized pubkey assertion without disturbing an already
+ * published token session or its live ship state. */
+bool server_player_abandon_pending_pubkey_identity(server_player_t *sp);
 void server_player_reset_input_stream(server_player_t *sp);
 void server_player_clear_transient_input(server_player_t *sp);
 
 /* Layer A.2 of #479 — pubkey registry. */
 /* Look up a player_idx (into world.players[]) by pubkey. Returns -1 if not
- * registered. The lookup walks pubkey_registry to find the binding, then
- * locates the player slot owning that session_token. */
+ * registered. A registry token is only a locator: the live candidate must
+ * also have finalized the same verified pubkey on its current transport. */
 int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
 /* Register / update a (pubkey, session_token) binding for a connection.
  * Returns true if a registry entry was newly added or updated; false on
@@ -1015,8 +1153,14 @@ int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
  * server_player_t side. */
 bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
                               const uint8_t session_token[8]);
-int server_find_session_reattach_slot(const world_t *w, int player_idx,
-                                      const uint8_t session_token[8]);
+/* Find an existing live slot that the incoming player may reattach. Identity
+ * classes never bridge: anonymous matches anonymous; verified matches only a
+ * finalized source with the exact same pubkey. `out_identity_conflict` is set
+ * when the token exists but belongs to an incompatible identity. */
+int server_find_session_reattach_slot(
+    const world_t *w,
+    int player_idx,
+    bool *out_identity_conflict);
 bool server_player_can_use_pubkey_persistence(const server_player_t *sp);
 bool server_finalize_pubkey_identity(world_t *w, int player_idx);
 
@@ -1024,11 +1168,14 @@ typedef struct {
     uint8_t token[8];
     char callsign[8];
     bool has_callsign;
+    uint16_t protocol_version;
+    bool has_protocol_version;
 } server_session_message_t;
 
 typedef struct {
     bool accepted;
     bool same_pubkey;
+    bool conflicting_pubkey;
     uint8_t pubkey[32];
 } server_pubkey_register_result_t;
 
@@ -1036,8 +1183,11 @@ typedef enum {
     SERVER_PUBKEY_PROOF_OK = 0,
     SERVER_PUBKEY_PROOF_MALFORMED,
     SERVER_PUBKEY_PROOF_NO_REGISTRATION,
+    SERVER_PUBKEY_PROOF_NO_CHALLENGE,
+    SERVER_PUBKEY_PROOF_CHALLENGE_REPLAY,
     SERVER_PUBKEY_PROOF_PUBKEY_MISMATCH,
     SERVER_PUBKEY_PROOF_SESSION_MISMATCH,
+    SERVER_PUBKEY_PROOF_LEGACY_VERSION,
     SERVER_PUBKEY_PROOF_BAD_SIGNATURE
 } server_pubkey_proof_status_t;
 
@@ -1046,10 +1196,33 @@ typedef struct {
     bool verified;
 } server_pubkey_proof_result_t;
 
+typedef enum {
+    SERVER_LEGACY_SAVE_CLAIM_MALFORMED = 0,
+    SERVER_LEGACY_SAVE_CLAIM_DISABLED,
+} server_legacy_save_claim_status_t;
+
+typedef struct {
+    server_legacy_save_claim_status_t status;
+} server_legacy_save_claim_result_t;
+
 bool server_parse_session_message(const uint8_t *data, int len,
                                   server_session_message_t *out);
+bool server_session_protocol_compatible(
+    const server_session_message_t *msg);
 bool server_apply_session_message(world_t *w, int player_idx,
                                   const server_session_message_t *msg);
+/* Create a server-owned session token (used by headless bot players).
+ * On entropy failure the token and all live identity state are cleared,
+ * `connected` remains false, and the caller must not spawn a ship. */
+bool server_player_start_generated_session(server_player_t *sp);
+/*
+ * Bind a headless server bot to a durable PLAYER principal. Identity is
+ * derived from operator-held station secret material plus the logical bot
+ * ordinal, never from its transient player slot or home station.
+ */
+bool server_finalize_generated_bot_identity(
+    world_t *w, int player_idx, uint32_t logical_bot_ordinal);
+#define SERVER_PUBKEY_PROOF_TIMEOUT_SECONDS 5.0f
 bool server_dispatch_register_pubkey_message(
     world_t *w,
     int player_idx,
@@ -1062,7 +1235,40 @@ bool server_dispatch_pubkey_proof_message(
     const uint8_t *data,
     int len,
     server_pubkey_proof_result_t *out);
+/*
+ * Classify the retired arbitrary-basename legacy-save claim wire value.
+ * A well-framed packet reports DISABLED and is always rejected. The const
+ * world boundary is deliberate: this dispatcher cannot alter authoritative
+ * state and performs no filesystem work.
+ */
+bool server_dispatch_legacy_save_claim_message(
+    const world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    server_legacy_save_claim_result_t *out);
+/* Issue one fresh challenge for a connected transport. `out` and the
+ * player's challenge state are fully cleared on entropy failure. */
+bool server_issue_pubkey_challenge(
+    world_t *w,
+    int player_idx,
+    uint8_t out[PUBKEY_PROOF_CHALLENGE_SIZE]);
+/* A pubkey may be used as durable identity only after its transport-bound
+ * challenge has been consumed successfully. `out` is cleared on failure. */
+bool server_player_copy_verified_pubkey(
+    const server_player_t *sp,
+    uint8_t out[32]);
+/* Advance the shared pre-session/proof deadline. Returns true exactly when
+ * an incomplete authentication attempt has expired. Token-only sessions and
+ * completed pubkey proofs are not timed by this helper. */
+bool server_player_tick_auth_timeout(
+    server_player_t *sp,
+    float elapsed_seconds);
 const char *server_pubkey_proof_status_name(
+    server_pubkey_proof_status_t status);
+/* Fatal protocol mismatches are closed immediately instead of consuming the
+ * proof retry window. */
+bool server_pubkey_proof_status_requires_disconnect(
     server_pubkey_proof_status_t status);
 
 /* Layer A.3 of #479 — signed-action verification.
@@ -1096,6 +1302,12 @@ signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
                                             uint16_t *out_payload_len);
 float signal_strength_at(const world_t *w, vec2 pos);
 void spatial_grid_build(world_t *w);
+#if defined(SIGNAL_SPATIAL_GRID_TESTING)
+/* Fail exactly one spatial-grid allocation after this many successful
+ * spatial-grid allocations. Test-only: production builds expose no hook. */
+void spatial_grid_test_fail_allocation_after(uint32_t successful_allocations);
+void spatial_grid_test_clear_allocation_failure(void);
+#endif
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
 float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore_value);
 
@@ -1147,32 +1359,55 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
  * picker surfaces the seed stock. */
 void world_seed_station_manifests(world_t *w);
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
+typedef struct {
+    int units[COMMODITY_COUNT];
+} shipyard_bill_t;
+
+bool shipyard_hull_bill(hull_class_t hull_class, shipyard_bill_t *out_bill);
+/* Compatibility projection for callers that only display the legacy three
+ * materials. New commission code must use shipyard_hull_bill(). */
 bool shipyard_hull_cost(hull_class_t hull_class, int *out_frames,
                         int *out_lasers, int *out_tractors);
 bool shipyard_can_commission_hull(const station_t *st, hull_class_t hull_class);
 bool shipyard_queue_ship_commission(world_t *w, int station_idx, int owner,
                                     hull_class_t hull_class);
+/* Rebuild transient birth-fragment slots from persisted stable pubs. */
+bool world_ship_birth_rebind_saved_assemblies(world_t *w);
+bool world_ship_birth_saved_assemblies_valid(const world_t *w);
+/* fragment_pubs_3x32 points to SHIP_BIRTH_PROOF_FRAGMENT_COUNT consecutive
+ * 32-byte public keys. Keep the byte matrix opaque at this API boundary:
+ * qualifying a pointer-to-array is not ISO C11-compatible before C23. */
+bool ship_birth_proof_compute_v1(
+    const void *fragment_pubs_3x32,
+    const uint8_t fragment_grades[SHIP_BIRTH_PROOF_FRAGMENT_COUNT],
+    uint8_t soul_pub_out[32],
+    uint8_t material_root_out[32]);
 ship_asset_t *world_ship_asset_by_id(world_t *w, uint32_t asset_id);
 const ship_asset_t *world_ship_asset_by_id_const(const world_t *w, uint32_t asset_id);
 ship_asset_t *world_ship_asset_mint(world_t *w, hull_class_t hull_class,
-                                    ship_asset_owner_kind_t owner_kind,
-                                    int owner_station, int custody_station,
+                                    const actor_principal_t *owner_principal,
+                                    int custody_station,
                                     ship_asset_provenance_t provenance,
-                                    bool loaner, int build_station,
-                                    const uint8_t owner_pubkey[32],
-                                    const uint8_t owner_session[8]);
+                                    bool loaner, int build_station);
 int world_station_stored_hull_count(const world_t *w, int station_idx,
                                     hull_class_t hull_class);
 void world_refresh_station_hull_inventories(world_t *w);
+void world_refresh_station_physical_inventories(world_t *w);
 bool world_ship_asset_sync_from_player(world_t *w, server_player_t *sp);
 bool world_ship_asset_sync_from_npc(world_t *w, int npc_slot);
 bool world_player_release_ship_asset(world_t *w, int player_slot);
+bool world_rebind_player_slot_refs(world_t *w,
+                                   int dst_slot,
+                                   int src_slot);
 bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot);
 bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx);
 int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role);
 bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
                                          hull_class_t hull_class);
 bool world_ship_assets_ensure_legacy_bindings(world_t *w);
+/* Fresh-start integration only: rebuild reset-time genesis hull ownership
+ * after a persisted station catalog has established final actor IDs. */
+bool world_reseed_genesis_ship_assets(world_t *w);
 int spawn_cargo_pod(world_t *w, vec2 pos, vec2 vel, commodity_t commodity,
                     uint16_t quantity, cargo_pod_kind_t kind);
 int spawn_cargo_pod_with_manifest(world_t *w, vec2 pos, vec2 vel,
@@ -1190,6 +1425,9 @@ int spawn_cargo_pod_with_manifest_deterministic(world_t *w, vec2 pos,
                                                 float spin);
 int world_ensure_starter_frame_pods(world_t *w);
 int world_ensure_starter_laser_module_reserve(world_t *w);
+/* Returns the existing marker slot (active order or consumed tombstone), or
+ * seeds the one-time order only while the exact opening reserve is untouched. */
+int world_ensure_starter_mining_refit_work_order(world_t *w);
 void cargo_pod_set_shell_frame(cargo_pod_t *pod, const cargo_unit_t *frame);
 bool cargo_pod_fold_shell_to_frame(cargo_pod_t *pod);
 bool cargo_pod_take_manifest_unit(cargo_pod_t *pod, commodity_t commodity,
@@ -1200,8 +1438,77 @@ int ship_towed_pods_manifest_count(const world_t *w, const ship_t *ship,
 bool ship_towed_pods_take_manifest_unit(world_t *w, ship_t *ship,
                                         commodity_t commodity,
                                         cargo_unit_t *out_unit);
+
+/*
+ * World-save decode results are stable operator/fuzz-replay vocabulary.
+ * Keep the numeric values and names append-only.
+ */
+typedef enum {
+    WORLD_LOAD_RESULT_OK = 0,
+    WORLD_LOAD_RESULT_INVALID_ARGUMENT = 1,
+    WORLD_LOAD_RESULT_IO = 2,
+    WORLD_LOAD_RESULT_TOO_LARGE = 3,
+    WORLD_LOAD_RESULT_TRUNCATED = 4,
+    WORLD_LOAD_RESULT_CHECKSUM = 5,
+    WORLD_LOAD_RESULT_UNSUPPORTED_VERSION = 6,
+    WORLD_LOAD_RESULT_MALFORMED = 7,
+    WORLD_LOAD_RESULT_TRAILING_DATA = 8,
+    WORLD_LOAD_RESULT_OUT_OF_MEMORY = 9,
+} world_load_result_t;
+
+/*
+ * Accepted world saves have one unbounded-by-runtime station-manifest count
+ * per fixed station slot (u16 on disk), plus bounded NPC/asset manifests.
+ * A manifest row is largest when all receipt-chain slots are populated.
+ * The remaining fixed-width payload is sourced from fixed-capacity world_t
+ * members and is conservatively covered by sizeof(world_t); four u32s cover
+ * the save header and CRC trailer framing outside that state.
+ */
+#define WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS 512u
+#define WORLD_SAVE_MAX_MANIFEST_ROW_BYTES \
+    ((uint64_t)sizeof(cargo_unit_t) + (uint64_t)sizeof(uint8_t) + \
+     (uint64_t)CARGO_RECEIPT_CHAIN_MAX_LEN * \
+         (uint64_t)sizeof(cargo_receipt_t))
+#define WORLD_SAVE_MAX_DYNAMIC_MANIFEST_ROWS \
+    ((uint64_t)MAX_STATIONS * (uint64_t)UINT16_MAX + \
+     (uint64_t)(MAX_NPC_SHIPS + MAX_SHIP_ASSETS) * \
+         (uint64_t)WORLD_SAVE_SHIP_MANIFEST_MAX_UNITS)
+#define WORLD_SAVE_FORMAT_MAX_BYTES \
+    ((uint64_t)sizeof(world_t) + \
+     WORLD_SAVE_MAX_DYNAMIC_MANIFEST_ROWS * \
+         WORLD_SAVE_MAX_MANIFEST_ROW_BYTES + \
+     4u * (uint64_t)sizeof(uint32_t))
+#define WORLD_SAVE_MAX_BYTES \
+    (WORLD_SAVE_FORMAT_MAX_BYTES < (uint64_t)LONG_MAX \
+         ? WORLD_SAVE_FORMAT_MAX_BYTES \
+         : (uint64_t)LONG_MAX)
+
 bool world_save(const world_t *w, const char *path);
+/* Deep, allocation-independent copy used by background persistence. */
+world_t *world_snapshot_clone_create(const world_t *source);
+void world_snapshot_clone_destroy(world_t *snapshot);
+/*
+ * Both entry points synchronously decode through the same seekable-stream
+ * implementation. world_load_bytes borrows `bytes` only for the duration of
+ * the call. The bool world_load wrapper remains for existing callers.
+ */
+const char *world_load_result_name(world_load_result_t result);
+world_load_result_t world_load_path(world_t *w, const char *path);
+world_load_result_t world_load_bytes(
+    world_t *w,
+    const uint8_t *bytes,
+    size_t size);
 bool world_load(world_t *w, const char *path);
+#if defined(SIGNAL_SAVE_TESTING)
+/* Emits the exact pre-principal v80 contract/delivery ownership layout. */
+bool world_save_legacy_v80_for_test(
+    const world_t *w,
+    const char *path);
+/* Emits the exact v81 raw cargo-pod player-slot tow layout. */
+bool world_save_legacy_v81_for_test(
+    const world_t *w,
+    const char *path);
+#endif
 /* Apply stock migrations that are keyed only by the decoded save version.
  * Kept separate from binary decoding so compatibility policy is directly
  * testable without forging a current payload under an older schema tag. */
@@ -1211,10 +1518,22 @@ void world_apply_starter_stock_migrations(world_t *w, uint32_t version);
  * hoppers in free outer-ring slots. Run automatically by world_load
  * for v50 saves; exposed so tests can exercise directly. Idempotent. */
 void world_apply_cargo_schema_migration(world_t *w);
-/* Station catalog — per-station identity persistence (sim_catalog.c) */
+/* Station catalog — per-station identity persistence (sim_catalog.c).
+ * load_all returns -1 on a hard current-format identity failure. */
 int  station_catalog_load_all(station_t *stations, int max, const char *dir);
 bool station_catalog_save_all(const station_t *stations, int count, const char *dir);
 bool player_save(const server_player_t *sp, const char *dir, int slot);
+typedef enum {
+    PLAYER_SAVE_CREATE_OK = 0,
+    PLAYER_SAVE_CREATE_DESTINATION_CONFLICT,
+    PLAYER_SAVE_CREATE_IO_FAILURE,
+} player_save_create_result_t;
+/*
+ * Recovery-only publication primitive. The final canonical filename must not
+ * exist at the atomic publish point; it is never replaced.
+ */
+player_save_create_result_t player_save_no_replace(
+    const server_player_t *sp, const char *dir, int slot);
 bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot);
 bool player_load_by_token(server_player_t *sp, world_t *w, const char *dir,
                           const uint8_t token[8]);
@@ -1225,31 +1544,6 @@ bool player_load_by_pubkey(server_player_t *sp, world_t *w, const char *dir,
 /* Compute the on-disk save path for this player. See sim_save.c. */
 bool player_save_path(char *out, size_t outlen, const char *dir,
                       const server_player_t *sp, int slot);
-/* Migrate top-level *.sav files into <dir>/legacy/. Idempotent; safe to
- * call on every server start. Layer A.4 of #479. */
-void player_save_migrate_legacy_layout(const char *dir);
-/* Enumerate up to `cap` legacy saves under <dir>/legacy/. Each entry's
- * 8-char prefix and full base name (no .sav suffix) are written into
- * the parallel arrays. Returns the count. */
-int player_save_list_legacy(const char *dir,
-                            char prefixes[][9],
-                            char names[][64],
-                            int cap);
-/* Rename <dir>/legacy/<basename>.sav -> <dir>/pubkey/<base58(pubkey)>.sav.
- * Refuses to clobber an existing pubkey save. Caller must verify any
- * authentication first. Returns true on success. */
-bool player_save_rename_legacy_to_pubkey(const char *dir,
-                                         const char *basename,
-                                         const uint8_t pubkey[32]);
-/* Append a durable audit row for a verified legacy-save claim attempt.
- * This does not prove original ownership of the legacy token; it records
- * which pubkey presented a valid claim signature and whether the rename won. */
-bool player_save_audit_legacy_claim(const char *dir,
-                                    const char *basename,
-                                    const uint8_t pubkey[32],
-                                    bool success,
-                                    const char *reason);
-
 /* Cross-module sim helpers — defined in game_sim.c, used by sim_*.c. */
 void anchor_ship_in_station(server_player_t *sp, world_t *w);
 asteroid_tier_t max_mineable_tier(int mining_level);
@@ -1272,6 +1566,9 @@ void emit_event(world_t *w, sim_event_t ev);
 void sim_emit_interaction(world_t *w, sim_interaction_t interaction);
 /* Station-local ledger economy */
 float ledger_balance(const station_t *st, const uint8_t *token);
+/* Resolve the canonical 32-byte ledger key used by token-based callers.
+ * This is also the key recorded in durable TRADE payloads. */
+void ledger_pubkey_from_token(const uint8_t token[8], uint8_t out[32]);
 /* Net currency a station has issued, derived from the ledger as
  * -Σ(balance) over all entries. Replaces the old stored credit_pool
  * field; conservation is now structural. */
@@ -1300,6 +1597,10 @@ int ledger_find_or_create_by_pubkey(station_t *st, const uint8_t pubkey[32]);
 float ledger_balance_by_pubkey(const station_t *st, const uint8_t pubkey[32]);
 void ledger_sanitize_station(station_t *st);
 void ledger_earn_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount);
+bool world_migrate_legacy_ledger_to_pubkey(
+    world_t *w,
+    const uint8_t session_token[8],
+    const uint8_t pubkey[32]);
 bool ledger_spend_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship);
 void ledger_force_debit_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship);
 void ledger_credit_supply_by_pubkey(station_t *st, const uint8_t pubkey[32], float ore_value);
@@ -1314,10 +1615,14 @@ void ledger_record_dock(station_t *st, const uint8_t pubkey[32], uint64_t tick);
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
 const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);
 void signal_chain_set_disk_enabled(bool enabled);
+#ifdef SIGNAL_SAVE_TESTING
+void signal_chain_test_set_write_failure(bool enabled);
+#endif
 
 /* Replay the on-disk hash chain into the world's signal_channel ring
  * buffer at server boot. Idempotent — safe to call once after world
- * init. Reads chain dir entries written by signal_channel_post. */
+ * init. Reads the authenticated bounded tail written by
+ * signal_channel_post. */
 void signal_chain_load(world_t *w);
 /* Maps a producer commodity to the module type that fabricates it.
  * Returns MODULE_COUNT for raw ore / unknown inputs. Test-exposed; the
@@ -1336,14 +1641,18 @@ void activate_outpost(world_t *w, int station_idx);
 /* Cargo-pod module tractor tuning. Economic custody does not create a
  * long-range physical beam: docks and hoppers both obey their real reach. */
 #define CARGO_POD_DOCK_TRACTOR_RANGE (HOPPER_PULL_RANGE * 1.65f)
+#define CARGO_POD_STATION_TRANSFER_RANGE (STATION_RING_RADIUS[3] * 2.25f)
+#define CARGO_POD_SECURITY_HOLD_SECONDS 0.25f
 static inline tractor_beam_t cargo_pod_module_tractor_beam(float range) {
     return tractor_tow_beam(range, 0.0f);
 }
 
 static inline float cargo_pod_module_tractor_range(module_type_t module_type) {
-    return module_type == MODULE_DOCK
-        ? CARGO_POD_DOCK_TRACTOR_RANGE
-        : HOPPER_PULL_RANGE;
+    if (module_type == MODULE_DOCK) return CARGO_POD_DOCK_TRACTOR_RANGE;
+    module_kind_t kind = module_kind(module_type);
+    if (kind == MODULE_KIND_PRODUCER || kind == MODULE_KIND_SHIPYARD)
+        return CARGO_POD_STATION_TRANSFER_RANGE;
+    return HOPPER_PULL_RANGE;
 }
 
 static inline float cargo_pod_module_tractor_range_for_pod(

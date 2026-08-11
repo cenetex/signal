@@ -106,10 +106,10 @@ bool                   module_requires_pair(module_type_t type);
  * the cargo-in-space redesign) consumes the matching ore — see
  * module_instance_input_ore().
  *
- * `out` must be sized at least 3. Returns count written. */
+ * `out` must be sized at least 4. Returns count written. */
 typedef struct {
     int         count;
-    commodity_t commodities[3];
+    commodity_t commodities[4];
     bool        any_satisfies; /* true → FURNACE-style "one of these"; false → ALL required */
 } module_inputs_t;
 module_inputs_t        module_required_inputs(module_type_t type);

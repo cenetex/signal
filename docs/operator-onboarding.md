@@ -118,13 +118,29 @@ station's private key:
 
 For stations you operate yourself, keep the same station authority secret
 available across restarts and replicas. Changing it intentionally rekeys
-stations; on load, the server starts a fresh chain identity for any station
-whose saved pubkey no longer matches the configured secret.
+stations; on load, the server preserves the saved public key as a
+trusted-rotated identity and starts a fresh live chain identity under the newly
+derived current key. The public registry is bounded and persisted with the
+world save. Explicitly untrusted or revoked keys are never reactivated: a
+configured secret that would derive one causes the load to fail closed.
+The registry retains at most eight public keys. When it is full, the oldest
+still-trusted rotated row may be evicted; explicit untrusted/revoked rows are
+never discarded to make room. If every historical slot is an explicit deny
+decision, another rekey is rejected until an operator resolves capacity
+deliberately.
 
 The private key is never written to disk and never sent over the wire. Layer B
 keeps `station_secret` as the last field of `station_t` and re-derives it on
 load via `station_authority_rederive_secret`
 ([`server/station_authority.h`](../server/station_authority.h)).
+Only public keys and their independent lifecycle/trust decisions are saved. A
+v76 or earlier world synthesizes one current record from each station's saved
+pubkey; it does not invent historical trust. Historical chain-log files remain
+addressable by those preserved public identities after a rekey.
+An operator may also record an unknown public key as deny-only untrusted or
+revoked policy. Such a row deliberately keeps its event lifecycle unspecified:
+without a verified historical log, the server will not fabricate an origin
+proof merely because a deny decision exists.
 
 ### 3. Wire your station's pubkey into the world
 
@@ -206,6 +222,13 @@ supported flow is:
 4. Let the server emit `CHAIN_EVT_OPERATOR_POST`, materialize the fields into
    `station_t`, persist them in the station catalog, and rebroadcast station
    identity to clients.
+
+Relationship rows never expose reconnect/session credentials. Current,
+proof-resolved players appear as `actor_kind:"derived"` with a
+domain-separated `actor_id`; token-keyed or otherwise unresolved historical
+rows appear as `actor_kind:"legacy-unattributed"` with `actor_id:null`.
+`activity_history.top_haulers` uses the same object shape. Treat these values
+as public presentation identifiers, not authorization material.
 
 When `chain_history` is included, `chain_history.route_history_aggregate[]`
 exposes compact cross-station route-memory groups built from recent signed
@@ -375,12 +398,18 @@ the outpost's identity is gone — start fresh by planting a new outpost.
 The chain log emitter writes header + payload-length + payload then `fflush`
 and closes ([`server/chain_log.c`](../server/chain_log.c)). The disk may
 contain a partial last entry. The verifier will walk up to the last good
-entry and report the count, but the server now treats the station as
-`CHAIN_HEALTH_FAILED` and blocks future appends. If the on-disk log is fully
-valid but simply ahead of `world.sav` because the process died after an append
-and before autosave, `world_load()` adopts the verified disk tail automatically.
-If verification fails, restore a matching save/log pair or archive the damaged
-chain for investigation before starting a new station identity.
+entry and report the count, but the server treats the station as
+`CHAIN_HEALTH_FAILED` and blocks future appends.
+
+A fully valid on-disk tail can also be ahead of the selected world generation
+when the process dies after the durable append but before its gameplay mutation
+and the next save. The server does not adopt that tail: advancing only the
+saved continuation pointer could preserve an event while losing its cargo,
+credit, or construction effect. It reports `CHAIN_HEALTH_MISMATCH`, leaves the
+log untouched, and blocks appends. Restore a matching save/log pair or preserve
+both for an exactly-once replay/rollback repair. If verification itself fails,
+archive the damaged chain for investigation before starting a new station
+identity.
 
 ### `world.sav` corruption
 
@@ -406,12 +435,29 @@ simultaneously.
 
 ### Save corruption on `saves/pubkey/<...>.sav`
 
-A corrupted player save affects only that player. The legacy claim flow
-(`"claim-legacy-save-v1" || <token_hex>` signed by the player's identity
-secret — see PR #491 and `/CLAUDE.md` "Save layout") is the migration
-mechanism for legacy session-token saves; for already-pubkey-keyed saves,
-restore from backup and accept that the player loses any progress between
-the backup and the corruption.
+A corrupted player save affects only that player. The old arbitrary-basename
+legacy claim flow is disabled and must not be used as a restore mechanism: it
+did not prove ownership of the named token-keyed save. For a pubkey-keyed
+save, restore from backup and accept that the player loses any progress
+between the backup and the corruption.
+
+For a canonical token-keyed save, the server may issue one opaque,
+short-lived recovery offer after session and pubkey proof. There is no
+operator-supplied filename and no namespace listing. Do not rename or copy a
+legacy file into the pubkey namespace by hand: recovery publishes a complete
+world/player generation and uses atomic no-replace semantics. The recovery
+client prompt requires a fresh `ENTER` to confirm; `ESC` leaves the remote
+source untouched and closes the provisional connection. The later docked UI
+work in #658 expands that bootstrap prompt but does not change its opaque
+signed-action boundary. The recovery
+generation carries a manifest-authenticated consumption marker and
+deliberately has no automatic fallback edge to the source-bearing generation;
+if that new generation is damaged, restore it from backup rather than
+re-enabling the consumed token save. A
+`migration-failure` accompanied by unresolved ownership-quarantine diagnostics
+is intentionally fail-closed; v81 discarded the bearer token needed to
+attribute those historical rows safely. See
+[`legacy-save-recovery.md`](legacy-save-recovery.md).
 
 ## Troubleshooting
 
@@ -465,11 +511,14 @@ continuity with the permanent history.
 
 `chain_log_emit` runs a self-verify on the freshly-signed header before
 writing it to disk ([`server/chain_log.c`](../server/chain_log.c)).
-A failure here means the secret slot was zero or rederive failed. Check
-that the world load called `station_authority_rederive_secret` for every
-station and that the station authority secret was configured before
-`world_reset` or `world_load`. For outposts, the founder + tick must have been
-loaded from the save.
+A failure here means the secret slot was zero or authority rederivation did
+not complete. Check that the world load called
+`station_authority_rederive_secret` for every station and that the authority
+secret was configured before `world_reset` or `world_load`. A
+`STATION_AUTHORITY_REDERIVE_REJECTED` result is intentional fail-closed
+behavior: the derived key was explicitly untrusted/revoked, the saved public
+registry was malformed, or its bounded capacity could not preserve a deny
+decision. For outposts, the founder + tick must have been loaded from the save.
 
 ### "Disk is filling up faster than expected"
 

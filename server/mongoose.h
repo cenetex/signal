@@ -1718,6 +1718,7 @@ struct mg_connection {
   unsigned long id;               // Auto-incrementing unique connection ID
   struct mg_iobuf recv;           // Incoming data
   struct mg_iobuf send;           // Outgoing data
+  size_t send_limit;              // Hard queued-send ceiling; 0 means unlimited
   struct mg_iobuf prof;           // Profile data enabled by MG_ENABLE_PROFILE
   struct mg_iobuf rtls;           // TLS only. Incoming encrypted data
   mg_event_handler_t fn;          // User-specified event handler function
@@ -2816,6 +2817,7 @@ struct mg_connection *mg_ws_connect(struct mg_mgr *, const char *url,
 void mg_ws_upgrade(struct mg_connection *, struct mg_http_message *,
                    const char *fmt, ...);
 size_t mg_ws_send(struct mg_connection *, const void *buf, size_t len, int op);
+bool mg_ws_control_frame_valid(unsigned flags, size_t payload_len);
 size_t mg_ws_wrap(struct mg_connection *, size_t len, int op);
 size_t mg_ws_printf(struct mg_connection *c, int op, const char *fmt, ...);
 size_t mg_ws_vprintf(struct mg_connection *c, int op, const char *fmt,

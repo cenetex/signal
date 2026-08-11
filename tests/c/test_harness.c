@@ -136,6 +136,64 @@ bool test_set_station_finished_amount(station_t *st, commodity_t c,
            fabsf(station_inventory_amount(st, c) - amount) < 0.001f;
 }
 
+bool test_anchor_station_legacy_cargo(world_t *w, int station_idx) {
+    return world_anchor_station_legacy_cargo_origins(w, station_idx);
+}
+
+bool test_anchor_pod_legacy_cargo(world_t *w, int station_idx, int pod_idx) {
+    if (!w || station_idx < 0 ||
+        station_idx >= w->station_count ||
+        station_idx >= MAX_STATIONS ||
+        pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) {
+        return false;
+    }
+    cargo_pod_t *pod = &w->cargo_pods[pod_idx];
+    if (!pod->active ||
+        pod->manifest_count > CARGO_POD_MANIFEST_CAP) {
+        return false;
+    }
+    size_t count = 0;
+    if (pod->has_shell_frame &&
+        pod->shell_frame.recipe_id ==
+            (uint16_t)RECIPE_LEGACY_MIGRATE) {
+        count++;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if (pod->manifest_units[i].recipe_id ==
+            (uint16_t)RECIPE_LEGACY_MIGRATE) {
+            count++;
+        }
+    }
+    if (count == 0) return true;
+    cargo_unit_t **units = calloc(count, sizeof(*units));
+    if (!units) return false;
+    size_t at = 0;
+    if (pod->has_shell_frame &&
+        pod->shell_frame.recipe_id ==
+            (uint16_t)RECIPE_LEGACY_MIGRATE) {
+        units[at++] = &pod->shell_frame;
+    }
+    for (uint16_t i = 0; i < pod->manifest_count; i++) {
+        if (pod->manifest_units[i].recipe_id ==
+            (uint16_t)RECIPE_LEGACY_MIGRATE) {
+            units[at++] = &pod->manifest_units[i];
+        }
+    }
+    bool anchored = at == count &&
+        world_anchor_legacy_cargo_origins(
+            w, station_idx, units, count);
+    free(units);
+    return anchored;
+}
+
+bool test_anchor_legacy_cargo_unit(
+    world_t *w, int station_idx, cargo_unit_t *unit) {
+    if (!unit) return false;
+    cargo_unit_t *units[] = {unit};
+    return world_anchor_legacy_cargo_origins(
+        w, station_idx, units, 1);
+}
+
 void test_clear_knowledge(knowledge_view_t *view, uint8_t capacity) {
     if (!view) return;
     memset(view, 0, sizeof(*view));
@@ -195,7 +253,8 @@ world_t *setup_collision_world_heap(void) {
     return w;
 }
 
-int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
+static int test_setup_placed_scaffold_mode(
+    world_t *w, int *out_mod_idx, bool reset_to_supply_phase) {
     w->players[0].connected = true;
     player_init_ship(&w->players[0], w);
     w->players[0].docked = false;
@@ -214,6 +273,8 @@ int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
             w->stations[outpost].modules[i].build_progress = 1.0f;
     }
     rebuild_signal_chain(w);
+    if (!reset_to_supply_phase)
+        memset(w->contracts, 0, sizeof(w->contracts));
     int before = w->stations[outpost].module_count;
     vec2 ring1_near = v2_add(outpost_pos, v2(180.0f, 0.0f));
     int idx = spawn_scaffold(w, MODULE_FURNACE, ring1_near, 0);
@@ -221,7 +282,20 @@ int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
     for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
     if (w->stations[outpost].module_count != before + 1) return -1;
     *out_mod_idx = before;
+    if (reset_to_supply_phase) {
+        /* Supply-path tests exercise a bare, unprefabricated module. */
+        w->stations[outpost].modules[before].build_progress = 0.0f;
+    }
     return outpost;
+}
+
+int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
+    return test_setup_placed_scaffold_mode(w, out_mod_idx, true);
+}
+
+int test_setup_prefabricated_placed_scaffold(
+    world_t *w, int *out_mod_idx) {
+    return test_setup_placed_scaffold_mode(w, out_mod_idx, false);
 }
 
 int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds) {

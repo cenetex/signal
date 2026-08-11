@@ -20,6 +20,7 @@
 #include "sim_ship.h"
 #include "tractor.h"
 #include "npc_radio.h"
+#include "hud_attention.h"
 #include <stddef.h>  /* ptrdiff_t for station index */
 #include <stdlib.h>
 
@@ -244,13 +245,8 @@ static void world_npc_scan_label(const npc_ship_t *npc, int idx,
         snprintf(out, 32, "NPC --");
         return;
     }
-    if (npc->session_token[0] == 'N' && npc->session_token[1] == 'P' &&
-        npc->session_token[2] == 'C') {
-        snprintf(out, 32, "%s N%02u", world_npc_role_label(npc->role),
-                 (unsigned)npc->session_token[5]);
-    } else {
-        snprintf(out, 32, "%s %02d", world_npc_role_label(npc->role), idx);
-    }
+    /* Runtime slot is presentation only; no bearer-derived name is shown. */
+    snprintf(out, 32, "%s %02d", world_npc_role_label(npc->role), idx);
 }
 
 typedef struct {
@@ -1192,6 +1188,7 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
     case MODULE_FRAME_PRESS:  PAL_UNPACK3(PAL_MODULE_FRAME_PRESS,  *r, *g, *b); return;
     case MODULE_LASER_FAB:    PAL_UNPACK3(PAL_MODULE_LASER_FAB,    *r, *g, *b); return;
     case MODULE_TRACTOR_FAB:  PAL_UNPACK3(PAL_MODULE_TRACTOR_FAB,  *r, *g, *b); return;
+    case MODULE_ENGINE_FAB:   PAL_UNPACK3(PAL_MODULE_ENGINE_FAB,   *r, *g, *b); return;
     case MODULE_SIGNAL_RELAY: PAL_UNPACK3(PAL_MODULE_SIGNAL_RELAY,  *r, *g, *b); return;
     case MODULE_REPAIR_BAY:   PAL_UNPACK3(PAL_MODULE_REPAIR_BAY,    *r, *g, *b); return;
     case MODULE_SHIPYARD:     PAL_UNPACK3(PAL_MODULE_SHIPYARD,      *r, *g, *b); return;
@@ -1219,6 +1216,7 @@ void commodity_color(commodity_t c, float *r, float *g, float *b) {
     case COMMODITY_LASER_MODULE:   PAL_UNPACK3(PAL_COMMODITY_LASER_MODULE,   *r, *g, *b); return;
     case COMMODITY_TRACTOR_MODULE: PAL_UNPACK3(PAL_COMMODITY_TRACTOR_MODULE, *r, *g, *b); return;
     case COMMODITY_REPAIR_KIT:     PAL_UNPACK3(PAL_COMMODITY_REPAIR_KIT,     *r, *g, *b); return;
+    case COMMODITY_ENGINE_MODULE:  PAL_UNPACK3(PAL_COMMODITY_ENGINE_MODULE,  *r, *g, *b); return;
     default:                       PAL_UNPACK3(PAL_MODULE_GENERIC,           *r, *g, *b); return;
     }
 }
@@ -1411,7 +1409,8 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
     /* ---- FABRICATOR (press, laser, tractor): Pentagon ---- */
     case MODULE_FRAME_PRESS:
     case MODULE_LASER_FAB:
-    case MODULE_TRACTOR_FAB: {
+    case MODULE_TRACTOR_FAB:
+    case MODULE_ENGINE_FAB: {
         /* Filled pentagon hull */
         fill_ngon(5, 28, mr*0.30f, mg*0.30f, mb*0.30f, alpha);
         /* Inner pentagon (product chamber) */
@@ -1564,7 +1563,8 @@ static void draw_layout_warning_outline(module_type_t type,
         outline_ngon(20, 35.0f, wr, wg, wb, a);
     } else if (type == MODULE_FRAME_PRESS ||
                type == MODULE_LASER_FAB ||
-               type == MODULE_TRACTOR_FAB) {
+               type == MODULE_TRACTOR_FAB ||
+               type == MODULE_ENGINE_FAB) {
         outline_ngon(5, 35.0f, wr, wg, wb, a);
     } else {
         sgl_c4f(wr, wg, wb, a);
@@ -2460,7 +2460,8 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             /* Fabricator: beam to nearest supplier when input buffer has material */
             if (!m->scaffold && (m->type == MODULE_FRAME_PRESS ||
                                   m->type == MODULE_LASER_FAB ||
-                                  m->type == MODULE_TRACTOR_FAB)) {
+                                  m->type == MODULE_TRACTOR_FAB ||
+                                  m->type == MODULE_ENGINE_FAB)) {
                 float fr, fg, fb;
                 module_color(m->type, &fr, &fg, &fb);
                 bool producing = station->modules[mod_idx[i]].input_buffer > 0.1f;
@@ -4195,6 +4196,7 @@ void draw_npc_chatter(void) {
 
     hail_asteroid_tag_t tags[HAIL_SCAN_ASTEROID_TAG_LIMIT];
     int tag_count = 0;
+    int asteroid_budget = hud_scan_asteroid_budget(ui_screen_width());
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &g.world.asteroids[i];
@@ -4207,13 +4209,13 @@ void draw_npc_chatter(void) {
         if (reveal <= 0.01f) continue;
         float relevance = hail_asteroid_relevance(a, i, dist_sq);
 
-        if (tag_count < HAIL_SCAN_ASTEROID_TAG_LIMIT) {
+        if (tag_count < asteroid_budget) {
             tags[tag_count++] = (hail_asteroid_tag_t){
                 i, dist_sq, reveal, relevance
             };
         } else {
             int worst = 0;
-            for (int j = 1; j < HAIL_SCAN_ASTEROID_TAG_LIMIT; j++) {
+            for (int j = 1; j < asteroid_budget; j++) {
                 if (tags[j].relevance < tags[worst].relevance) worst = j;
             }
             if (relevance > tags[worst].relevance) {
@@ -4271,13 +4273,43 @@ void draw_npc_chatter(void) {
         }
     }
 
+    typedef struct {
+        int index;
+        float relevance;
+    } hail_npc_tag_t;
+    hail_npc_tag_t npc_tags[4];
+    int npc_tag_count = 0;
+    int npc_budget = hud_scan_npc_budget(ui_screen_width());
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
         if (!npc->active) continue;
         if (!on_screen(npc->ship->pos.x, npc->ship->pos.y, 50.0f)) continue;
-        if (v2_dist_sq(npc->ship->pos, g.hail_ping_origin) > hail_range_sq) continue;
+        float dist_sq = v2_dist_sq(npc->ship->pos, g.hail_ping_origin);
+        if (dist_sq > hail_range_sq) continue;
+        if (hail_scan_reveal_alpha(npc->ship->pos) <= 0.01f) continue;
+        float relevance = hail_range_sq - dist_sq;
+        if (LOCAL_PLAYER.scan_target_type == INSPECT_TARGET_NPC &&
+            LOCAL_PLAYER.scan_target_index == i)
+            relevance += hail_range_sq * 4.0f;
+        if (hail_conversation_entry_for_npc(i))
+            relevance += hail_range_sq * 2.0f;
+        if (npc_tag_count < npc_budget) {
+            npc_tags[npc_tag_count++] = (hail_npc_tag_t){i, relevance};
+        } else {
+            int worst = 0;
+            for (int j = 1; j < npc_budget; j++) {
+                if (npc_tags[j].relevance < npc_tags[worst].relevance)
+                    worst = j;
+            }
+            if (relevance > npc_tags[worst].relevance)
+                npc_tags[worst] = (hail_npc_tag_t){i, relevance};
+        }
+    }
+
+    for (int tag = 0; tag < npc_tag_count; tag++) {
+        int i = npc_tags[tag].index;
+        const npc_ship_t *npc = &g.world.npc_ships[i];
         float reveal = hail_scan_reveal_alpha(npc->ship->pos);
-        if (reveal <= 0.01f) continue;
 
         const hail_conversation_entry_t *entry =
             hail_conversation_entry_for_npc(i);

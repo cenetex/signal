@@ -406,7 +406,7 @@ TEST(test_world_seed_persists_across_restart) {
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
     loaded->rng = 999999u; /* deliberately different to prove load wins */
-    world_reset(loaded);
+    world_reset(loaded);   /* reset actors are fallback, not catalog attestations */
     ASSERT(world_load(loaded, TMP("ws_seed_persist.sav")));
 
     ASSERT(loaded->belt_seed == expected_seed);

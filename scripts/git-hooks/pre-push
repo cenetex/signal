@@ -51,7 +51,7 @@ if ! cmake --build build-test --parallel >/dev/null 2>&1; then
     echo "pre-push: BLOCKED — build failed"
     exit 1
 fi
-if ! ./build-test/signal_test --quiet; then
+if ! "$ROOT/scripts/run_signal_test.sh" "$ROOT/build-test/signal_test" --quiet; then
     echo "pre-push: BLOCKED — synchronous test run failed"
     exit 1
 fi

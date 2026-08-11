@@ -102,7 +102,7 @@ logs the HNN top legal action against the authoritative autopilot teacher, then
 stores the teacher action for future rows. This does not drive controls.
 
 ```json
-{"schema":"crlp.signal_hnn_shadow.v1","sample":1,"tick":120,"task":"flight","feature_hash":"...","allowed_mask":"0x1eb","contract":{"dim":1024,"seed":"...","keygen_version":1,"encoder_version":1,"action_vocabulary_hash":"...","trace_format_version":1,"stored_count":0,"capacity_load":0,"fidelity_estimate":0,"last_margin":0},"holonet":{"enabled":true,"active_count":2,"last_route":1,"scored_count":2,"route_similarity":0.81,"contract":{"dim":1024,"seed":"...","keygen_version":1,"encoder_version":1,"action_vocabulary_hash":"...","trace_format_version":1,"stored_count":42,"capacity_load":0.109,"fidelity_estimate":0.54,"last_margin":0.03}},"hnn_top_allowed":{"index":6,"name":"WD","score":0.12},"teacher":{"index":6,"name":"WD","matches_best_allowed":true},"margin":0.03,"trace_fidelity":0.41}
+{"schema":"crlp.signal_hnn_shadow.v1","sample":1,"tick":120,"task":"flight","feature_hash":"...","allowed_mask":"0x1eb","contract":{"dim":1024,"seed":"...","keygen_version":1,"encoder_version":2,"action_vocabulary_hash":"...","trace_format_version":1,"stored_count":0,"capacity_load":0,"fidelity_estimate":0,"last_margin":0},"holonet":{"enabled":true,"active_count":2,"last_route":1,"scored_count":2,"route_similarity":0.81,"contract":{"dim":1024,"seed":"...","keygen_version":1,"encoder_version":2,"action_vocabulary_hash":"...","trace_format_version":1,"stored_count":42,"capacity_load":0.109,"fidelity_estimate":0.54,"last_margin":0.03}},"hnn_top_allowed":{"index":6,"name":"WD","score":0.12},"teacher":{"index":6,"name":"WD","matches_best_allowed":true},"margin":0.03,"trace_fidelity":0.41}
 ```
 
 Run the HNN gate after collecting those rows:
@@ -131,9 +131,11 @@ Regenerate it after retraining; do not hand-edit generated sources.
 The flight brain is the first active-client candidate because its feature set
 matches the current live ship contract. The tactical mining brain should remain
 shadow/gated until replay runs show it is no longer trading safety for utility.
-The strategic NPC worker brain has stronger offline signals, but the current
-Signal server loader still has older `signal-npc-worker-v1` expectations, so it
-needs an explicit feature-contract bridge before active use.
+The strategic NPC worker brain has stronger offline signals, and the
+authoritative server now exposes the topology-safe `signal-npc-worker-v2`
+encoder-version-2 contract. The checked-in strategic artifact still uses the
+older encoder-version-1 row layout, so it remains shadow-only until it is
+retrained and exported against that server contract.
 
 ## Export Command
 

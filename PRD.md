@@ -281,22 +281,35 @@ Arweave/permaweb anchoring is the core long-term persistence direction for settl
 
 ### 8.1 Groomed Backlog
 
-Priority is ordered by metaproduct leverage: first make object history unavoidable, then make settlement canonical, then make that history portable.
+The active milestone is #690: **one hour of smooth, complete, trustworthy
+play**. The player product gates the substrate roadmap.
 
-1. **Metaproduct alignment:** Keep this PRD, [ENG.md](ENG.md), [docs/metaproduct.md](docs/metaproduct.md), and [docs/decentralization-synthesis.md](docs/decentralization-synthesis.md) aligned around "physical play produces verifiable history."
-2. **#588 determinism acceptance:** Decide whether the strict native↔WASM replay ratchet is the accepted substrate after broader platform/scenario coverage, or whether full `q32.32` remains mandatory before P2P work can proceed.
-3. **#340 / #339 manifest authority:** Make buy, sell, deliver, and production paths move concrete `cargo_unit_t` rows by default, then retire finished-goods float authority.
-4. **Visible matter algebra:** Restate conserved production around the quartering rule: fragment -> 4 ingots, ingot -> 4 frames, ingot+frame -> module, and 4 frames -> station/hull block. Preserve current effective rock costs when changing build costs, and route repair away from the 100-kit path toward block-count hull/station repair.
-5. **Lineage view:** Make rock -> fragment -> ingot -> frame -> outpost/gate contribution inspectable as the killer demo.
-6. **#587 typed provenance contracts:** Add explicit target pubkeys and fracture/death fulfillment so contracts can price witnessed events, not only aggregate commodities.
-7. **#354 / #355 / #356 settlement bridge:** Emit canonical settlement events for validated game actions, construction milestones, and signal-channel continuity.
-8. **Player-facing legibility:** Surface cargo lineage, local ledger history, and station-authored provenance in the docked UI so the player can see what the substrate remembers.
-9. **Institution tools:** Add shared contracts, escrowed cargo, station-endorsed bounties, route health dashboards, and public construction manifests.
-10. **#294 unified ship/controller model:** Retire parallel NPC cargo paths that can drift from player manifest semantics.
-11. **#590 / #591 / #589 permaweb + mesh:** Bootstrap clients from Arweave snapshots/logs, then add WebRTC state-root comparison and quorum behavior.
-12. **#496 RATi vessel identity:** Bind cross-world RATi identity to substrate-born vessels once manifest transfers and settlement events are canonical.
-13. **#343 / #603 hull/station blocks:** Converge hull-as-merkle, sheared blocks, and ship/station repair so visible blocks are the damage and repair unit.
-14. **#285 streaming entity pool:** Lift hard caps after the core economic/provenance path is settled. Cap lifting is additionally gated on the sim hot-path fixes in [docs/optimization-report.md](docs/optimization-report.md) — several 120 Hz loops scale as `entities × stations`, so raising `MAX_STATIONS`/`MAX_ASTEROIDS` without them degrades tick budget quadratically.
+1. **#686 economy integrity:** a physical or logical source can fund one
+   station payout at most once.
+2. **#685 asteroid motion:** no visible local 10 Hz correction rhythm during
+   tow, collision, fracture, throw, or station capture.
+3. **#687 gameplay observability:** frame percentiles, phase timings, entity
+   correction/jerk, snapshot cadence, persistence stalls, and accumulator loss
+   are measurable in native and browser scenarios.
+4. **#617 atomic towing:** attach/release and presentation remain reliable under
+   loopback and adverse network conditions.
+5. **#674 reachable construction:** normal purchased/towed frame pods can found
+   an outpost without synthetic receipt fixtures.
+6. **#684 physics feel:** ship, tractor, collision, throw, and camera behavior
+   are tuned against recorded scenarios.
+7. **#666 persistence:** save generations are crash-consistent and durable I/O
+   cannot stall the simulation loop.
+8. **#619 interaction clarity:** immediate action, danger, payout, and rejection
+   reasons outrank audit/debug detail.
+9. **#688 first-hour progression:** a fresh player completes the normal
+   mine-to-outpost path.
+10. **#689 rock combat and rewards:** impacts, feedback, upgrades, and physical
+    conflict create meaningful choices.
+
+Broad settlement, permaweb/P2P, RATi identity, controller convergence, cap
+lifting, and provenance UI not attached to a live decision remain gated until
+the Playable Core acceptance criteria pass. #588's strict replay profile is an
+accepted operating decision; #339 and #340 are completed.
 
 ### 8.2 Post-Sector One Vision (Sector X)
 - **Dark-Sector Battery Runs:** High-risk zones beyond institutional reality: no easy comms, no instant market quote, no NPC safety net, no station guarantee, no complete telemetry, and no automatic trust.

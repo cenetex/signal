@@ -86,6 +86,9 @@ bool handoff_ship_snapshot_pack(const ship_t *ship, uint8_t *out, size_t cap,
 bool handoff_ship_snapshot_unpack(const uint8_t *data, size_t len,
                                   ship_t *out, size_t *consumed);
 
+/* Issue a ticket only when source_secret actually signs for source_authority.
+ * Invalid inputs or signing/self-verification failure return false and clear
+ * every byte of `out`, so callers cannot publish a stale or partial ticket. */
 bool handoff_ticket_issue_for_ship(
     const uint8_t source_authority[32],
     const uint8_t source_secret[64],

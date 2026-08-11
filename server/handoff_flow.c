@@ -75,7 +75,8 @@ bool handoff_issue_ticket_to_station(world_t *w, int player_idx,
     server_player_t *sp = &w->players[player_idx];
     station_t *src = &w->stations[source_station_idx];
     station_t *dst = &w->stations[dest_station_idx];
-    if (!sp->connected || !sp->pubkey_set ||
+    if (!server_player_is_gameplay_ready(sp) ||
+        !server_player_can_use_pubkey_persistence(sp) ||
         !station_ready_for_handoff(src) ||
         !station_ready_for_handoff(dst)) {
         return false;
@@ -107,7 +108,8 @@ handoff_flow_result_t handoff_accept_presented_ship(world_t *w, int player_idx,
     }
 
     server_player_t *sp = &w->players[player_idx];
-    if (!sp->connected || !sp->pubkey_set)
+    if (!server_player_is_gameplay_ready(sp) ||
+        !server_player_can_use_pubkey_persistence(sp))
         return HANDOFF_FLOW_REJECT_NO_PLAYER_KEY;
 
     source_idx = find_station_by_pubkey(w, ticket->source_authority);

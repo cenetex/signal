@@ -134,6 +134,13 @@ FAST_SCENARIOS = (
         "--provenance-script", "fracture-claim",
     ),
     (
+        "--seed", "6650",
+        "--station", "0",
+        "--horizon-ticks", "32",
+        "--candidates", "NONE",
+        "--provenance-script", "dense-asteroids",
+    ),
+    (
         "--seed", "6601",
         "--station", "0",
         "--horizon-ticks", "2000",
