@@ -246,6 +246,8 @@ def _semantic_row(row: dict[str, object]) -> dict[str, object]:
         "station",
         "prefix_state_hash",
         "state_hash",
+        "prefix_state_root",
+        "state_root",
         "end_current_station",
     ):
         normalized.pop(field, None)

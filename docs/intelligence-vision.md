@@ -125,6 +125,11 @@ Do not pretend the game is training live unless it is. Show one of:
   rate, teacher fallback count, completion/failure outcomes
 - station-scoped trace summaries from `SIGNAL_NPC_WORKER_TRACE`
 
+Worker trace rows use `signal.npc_worker_shadow.v3`. Until NPCs have persisted
+non-secret birth IDs they emit `"actor_kind":"unattributed"` and
+`"public_actor":null`; the NPC slot is diagnostic presentation metadata, and
+the runtime session token is never exported.
+
 This makes "training" visible without lying about runtime behavior.
 
 ## Scale Model

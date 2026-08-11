@@ -78,6 +78,14 @@ birth.
   "agent_pubkey": "<32-byte Signal/agent pubkey>",
   "wallet_pubkey": "<optional chain wallet pubkey>",
   "station_pubkey": "<32-byte station pubkey>",
+  "provenance": {
+    "proof_level": "station_attested_v1",
+    "status": "valid_station_attested_v1",
+    "semantics_version": 1,
+    "station_signature_verified": true,
+    "station_attested_semantics": true,
+    "mining_proven": false
+  },
   "world_id": 0,
   "world_seq": 0,
   "build_id": "<short build hash>",
@@ -93,7 +101,12 @@ birth.
     "cargo_pub": "<32-byte hash>",
     "parent_merkle": "<32-byte hash>",
     "grade": "RATi",
+    "grade_attested": true,
+    "grade_verified": false,
+    "mining_proven": false,
     "prefix_class": "INGOT_PREFIX_RATI",
+    "output_index": 7,
+    "refinery_context_tick": 123456,
     "mined_tick": 123456
   },
   "arweave": {
@@ -109,6 +122,17 @@ birth.
   }
 }
 ```
+
+`mined_tick` is retained only as a deprecated compatibility alias for
+`refinery_context_tick`; the value is authenticated by the signed SMELT event
+but is not an input to cargo identity or evidence of mining. Current V0 and V1
+receipts both set `mining_proven: false` and `grade_verified: false`:
+
+- `unbound_v0` means the exact historical payload has a unique legacy identity
+  match. Its identity omitted commodity and grade, so it is audit-only.
+- `station_attested_v1` means the station signed a canonical, self-consistent V1
+  SMELT identity binding commodity, grade, fragment, and output index. It is a
+  station attestation, not independent mining proof.
 
 This should be canonicalized before hashing. Use sorted keys, fixed encodings,
 and a domain separator:
@@ -203,9 +227,9 @@ identity and yield-bearing artifacts.
 | Area | Current state | Needed for Bitcoin-anchored RATi | Risk |
 |------|---------------|-----------------------------------|------|
 | RATi event vocabulary | RATi-grade mining now resolves through `CHAIN_EVT_CLAIM_FRAGMENT` followed by `CHAIN_EVT_SMELT`; `/mine.html` copy was updated to match. | Keep receipt, bridge, and settlement docs aligned around claim+smelt rather than a separate `CHAIN_EVT_MINE_RATI`. | Low. The main risk is future docs drifting back to a fake-specific event name. |
-| Fracture proof persistence | `CHAIN_EVT_CLAIM_FRAGMENT` now persists `fracture_seed`, `fragment_pub`, claimant pubkey, burst nonce/cap, grade, and fracture id for fresh logs. Older logs may still only have downstream smelt identity. | Extend migration/backfill policy if old high-value receipts need independent recomputation rather than station attestation. | Medium. Fresh receipts can verify; historical receipts may remain weaker. |
+| Fracture proof persistence | `CHAIN_EVT_CLAIM_FRAGMENT` persists claim-local inputs that can reproduce its `fragment_pub` and grade math. It does not bind those inputs to canonical asteroid/material evidence, so neither a matching claim nor its signed SMELT is mining proof. Older logs may only have downstream V0 smelt identity. | Define and persist canonical fracture evidence before any receipt can claim independent mining verification. Extend migration/backfill policy separately for historical audit records. | High. Claim-local recomputation must not be promoted to proof. |
 | Agent identity binding | Fracture claims currently derive a player pubkey from session token in the claim path; separate code handles persistent pubkey proof. | Bind RATi-grade receipts to verified player/agent identity, not ephemeral session identity, before bridge/mint eligibility. | High. "Anyone can mine for any agent" needs a precise signed-agent model. |
-| Canonical receipt format | `signal_rati_receipt` now emits `rati_mining_receipt_v1` JSON from verified station logs, including claim-backed grade verification for fresh logs. | Freeze the schema, add compatibility fixtures, and decide whether canonical JSON stays the long-term wire format or becomes a binary envelope. | Medium. Bad canonicalization creates unrepeatable hashes. |
+| Canonical receipt format | `signal_rati_receipt` emits `rati_mining_receipt_v1` JSON from verified station logs. Exact V0 payloads are labeled `unbound_v0`; canonical V1 payloads are labeled `station_attested_v1`; neither is labeled mining-proven. | Freeze the proof-level vocabulary, add compatibility fixtures, and decide whether canonical JSON stays the long-term wire format or becomes a binary envelope. | Medium. Bad canonicalization or ambiguous proof labels create unsafe downstream decisions. |
 | Settlement checkpoints | `docs/settlement-event-model.md` is draft; canonical segment roots and forward-apply checkpointing are not yet implemented. | Implement segment roots, state roots, and discovery manifests for mining/smelt/receipt state. | High. Bitcoin should anchor checkpoint roots, not ad hoc logs forever. |
 | Arweave proof storage | Static site deployment to Arweave exists. Settlement/proof artifact upload is planned but not implemented as a general anchor service. | Add a proof artifact upload path separate from site deploys: receipts, batches, segment files, checkpoint files, and anchor receipts. | Medium. Site deploy manifests and settlement manifests should not be conflated. |
 | Bitcoin tooling | `build-rati-anchor-batch` now builds deterministic Merkle batches and OP_RETURN-ready payloads. `stamp-rati-anchor` validates the batch and wraps the OpenTimestamps CLI into a proof manifest. Direct Bitcoin RPC broadcast and anchor verification are still missing. | Add `verify-rati-anchor` tooling and decide whether direct OP_RETURN broadcast is needed after OTS. | Medium. OTS first keeps ops simple. |
@@ -230,11 +254,14 @@ No Bitcoin or Solana dependency yet.
 
 Initial implementation: `tools/signal_rati_receipt.c` builds the
 `signal_rati_receipt` CLI. It verifies the station log with
-`chain_log_verify_with_pubkey`, then emits JSON receipts for `CHAIN_EVT_SMELT`
+`chain_log_verify_with_pubkey`, rewinds and parses that same open descriptor,
+and emits JSON receipts only for exact, semantically valid `CHAIN_EVT_SMELT`
 events. It supports `--event-id`, `--segment-id`, `--cargo-pub`, and
-`--min-prefix=RATi` filters. Fresh logs include `CHAIN_EVT_CLAIM_FRAGMENT`, so
-the receipt builder can recompute `fragment_pub` and mining grade; older logs
-without that event still emit receipts with `grade_verified: false`.
+`--min-prefix=RATi` filters. V0 identity recovery and V1 semantic checks fail
+closed; claim/receipt collection is bounded. A unique
+`CHAIN_EVT_CLAIM_FRAGMENT` is exposed only as an unbound observation with
+claim-local math consistency fields. It never upgrades V0 or V1 to mining
+proof.
 
 ### Wedge 2: Batch Root and OTS Proof
 
@@ -254,6 +281,10 @@ given `--allow-unverified`, sorts by `receipt_hash`, writes
 OP_RETURN-ready payload (`SIGR` + version + root). `make rati-anchor-batch`
 wraps the builder, and `scripts/test-rati-anchor-batch.mjs` checks deterministic
 batch output and the unverified-receipt guard.
+
+Because current V0 and V1 receipts intentionally report
+`grade_verified: false`, the batch builder's default gate rejects them. Using
+`--allow-unverified` is an explicit audit-only workflow, not mint eligibility.
 
 The next layer is also present: `scripts/stamp-rati-anchor.mjs` validates a batch
 before invoking `ots stamp`, writes the `.ots` proof, and emits
@@ -323,9 +354,9 @@ verify-rati-anchor <receipt-or-solana-tx>
 It should end with a human-readable proof:
 
 ```
-RATi receipt verified.
+RATi receipt integrity verified (station_attested_v1; mining_proven=false).
 Signal event: CHAIN_EVT_SMELT #42, station signature valid.
-Cargo: RATi ingot <callsign>, parent fragment <fragment_pub>.
+Cargo label: RATi ingot <callsign>, parent fragment <fragment_pub>.
 Arweave: checkpoint <txid>.
 Bitcoin: timestamped by block <height>.
 ```

@@ -35,3 +35,20 @@ pixel assertions:
 If a semantic assertion fails, the browser error names the player question it
 violated. If a visual review fails, record the scenario, viewport, and artifact
 name on the sprint tracker before changing presentation.
+
+## HUD attention-budget review
+
+The same browser lane captures a deterministic attention pass:
+
+| State | Expected primary surface | Review attachment |
+| --- | --- | --- |
+| Docked, desktop | Station terminal; healthy build/network diagnostics absent | `perception-hud-attention-station-desktop` |
+| Onboarding message, narrow | One tutorial/notice instruction; competing flight action absent | `perception-hud-attention-message-narrow` |
+| Undocked scoreboard, narrow | Scoreboard only; no flight panel or tutorial subtitle beneath it | `perception-hud-attention-scoreboard-narrow` |
+| Selected NPC scan, narrow | Inspect/contact card; stale scoreboard and tutorial subtitle suppressed | `perception-hud-attention-inspect-narrow` |
+
+The gate also asserts that F3 is the explicit diagnostic toggle and that scan
+budgets contract from eight asteroid/four NPC labels on desktop to four
+asteroid/two NPC labels on narrow screens. Critical connection states remain
+visible without F3; healthy version, latency, queue, and replay telemetry does
+not.

@@ -18,10 +18,10 @@
 #include "signal_model.h"
 #include "palette.h"
 #include "contract_fit.h"
-#include "npc_identity.h"
 #include "ui_clarity.h"
 #include "rock_usefulness.h"
 #include "chain_log.h"
+#include "hud_attention.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -29,6 +29,10 @@
 #define HUD_LATENCY_WARN_MS 100.0f
 #define HUD_LATENCY_BAD_MS 300.0f
 #define HUD_FRAGMENT_NEARBY_RANGE 220.0f
+
+static bool build_hud_message(char *label, size_t label_size,
+                              char *message, size_t message_size,
+                              uint8_t *r, uint8_t *g0, uint8_t *b);
 
 static void hud_append_text(char *out, size_t cap, const char *text) {
     if (!out || cap == 0 || !text) return;
@@ -530,7 +534,8 @@ static const char *hud_module_consequence(const station_t *st, int module_idx) {
     }
     case MODULE_FRAME_PRESS:
     case MODULE_LASER_FAB:
-    case MODULE_TRACTOR_FAB: {
+    case MODULE_TRACTOR_FAB:
+    case MODULE_ENGINE_FAB: {
         module_inputs_t req = module_instance_required_inputs(m);
         commodity_t out = module_instance_output(m);
         if (req.count <= 0 || out >= COMMODITY_COUNT) break;
@@ -546,7 +551,7 @@ static const char *hud_module_consequence(const station_t *st, int module_idx) {
     }
     case MODULE_SHIPYARD:
         snprintf(label, sizeof(label),
-                 "Frames + Laser Modules + Tractor Modules -> ships/kits");
+                 "Frames + Engines + tools -> ships; tools -> kits");
         return label;
     case MODULE_HOPPER:
         if ((commodity_t)m->commodity < COMMODITY_COUNT) {
@@ -1095,6 +1100,44 @@ static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
 #else
     const char *client_hash = "dev";
 #endif
+    /* The default play surface reports causes that require attention, not
+     * healthy implementation telemetry. F3 restores the detailed build,
+     * transport, queue, and latency readout for diagnosis. */
+    if (!g.hud_debug_visible) {
+        if (!g.net_authority_enabled) return;
+        if (!net_is_connected()) {
+            sdtx_color3b(PAL_SYNC_OFFLINE);
+            sdtx_puts("offline [P] reconnect");
+            return;
+        }
+        if (!net_is_loopback()) {
+            const char *srv = net_server_hash();
+            if (srv[0] == '\0') {
+                sdtx_color3b(PAL_SYNC_CONNECTING);
+                sdtx_puts("connecting...");
+                return;
+            }
+            if (strcmp(client_hash, srv) != 0) {
+                sdtx_color3b(PAL_SYNC_RESYNCING);
+                sdtx_puts("syncing...");
+                return;
+            }
+            bool ack_fresh = net_latency_stats_fresh(
+                &g.net_ack_latency, g.net_time, NET_LATENCY_STALE_SEC);
+            bool ping_fresh = net_latency_stats_fresh(
+                &g.net_ping_latency, g.net_time, NET_LATENCY_STALE_SEC);
+            float warning_ms = ack_fresh
+                ? net_latency_stats_smoothed_sec(&g.net_ack_latency) * 1000.0f
+                : (ping_fresh
+                    ? net_latency_stats_smoothed_sec(&g.net_ping_latency) * 1000.0f
+                    : 0.0f);
+            if (warning_ms >= HUD_LATENCY_BAD_MS) {
+                sdtx_color3b(PAL_WARNING);
+                sdtx_puts("connection unstable");
+            }
+        }
+        return;
+    }
     if (g.net_authority_enabled && net_is_connected()) {
         const char *srv = net_server_hash();
         bool match = srv[0] != '\0' && strcmp(client_hash, srv) == 0;
@@ -1839,22 +1882,8 @@ static void hud_npc_label(const npc_ship_t *npc, int idx, char *out, size_t cap)
         snprintf(out, cap, "NPC --");
         return;
     }
-    if (npc->session_token[0] == 'N' && npc->session_token[1] == 'P' &&
-        npc->session_token[2] == 'C') {
-        snprintf(out, cap, "%s N%02u", hud_npc_custody_role_label(npc->role),
-                 (unsigned)npc->session_token[5]);
-    } else {
-        snprintf(out, cap, "%s %02d", hud_npc_custody_role_label(npc->role), idx);
-    }
-}
-
-static void hud_npc_custody_pubkey(const npc_ship_t *npc,
-                                   int npc_slot,
-                                   uint8_t out[32]) {
-    uint8_t role = npc ? (uint8_t)npc->role : 0;
-    uint8_t home = npc ? (uint8_t)npc->home_station : 0xFFu;
-    npc_custody_pubkey_from_fields(npc ? npc->session_token : NULL,
-                                   npc_slot, role, home, out);
+    /* Runtime slot is presentation only; no bearer-derived name is shown. */
+    snprintf(out, cap, "%s %02d", hud_npc_custody_role_label(npc->role), idx);
 }
 
 /* Resolve a 32-byte receipt identity for player-facing provenance. Stations
@@ -1886,23 +1915,11 @@ static void hud_identity_name_for_pubkey(const uint8_t pub[32],
                 snprintf(out, cap, "pilot %d", i);
             return;
         }
-        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-            const npc_ship_t *npc = &g.world.npc_ships[i];
-            if (!npc->active) continue;
-            bool has_token = false;
-            for (int b = 0; b < 8; b++) {
-                if (npc->session_token[b] != 0) {
-                    has_token = true;
-                    break;
-                }
-            }
-            if (!has_token) continue;
-            uint8_t custody[32];
-            hud_npc_custody_pubkey(npc, i, custody);
-            if (memcmp(custody, pub, 32) != 0) continue;
-            hud_npc_label(npc, i, out, cap);
-            return;
-        }
+        /*
+         * NPC receipt identities are currently token-derived authority data.
+         * Public snapshots do not expose those tokens, so UI deliberately
+         * falls back to the receipt hash instead of inventing an actor link.
+         */
     }
     char tmp[8];
     hud_hash_short_label(pub, tmp);
@@ -2082,7 +2099,9 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     if (!npc->active) return;
 
     float cell = 8.0f;
-    float px = fmaxf(14.0f, screen_w - 340.0f);
+    /* Keep the card inside the scaled narrow safe edge. Fractional/near-edge
+     * debug-text columns can lose the leading "[ CONTACT" glyphs. */
+    float px = fmaxf(48.0f, screen_w - 340.0f);
     float py = (screen_h < 520.0f) ? 70.0f : 86.0f;
     float bg_x = fmaxf(8.0f, px - 10.0f);
     float bg_y = fmaxf(8.0f, py - 9.0f);
@@ -2185,10 +2204,14 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
                  job ? clarity.fg[1] : clarity.dim[1],
                  job ? clarity.fg[2] : clarity.dim[2]);
     if (job) {
-        sdtx_printf("%s %s  home %.10s",
-                    hud_npc_role_label(snap->role),
-                    hud_npc_state_label(snap->state),
-                    home);
+        char role_line[96];
+        char role_fit[96];
+        snprintf(role_line, sizeof(role_line), "%s %s  home %.10s",
+                 hud_npc_role_label(snap->role),
+                 hud_npc_state_label(snap->state),
+                 home);
+        hud_fit_text(role_line, text_chars, role_fit, sizeof(role_fit));
+        sdtx_puts(role_fit);
     } else {
         sdtx_printf("%c MEMORY", stream);
     }
@@ -2318,7 +2341,7 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         if (!np && !g.world.players[target_idx].connected) return;
     }
 
-    float px = fmaxf(16.0f, screen_w - 360.0f);
+    float px = fmaxf(24.0f, screen_w - 360.0f);
     float py = (screen_h < 520.0f) ? 76.0f : 92.0f;
     float cell = 8.0f;
     sdtx_canvas(screen_w, screen_h);
@@ -2999,10 +3022,22 @@ static void hud_draw_kill_counter(float screen_w) {
 static void hud_draw_scoreboard(float screen_w, float screen_h) {
     if (!g.scoreboard.show) return;
     float cell = 8.0f;
-    int order[16];
+    int order[CLIENT_SCOREBOARD_MAX_ROWS];
+    char labels[CLIENT_SCOREBOARD_MAX_ROWS]
+               [CLIENT_PUBLIC_ACTOR_DISPLAY_LABEL_CAP];
     int n = g.scoreboard.row_count;
-    if (n > 16) n = 16;
-    for (int i = 0; i < n; i++) order[i] = i;
+    if (n > CLIENT_SCOREBOARD_MAX_ROWS)
+        n = CLIENT_SCOREBOARD_MAX_ROWS;
+    size_t longest_label = 4;
+    for (int i = 0; i < n; i++) {
+        order[i] = i;
+        if (!client_scoreboard_format_row_label(
+                &g.scoreboard, i, labels[i], sizeof(labels[i]))) {
+            snprintf(labels[i], sizeof(labels[i]), "%s", "????");
+        }
+        size_t label_len = strlen(labels[i]);
+        if (label_len > longest_label) longest_label = label_len;
+    }
     for (int i = 1; i < n; i++) {
         int k = order[i];
         int j = i - 1;
@@ -3019,35 +3054,86 @@ static void hud_draw_scoreboard(float screen_w, float screen_h) {
         order[j + 1] = k;
     }
 
-    float panel_w = 280.0f;
+    bool narrow = screen_w < 520.0f;
+    /*
+     * Keep the K/D columns fixed and wrap only the actor label. This retains
+     * every byte of an adversarial full-ID disambiguation suffix without
+     * letting it push the numeric columns off-screen.
+     */
+    const int stats_cols = 13;
+    int available_cols = (int)floorf((screen_w - 16.0f) / cell);
+    int label_cols = available_cols - stats_cols;
+    if (label_cols < 4) label_cols = 4;
+    size_t desired_label_cols =
+        longest_label < 20u ? 20u : longest_label;
+    if ((size_t)label_cols > desired_label_cols)
+        label_cols = (int)desired_label_cols;
+    if (label_cols < 4) label_cols = 4;
+    float panel_w = (float)(label_cols + stats_cols) * cell;
     float panel_x = (screen_w - panel_w) * 0.5f;
-    float panel_y = screen_h * 0.18f;
+    if (panel_x < 8.0f) panel_x = 8.0f;
+    float panel_y = fmaxf(28.0f, screen_h * 0.16f);
+    float stats_x = panel_x + (float)(label_cols + 1) * cell;
     sdtx_canvas(screen_w, screen_h);
     sdtx_origin(0.0f, 0.0f);
 
     sdtx_color3b(255, 220, 100);
-    sdtx_pos(panel_x / cell, panel_y / cell);
-    sdtx_puts("== SCOREBOARD ==  [Tab to close]");
+    sdtx_pos((panel_x + 16.0f) / cell, (panel_y + 14.0f) / cell);
+    sdtx_puts(narrow ? "SCOREBOARD // [TAB] CLOSE"
+                     : "SESSION SCOREBOARD // [TAB] CLOSE");
 
     sdtx_color3b(180, 180, 180);
-    sdtx_pos(panel_x / cell, (panel_y + 16.0f) / cell);
-    sdtx_puts("PILOT             K   D   K/D");
+    sdtx_pos((panel_x + 16.0f) / cell, (panel_y + 34.0f) / cell);
+    sdtx_puts("PILOT");
+    sdtx_pos(stats_x / cell, (panel_y + 34.0f) / cell);
+    sdtx_puts("  K   D   K/D");
 
     if (n == 0) {
         sdtx_color3b(140, 140, 140);
-        sdtx_pos(panel_x / cell, (panel_y + 32.0f) / cell);
+        sdtx_pos((panel_x + 16.0f) / cell, (panel_y + 54.0f) / cell);
         sdtx_puts("(no kills or deaths yet)");
         return;
     }
+    public_actor_id_t local_actor = public_actor_id_none();
+    bool have_local_actor =
+        client_local_public_actor_id(&local_actor);
+    float row_y = panel_y + 54.0f;
     for (int rank = 0; rank < n; rank++) {
         int idx = order[rank];
-        const char *label = g.scoreboard.rows[idx].label[0]
-                          ? g.scoreboard.rows[idx].label : "????";
-        bool is_me = memcmp(g.scoreboard.rows[idx].token,
-                            g.world.players[g.local_player_slot].session_token, 8) == 0;
+        const char *label = labels[idx];
+        size_t label_len = strlen(label);
+        int label_lines =
+            (int)((label_len + (size_t)label_cols - 1u) /
+                  (size_t)label_cols);
+        if (label_lines < 1) label_lines = 1;
+        float row_height = (float)label_lines * 12.0f;
+        if (row_y + row_height > screen_h - 8.0f) {
+            sdtx_color3b(140, 140, 140);
+            sdtx_pos(panel_x / cell, row_y / cell);
+            sdtx_printf("... %d more", n - rank);
+            break;
+        }
+
+        bool is_me = have_local_actor &&
+            public_actor_id_equal(
+                &g.scoreboard.rows[idx].actor, &local_actor);
         if (is_me) sdtx_color3b(255, 220, 100);
         else       sdtx_color3b(200, 200, 200);
-        char kdr[8];
+        for (int line = 0; line < label_lines; line++) {
+            size_t offset = (size_t)line * (size_t)label_cols;
+            size_t remaining = label_len - offset;
+            size_t chunk_len = remaining < (size_t)label_cols
+                ? remaining : (size_t)label_cols;
+            char chunk[CLIENT_PUBLIC_ACTOR_DISPLAY_LABEL_CAP];
+            memcpy(chunk, label + offset, chunk_len);
+            chunk[chunk_len] = '\0';
+            sdtx_pos(
+                panel_x / cell,
+                (row_y + (float)line * 12.0f) / cell);
+            sdtx_puts(chunk);
+        }
+
+        char kdr[16];
         if (g.scoreboard.rows[idx].deaths == 0) {
             snprintf(kdr, sizeof(kdr), "%d.0", g.scoreboard.rows[idx].kills);
         } else {
@@ -3055,12 +3141,12 @@ static void hud_draw_scoreboard(float screen_w, float screen_h) {
                       (float)g.scoreboard.rows[idx].deaths;
             snprintf(kdr, sizeof(kdr), "%.2f", r);
         }
-        sdtx_pos(panel_x / cell, (panel_y + 32.0f + (float)rank * 12.0f) / cell);
-        sdtx_printf("%-16s %3d %3d %5s",
-                    label,
+        sdtx_pos(stats_x / cell, row_y / cell);
+        sdtx_printf("%3d %3d %5s",
                     g.scoreboard.rows[idx].kills,
                     g.scoreboard.rows[idx].deaths,
                     kdr);
+        row_y += row_height;
     }
 }
 
@@ -3075,7 +3161,6 @@ static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_qua
     hud_draw_kill_feed(screen_w, screen_h);
     hud_draw_kill_confirm(screen_w, screen_h);
     hud_draw_kill_counter(screen_w);
-    hud_draw_scoreboard(screen_w, screen_h);
     /* Hit feedback vignette — drawn last so it sits above the HUD
      * readouts, but the inset rectangle in the middle leaves the
      * action row + flight readouts unobscured. */
@@ -3344,10 +3429,34 @@ void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float* top_h
     *bottom_h = bottom_height;
 }
 
+static bool hud_inspect_surface_active(void) {
+    return g.inspect_station >= 0 ||
+        (g.inspect_snapshot_timer > 0.0f &&
+         g.inspect_snapshot.target_type != INSPECT_TARGET_NONE);
+}
+
 bool hud_should_draw_message_panel(void) {
     if (episode_is_active(&g.episode)) return false;
-    return !LOCAL_PLAYER.docked || !g.onboarding.complete || !g.onboarding.welcomed ||
-           (g.notice_timer > 0.0f) || (g.collection_feedback_timer > 0.0f);
+    if (g.scoreboard.show) return false;
+    if (hud_inspect_surface_active()) return false;
+    char label[32];
+    char message[320];
+    uint8_t r = 0, g0 = 0, b = 0;
+    return build_hud_message(label, sizeof(label), message, sizeof(message),
+                             &r, &g0, &b);
+}
+
+const char *hud_attention_current_surface_name(void) {
+    hud_attention_flags_t flags = {
+        .death = g.death_screen_timer > 0.0f ||
+                 g.death_cinematic.active ||
+                 g.death_cinematic.menu_alpha > 0.001f,
+        .docked = LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f,
+        .inspect = hud_inspect_surface_active(),
+        .scoreboard = g.scoreboard.show,
+        .message = hud_should_draw_message_panel(),
+    };
+    return hud_attention_surface_name(hud_attention_select(flags));
 }
 
 void get_hud_message_panel_rect(float* x, float* y, float* width, float* height) {
@@ -3895,12 +4004,20 @@ enum {
     SMOKE_LOOP_STATE_REMEMBERED_WORK_DEGRADED = 35,
     SMOKE_LOOP_STATE_CONSTRUCTION_CONSEQUENCE = 36,
     SMOKE_LOOP_STATE_STATION_FRAGMENT_TRACTOR = 37,
+    SMOKE_LOOP_STATE_REFIT_SUPPLY_ACTIVE = 38,
+    SMOKE_LOOP_STATE_REFIT_SUPPLY_INACTIVE = 39,
+    SMOKE_LOOP_STATE_REFIT_WORK_AGED = 40,
 };
 
 static int smoke_remembered_work_mode = -1;
 static bool smoke_construction_snapshot_valid = false;
 static int smoke_construction_snapshot_indices[2] = {-1, -1};
 static station_module_t smoke_construction_snapshot_modules[2];
+static bool smoke_refit_supply_snapshot_valid = false;
+static float smoke_refit_supply_signal_ranges[2];
+static bool smoke_refit_work_snapshot_valid = false;
+static int smoke_refit_work_snapshot_index = -1;
+static float smoke_refit_work_snapshot_age = 0.0f;
 
 static bool smoke_maintain_npc_motive_view(bool degraded) {
     if (g.world.station_count <= 1 ||
@@ -3984,7 +4101,8 @@ static bool smoke_maintain_remembered_work_view(void) {
 
 static bool smoke_seed_remembered_work(bool degraded) {
     int mode = degraded ? 1 : 0;
-    if (g.local_server.world.station_count <= 1) return false;
+    world_t *local_authority = local_server_world(&g.local_server);
+    if (!local_authority || local_authority->station_count <= 1) return false;
     if (smoke_remembered_work_mode != mode) {
         chain_payload_route_history_t payload = {0};
         payload.memory_kind = (uint8_t)MARKET_MEMORY_ROUTE_SUCCESS;
@@ -3999,8 +4117,8 @@ static bool smoke_seed_remembered_work(bool degraded) {
         payload.observed_tick = (uint32_t)g.world.tick;
         payload.subject_nonce = degraded
             ? UINT64_C(0x6060dd01) : UINT64_C(0x6060cc01);
-        station_t *authority = &g.local_server.world.stations[1];
-        if (chain_log_emit(&g.local_server.world, authority,
+        station_t *authority = &local_authority->stations[1];
+        if (chain_log_emit(local_authority, authority,
                            CHAIN_EVT_ROUTE_HISTORY,
                            &payload, sizeof(payload)) == 0) {
             return false;
@@ -4118,7 +4236,7 @@ static bool smoke_maintain_weak_signal_view(void) {
         !station_exists(&g.world.stations[0])) return false;
 
     server_player_t *sp = &LOCAL_PLAYER;
-    g.episode.watched[7] = true;
+    episode_set_watched(&g.episode, 7, true);
     g.local_server.active = false;
     sp->docked = false;
     sp->current_station = -1;
@@ -4260,6 +4378,28 @@ static void smoke_set_onboarding_economy_progress(bool earned,
 static void smoke_clear_loop_state(void) {
     server_player_t *sp = &LOCAL_PLAYER;
     float max_hull = ship_max_hull(sp->ship);
+
+    if (smoke_refit_work_snapshot_valid) {
+        if (smoke_refit_work_snapshot_index >= 0 &&
+            smoke_refit_work_snapshot_index < MAX_CONTRACTS) {
+            g.world.contracts[
+                smoke_refit_work_snapshot_index].age =
+                    smoke_refit_work_snapshot_age;
+        }
+        smoke_refit_work_snapshot_valid = false;
+        smoke_refit_work_snapshot_index = -1;
+        smoke_refit_work_snapshot_age = 0.0f;
+    }
+
+    if (smoke_refit_supply_snapshot_valid) {
+        if (g.world.station_count > 2) {
+            g.world.stations[1].signal_range =
+                smoke_refit_supply_signal_ranges[0];
+            g.world.stations[2].signal_range =
+                smoke_refit_supply_signal_ranges[1];
+        }
+        smoke_refit_supply_snapshot_valid = false;
+    }
 
     if (smoke_construction_snapshot_valid && g.world.station_count > 0 &&
         station_exists(&g.world.stations[0])) {
@@ -4420,6 +4560,39 @@ static int smoke_apply_loop_state(int state) {
     switch (state) {
     case SMOKE_LOOP_STATE_CLEAR:
         return 1;
+    case SMOKE_LOOP_STATE_REFIT_SUPPLY_ACTIVE:
+    case SMOKE_LOOP_STATE_REFIT_SUPPLY_INACTIVE:
+        if (g.world.station_count <= 2 ||
+            !station_exists(&g.world.stations[1]) ||
+            !station_exists(&g.world.stations[2])) {
+            return 0;
+        }
+        smoke_refit_supply_signal_ranges[0] =
+            g.world.stations[1].signal_range;
+        smoke_refit_supply_signal_ranges[1] =
+            g.world.stations[2].signal_range;
+        smoke_refit_supply_snapshot_valid = true;
+        g.world.stations[1].signal_range = 0.0f;
+        if (state == SMOKE_LOOP_STATE_REFIT_SUPPLY_INACTIVE) {
+            g.world.stations[2].signal_range = 0.0f;
+        } else if (g.world.stations[2].signal_range <= 0.0f) {
+            g.world.stations[2].signal_range = 1.0f;
+        }
+        return 1;
+    case SMOKE_LOOP_STATE_REFIT_WORK_AGED:
+        for (int i = 0; i < MAX_CONTRACTS; i++) {
+            contract_t *contract = &g.world.contracts[i];
+            if (!contract->active ||
+                !starter_refit_work_order_matches(contract)) {
+                continue;
+            }
+            smoke_refit_work_snapshot_valid = true;
+            smoke_refit_work_snapshot_index = i;
+            smoke_refit_work_snapshot_age = contract->age;
+            contract->age = 300.0f;
+            return 1;
+        }
+        return 0;
     case SMOKE_LOOP_STATE_FRAGMENTS_NEARBY:
         sp->nearby_fragments = 3;
         return 1;
@@ -5009,22 +5182,23 @@ static int smoke_apply_loop_state(int state) {
         if (!hash_product(RECIPE_FRAME_BASIC, &ingot, 1, 0, &frame)) return 0;
         frame.origin_station = 0;
 
-        if (g.local_server.world.station_count > 0) {
-            station_t *authority = &g.local_server.world.stations[0];
+        world_t *local_authority = local_server_world(&g.local_server);
+        if (local_authority && local_authority->station_count > 0) {
+            station_t *authority = &local_authority->stations[0];
             chain_payload_smelt_t smelt = {0};
-            memcpy(smelt.fragment_pub, fragment_pub, 32);
-            memcpy(smelt.ingot_pub, ingot.pub, 32);
-            smelt.prefix_class = ingot.prefix_class;
-            smelt.mined_block = ingot.mined_block;
-            (void)chain_log_emit(&g.local_server.world, authority,
+            if (!chain_payload_smelt_bind_output(
+                    &smelt, fragment_pub, 0, &ingot)) {
+                return 0;
+            }
+            (void)chain_log_emit(local_authority, authority,
                                  CHAIN_EVT_SMELT, &smelt, sizeof(smelt));
 
             chain_payload_craft_t craft = {0};
-            craft.recipe_id = (uint16_t)RECIPE_FRAME_BASIC;
-            craft.input_count = 1;
-            memcpy(craft.output_pub, frame.pub, 32);
-            memcpy(craft.input_pubs[0], ingot.pub, 32);
-            (void)chain_log_emit(&g.local_server.world, authority,
+            if (!chain_payload_craft_bind_output(
+                    &craft, &ingot, 1, &frame)) {
+                return 0;
+            }
+            (void)chain_log_emit(local_authority, authority,
                                  CHAIN_EVT_CRAFT, &craft, sizeof(craft));
         }
 
@@ -5352,6 +5526,24 @@ void draw_hud_panels(void) {
         return;
     }
     draw_hull_warning_overlay();
+    if (hud_inspect_surface_active() && !LOCAL_PLAYER.docked)
+        return;
+    if (g.scoreboard.show && !LOCAL_PLAYER.docked) {
+        float screen_w = ui_screen_width();
+        float screen_h = ui_screen_height();
+        float panel_w = fminf(screen_w < 520.0f ? 358.0f : 360.0f,
+                              screen_w - 32.0f);
+        float panel_x = (screen_w - panel_w) * 0.5f;
+        float panel_y = fmaxf(28.0f, screen_h * 0.16f);
+        int rows = g.scoreboard.row_count;
+        if (rows < 1) rows = 1;
+        if (rows > 16) rows = 16;
+        float panel_h = fminf(screen_h - panel_y - 24.0f,
+                              70.0f + (float)rows * 12.0f);
+        draw_ui_scrim(0.42f);
+        draw_ui_panel(panel_x, panel_y, panel_w, panel_h, 0.18f);
+        return;
+    }
     float top_x = 0.0f, top_y = 0.0f, top_w = 0.0f, top_h = 0.0f;
     float bottom_x = 0.0f, bottom_y = 0.0f, bottom_w = 0.0f, bottom_h = 0.0f;
     get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h, &bottom_x, &bottom_y, &bottom_w, &bottom_h);
@@ -5602,6 +5794,25 @@ void draw_hud(void) {
 
     /* Death-screen overlay short-circuits the rest of the HUD. */
     if (draw_death_overlay(screen_w, screen_h)) return;
+    if (hud_inspect_surface_active() && !LOCAL_PLAYER.docked) {
+        sdtx_canvas(screen_w / ui_text_zoom(), screen_h / ui_text_zoom());
+        sdtx_font(0);
+        sdtx_origin(0.0f, 0.0f);
+        sdtx_home();
+        hud_draw_module_inspect_pane(screen_w);
+        hud_draw_inspect_snapshot_pane(screen_w, screen_h);
+        float sig_quality = signal_strength_at(&g.world, LOCAL_PLAYER.ship->pos);
+        hud_draw_signal_lost_warning(screen_w, screen_h, sig_quality);
+        draw_damage_flash(screen_w, screen_h);
+        return;
+    }
+    /* The scoreboard is a deliberate modal glance, not another layer on top
+     * of flight, tutorial, inspect, and connection chrome. */
+    if (g.scoreboard.show && !LOCAL_PLAYER.docked) {
+        hud_draw_scoreboard(screen_w, screen_h);
+        draw_damage_flash(screen_w, screen_h);
+        return;
+    }
 
     bool compact = ui_is_compact();
     float top_x = 0.0f;
@@ -5668,7 +5879,8 @@ void draw_hud(void) {
     sdtx_font(0);
     sdtx_origin(0.0f, 0.0f);
     sdtx_home();
-    if (hud_should_draw_message_panel()) {
+    bool message_panel_visible = hud_should_draw_message_panel();
+    if (message_panel_visible) {
         int message_cols = 0;
         get_hud_message_panel_rect(&message_x, &message_y, &message_w, &message_h);
         build_hud_message(message_label, sizeof(message_label), message_text, sizeof(message_text), &message_r, &message_g, &message_b);
@@ -5733,20 +5945,22 @@ void draw_hud(void) {
             sdtx_pos(top_text_x, top_row_2);
             if (LOCAL_PLAYER.in_dock_range) {
                 sdtx_color3b(PAL_SIGNAL_MINT);
-                sdtx_puts("DOCK RANGE // E dock");
+                sdtx_puts(message_panel_visible
+                    ? "DOCK RANGE"
+                    : "DOCK RANGE // E dock");
             } else {
                 sdtx_color3b(PAL_NAV_BLUE);
                 sdtx_printf("%s %d u // %d %s", nav_role, station_distance, bearing_degrees, bearing_mark);
             }
 
-            sdtx_pos(top_text_x, top_row_3);
-            {
+            if (!message_panel_visible) {
+                sdtx_pos(top_text_x, top_row_3);
                 hud_action_t act = hud_classify_action(cargo_units, cargo_capacity, sig_quality);
                 hud_render_action_compact(&act, dock_role);
             }
         }
 
-        if (!LOCAL_PLAYER.docked && hud_should_draw_message_panel()) {
+        if (!LOCAL_PLAYER.docked && message_panel_visible) {
             /* Subtitle: up to HUD_MSG_LINES wrapped lines, stacked bottom-up. */
             float cell = HUD_CELL * ui_text_zoom();
             int first_line_with_content = -1;
@@ -5823,7 +6037,9 @@ void draw_hud(void) {
         sdtx_printf("%s // docked // E launch", current_station->name);
     } else if (LOCAL_PLAYER.in_dock_range) {
         sdtx_color3b(PAL_SIGNAL_MINT);
-        sdtx_puts("In dock range. [E] to dock.");
+        sdtx_puts(message_panel_visible
+            ? "In dock range."
+            : "In dock range. [E] to dock.");
     } else {
         sdtx_color3b(PAL_NAV_BLUE);
         sdtx_printf("%s %d u // %d deg %s",
@@ -5833,8 +6049,8 @@ void draw_hud(void) {
             bearing_side);
     }
 
-    sdtx_pos(top_text_x, top_row_3);
-    {
+    if (!message_panel_visible) {
+        sdtx_pos(top_text_x, top_row_3);
         hud_action_t act = hud_classify_action(cargo_units, cargo_capacity, sig_quality);
         hud_render_action_wide(&act, current_station);
     }
@@ -5930,7 +6146,7 @@ void draw_hud(void) {
         sdtx_pos(cur_x / cell, msg_y / cell);
         sdtx_color4b(total_r, total_g, total_b, (uint8_t)(alpha * 255.0f));
         sdtx_puts(" ]");
-    } else if (hud_should_draw_message_panel()) {
+    } else if (message_panel_visible) {
         float cell = 8.0f;
         bool is_hull_warn = (message_r == 255 && message_g == 60);
         uint8_t r8 = message_r, g8 = message_g, b8 = message_b;

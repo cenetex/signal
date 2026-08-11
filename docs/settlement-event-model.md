@@ -9,11 +9,11 @@ It is the design artifact for issue #350 and serves as the reference for #351
 
 ## Status
 
-Draft. Not yet implemented. The existing dedicated server (`signal_server`),
-`chain_event_header_t`, and per-station signed log (Layer C of #479) are the
-foundation; this document extends them toward P2P quorum signing, segment
-checkpoints, and a future forward-apply model that can be verified without
-trusting one dedicated server.
+Draft protocol. The existing dedicated server (`signal_server`),
+`chain_event_header_t`, per-station signed log (Layer C of #479), and
+`shared/settlement_engine.*` forward-apply substrate are implemented. This
+document extends them toward P2P quorum signing and externally anchored
+segments that can be verified without trusting one dedicated server.
 
 ## Design principles
 
@@ -200,7 +200,7 @@ typedef struct {
     uint8_t  kind;
     uint8_t  direction;   /* 0 = BUY (station→player), 1 = SELL (player→station) */
     uint8_t  _pad[6];
-} settlement_payload_trade_t;  /* 144 bytes */
+} settlement_payload_trade_t;  /* 112 bytes */
 ```
 
 ### ISSUE_CREDIT_NOTE (0x12) / REDEEM_CREDIT_NOTE (0x13)
@@ -241,7 +241,7 @@ Input cargo consumed to advance scaffold build progress.
 typedef struct {
     uint8_t  scaffold_id[32];
     uint8_t  station_pubkey[32];
-    uint8_t  input_pubs[4][32];
+    uint8_t  input_pubs[3][32];
     uint8_t  input_count;
     uint8_t  module_type;
     uint8_t  ring;
@@ -361,15 +361,26 @@ Sim-owned state (NOT in settlement):
 
 ### Applying an event
 
-For each event in a segment, the engine:
+The history resolver verifies each event header's station/quorum signature
+before calling the forward-apply engine. For each imported event, the current
+engine then:
 
-1. **Verifies** the header signature (single or quorum).
+1. **Verifies** the payload bytes against the signed header's payload hash.
 2. **Validates** preconditions (fragment exists, cargo in manifest, etc.).
-3. **Mutates** settlement state (add/remove manifest units, update ledger).
-4. **Produces** the post-event state root.
+3. **Preflights provenance** for every transfer, sell, and construction input
+   by calling the shared cargo-receipt trust verifier with caller-resolved
+   receipt, origin-event, and authority-lifecycle evidence.
+4. **Binds custody** by requiring the final receipt recipient to match the
+   event's current holder (source actor or construction station).
+5. **Applies privately** to a temporary state and publishes state plus
+   checkpoint only after the complete segment succeeds.
+6. **Produces** deterministic previous- and post-segment state roots.
 
-Invalid events are rejected without mutating state. The engine is pure: no
-I/O, no side effects, no wall-clock dependence.
+Missing history and unknown, untrusted, or revoked authorities remain distinct
+stable rejection outcomes. Invalid events leave settlement state and caller
+checkpoint storage byte-identical. Receipt and origin pointers are borrowed
+for the call only and are never retained. The engine performs no I/O and has
+no wall-clock dependence.
 
 ### State root
 

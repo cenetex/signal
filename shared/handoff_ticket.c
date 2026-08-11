@@ -314,13 +314,13 @@ bool handoff_ticket_issue_for_ship(
     uint64_t expires_tick,
     const ship_t *ship,
     handoff_ticket_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
     if (!source_authority || !source_secret || !dest_authority ||
         !player_pubkey || !ship || !out || expires_tick < issued_tick ||
         is_zero32(source_authority) || is_zero32(dest_authority) ||
         is_zero32(player_pubkey)) {
         return false;
     }
-    memset(out, 0, sizeof(*out));
     memcpy(out->source_authority, source_authority, 32);
     memcpy(out->dest_authority, dest_authority, 32);
     memcpy(out->player_pubkey, player_pubkey, 32);
@@ -334,6 +334,11 @@ bool handoff_ticket_issue_for_ship(
     uint8_t blob[HANDOFF_TICKET_UNSIGNED_SIZE];
     handoff_ticket_unsigned_pack(out, blob);
     signal_crypto_sign(out->signature, blob, sizeof(blob), source_secret);
+    if (!signal_crypto_verify(out->signature, blob, sizeof(blob),
+                              source_authority)) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
     return true;
 }
 

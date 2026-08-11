@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import crypto from 'node:crypto';
 import net from 'node:net';
+import path from 'node:path';
 import tls from 'node:tls';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { pathToFileURL } from 'node:url';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const NET_MSG_SESSION = 0x20;
@@ -91,6 +93,7 @@ const MESSAGE_NAMES = new Map([
   [0x6c, 'WORLD_PLAYER_MOTIOND_Q'],
   [0x6d, 'WORLD_PLAYER_POSED_Q'],
   [0x6e, 'WORLD_PLAYER_MOTIONM_Q'],
+  [0x70, 'PUBKEY_CHALLENGE'],
 ]);
 
 const EVENT_NAMES = [
@@ -686,9 +689,16 @@ function decodeRecordInfo(payload, clientEntry) {
 
   if (type === 0x62 && payload.length >= 2) {
     const count = payload[1];
-    const recordSize = 28;
+    const recordSize = 62;
     const expected = 2 + count * recordSize;
-    return payload.length >= expected ? { records: count } : null;
+    return payload.length === expected ? { records: count } : null;
+  }
+
+  if (type === 0x46 && payload.length >= 2) {
+    const count = payload[1];
+    const recordSize = 72;
+    const expected = 2 + count * recordSize;
+    return payload.length === expected ? { records: count } : null;
   }
 
   if (type === 0x64 && payload.length >= 2) {
@@ -712,7 +722,7 @@ function decodeRecordInfo(payload, clientEntry) {
   }
 
   if ((type === 0x11 || type === 0x12 || type === 0x19 ||
-       type === 0x24 || type === 0x46 || type === 0x49) &&
+       type === 0x24 || type === 0x49) &&
       payload.length >= 2) {
     return { records: payload[1] };
   }
@@ -1180,10 +1190,11 @@ async function connectClient(clientId, urlText, opts, onPayload, onSentPayload, 
   });
 
   if (opts.sendSession) {
-    const session = Buffer.alloc(16);
+    const session = Buffer.alloc(18);
     session[0] = NET_MSG_SESSION;
     crypto.randomBytes(8).copy(session, 1);
     Buffer.from(`P${String(clientId).padStart(6, '0')}`).copy(session, 9, 0, 7);
+    session.writeUInt16LE(4, 16);
     if (safeSocketWrite(socket, wsClientFrame(session))) {
       onSentPayload(clientId, session);
     } else {
@@ -1386,7 +1397,14 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(`[relay-traffic-probe] ${err.message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] &&
+    import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch((err) => {
+    console.error(`[relay-traffic-probe] ${err.message}`);
+    process.exitCode = 1;
+  });
+}
+
+export {
+  decodeRecordInfo,
+};

@@ -1,15 +1,15 @@
 /*
- * signal_rati_receipt -- off-chain RATi mining receipt builder.
+ * signal_rati_receipt -- off-chain RATi provenance receipt builder.
  *
  * Reads a verified station chain log and emits deterministic JSON receipt
- * records for CHAIN_EVT_SMELT events. This is wedge 1 for the
- * Bitcoin/Arweave RATi anchor flow: local proof material first, external
- * anchoring later.
+ * records for semantically valid CHAIN_EVT_SMELT events. V0 is explicitly
+ * unbound and V1 is station-attested; neither is independent mining proof.
  */
 
 #include "chain_log.h"
 
 #include "base58.h"
+#include "cargo_smelt_provenance.h"
 #include "mining.h"
 #include "sha256.h"
 
@@ -20,7 +20,38 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CHAIN_UNSIGNED_HEADER_SIZE 120
+enum {
+    RATI_PAYLOAD_MAX = 4096,
+    RATI_RECEIPT_RECORD_LIMIT = 4096,
+    RATI_CLAIM_RECORD_LIMIT = 4096,
+    RATI_LEGACY_V0_SCAN_LIMIT = 256,
+    RATI_LOG_SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024,
+};
+
+typedef enum {
+    RECEIPT_PROOF_UNBOUND_V0 = 0,
+    RECEIPT_PROOF_STATION_ATTESTED_V1 = 1,
+} receipt_proof_level_t;
+
+typedef enum {
+    CLAIM_MATCH_NONE = 0,
+    CLAIM_MATCH_UNIQUE_UNBOUND_V1 = 1,
+    CLAIM_MATCH_AMBIGUOUS = 2,
+} claim_match_status_t;
+
+typedef enum {
+    APPEND_OK = 0,
+    APPEND_RESOURCE_EXHAUSTED = 1,
+    APPEND_ALLOCATION_FAILED = 2,
+} append_result_t;
+
+typedef enum {
+    COLLECT_OK = 0,
+    COLLECT_READ_INVALID = 1,
+    COLLECT_SEMANTIC_INVALID = 2,
+    COLLECT_RESOURCE_EXHAUSTED = 3,
+    COLLECT_ALLOCATION_FAILED = 4,
+} collect_result_t;
 
 typedef struct {
     const char *path;
@@ -63,8 +94,8 @@ typedef struct {
     uint16_t burst_cap;
     uint8_t grade;
     uint8_t asteroid_slot;
-    bool fragment_verified;
-    bool grade_verified;
+    bool fragment_math_consistent;
+    bool grade_math_consistent;
     uint8_t computed_fragment_pub[32];
     uint8_t computed_grade;
     char callsign[8];
@@ -78,8 +109,14 @@ typedef struct {
     uint8_t fragment_pub[32];
     uint8_t ingot_pub[32];
     uint8_t prefix_class;
-    uint64_t mined_block;
+    uint8_t semantics_version;
+    uint8_t commodity;
+    uint8_t grade;
+    uint16_t output_index;
+    uint64_t refinery_context_tick;
+    receipt_proof_level_t proof_level;
     receipt_context_t context;
+    claim_match_status_t claim_match_status;
     bool has_claim;
     claim_record_t claim;
 } receipt_t;
@@ -95,6 +132,11 @@ typedef struct {
     size_t count;
     size_t cap;
 } claim_list_t;
+
+typedef struct {
+    uint64_t station_attested_v1;
+    uint64_t unbound_v0;
+} craft_audit_summary_t;
 
 static void print_usage(FILE *out) {
     fprintf(out,
@@ -227,6 +269,47 @@ static const char *grade_name(uint8_t grade) {
     }
 }
 
+static const char *receipt_commodity_name(uint8_t commodity) {
+    switch ((commodity_t)commodity) {
+    case COMMODITY_FERRITE_INGOT: return "ferrite_ingot";
+    case COMMODITY_CUPRITE_INGOT: return "cuprite_ingot";
+    case COMMODITY_CRYSTAL_INGOT: return "crystal_ingot";
+    default: return "unknown";
+    }
+}
+
+static const char *proof_level_name(receipt_proof_level_t level) {
+    switch (level) {
+    case RECEIPT_PROOF_UNBOUND_V0:
+        return "unbound_v0";
+    case RECEIPT_PROOF_STATION_ATTESTED_V1:
+        return "station_attested_v1";
+    }
+    return "failure";
+}
+
+static const char *proof_status_name(receipt_proof_level_t level) {
+    switch (level) {
+    case RECEIPT_PROOF_UNBOUND_V0:
+        return "audit_only_unbound_v0";
+    case RECEIPT_PROOF_STATION_ATTESTED_V1:
+        return "valid_station_attested_v1";
+    }
+    return "failure";
+}
+
+static const char *claim_match_status_name(claim_match_status_t status) {
+    switch (status) {
+    case CLAIM_MATCH_NONE:
+        return "none";
+    case CLAIM_MATCH_UNIQUE_UNBOUND_V1:
+        return "unique_unbound_observation_v1";
+    case CLAIM_MATCH_AMBIGUOUS:
+        return "ambiguous";
+    }
+    return "unknown";
+}
+
 static bool parse_prefix_class(const char *text, uint8_t *out) {
     if (!text || !out) return false;
     if (strcmp(text, "anonymous") == 0) { *out = INGOT_PREFIX_ANONYMOUS; return true; }
@@ -290,42 +373,62 @@ static bool pubkey_from_filename(const char *path, uint8_t out[32],
     return true;
 }
 
-static bool append_receipt(receipt_list_t *list, const receipt_t *receipt) {
+static append_result_t append_receipt(receipt_list_t *list,
+                                      const receipt_t *receipt) {
+    if (list->count >= RATI_RECEIPT_RECORD_LIMIT)
+        return APPEND_RESOURCE_EXHAUSTED;
     if (list->count >= list->cap) {
         size_t next = list->cap ? list->cap * 2u : 16u;
+        if (next > RATI_RECEIPT_RECORD_LIMIT)
+            next = RATI_RECEIPT_RECORD_LIMIT;
         receipt_t *items = (receipt_t *)realloc(list->items, next * sizeof(receipt_t));
-        if (!items) return false;
+        if (!items) return APPEND_ALLOCATION_FAILED;
         list->items = items;
         list->cap = next;
     }
     list->items[list->count++] = *receipt;
-    return true;
+    return APPEND_OK;
 }
 
-static bool append_claim(claim_list_t *list, const claim_record_t *claim) {
+static append_result_t append_claim(claim_list_t *list,
+                                    const claim_record_t *claim) {
+    if (list->count >= RATI_CLAIM_RECORD_LIMIT)
+        return APPEND_RESOURCE_EXHAUSTED;
     if (list->count >= list->cap) {
         size_t next = list->cap ? list->cap * 2u : 16u;
+        if (next > RATI_CLAIM_RECORD_LIMIT)
+            next = RATI_CLAIM_RECORD_LIMIT;
         claim_record_t *items =
             (claim_record_t *)realloc(list->items, next * sizeof(claim_record_t));
-        if (!items) return false;
+        if (!items) return APPEND_ALLOCATION_FAILED;
         list->items = items;
         list->cap = next;
     }
     list->items[list->count++] = *claim;
-    return true;
+    return APPEND_OK;
 }
 
-static const claim_record_t *find_claim_for_fragment(const claim_list_t *list,
-                                                     uint64_t segment_id,
-                                                     const uint8_t fragment_pub[32]) {
-    if (!list || !fragment_pub) return NULL;
-    for (size_t i = list->count; i > 0; i--) {
-        const claim_record_t *claim = &list->items[i - 1u];
+static claim_match_status_t find_claim_for_fragment(
+    const claim_list_t *list,
+    uint64_t segment_id,
+    const uint8_t fragment_pub[32],
+    const claim_record_t **out_claim) {
+    const claim_record_t *match = NULL;
+    size_t matches = 0;
+    if (out_claim) *out_claim = NULL;
+    if (!list || !fragment_pub || !out_claim) return CLAIM_MATCH_NONE;
+    for (size_t i = 0; i < list->count; i++) {
+        const claim_record_t *claim = &list->items[i];
         if (claim->segment_id != segment_id) continue;
-        if (memcmp(claim->fragment_pub, fragment_pub, 32) == 0)
-            return claim;
+        if (memcmp(claim->fragment_pub, fragment_pub, 32) != 0)
+            continue;
+        match = claim;
+        matches++;
+        if (matches > 1u) return CLAIM_MATCH_AMBIGUOUS;
     }
-    return NULL;
+    if (matches == 0u) return CLAIM_MATCH_NONE;
+    *out_claim = match;
+    return CLAIM_MATCH_UNIQUE_UNBOUND_V1;
 }
 
 static void json_string(FILE *out, const char *text) {
@@ -413,7 +516,7 @@ static void compute_receipt_hash(receipt_t *receipt) {
     sha256_update(&ctx, receipt->fragment_pub, 32);
     sha256_update(&ctx, receipt->ingot_pub, 32);
     sha256_update(&ctx, &receipt->prefix_class, 1);
-    hash_u64_le(&ctx, receipt->mined_block);
+    hash_u64_le(&ctx, receipt->refinery_context_tick);
     sha256_update(&ctx, &receipt->has_claim, 1);
     if (receipt->has_claim) {
         sha256_update(&ctx, receipt->claim.event_hash, 32);
@@ -426,8 +529,8 @@ static void compute_receipt_hash(receipt_t *receipt) {
         hash_u32_le(&ctx, receipt->claim.burst_nonce);
         hash_u16_le(&ctx, receipt->claim.burst_cap);
         sha256_update(&ctx, &receipt->claim.grade, 1);
-        sha256_update(&ctx, &receipt->claim.fragment_verified, 1);
-        sha256_update(&ctx, &receipt->claim.grade_verified, 1);
+        sha256_update(&ctx, &receipt->claim.fragment_math_consistent, 1);
+        sha256_update(&ctx, &receipt->claim.grade_math_consistent, 1);
     }
     sha256_final(&ctx, receipt->receipt_hash);
 }
@@ -453,7 +556,7 @@ static claim_record_t build_claim_record(uint64_t segment_id,
                                 claim.claimant_pubkey,
                                 claim.burst_nonce,
                                 claim.computed_fragment_pub);
-    claim.fragment_verified =
+    claim.fragment_math_consistent =
         memcmp(claim.computed_fragment_pub, claim.fragment_pub, 32) == 0;
 
     mining_keypair_t kp;
@@ -461,11 +564,11 @@ static claim_record_t build_claim_record(uint64_t segment_id,
                           claim.burst_nonce, &kp);
     mining_callsign_from_pubkey(kp.pub, claim.callsign);
     claim.computed_grade = (uint8_t)mining_classify_base58(claim.callsign);
-    claim.grade_verified = claim.fragment_verified &&
-                            claim.burst_cap > 0 &&
-                            claim.burst_nonce < claim.burst_cap &&
-                            claim.grade == claim.computed_grade &&
-                            claim.grade < MINING_GRADE_COUNT;
+    claim.grade_math_consistent = claim.fragment_math_consistent &&
+                                  claim.burst_cap > 0 &&
+                                  claim.burst_nonce < claim.burst_cap &&
+                                  claim.grade == claim.computed_grade &&
+                                  claim.grade < MINING_GRADE_COUNT;
     return claim;
 }
 
@@ -481,124 +584,321 @@ static bool receipt_matches_filters(const cli_opts_t *opts,
     return true;
 }
 
-static bool collect_receipts(const cli_opts_t *opts, receipt_list_t *out) {
-    FILE *f = fopen(opts->path, "rb");
-    if (!f) {
-        fprintf(stderr, "signal_rati_receipt: cannot open %s\n", opts->path);
-        return false;
+/*
+ * Freeze the path-backed log before either verification pass.  Holding one
+ * descriptor prevents pathname replacement; copying it once to an anonymous
+ * bounded file also prevents in-place edits from changing bytes between
+ * verification and semantic collection.
+ */
+static FILE *snapshot_log(FILE *source) {
+    if (!source) return NULL;
+    FILE *snapshot = tmpfile();
+    if (!snapshot) {
+        fprintf(stderr,
+                "signal_rati_receipt: proof_status=read_invalid "
+                "reason=cannot_create_anonymous_snapshot\n");
+        return NULL;
     }
+    uint8_t buffer[64 * 1024];
+    size_t total = 0;
+    for (;;) {
+        size_t got = fread(buffer, 1, sizeof(buffer), source);
+        if (got > 0u) {
+            if (got > (size_t)RATI_LOG_SNAPSHOT_MAX_BYTES - total) {
+                fprintf(stderr,
+                        "signal_rati_receipt: "
+                        "proof_status=resource_exhausted "
+                        "resource=chain_log_snapshot_bytes limit=%u\n",
+                        (unsigned)RATI_LOG_SNAPSHOT_MAX_BYTES);
+                fclose(snapshot);
+                return NULL;
+            }
+            if (fwrite(buffer, 1, got, snapshot) != got) {
+                fprintf(stderr,
+                        "signal_rati_receipt: proof_status=read_invalid "
+                        "reason=anonymous_snapshot_write_failed\n");
+                fclose(snapshot);
+                return NULL;
+            }
+            total += got;
+        }
+        if (got < sizeof(buffer)) {
+            if (ferror(source)) {
+                fprintf(stderr,
+                        "signal_rati_receipt: proof_status=read_invalid "
+                        "reason=source_snapshot_read_failed\n");
+                fclose(snapshot);
+                return NULL;
+            }
+            break;
+        }
+    }
+    if (fflush(snapshot) != 0 ||
+        fseek(snapshot, 0, SEEK_SET) != 0) {
+        fprintf(stderr,
+                "signal_rati_receipt: proof_status=read_invalid "
+                "reason=anonymous_snapshot_rewind_failed\n");
+        fclose(snapshot);
+        return NULL;
+    }
+    return snapshot;
+}
 
+static collect_result_t collect_receipts(FILE *f,
+                                         uint64_t verified_event_count,
+                                         const cli_opts_t *opts,
+                                         receipt_list_t *out,
+                                         craft_audit_summary_t *crafts) {
+    if (!f || !opts || !out || !crafts ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fprintf(stderr,
+                "signal_rati_receipt: proof_status=read_invalid "
+                "reason=cannot_rewind_verified_descriptor\n");
+        return COLLECT_READ_INVALID;
+    }
+    memset(crafts, 0, sizeof(*crafts));
     claim_list_t claims;
     memset(&claims, 0, sizeof(claims));
     uint64_t segment_id = 0;
-    uint64_t events_seen = 0;
+    size_t legacy_v0_scans = 0;
     receipt_context_t context;
     memset(&context, 0, sizeof(context));
+    collect_result_t result = COLLECT_OK;
 
-    for (;;) {
+    for (uint64_t event_index = 0;
+         event_index < verified_event_count;
+         event_index++) {
         uint8_t raw[CHAIN_EVENT_HEADER_SIZE];
         size_t got = fread(raw, 1, sizeof(raw), f);
-        if (got == 0 && feof(f)) break;
         if (got != sizeof(raw)) {
-            fprintf(stderr, "signal_rati_receipt: truncated header\n");
-            free(claims.items);
-            fclose(f);
-            return false;
+            fprintf(stderr,
+                    "signal_rati_receipt: proof_status=read_invalid "
+                    "reason=verified_snapshot_truncated_header "
+                    "event_index=%llu\n",
+                    (unsigned long long)event_index);
+            result = COLLECT_READ_INVALID;
+            goto done;
         }
 
         parsed_header_t hdr;
         if (!parse_header(raw, &hdr)) {
-            fprintf(stderr, "signal_rati_receipt: malformed header padding\n");
-            free(claims.items);
-            fclose(f);
-            return false;
+            fprintf(stderr,
+                    "signal_rati_receipt: proof_status=read_invalid "
+                    "reason=verified_snapshot_malformed_header "
+                    "event_index=%llu\n",
+                    (unsigned long long)event_index);
+            result = COLLECT_READ_INVALID;
+            goto done;
         }
 
         uint8_t len_bytes[2];
         if (fread(len_bytes, 1, sizeof(len_bytes), f) != sizeof(len_bytes)) {
-            fprintf(stderr, "signal_rati_receipt: missing payload length\n");
-            free(claims.items);
-            fclose(f);
-            return false;
+            fprintf(stderr,
+                    "signal_rati_receipt: proof_status=read_invalid "
+                    "reason=verified_snapshot_missing_payload_length "
+                    "event_id=%llu segment_id=%llu\n",
+                    (unsigned long long)hdr.event_id,
+                    (unsigned long long)segment_id);
+            result = COLLECT_READ_INVALID;
+            goto done;
         }
         uint16_t payload_len = read_le16(len_bytes);
-        uint8_t *payload = NULL;
-        if (payload_len) {
-            payload = (uint8_t *)malloc(payload_len);
-            if (!payload) {
-                free(claims.items);
-                fclose(f);
-                return false;
-            }
-            if (fread(payload, 1, payload_len, f) != payload_len) {
-                free(payload);
-                fprintf(stderr, "signal_rati_receipt: truncated payload\n");
-                free(claims.items);
-                fclose(f);
-                return false;
-            }
+        uint8_t payload[RATI_PAYLOAD_MAX];
+        if (payload_len > sizeof(payload)) {
+            fprintf(stderr,
+                    "signal_rati_receipt: proof_status=read_invalid "
+                    "reason=verified_snapshot_payload_too_large "
+                    "event_id=%llu payload_len=%u\n",
+                    (unsigned long long)hdr.event_id,
+                    (unsigned)payload_len);
+            result = COLLECT_READ_INVALID;
+            goto done;
+        }
+        if (payload_len > 0u &&
+            fread(payload, 1, payload_len, f) != payload_len) {
+            fprintf(stderr,
+                    "signal_rati_receipt: proof_status=read_invalid "
+                    "reason=verified_snapshot_truncated_payload "
+                    "event_id=%llu payload_len=%u\n",
+                    (unsigned long long)hdr.event_id,
+                    (unsigned)payload_len);
+            result = COLLECT_READ_INVALID;
+            goto done;
         }
 
-        bool segment_reset = events_seen > 0 &&
+        bool segment_reset = event_index > 0 &&
                              hdr.event_id == 1 &&
                              hash_is_zero(hdr.prev_hash);
         if (segment_reset) {
             segment_id++;
             memset(&context, 0, sizeof(context));
+            claims.count = 0;
         }
-        events_seen++;
 
         if (hdr.type == CHAIN_EVT_OPERATOR_POST) {
             update_context(&context, payload, payload_len);
-        } else if (hdr.type == CHAIN_EVT_CLAIM_FRAGMENT &&
-                   payload_len == sizeof(chain_payload_claim_fragment_t)) {
-            claim_record_t claim = build_claim_record(segment_id, &hdr, payload);
-            if (!append_claim(&claims, &claim)) {
-                free(payload);
-                free(claims.items);
-                fclose(f);
-                return false;
+        } else if (hdr.type == CHAIN_EVT_CLAIM_FRAGMENT) {
+            if (payload_len != sizeof(chain_payload_claim_fragment_t)) {
+                fprintf(stderr,
+                        "signal_rati_receipt: "
+                        "proof_status=reject_claim_payload_length "
+                        "event_id=%llu segment_id=%llu payload_len=%u "
+                        "expected=%zu\n",
+                        (unsigned long long)hdr.event_id,
+                        (unsigned long long)segment_id,
+                        (unsigned)payload_len,
+                        sizeof(chain_payload_claim_fragment_t));
+                result = COLLECT_SEMANTIC_INVALID;
+                goto done;
             }
-        } else if (hdr.type == CHAIN_EVT_SMELT &&
-                   payload_len == sizeof(chain_payload_smelt_t)) {
-            const uint8_t *fragment_pub = &payload[0];
-            const uint8_t *ingot_pub = &payload[32];
-            uint8_t prefix_class = payload[64];
-            if (receipt_matches_filters(opts, segment_id, &hdr, ingot_pub,
-                                        prefix_class)) {
-                receipt_t receipt;
-                memset(&receipt, 0, sizeof(receipt));
-                receipt.segment_id = segment_id;
-                receipt.hdr = hdr;
+            claim_record_t claim = build_claim_record(segment_id, &hdr, payload);
+            append_result_t appended = append_claim(&claims, &claim);
+            if (appended != APPEND_OK) {
+                fprintf(stderr,
+                        "signal_rati_receipt: "
+                        "proof_status=%s record_kind=claim limit=%u\n",
+                        appended == APPEND_RESOURCE_EXHAUSTED
+                            ? "resource_exhausted"
+                            : "allocation_failed",
+                        (unsigned)RATI_CLAIM_RECORD_LIMIT);
+                result = appended == APPEND_RESOURCE_EXHAUSTED
+                    ? COLLECT_RESOURCE_EXHAUSTED
+                    : COLLECT_ALLOCATION_FAILED;
+                goto done;
+            }
+        } else if (hdr.type == CHAIN_EVT_CRAFT) {
+            cargo_craft_provenance_result_t craft;
+            cargo_craft_provenance_status_t status =
+                cargo_craft_provenance_evaluate(
+                    payload, payload_len, true, &craft);
+            if (status ==
+                CARGO_CRAFT_PROVENANCE_STATION_ATTESTED_V1) {
+                crafts->station_attested_v1++;
+            } else if (status ==
+                       CARGO_CRAFT_PROVENANCE_UNBOUND_V0) {
+                crafts->unbound_v0++;
+            } else {
+                fprintf(stderr,
+                        "signal_rati_receipt: proof_status=%s "
+                        "record_kind=craft event_id=%llu "
+                        "segment_id=%llu\n",
+                        cargo_craft_provenance_status_name(status),
+                        (unsigned long long)hdr.event_id,
+                        (unsigned long long)segment_id);
+                result = COLLECT_SEMANTIC_INVALID;
+                goto done;
+            }
+        } else if (hdr.type == CHAIN_EVT_SMELT) {
+            if (payload_len == sizeof(chain_payload_smelt_t) &&
+                payload[65] == CHAIN_CARGO_SEMANTICS_UNBOUND) {
+                if (legacy_v0_scans >= RATI_LEGACY_V0_SCAN_LIMIT) {
+                    fprintf(stderr,
+                            "signal_rati_receipt: "
+                            "proof_status=resource_exhausted "
+                            "resource=legacy_v0_semantic_scans limit=%u\n",
+                            (unsigned)RATI_LEGACY_V0_SCAN_LIMIT);
+                    result = COLLECT_RESOURCE_EXHAUSTED;
+                    goto done;
+                }
+                legacy_v0_scans++;
+            }
+
+            receipt_t receipt;
+            memset(&receipt, 0, sizeof(receipt));
+            receipt.segment_id = segment_id;
+            receipt.hdr = hdr;
+            receipt.context = context;
+            cargo_smelt_provenance_result_t provenance;
+            cargo_smelt_provenance_status_t validation =
+                cargo_smelt_provenance_evaluate(
+                    payload, payload_len, true, &provenance);
+            if (validation != CARGO_SMELT_PROVENANCE_UNBOUND_V0 &&
+                validation !=
+                    CARGO_SMELT_PROVENANCE_STATION_ATTESTED_V1) {
+                fprintf(stderr,
+                        "signal_rati_receipt: proof_status=%s "
+                        "event_id=%llu segment_id=%llu\n",
+                        cargo_smelt_provenance_status_name(validation),
+                        (unsigned long long)hdr.event_id,
+                        (unsigned long long)segment_id);
+                result =
+                    validation ==
+                        CARGO_SMELT_PROVENANCE_REJECT_RESOURCE
+                    ? COLLECT_RESOURCE_EXHAUSTED
+                    : COLLECT_SEMANTIC_INVALID;
+                goto done;
+            }
+            memcpy(receipt.fragment_pub, provenance.fragment_pub,
+                   sizeof(receipt.fragment_pub));
+            memcpy(receipt.ingot_pub, provenance.output_pub,
+                   sizeof(receipt.ingot_pub));
+            receipt.prefix_class = provenance.prefix_class;
+            receipt.semantics_version = provenance.semantics_version;
+            receipt.commodity = provenance.commodity;
+            receipt.grade = provenance.grade;
+            receipt.output_index = provenance.output_index;
+            receipt.refinery_context_tick =
+                provenance.refinery_context_tick;
+            receipt.proof_level =
+                validation ==
+                    CARGO_SMELT_PROVENANCE_STATION_ATTESTED_V1
+                ? RECEIPT_PROOF_STATION_ATTESTED_V1
+                : RECEIPT_PROOF_UNBOUND_V0;
+
+            if (receipt_matches_filters(opts, segment_id, &hdr,
+                                        receipt.ingot_pub,
+                                        receipt.prefix_class)) {
                 sha256_bytes(hdr.raw_header, CHAIN_EVENT_HEADER_SIZE,
                              receipt.event_hash);
-                memcpy(receipt.fragment_pub, fragment_pub, 32);
-                memcpy(receipt.ingot_pub, ingot_pub, 32);
-                receipt.prefix_class = prefix_class;
-                receipt.mined_block = read_le64(&payload[72]);
-                receipt.context = context;
-                const claim_record_t *claim =
-                    find_claim_for_fragment(&claims, segment_id, fragment_pub);
-                if (claim) {
+                const claim_record_t *claim = NULL;
+                receipt.claim_match_status =
+                    find_claim_for_fragment(&claims, segment_id,
+                                            receipt.fragment_pub, &claim);
+                if (receipt.claim_match_status ==
+                    CLAIM_MATCH_UNIQUE_UNBOUND_V1) {
                     receipt.has_claim = true;
                     receipt.claim = *claim;
                 }
                 compute_receipt_hash(&receipt);
-                if (!append_receipt(out, &receipt)) {
-                    free(payload);
-                    free(claims.items);
-                    fclose(f);
-                    return false;
+                append_result_t appended = append_receipt(out, &receipt);
+                if (appended != APPEND_OK) {
+                    fprintf(stderr,
+                            "signal_rati_receipt: "
+                            "proof_status=%s record_kind=receipt limit=%u\n",
+                            appended == APPEND_RESOURCE_EXHAUSTED
+                                ? "resource_exhausted"
+                                : "allocation_failed",
+                            (unsigned)RATI_RECEIPT_RECORD_LIMIT);
+                    result = appended == APPEND_RESOURCE_EXHAUSTED
+                        ? COLLECT_RESOURCE_EXHAUSTED
+                        : COLLECT_ALLOCATION_FAILED;
+                    goto done;
                 }
             }
         }
-
-        free(payload);
     }
 
-    fclose(f);
+    {
+        int trailing = fgetc(f);
+        if (trailing != EOF) {
+            fprintf(stderr,
+                    "signal_rati_receipt: proof_status=read_invalid "
+                    "reason=verified_snapshot_has_trailing_data\n");
+            result = COLLECT_READ_INVALID;
+            goto done;
+        }
+        if (ferror(f)) {
+            fprintf(stderr,
+                    "signal_rati_receipt: proof_status=read_invalid "
+                    "reason=verified_snapshot_read_error\n");
+            result = COLLECT_READ_INVALID;
+            goto done;
+        }
+    }
+
+done:
     free(claims.items);
-    return true;
+    return result;
 }
 
 static void print_hex_field(FILE *out, const char *name, const uint8_t *bytes,
@@ -610,7 +910,6 @@ static void print_hex_field(FILE *out, const char *name, const uint8_t *bytes,
 
 static void print_receipt(FILE *out, const receipt_t *r,
                           const char station_b58[64]) {
-    char hex[129];
     fprintf(out, "{\n");
     fprintf(out, "      \"version\":\"rati_mining_receipt_v1\",\n");
     fprintf(out, "      ");
@@ -620,6 +919,19 @@ static void print_receipt(FILE *out, const receipt_t *r,
     print_hex_field(out, "station_pubkey", r->hdr.authority, 32, true);
     fprintf(out, "\n");
     fprintf(out, "      \"station_pubkey_b58\":\"%s\",\n", station_b58);
+    fprintf(out, "      \"provenance\":{");
+    fprintf(out, "\"proof_level\":\"%s\",",
+            proof_level_name(r->proof_level));
+    fprintf(out, "\"status\":\"%s\",",
+            proof_status_name(r->proof_level));
+    fprintf(out, "\"semantics_version\":%u,",
+            (unsigned)r->semantics_version);
+    fprintf(out, "\"station_signature_verified\":true,");
+    fprintf(out, "\"station_attested_semantics\":%s,",
+            r->proof_level == RECEIPT_PROOF_STATION_ATTESTED_V1
+                ? "true"
+                : "false");
+    fprintf(out, "\"mining_proven\":false},\n");
     fprintf(out, "      \"world\":{\"world_id\":%u,\"world_seq\":%u,\"build_id\":",
             (unsigned)r->context.world_id, (unsigned)r->context.world_seq);
     if (r->context.build_id[0])
@@ -647,30 +959,59 @@ static void print_receipt(FILE *out, const receipt_t *r,
     print_hex_field(out, "cargo_pub", r->ingot_pub, 32, true);
     print_hex_field(out, "parent_merkle", r->fragment_pub, 32, true);
     fprintf(out, "\"grade\":");
-    if (r->has_claim && r->claim.grade_verified)
-        json_string(out, grade_name(r->claim.grade));
+    if (r->proof_level == RECEIPT_PROOF_STATION_ATTESTED_V1)
+        json_string(out, grade_name(r->grade));
     else
         fputs("null", out);
-    fprintf(out, ",\"grade_verified\":%s,",
-            (r->has_claim && r->claim.grade_verified) ? "true" : "false");
+    fprintf(out, ",\"grade_attested\":%s,",
+            r->proof_level == RECEIPT_PROOF_STATION_ATTESTED_V1
+                ? "true"
+                : "false");
+    fprintf(out, "\"grade_verified\":false,");
+    fprintf(out, "\"mining_proven\":false,");
     fprintf(out, "\"grade_note\":");
-    if (r->has_claim)
-        json_string(out, r->claim.grade_verified
-            ? "verified from CHAIN_EVT_CLAIM_FRAGMENT"
-            : "claim fragment proof did not verify");
+    if (r->proof_level == RECEIPT_PROOF_STATION_ATTESTED_V1)
+        json_string(out,
+            "station-attested V1 label; no mining preimage proof");
     else
-        json_string(out, "no CHAIN_EVT_CLAIM_FRAGMENT matched this smelt");
+        json_string(out,
+            "legacy V0 identity omits grade and cannot prove it");
+    fprintf(out, ",");
+    fprintf(out, "\"commodity\":");
+    if (r->proof_level == RECEIPT_PROOF_STATION_ATTESTED_V1)
+        json_string(out, receipt_commodity_name(r->commodity));
+    else
+        fputs("null", out);
+    fprintf(out, ",\"commodity_id\":");
+    if (r->proof_level == RECEIPT_PROOF_STATION_ATTESTED_V1)
+        fprintf(out, "%u", (unsigned)r->commodity);
+    else
+        fputs("null", out);
     fprintf(out, ",");
     fprintf(out, "\"prefix_class\":\"%s\",", prefix_name(r->prefix_class));
     fprintf(out, "\"prefix_class_id\":%u,", (unsigned)r->prefix_class);
-    fprintf(out, "\"mined_tick\":%llu",
-            (unsigned long long)r->mined_block);
+    fprintf(out, "\"output_index\":%u,", (unsigned)r->output_index);
+    fprintf(out, "\"output_index_source\":\"%s\",",
+            r->proof_level == RECEIPT_PROOF_STATION_ATTESTED_V1
+                ? "station_attested_smelt_v1"
+                : "legacy_identity_recovery");
+    fprintf(out, "\"refinery_context_tick\":%llu,",
+            (unsigned long long)r->refinery_context_tick);
+    fprintf(out, "\"mined_tick\":%llu,",
+            (unsigned long long)r->refinery_context_tick);
+    fprintf(out, "\"mined_tick_note\":");
+    json_string(out,
+        "deprecated alias for refinery_context_tick; not mining proof");
     fprintf(out, "},\n");
 
+    fprintf(out, "      \"claim_match_status\":\"%s\",\n",
+            claim_match_status_name(r->claim_match_status));
     fprintf(out, "      \"claim\":");
     if (r->has_claim) {
         fprintf(out, "{");
         fprintf(out, "\"kind\":\"CHAIN_EVT_CLAIM_FRAGMENT\",");
+        fprintf(out, "\"binding\":\"unbound_observation_v1\",");
+        fprintf(out, "\"mining_proven\":false,");
         fprintf(out, "\"event_id\":%llu,",
                 (unsigned long long)r->claim.hdr.event_id);
         fprintf(out, "\"segment_id\":%llu,",
@@ -691,10 +1032,15 @@ static void print_receipt(FILE *out, const receipt_t *r,
         fprintf(out, "\"computed_grade\":\"%s\",", grade_name(r->claim.computed_grade));
         print_hex_field(out, "computed_fragment_pub",
                         r->claim.computed_fragment_pub, 32, true);
-        fprintf(out, "\"fragment_verified\":%s,",
-                r->claim.fragment_verified ? "true" : "false");
-        fprintf(out, "\"grade_verified\":%s",
-                r->claim.grade_verified ? "true" : "false");
+        fprintf(out, "\"fragment_math_consistent\":%s,",
+                r->claim.fragment_math_consistent ? "true" : "false");
+        fprintf(out, "\"grade_math_consistent\":%s,",
+                r->claim.grade_math_consistent ? "true" : "false");
+        fprintf(out, "\"fragment_verified\":false,");
+        fprintf(out, "\"grade_verified\":false,");
+        fprintf(out, "\"verification_note\":");
+        json_string(out,
+            "claim-local math is not bound to canonical fracture evidence");
         fprintf(out, "}");
     } else {
         fputs("null", out);
@@ -703,8 +1049,6 @@ static void print_receipt(FILE *out, const receipt_t *r,
 
     fprintf(out, "      \"arweave\":{\"segment_tx\":null,\"checkpoint_tx\":null,\"manifest_tx\":null},\n");
     fprintf(out, "      \"bitcoin\":{\"batch_root\":null,\"anchor_txid\":null,\"block_height\":null,\"block_hash\":null}\n");
-    hex_bytes(r->receipt_hash, 32, hex, sizeof(hex));
-    (void)hex;
     fprintf(out, "    }");
 }
 
@@ -712,7 +1056,8 @@ static void print_output(FILE *out, const cli_opts_t *opts,
                          const char station_b58[64],
                          const uint8_t station_pubkey[32],
                          const chain_log_verify_report_t *report,
-                         const receipt_list_t *receipts) {
+                         const receipt_list_t *receipts,
+                         const craft_audit_summary_t *crafts) {
     char station_hex[65];
     hex_bytes(station_pubkey, 32, station_hex, sizeof(station_hex));
 
@@ -741,6 +1086,14 @@ static void print_output(FILE *out, const cli_opts_t *opts,
         fprintf(out, ",\"cargo_pub\":\"%s\"", cargo_hex);
     }
     fprintf(out, "},\n");
+    fprintf(out, "  \"craft_provenance\":{");
+    fprintf(out, "\"scope\":\"all_verified_events\",");
+    fprintf(out, "\"station_attested_v1\":%llu,",
+            (unsigned long long)crafts->station_attested_v1);
+    fprintf(out, "\"unbound_v0\":%llu,",
+            (unsigned long long)crafts->unbound_v0);
+    fprintf(out, "\"input_lineage_proven\":false,");
+    fprintf(out, "\"conservation_proven\":false},\n");
     fprintf(out, "  \"receipt_count\":%zu,\n", receipts->count);
     fprintf(out, "  \"receipts\":[\n");
     for (size_t i = 0; i < receipts->count; i++) {
@@ -820,28 +1173,51 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    FILE *vf = fopen(opts.path, "rb");
-    if (!vf) {
+    FILE *source_log = fopen(opts.path, "rb");
+    if (!source_log) {
         fprintf(stderr, "signal_rati_receipt: cannot open %s\n", opts.path);
         return 2;
     }
+    FILE *verified_log = snapshot_log(source_log);
+    if (fclose(source_log) != 0) {
+        if (verified_log) fclose(verified_log);
+        fprintf(stderr,
+                "signal_rati_receipt: proof_status=read_invalid "
+                "reason=source_descriptor_close_failed\n");
+        return 1;
+    }
+    if (!verified_log) return 1;
     chain_log_verify_report_t report;
-    bool verified = chain_log_verify_with_pubkey(vf, station_pubkey, &report);
-    fclose(vf);
+    bool verified =
+        chain_log_verify_with_pubkey(verified_log, station_pubkey, &report);
     if (!verified) {
         fprintf(stderr, "signal_rati_receipt: chain verification failed: %s\n",
                 report.first_fail_reason[0] ? report.first_fail_reason : "unknown");
+        fclose(verified_log);
         return 1;
     }
 
     receipt_list_t receipts;
     memset(&receipts, 0, sizeof(receipts));
-    if (!collect_receipts(&opts, &receipts)) {
+    craft_audit_summary_t crafts = {0};
+    collect_result_t collected =
+        collect_receipts(
+            verified_log, report.valid_events,
+            &opts, &receipts, &crafts);
+    if (fclose(verified_log) != 0 && collected == COLLECT_OK) {
+        fprintf(stderr,
+                "signal_rati_receipt: proof_status=read_invalid "
+                "reason=verified_descriptor_close_failed\n");
+        collected = COLLECT_READ_INVALID;
+    }
+    if (collected != COLLECT_OK) {
         free(receipts.items);
         return 1;
     }
 
-    print_output(stdout, &opts, station_b58, station_pubkey, &report, &receipts);
+    print_output(
+        stdout, &opts, station_b58, station_pubkey,
+        &report, &receipts, &crafts);
     free(receipts.items);
     return 0;
 }

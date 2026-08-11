@@ -23,6 +23,32 @@ void cargo_unit_wire_pack(const cargo_unit_t *unit,
 void cargo_unit_wire_unpack(const uint8_t in[CARGO_UNIT_WIRE_SIZE],
                             cargo_unit_t *out);
 
+/*
+ * Domain-separated selection token for a physical cargo pod.
+ *
+ * This binds the pod's exact ordered identities, shell, shipment envelope,
+ * and charge custody. The server folds it together with the live entity
+ * generation before issuing a client selection token; this content-only
+ * helper deliberately excludes position/velocity and render summaries.
+ */
+bool cargo_pod_selection_digest(const cargo_pod_t *pod, uint8_t out[32]);
+
+/*
+ * Canonical digest of the exact ordered manifest currently remaining in a
+ * pod.  The paid-custody anchor persists this digest so a save/reload or an
+ * unrelated content mutation cannot silently reuse an aggregate quote for a
+ * different suffix.
+ */
+bool cargo_pod_ordered_manifest_digest(const cargo_pod_t *pod,
+                                       uint8_t out[32]);
+
+/*
+ * Validate the server-only paid-custody anchor.  A completely clear anchor is
+ * valid.  A populated anchor must belong to station custody, describe the
+ * current manifest count as an original ordered suffix, and match its digest.
+ */
+bool cargo_pod_custody_charge_anchor_valid(const cargo_pod_t *pod);
+
 const char *cargo_kind_name(cargo_kind_t kind);
 const recipe_def_t *recipe_get(recipe_id_t id);
 
@@ -46,6 +72,7 @@ bool cargo_store_push_with_chain(cargo_store_t *store,
 bool cargo_store_remove_with_chain(cargo_store_t *store, uint16_t index,
                                    cargo_unit_t *out_unit,
                                    cargo_receipt_chain_t *out_chain);
+bool cargo_store_swap_rows(cargo_store_t *store, uint16_t a, uint16_t b);
 int cargo_store_consume_by_commodity(cargo_store_t *store,
                                      commodity_t commodity, int n);
 
@@ -122,6 +149,9 @@ void ship_finished_sync(ship_t *ship, commodity_t c);
 int ship_finished_drain(ship_t *ship, commodity_t c, int n);
 
 void ship_cleanup(ship_t *ship);
+
+/* Release owned cargo/receipt storage and return the whole value to zero. */
+void ship_reset(ship_t *ship);
 bool ship_manifest_bootstrap(ship_t *ship);
 bool ship_copy(ship_t *dst, const ship_t *src);
 
@@ -139,6 +169,9 @@ bool ship_manifest_remove_with_chain(ship_t *ship, uint16_t index,
                                      cargo_receipt_chain_t *out_chain);
 int ship_manifest_consume_by_commodity(ship_t *ship, commodity_t c, int n);
 void station_cleanup(station_t *station);
+
+/* Release owned cargo/receipt storage, wipe the signing key, and zero state. */
+void station_reset(station_t *station);
 bool station_manifest_bootstrap(station_t *station);
 bool station_copy(station_t *dst, const station_t *src);
 ship_receipts_t *station_get_receipts(station_t *station);
@@ -156,6 +189,21 @@ bool hash_merkle_root(const uint8_t pubs[][32], size_t count, uint8_t out_root[3
 bool hash_ingot(commodity_t commodity, mining_grade_t grade,
                 const uint8_t fragment_pub[32], uint16_t output_index,
                 cargo_unit_t *out_unit);
+/*
+ * Derive the identity-bearing half of a normal fabricated output directly
+ * from the input pubs and output grade carried by a signed CRAFT event. This
+ * is the shared verifier companion to hash_product(): it deliberately cannot
+ * validate input commodity/grade labels, while hash_product() still does.
+ * Zero or duplicate input identities are never canonical.
+ */
+bool hash_product_identity_from_pubs(
+    recipe_id_t recipe_id,
+    const uint8_t input_pubs[][32],
+    size_t input_count,
+    mining_grade_t output_grade,
+    uint16_t output_index,
+    uint8_t out_parent_merkle[32],
+    uint8_t out_pub[32]);
 bool hash_product(recipe_id_t recipe_id, const cargo_unit_t *inputs,
                   size_t input_count, uint16_t output_index,
                   cargo_unit_t *out_unit);

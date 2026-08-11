@@ -8,6 +8,14 @@
 #include "game_sim.h"
 
 #define SIGNAL_FRONTIER_VIRTUAL_PILOTS_MAX 1000000
+#define SIGNAL_NPC_WORKER_TRACE_SCHEMA "signal.npc_worker_shadow.v3"
+/*
+ * NPCs do not yet have a persisted non-secret birth ID. Public traces must
+ * therefore say "unattributed" explicitly; runtime session tokens are
+ * bearer credentials and are never trace identity.
+ */
+#define SIGNAL_NPC_WORKER_TRACE_PUBLIC_IDENTITY_JSON \
+    "\"actor_kind\":\"unattributed\",\"public_actor\":null,"
 
 typedef enum {
     FRONTIER_DIRECTOR_DECISION_NONE = 0,

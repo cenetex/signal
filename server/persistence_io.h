@@ -3,6 +3,7 @@
 #define SIGNAL_PERSISTENCE_IO_H
 
 #include <stdbool.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -114,6 +115,48 @@ static inline bool persistence_replace_file(const char *tmp_path,
 #else
     if (rename(tmp_path, final_path) != 0) return false;
     return persistence_sync_parent_dir(final_path);
+#endif
+}
+
+typedef enum {
+    PERSISTENCE_PUBLISH_NO_REPLACE_OK = 0,
+    PERSISTENCE_PUBLISH_NO_REPLACE_CONFLICT,
+    PERSISTENCE_PUBLISH_NO_REPLACE_IO_FAILURE,
+} persistence_publish_no_replace_result_t;
+
+/*
+ * Publish a fully flushed temporary file without ever replacing an existing
+ * final name. POSIX link(2) and Windows MoveFileEx without
+ * MOVEFILE_REPLACE_EXISTING both make the absence check part of the atomic
+ * namespace operation.
+ */
+static inline persistence_publish_no_replace_result_t
+persistence_publish_file_no_replace(const char *tmp_path,
+                                    const char *final_path) {
+    if (!tmp_path || !final_path)
+        return PERSISTENCE_PUBLISH_NO_REPLACE_IO_FAILURE;
+#ifdef _WIN32
+    if (!MoveFileExA(tmp_path, final_path, MOVEFILE_WRITE_THROUGH)) {
+        DWORD error = GetLastError();
+        return error == ERROR_FILE_EXISTS ||
+               error == ERROR_ALREADY_EXISTS
+            ? PERSISTENCE_PUBLISH_NO_REPLACE_CONFLICT
+            : PERSISTENCE_PUBLISH_NO_REPLACE_IO_FAILURE;
+    }
+    return persistence_sync_parent_dir(final_path)
+        ? PERSISTENCE_PUBLISH_NO_REPLACE_OK
+        : PERSISTENCE_PUBLISH_NO_REPLACE_IO_FAILURE;
+#else
+    if (link(tmp_path, final_path) != 0) {
+        return errno == EEXIST
+            ? PERSISTENCE_PUBLISH_NO_REPLACE_CONFLICT
+            : PERSISTENCE_PUBLISH_NO_REPLACE_IO_FAILURE;
+    }
+    if (unlink(tmp_path) != 0 ||
+        !persistence_sync_parent_dir(final_path)) {
+        return PERSISTENCE_PUBLISH_NO_REPLACE_IO_FAILURE;
+    }
+    return PERSISTENCE_PUBLISH_NO_REPLACE_OK;
 #endif
 }
 

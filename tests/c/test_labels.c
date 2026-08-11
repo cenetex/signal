@@ -173,6 +173,8 @@ TEST(test_station_dominant_module_priority) {
     ASSERT_EQ_INT(station_dominant_module(&st), MODULE_LASER_FAB);
     seed_single_module_station(&st, MODULE_TRACTOR_FAB);
     ASSERT_EQ_INT(station_dominant_module(&st), MODULE_TRACTOR_FAB);
+    seed_single_module_station(&st, MODULE_ENGINE_FAB);
+    ASSERT_EQ_INT(station_dominant_module(&st), MODULE_ENGINE_FAB);
     seed_single_module_station(&st, MODULE_FURNACE);
     ASSERT_EQ_INT(station_dominant_module(&st), MODULE_FURNACE);
     seed_single_module_station(&st, MODULE_SIGNAL_RELAY);
@@ -206,6 +208,8 @@ TEST(test_station_primary_buy_per_dominant_module) {
     ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_CRYSTAL_INGOT);
     seed_single_module_station(&st, MODULE_TRACTOR_FAB);
     ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_CUPRITE_INGOT);
+    seed_single_module_station(&st, MODULE_ENGINE_FAB);
+    ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_FRAME);
     /* Furnaces don't buy from players (ore arrives via fragment smelting). */
     seed_single_module_station(&st, MODULE_FURNACE);
     ASSERT_EQ_INT((int)station_primary_buy(&st), -1);
@@ -218,14 +222,19 @@ TEST(test_station_consumes_fab_inputs) {
     station_t st = {0};
 
     seed_single_module_station(&st, MODULE_LASER_FAB);
+    ASSERT(station_consumes(&st, COMMODITY_CRYSTAL_INGOT));
+    ASSERT(station_consumes(&st, COMMODITY_FRAME));
+    ASSERT(!station_consumes(&st, COMMODITY_CUPRITE_INGOT));
+
+    seed_single_module_station(&st, MODULE_TRACTOR_FAB);
     ASSERT(station_consumes(&st, COMMODITY_CUPRITE_INGOT));
     ASSERT(station_consumes(&st, COMMODITY_FRAME));
     ASSERT(!station_consumes(&st, COMMODITY_CRYSTAL_INGOT));
 
-    seed_single_module_station(&st, MODULE_TRACTOR_FAB);
-    ASSERT(station_consumes(&st, COMMODITY_CRYSTAL_INGOT));
+    seed_single_module_station(&st, MODULE_ENGINE_FAB);
     ASSERT(station_consumes(&st, COMMODITY_FRAME));
-    ASSERT(!station_consumes(&st, COMMODITY_CUPRITE_INGOT));
+    ASSERT(station_consumes(&st, COMMODITY_CUPRITE_INGOT));
+    ASSERT(station_consumes(&st, COMMODITY_CRYSTAL_INGOT));
 }
 
 TEST(test_station_primary_sell_per_dominant_module) {
@@ -255,6 +264,8 @@ TEST(test_station_primary_sell_per_dominant_module) {
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_LASER_MODULE);
     seed_single_module_station(&st, MODULE_TRACTOR_FAB);
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_TRACTOR_MODULE);
+    seed_single_module_station(&st, MODULE_ENGINE_FAB);
+    ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_ENGINE_MODULE);
     seed_single_module_station(&st, MODULE_SIGNAL_RELAY);
     ASSERT_EQ_INT((int)station_primary_sell(&st), -1);
     memset(&st, 0, sizeof st);
@@ -270,6 +281,7 @@ TEST(test_producer_module_for_commodity) {
     ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_FERRITE_INGOT), MODULE_FURNACE);
     ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_CUPRITE_INGOT), MODULE_FURNACE);
     ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_CRYSTAL_INGOT), MODULE_FURNACE);
+    ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_ENGINE_MODULE), MODULE_ENGINE_FAB);
     /* Default branch — raw ore inputs and module commodities have no
      * direct producer module; shipyard_intake_rate falls back to a
      * trickle when this returns MODULE_COUNT. */

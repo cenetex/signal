@@ -9,7 +9,10 @@ int main(void) {
     /* Generate keypair — NaCl returns pub[32] + secret[64].
        First 32 bytes of secret = seed that produces this pubkey. */
     uint8_t pub[32], nacl_secret[64];
-    signal_crypto_keypair(pub, nacl_secret);
+    if (!signal_crypto_keypair(pub, nacl_secret)) {
+        printf("FAIL: secure key generation unavailable\n");
+        return 1;
+    }
 
     /* Build Solana-format keypair: [seed(32)][pub(32)] */
     uint8_t kp[64];

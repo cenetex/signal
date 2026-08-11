@@ -1,56 +1,92 @@
-# Agent Instructions for cenetex/signal
+# Contributor Instructions for cenetex/signal
 
 ## What This Is
 
-A multiplayer space mining game. Pure C11 + Sokol (sokol_gfx, sokol_gl, sokol_debugtext, sokol_audio). Zero external assets — all rendering and audio is procedural. Runs native (CMake) and web (Emscripten).
+Signal is a multiplayer space-mining game written in C11 with Sokol
+(`sokol_gfx`, `sokol_gl`, `sokol_debugtext`, and `sokol_audio`). World geometry
+and HUD drawing are procedural, but the game is asset-light rather than
+asset-free: station portraits/MOTD data, MP3 music, and MPEG episode clips are
+runtime media described by `assets/manifest.txt`. It runs as a native desktop
+client, an authoritative headless server, and an Emscripten web client.
 
-## Build & Test
+## Build and Test
+
+Use the maintained Make targets so CMake options and safety launchers stay
+consistent:
 
 ```sh
-# Native
-cmake -S . -B build && cmake --build build
-./build/signal --test        # runs all tests (~257)
-
-# Web
-emcmake cmake -S . -B build-web && cmake --build build-web
+make build                 # native desktop client
+make build-server          # authoritative headless server
+make build-web             # Emscripten client
+make test                  # fast native suite, sharded
+make test-soak             # long-running tests only
+make test-all              # fast + soak
+make test-serial           # fast suite in one process
+make test-san              # ASan + UBSan
+make banned-apis deterministic-libm doc-freshness vendor-drift
+make cppcheck
 ```
 
-Both must stay green. CI runs: build-client, build-server, test-basic, test-static, test-asan, test-valgrind, native (linux/mac/windows).
+On Linux, do not invoke `signal_test` directly. Use
+`scripts/run_signal_test.sh <binary> [arguments...]`; it enforces the 64 MiB
+stack required by legacy `WORLD_DECL` fixtures. The Make test targets already
+use that launcher.
 
 ## Architecture
 
 ### File layout
-- `src/` — Client code (rendering, HUD, input, audio)
-- `server/` — Authoritative sim (game_sim.c, sim_production.c)
-- `shared/` — Types and utilities shared between client and server (types.h, station_util.h, module_schema.h)
-- `vendor/` — Sokol headers (do not modify)
-- `web/` — Emscripten shell (shell.html)
-- `src/test_main.c` — All tests in one file
+
+- `client/` — rendering, HUD, input, audio, networking, and the in-process
+  singleplayer server adapter.
+- `server/` — authoritative simulation, persistence, AI, chain logging, and
+  the multiplayer relay.
+- `shared/` — protocol types and dependency-light helpers used by client and
+  server.
+- `tests/c/` — the native C test runner, harness, and subsystem test files.
+- `tests/` — browser, fuzz, and non-C fixtures in addition to `tests/c/`.
+- `tools/` — standalone replay, verification, export, and profiling tools.
+- `vendor/` — third-party dependencies. Do not edit these except as an
+  intentional vendor upgrade.
+- `web/` — browser shell and static web files.
+- `assets/` — the tracked external-media manifest plus ignored/local runtime
+  station, music, and episode files when provisioned.
 
 ### Key conventions
-- **C11, not C99.** Use `_Static_assert`, designated initializers, anonymous structs where appropriate.
-- **No dynamic allocation in the hot path.** Fixed arrays, stack buffers, arena patterns.
-- **Immediate-mode rendering.** No retained UI, no component tree. Every frame redraws everything via `sokol_gl` (geometry) and `sokol_debugtext` (text).
-- **Two color scales.** `sdtx_color3b(r, g, b)` takes 0-255 bytes for text. `sgl_c4f(r, g, b, a)` takes 0.0-1.0 floats for geometry. Both are used throughout HUD code.
-- **Server-authoritative.** Client sends intents, server validates and applies. Don't put game logic in `src/`.
-- **Shared types are shared.** `shared/types.h` is included by both client and server. Changes there affect both.
 
-### HUD/UI files
-- `src/hud.c` / `src/hud.h` — Flight HUD panels, meters, message system, damage vignette
-- `src/station_ui.c` — Docked station panel (tabs: STATUS, MARKET, CONTRACTS, SHIPYARD)
-- `src/world_draw.c` — World-space rendering (stations, modules, asteroids, signal borders, ships)
-- `src/render.c` — Drawing primitives (panels, meters, service cards, pips)
-- `src/input.c` — Input handling (flight, docked, plan mode, tow mode)
-- `src/station_voice.h` — Station personality: hail conditions, dock tips, voice content
+- **C11, not C99.** Use `_Static_assert`, designated initializers, and the
+  project’s existing C11 patterns.
+- **No dynamic allocation in the hot path.** Prefer fixed arrays, bounded
+  buffers, and existing arena/ownership conventions.
+- **Immediate-mode rendering.** The client redraws with Sokol every frame.
+- **Two color scales.** `sdtx_color3b` takes 0–255 byte values;
+  `sgl_c4f` takes 0.0–1.0 floats.
+- **Server-authoritative.** Clients send intents; the server validates and
+  applies them. Authoritative game logic does not belong in `client/`.
+- **Shared types are shared.** Changes under `shared/` affect native client,
+  server, tests, replay tools, and often WebAssembly.
 
-### Sim files
-- `server/game_sim.c` — Main simulation: docking, mining, scaffold placement, contracts
-- `server/sim_production.c` — Refinery smelting, module flow graph, material delivery
+### HUD and UI files
+
+- `client/hud.c` — flight HUD panels, meters, messages, and damage effects.
+- `client/station_ui.c` — docked station panels and actions.
+- `client/world_draw.c` — world-space stations, asteroids, borders, and ships.
+- `client/render.c` — drawing primitives.
+- `client/input.c` — flight, docked, plan, and tow input.
+- `client/station_voice.h` — station hail and personality content.
+
+### Simulation files
+
+- `server/game_sim.c` — central authoritative simulation flow.
+- `server/sim_production.c` — module production and material delivery.
+- `server/sim_save.c` — versioned world/player persistence.
 
 ## Working Style
 
-- **Targeted changes.** Don't refactor beyond the issue scope.
-- **No premature file splits.** Big files are intentional — `hud.c` at 1300 lines is fine.
-- **Test what you change.** If you add a header, make sure it compiles on all platforms. If you change behavior, add or update a test in `test_main.c`.
-- **Both scales.** When adding color constants, provide both byte (0-255) and float (0.0-1.0) versions if the color is used in both text and geometry contexts.
-- **Read before writing.** The codebase has strong internal conventions. Match the patterns in the file you're editing.
+- Keep changes focused on the issue.
+- Read the surrounding code before changing conventions.
+- Add behavior tests under `tests/c/`; register new test files in
+  `CMakeLists.txt` and their registry in `tests/c/test_main.c`.
+- Compile both the affected native target and WebAssembly when shared/client
+  code changes.
+- Treat `assets/manifest.txt` as an inventory, not as proof that every large
+  external asset is present in a checkout.

@@ -81,7 +81,12 @@ static float test_station_market_pod_sell_quote(const station_t *st,
         quote += station_sell_price_unit(st, unit) *
                  mining_payout_multiplier((mining_grade_t)unit->grade);
     }
-    return quote;
+    if (pod->has_shell_frame) {
+        quote += station_sell_price_unit(st, &pod->shell_frame) *
+                 mining_payout_multiplier(
+                     (mining_grade_t)pod->shell_frame.grade);
+    }
+    return (float)llroundf(quote);
 }
 
 static void test_move_pod_past_station_charge_boundary(world_t *w,
@@ -319,6 +324,7 @@ TEST(test_e2e_launch_thrust_then_prospect_buy_reconciles_balance) {
     memset(sp->pubkey, 0xA5, sizeof(sp->pubkey));
     sp->pubkey_set = true;
     sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
     ASSERT(sp->docked);
     ASSERT_EQ_INT(sp->current_station, 0);
 
@@ -973,6 +979,12 @@ TEST(test_e2e_kit_chain_converges) {
     ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_LASER_MODULE, 50));
     ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_TRACTOR_MODULE, 50));
     ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_REPAIR_KIT, 0));
+    /*
+     * These test helpers mint legacy-migration rows. Production is
+     * provenance-sensitive, so make their synthetic local origin durable
+     * before asking the shipyard to consume them.
+     */
+    ASSERT(test_anchor_station_legacy_cargo(w, shipyard));
     uint8_t seed_frame_pub[32] = {0};
     uint8_t seed_laser_pub[32] = {0};
     uint8_t seed_tractor_pub[32] = {0};

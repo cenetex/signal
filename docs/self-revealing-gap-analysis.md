@@ -28,9 +28,10 @@ are live:
 - docked refit rows and upgrade directives name the next laser unlock
 - blocked laser refits now show the Laser Module recipe and the Crystal input
   gate, making the first-upgrade bottleneck visible instead of silent
-- Kepler Yard now carries a deterministic starter Laser Module reserve for the
-  first mining refit; the refit consumes real stock but the reserve covers the
-  station-credit cost
+- Kepler Yard now carries a deterministic eight-module reserve at its normal
+  live retail price and posts one explicit starter work order: haul eight
+  recipe-smelted Ferrite Ingots from Prospect to earn the Kepler-local balance
+  for the first refit
 - station arrival/trade summaries now show a live production recipe and status
   such as `Ferrite Ore -> Ferrite Ingots; missing input`
 - module scans expose production consequences from live module recipes, such as
@@ -42,12 +43,10 @@ are live:
 - module activation notices name the capability that came online
 
 The remaining product risk is subtler: the game often reveals facts, but not
-the rule the player needs to infer from those facts. This pass also exposed one
-P0 progression risk: the Crystal-backed Laser Module bottleneck is legible, but
-the fresh-world path to produce or import the first Laser Modules is not yet
-proven. Other remaining gaps are NPC contact packaging,
-deeper rock value synthesis beyond direct demand and tracked work, and
-multiplayer snapshots for station-local ledgers.
+the rule the player needs to infer from those facts. The first gated
+progression path is now deterministic and causal; the remaining gaps are NPC
+contact packaging, deeper rock value synthesis beyond direct demand and
+tracked work, and multiplayer snapshots for station-local ledgers.
 
 ## Gap Scale
 
@@ -79,7 +78,7 @@ than against whether a screen has more text.
 
 | Player question | Current state | Gap | Severity | Next slice |
 |---|---:|---|---:|---|
-| How do I unlock gated rocks? | Closed | The UI says Cuprite needs L2 and Crystal needs L3; Kepler Yard now seeds a provenance-backed starter Laser Module reserve that covers the first laser refit and is proven by a fresh-world test. | Done | Keep later Laser Modules tied to the normal Crystal Ingots plus Frames production path. |
+| How do I unlock gated rocks? | Closed | The UI says Cuprite needs L2 and Crystal needs L3; Kepler shows eight real Laser Modules, their live local price, and the explicit eight-ingot Prospect-to-Kepler work order that pays for the first refit. | Done | Keep later Laser Modules tied to the normal Crystal Ingots plus Frames production path. |
 | Why is this rock valuable? | Partial | Throw danger, tracked-contract fit, direct station demand, rare grade, and mining gate reasons are visible; smelt outcome and market-memory usefulness are not unified on the same object yet. | P1 | Extend target/tow usefulness into smelt destination, carried memory, and route value. |
 | Why did my ship stop responding? | Closed | Low-signal control loss now has both compact telemetry and a central CTRL warning before near-zero loss. | Done | Tune thresholds only if playtests show confusion. |
 | Why can I spend credits here but not there? | Partial | Single-player dock/hail explains station-local money; multiplayer still needs a compact cross-station ledger snapshot. | P2 | MP known-ledger snapshot or response extension. |
@@ -102,7 +101,7 @@ These are the concrete code/doc hooks behind the matrix above.
 | Upgrade path | `client/station_ui.c` names next refit unlocks and, for a blocked starter laser refit, shows `Laser Modules: Crystal Ingots + Frames` plus `Crystal source requires L3 laser`; `client/contract_objective.c` uses the same unlock grammar for ready-upgrade directives. |
 | Module production consequences | `client/station_ui.c` now summarizes station-level production and status in arrival/trade copy; `client/hud.c` scan copy describes scaffold needs and module input/output chains such as Furnace ore to ingot and Laser Fab ingots plus frames to laser modules. |
 | Station needs | `client/hud.c` names construction supply needs and material sources; `client/station_ui.c` can lead dock arrival with ready/nearest work, gated work, local credit bridging, and local memory. |
-| L2 bootstrap | `shared/ship.c` makes the first mining upgrade cost 8 Laser Modules; `server/game_sim.c` seeds Kepler's starter reserve and applies the first-refit subsidy; `tests/c/test_world_sim.c` proves a zero-balance fresh player can take L2 from that reserve while Cuprite/Crystal gates remain correct. |
+| L2 bootstrap | `shared/ship.c` makes the first mining upgrade cost 8 Laser Modules; `server/game_sim.c` seeds Kepler's finite physical reserve plus a marked, recipe-proof Ferrite haul order; `tests/c/test_world_sim.c` proves the reserve is unaffordable before work, then follows smelt, receipt, physical flight, contract payout, local ledger, and paid refit in under one in-game hour. |
 | Trade lineage | `client/station_ui.c:1153` only attaches station-stock lineage when the row is fully represented by local manifest data; `client/station_ui.c:1251` applies the same caution for player-held sell rows. |
 | NPC contact/motive | `client/hud.c:1395` renders the NPC contact ticker; `client/hud.c:1451` renders contact identity; `client/hud.c:1461` renders role/state/home/destination; job motive helpers sit around `client/hud.c:928`. |
 | Station gossip/memory | `client/station_ui.c:1633` renders OVERHEARD rows; `client/station_ui.c:1690` renders compact route HISTORY rows; `client/station_ui.c:1836` renders aggregate history; `server/gossip.c:786` promotes repeated route memory into chain-log history. |
@@ -133,9 +132,20 @@ These are the concrete code/doc hooks behind the matrix above.
 - Normal Laser Module production still depends on Crystal Ingots plus Frames.
 - Kepler Yard starts with a deterministic 8-module starter reserve tagged by
   fixed cargo provenance.
-- The first mining refit at Kepler consumes those real modules, but the starter
-  reserve covers the station-credit cost so a fresh zero-balance pilot can cross
-  the first gate.
+- The reserve is sold at the same live scarcity-adjusted retail price as any
+  other station stock; zero balance cannot buy or install it.
+- Kepler posts one explicitly marked, finite TRACTOR work order for eight
+  recipe-smelted Ferrite Ingots. Prospect's normal physical smelt output can be
+  PRESENTed into receipt-backed ship cargo, flown to Kepler, and transferred
+  into the order for Kepler-local credit.
+- The order's per-unit payout is rounded up from the live eight-module quote,
+  so delivering all eight units covers that quote without a wallet grant,
+  global-credit bridge, free upgrade, or zero-price exception.
+- The marked order is public, never acquires a durable claimant, and accepts
+  its advertised eight-unit quota only through the bulk delivery action. A
+  one-unit actor cannot claim or price-fragment it before disappearing; a
+  later fresh pilot still earns exactly the visible contract rate for all
+  eight units.
 - Save migration v72 backfills that reserve into older worlds that do not
   already have enough Kepler Laser Module stock.
 
@@ -144,10 +154,19 @@ These are the concrete code/doc hooks behind the matrix above.
 **Proof:**
 
 `test_fresh_world_kepler_starter_laser_refit_bootstrap` starts from
-`world_reset`, verifies Kepler has the eight-module reserve, verifies the
-zero-credit starter subsidy, completes the first mining upgrade through
-`world_sim_step`, and proves Cuprite is blocked before L2, mineable after L2,
-while Crystal remains blocked before L3.
+`world_reset`, verifies the reserve is unaffordable before payout, smelts and
+PRESENTs eight recipe-provenanced Ferrite Ingots at Prospect, verifies their
+receipts at Kepler, flies the real autopilot route, fulfills the marked order,
+and pays the live refit price from the Kepler-local ledger in less than one
+in-game hour. The seed-matrix test covers the zero-seed fallback, operational
+replay/soak seeds, and uint32 boundary classes. The recovery test shuts Helios
+down, proves production pauses, restores it, and verifies its ordinary
+Laser-Fab output matches Kepler's recipe-gated import without recreating the
+starter work order or any free-price path. Separate regressions prove that a
+one-unit attempt is inert and cannot block a later fresh pilot, and that a full
+funded station ledger leaves receipt cargo, chain head, contract state, pod
+custody, credit statistics, and ledger bytes unchanged instead of consuming
+goods for an unrecorded payout.
 
 ### 1. Rock Value And Throw Legibility
 

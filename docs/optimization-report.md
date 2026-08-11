@@ -10,6 +10,15 @@ landed as independent commits: SIM_PROFILE phase timing, O(1)
 `chunk_materialized` lookup, compact station scans, conservative station
 collision broad phase, and hardware `sqrtf` for `v2_len`.*
 
+*Updated 2026-07-26 after the dense-asteroid scheduler pass: spatial cells
+retain every body, gravity and collision share one bounded deterministic
+pair plan, and dense native/WASM replay parity is now a fast-suite gate.*
+
+*Updated 2026-07-26 after the #663 backpressure pass: the soak client now
+uses the authenticated signed-action path, transfer appends advance a
+verified provenance cache under fail-closed invariants, and the unrelaxed
+10-minute latency/RSS/backpressure acceptance run passes.*
+
 *Date: 2026-07-03. Scope: static analysis of the 120 Hz authoritative sim
 (`server/`), the network broadcast layer (`server/main.c`,
 `server/net_protocol.h`), and the client render path (`client/world_draw.c`).
@@ -96,6 +105,52 @@ The new ranking is also sharper than the old call-stack sample: cargo and
 gravity remain the next real targets, with NPC work now visible at ~14%.
 `maintain_asteroid_field` has dropped into the asteroid phase bucket at ~6%.
 
+## WebSocket backpressure and provenance tail latency (2026-07-26)
+
+The #663 soak now follows the production authentication path: an ephemeral
+Ed25519 identity registers, completes the v2 session proof, and submits
+signed BUY/DELIVER actions while a second client stops reading. Samples
+received while the harness takes a phase-boundary health reading are
+discarded, so late replies cannot leak into the next latency cohort.
+
+Profiling the initial failing run isolated the tail-latency growth to origin
+authority evaluation, not the socket queue or durable append. Evaluation
+grew to 79 ms p50 / 104 ms p95 as the station history lengthened; receipt
+linking was effectively 0 ms, signing about 2 ms, serialization/crypto about
+4–6 ms, and `fsync` 0.35 ms p95. Each successful local transfer had
+invalidated the verified origin index, so the next action replayed the whole
+history.
+
+The fix advances a verified cache only across the exact transaction that
+appends TRANSFER or TRANSFER+TRADE events. It holds the verified file object
+open and requires the same cache generation, authority/configuration,
+registry fingerprint, station event count and tail, file identity, exact
+byte growth, appended event IDs, and final tail hash. Any mismatch discards
+the entry and forces full verification; transforms, rotation, and other
+generic appends still rebuild. This relies on the server's documented
+synchronous single-writer chain-log model. Focused regressions keep
+`full_verifications` and `index_builds` at one across one- and two-event
+transfers, require a later SMELT to rebuild, and reject a tampered cached
+prefix rather than advancing it.
+
+The final 10-minute acceptance run passed without changing the original
+absolute gates (p95/p99 at most 100/250 ms) or comparative gates (slow-reader
+increase at most 25/50 ms):
+
+| Signal | Baseline | Slow-reader phase |
+|---|---:|---:|
+| ACK p95 / p99 | 17 / 21 ms | 18 / 21 ms |
+| Server-excluded p99 | 12 ms | 12 ms |
+| Ping p99 | 12 ms | 12 ms |
+| Authoritative tick rate | 119.895 Hz | 120.003 Hz |
+
+The slow-reader phase's minimum tick interval was 118.57 Hz. All 59 signed
+actions were verified (30 buys, 29 deliveries); the outbound queue peaked at
+172,033 bytes against its 262,144-byte bound. The stalled connection was
+closed for `no_write_progress` after 21.414 seconds. RSS peaked at
+47,284,224 bytes with 5,816,320 bytes growth, and the run reported no
+failures.
+
 ### M1. `v2_len` routed through software 128-bit division — **resolved**
 
 Before this pass, `shared/math_util.h:66` defined `v2_len` as
@@ -139,8 +194,10 @@ while M1–M3 are what's slow today.
 
 Credit where due — these are done right and should not be touched:
 
-- **Asteroid spatial grid** (`game_sim.c:506`, `game_sim.h:99`): 800-unit
-  cells, used by asteroid–asteroid gravity and collision.
+- **Asteroid spatial grid** (`game_sim.c`, `game_sim.h`): 800-unit cells
+  retain up to the full `MAX_ASTEROIDS` pool. Navigation/proximity queries
+  see every body; gravity and collision consume the bounded pair plan
+  described below.
 - **30 Hz gate on N-body work** (`game_sim.c:11242`): gravity + asteroid
   collisions run at 30 Hz, not 120 Hz.
 - **Signal strength cache grid** (`game_sim.c:645`): 256² precomputed grid
@@ -152,6 +209,67 @@ Credit where due — these are done right and should not be touched:
   buffers, WS backpressure deferral.
 - **Client render lists** (`world_draw.c:260-282`): per-frame cached
   S-tier/smelting index lists instead of rescanning per draw pass.
+
+### Dense asteroid pair ownership and fairness
+
+`asteroid_pair_plan_build` constructs one immutable, fixed-capacity plan
+from the already-built grid at each 30 Hz solve. Both
+`step_asteroid_gravity` and `resolve_asteroid_collisions` walk that exact
+plan, so a pair has one owner and cannot be omitted by one path or processed
+twice by the other.
+
+- Cells are sorted by `(y, x)`. Only the four forward neighbors
+  `(1,0), (-1,1), (0,1), (1,1)` own cross-cell pairs; together with the
+  same-cell owner, this covers the 3×3 neighborhood exactly once.
+- Bodies are ordered by authoritative identity first: `rock_pub`, then
+  fracture/fragment identity. The explicit semantic record is the
+  tie-breaker. Slot is used only for an exact anonymous-record tie; that
+  legacy/test-only fallback is valid only when aligned metadata and live
+  external references are also equal/absent, which the regression asserts.
+- A same cell of at most 16 bodies is exhaustive. A denser cell processes
+  four non-wrapping cyclic-distance bands per epoch and visits every
+  unordered pair exactly once within
+  `ceil(floor(N/2) / 4)` 30 Hz epochs, for both odd and even `N`.
+- A neighboring-cell product of at most 256 is exhaustive. A denser
+  cross-cell product processes four deterministic bipartite offsets per
+  epoch and visits every pair exactly once within
+  `ceil(min(A,B) / 4)` epochs, including unequal cell populations.
+- The phase is `world.tick / 4`. Save load reconstructs `world.tick` from
+  persisted `world.time`; a boundary regression saves at tick 39, reloads
+  in epoch 9, and advances to epoch 10 on tick 40.
+- Storage is statically bounded: no pair array and no hot-path allocation.
+  The proof bound is 72 candidates per active body (self cost at most
+  `8N`, plus at most eight adjacent-cell contributions at
+  `8(A+B)`), or 147,456 candidates at the full 2,048-body pool. A
+  nine-adjacent-cell/full-pool regression asserts the bound.
+- Signal-pressure's boolean proximity probe is intentionally not sampled;
+  it scans every retained body in the 3×3 neighborhood because a boolean
+  safety/crowding decision cannot fairly rotate omissions.
+
+The focused benchmark times plan construction plus two complete plan walks
+(the gravity and collision scheduling overhead);
+`make asteroid-physics-bench` rebuilds and runs it. The table below was
+recorded on Apple Silicon from the native RelWithDebInfo binary
+(`-O2 -g -DNDEBUG`, deterministic floating-point flags), 2026-07-26:
+
+| Bodies in one cell | Candidates/path at 30 Hz | Both paths per solve | Amortized callbacks per 120 Hz tick | Plan + two walks |
+|---:|---:|---:|---:|---:|
+| 16 | 120 | 240 | 60 | 1.91 µs |
+| 32 | 128 | 256 | 64 | 2.13 µs |
+| 64 | 256 | 512 | 128 | 2.71 µs |
+| 128 | 512 | 1,024 | 256 | 3.99 µs |
+
+At 128 bodies, scheduler overhead is about 0.004 ms per 30 Hz solve
+(roughly 0.001 ms amortized per 120 Hz tick), leaving the existing
+0.6 ms/tick whole-sim target essentially untouched. These numbers isolate
+scheduling overhead; pair-specific distance/math cost remains in the
+phase profiler.
+
+The fast replay matrix also contains `dense-asteroids`: 32 overlapping
+M/L bodies, 32 ticks, one deterministic candidate. Native and Emscripten
+outputs were byte-identical on 2026-07-26 (SHA-256
+`bc8de9b5d0e9d1bb42cb5bd7f5229d98062461c27e1b5bec7e4c8d1a2588d515`);
+`make replay-native-wasm` runs the same scenario on every fast parity gate.
 
 ## Findings, ranked by estimated impact
 
@@ -275,12 +393,10 @@ save format code doesn't change; only the destination becomes a buffer.
   all asteroids × all stations at 30 Hz. The per-station intake counts are
   already precomputed; the loop just needs the same compact
   active-station array as Finding 1.
-- **Spatial cell overflow is silent** (`game_sim.c:501`,
-  `SPATIAL_MAX_PER_CELL = 16`): in a dense field (cells are 800×800), the
-  17th+ asteroid in a cell is dropped from *all* neighbor queries — it
-  stops attracting, colliding, and being collidable. That is a correctness
-  cliff as much as a perf note; consider bumping the cap or logging
-  overflow in debug builds.
+- **Dense spatial-cell omission is resolved**: the grid retains the whole
+  pool and the pair plan gives every same/cross-cell pair a formula-bounded
+  revisit window. Grid `overflow_count` now represents allocation failure,
+  not an intentional first-16 physics clamp.
 - **`rebuild_signal_chain` flood fill** (`game_sim.c:541`) is O(passes ×
   N²) but runs only on topology changes — fine, leave it.
 - **Client**: render lists are cached and asteroid serialization is
@@ -305,6 +421,7 @@ are what is actually slow today.*
 | done | Hash set for `chunk_materialized` | small | Removed the linear asteroid-slot scan per candidate chunk |
 | done | Compact station arrays for asteroid/vortex/industrial pull scans | small | Removed the dominant `asteroids × 128-slot` traffic in covered paths |
 | done | Broad-phase distance guard before station collision geometry | small | Cuts far-away `station_build_geom` calls with a derived conservative bound |
+| done | Dense asteroid pair plan | medium | Removed slot-order omissions while keeping a 72N fixed bound and native/WASM parity |
 | 2 | Off-relay beacon list + early-out in `signal_strength_at` | small | Restores the O(1) promise of the signal cache |
 | 4 | Rebuild spatial grid per tick; use it for NPC + player asteroid collision | medium | ~25M slot checks/sec → thousands |
 | 5 | Per-tick shared `station_geom_t` cache (heap) | medium | One geom build per station per tick, all consumers |

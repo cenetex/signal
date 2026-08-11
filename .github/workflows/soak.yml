@@ -1,0 +1,70 @@
+name: Scheduled Sanitizer Soak
+
+on:
+  schedule:
+    # Weekly full RUN_SOAK pass under ASan+UBSan. Pull requests run the
+    # faster native variant in ci.yml on every relevant revision.
+    - cron: '17 10 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizer-soak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sanitizer-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install sanitizer toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang
+      - name: Run functional soak suite under ASan and UBSan
+        env:
+          CC: clang
+        run: make test-san-soak TEST_FAILURE_LOG_DIR=test-results/soak-san
+      - name: Upload sanitizer soak failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitizer-soak-failure-logs
+          path: test-results/soak-san/
+          if-no-files-found: warn
+
+  memory-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install MemorySanitizer toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build
+      - name: Check instrumented secret lifecycle paths
+        run: make memzero-codegen test-msan
+
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install ThreadSanitizer toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build
+      - name: Check bounded concurrent HNN and simulation path
+        run: |
+          make test-tsan \
+            TEST_FAILURE_LOG_DIR=test-results/tsan
+      - name: Upload ThreadSanitizer failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thread-sanitizer-failure-logs
+          path: test-results/tsan/
+          if-no-files-found: warn

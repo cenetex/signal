@@ -10,6 +10,7 @@ commodity_t commodity_ore_form(commodity_t commodity) {
         case COMMODITY_FRAME:             return COMMODITY_FERRITE_ORE;
         case COMMODITY_LASER_MODULE:      return COMMODITY_CRYSTAL_ORE;
         case COMMODITY_TRACTOR_MODULE:    return COMMODITY_CUPRITE_ORE;
+        case COMMODITY_ENGINE_MODULE:     return COMMODITY_CUPRITE_ORE;
         default:                          return commodity;
     }
 }
@@ -53,6 +54,8 @@ const char* commodity_name(commodity_t commodity) {
             return "Tractor Modules";
         case COMMODITY_REPAIR_KIT:
             return "Repair Kits";
+        case COMMODITY_ENGINE_MODULE:
+            return "Engine Modules";
         case COMMODITY_COUNT:
         default:
             return "Cargo";
@@ -81,6 +84,8 @@ const char* commodity_code(commodity_t commodity) {
             return "TM";
         case COMMODITY_REPAIR_KIT:
             return "RK";
+        case COMMODITY_ENGINE_MODULE:
+            return "EM";
         case COMMODITY_COUNT:
         default:
             return "--";
@@ -112,6 +117,8 @@ void commodity_color_u8(commodity_t commodity, uint8_t *r, uint8_t *g, uint8_t *
         *r = 130; *g = 176; *b = 143; return;
     case COMMODITY_REPAIR_KIT:
         *r = 184; *g = 140; *b = 140; return;
+    case COMMODITY_ENGINE_MODULE:
+        *r = 224; *g = 174; *b = 92; return;
     case COMMODITY_COUNT:
     default:
         *r = 200; *g = 220; *b = 230; return;  /* fallback cool white */
@@ -140,6 +147,8 @@ const char* commodity_short_name(commodity_t commodity) {
             return "Tractor Mod";
         case COMMODITY_REPAIR_KIT:
             return "Repair Kit";
+        case COMMODITY_ENGINE_MODULE:
+            return "Engine Mod";
         case COMMODITY_COUNT:
         default:
             return "Unknown";
@@ -204,12 +213,19 @@ float station_sell_price(const station_t* station, commodity_t commodity) {
     return base * (1.0f + deficit * deficit);
 }
 
-float station_inventory_amount(const station_t* station, commodity_t commodity) {
+float station_stored_inventory_amount(const station_t* station,
+                                      commodity_t commodity) {
     if (!station || commodity < 0 || commodity >= COMMODITY_COUNT) return 0.0f;
     if (commodity < COMMODITY_RAW_ORE_COUNT)
         return station->_inventory_cache[commodity];
     return (float)manifest_count_by_commodity(&station->manifest, commodity) +
            station->_finished_residue[commodity];
+}
+
+float station_inventory_amount(const station_t* station, commodity_t commodity) {
+    if (!station || commodity < 0 || commodity >= COMMODITY_COUNT) return 0.0f;
+    return station_stored_inventory_amount(station, commodity) +
+           station->_physical_inventory_cache[commodity];
 }
 
 /* Unit-aware variants: same dynamic stock curve as above, scaled by

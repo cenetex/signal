@@ -29,6 +29,26 @@ SIM_SAVE = ROOT / "server" / "sim_save.c"
 CELL_STRESS = ROOT / "shared" / "cell_stress.h"
 CELL_DAMAGE_DOC = ROOT / "docs" / "cell-damage-balance.md"
 
+# These files actively direct contributors and coding agents. The client moved
+# from the retired top-level src/ tree to client/; historical reports and
+# nested third-party/project paths named */src/* are intentionally outside
+# this focused rule.
+ACTIVE_CONTRIBUTOR_GUIDANCE = [
+    ROOT / ".github" / "AGENT.md",
+    ROOT / "README.md",
+    ROOT / "CLAUDE.md",
+    ROOT / "ARCHITECTURE.md",
+    ROOT / "ENG.md",
+    ROOT / "docs" / "c_safety_policy.md",
+]
+
+# Installed hooks must use the same memory-capped native-test launcher as CI.
+# A direct signal_test invocation silently bypasses the Linux 64 MiB limit.
+NATIVE_TEST_HOOKS = [
+    ROOT / "scripts" / "git-hooks" / "pre-push",
+    ROOT / "scripts" / "git-hooks" / "post-commit",
+]
+
 SCANNED_DOCS = [
     ROOT / "CLAUDE.md",
     ROOT / "ARCHITECTURE.md",
@@ -43,6 +63,11 @@ CURRENT_RE = re.compile(
 )
 MINIMUM_RE = re.compile(
     r"minimum[\s-]accepted(?:\s+version)?\s*(?:is\s*)?v(\d+)", re.IGNORECASE
+)
+RETIRED_TOP_LEVEL_SRC_RE = re.compile(r"(^|[\s`('\"=:])src/")
+BUILD_SIGNAL_TEST_RE = re.compile(
+    r"(?:\./|(?:\"?\$\{?ROOT\}?\"?)/)?"
+    r"build(?:-[A-Za-z0-9_.-]+)?/signal_test\b"
 )
 
 
@@ -136,6 +161,40 @@ def cell_stress_failures(header: str, doc: str) -> list[str]:
     return failures
 
 
+def retired_layout_failures(guidance: dict[Path, str]) -> list[str]:
+    """Reject the retired top-level src/ layout in active guidance."""
+    failures = []
+    for path, source in guidance.items():
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if RETIRED_TOP_LEVEL_SRC_RE.search(line):
+                try:
+                    display_path = path.relative_to(ROOT)
+                except ValueError:
+                    display_path = path
+                failures.append(
+                    f"{display_path}:{lineno}: references retired top-level "
+                    "src/ layout; use client/, server/, shared/, or tests/c/")
+    return failures
+
+
+def native_test_launcher_failures(hooks: dict[Path, str]) -> list[str]:
+    """Reject hook commands that bypass the bounded native-test launcher."""
+    failures = []
+    for path, source in hooks.items():
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if (BUILD_SIGNAL_TEST_RE.search(line)
+                    and "run_signal_test.sh" not in line):
+                try:
+                    display_path = path.relative_to(ROOT)
+                except ValueError:
+                    display_path = path
+                failures.append(
+                    f"{display_path}:{lineno}: invokes signal_test directly; "
+                    "use scripts/run_signal_test.sh so the memory limit is "
+                    "enforced")
+    return failures
+
+
 def main() -> int:
     sim_save_text = SIM_SAVE.read_text(encoding="utf-8")
     save_version = _define(sim_save_text, "SAVE_VERSION")
@@ -164,6 +223,16 @@ def main() -> int:
         CELL_STRESS.read_text(encoding="utf-8"),
         CELL_DAMAGE_DOC.read_text(encoding="utf-8"),
     ))
+    failures.extend(retired_layout_failures({
+        path: path.read_text(encoding="utf-8")
+        for path in ACTIVE_CONTRIBUTOR_GUIDANCE
+        if path.is_file()
+    }))
+    failures.extend(native_test_launcher_failures({
+        path: path.read_text(encoding="utf-8")
+        for path in NATIVE_TEST_HOOKS
+        if path.is_file()
+    }))
 
     if failures:
         for f in failures:

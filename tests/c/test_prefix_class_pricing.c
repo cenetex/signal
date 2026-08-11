@@ -65,7 +65,7 @@ TEST(test_prefix_pricing_rati_class_50x) {
  * the buy curve is 1 - 0.5*0.5 = 0.75×; under RATi prefix the
  * combined factor is 0.75 × 50 = 37.5. */
 TEST(test_prefix_pricing_compose_with_stock_curve) {
-    station_t st = {0};
+    STATION_DECL(st);
     st.base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     /* Half-full PRODUCT stockpile (capacity = MAX_PRODUCT_STOCK). */
     ASSERT(test_set_station_finished_units(

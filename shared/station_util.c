@@ -304,17 +304,21 @@ bool station_consumes(const station_t *st, commodity_t c) {
         case COMMODITY_CRYSTAL_ORE:   return station_can_smelt(st, COMMODITY_CRYSTAL_ORE);
         case COMMODITY_FERRITE_INGOT: return station_has_module(st, MODULE_FRAME_PRESS);
         case COMMODITY_CUPRITE_INGOT:
-            return station_has_module(st, MODULE_LASER_FAB);
+            return station_has_module(st, MODULE_TRACTOR_FAB) ||
+                   station_has_module(st, MODULE_ENGINE_FAB);
         case COMMODITY_CRYSTAL_INGOT:
-            return station_has_module(st, MODULE_TRACTOR_FAB);
+            return station_has_module(st, MODULE_LASER_FAB) ||
+                   station_has_module(st, MODULE_ENGINE_FAB);
         case COMMODITY_FRAME:
             return is_shipyard ||
                    station_has_module(st, MODULE_LASER_FAB) ||
-                   station_has_module(st, MODULE_TRACTOR_FAB);
+                   station_has_module(st, MODULE_TRACTOR_FAB) ||
+                   station_has_module(st, MODULE_ENGINE_FAB);
         case COMMODITY_LASER_MODULE:  return is_shipyard;
         case COMMODITY_TRACTOR_MODULE:return is_shipyard;
         case COMMODITY_REPAIR_KIT:
             return station_has_module(st, MODULE_DOCK) && !is_shipyard;
+        case COMMODITY_ENGINE_MODULE: return is_shipyard;
         default: return false;
     }
 }
@@ -328,6 +332,7 @@ bool station_produces(const station_t *st, commodity_t c) {
         case COMMODITY_LASER_MODULE:  return station_has_module(st, MODULE_LASER_FAB);
         case COMMODITY_TRACTOR_MODULE:return station_has_module(st, MODULE_TRACTOR_FAB);
         case COMMODITY_REPAIR_KIT:    return station_has_module(st, MODULE_SHIPYARD);
+        case COMMODITY_ENGINE_MODULE: return station_has_module(st, MODULE_ENGINE_FAB);
         default: return false;
     }
 }
@@ -350,7 +355,8 @@ module_type_t station_dominant_module(const station_t *st) {
     static const module_type_t priority[] = {
         MODULE_FURNACE,
         MODULE_FRAME_PRESS, MODULE_LASER_FAB,
-        MODULE_TRACTOR_FAB, MODULE_SIGNAL_RELAY, MODULE_HOPPER,
+        MODULE_TRACTOR_FAB, MODULE_ENGINE_FAB,
+        MODULE_SIGNAL_RELAY, MODULE_HOPPER,
     };
     for (int p = 0; p < (int)(sizeof(priority) / sizeof(priority[0])); p++) {
         for (int i = 0; i < st->module_count; i++) {
@@ -366,6 +372,7 @@ commodity_t station_primary_buy(const station_t *st) {
         case MODULE_FRAME_PRESS: return COMMODITY_FERRITE_INGOT;
         case MODULE_LASER_FAB:   return COMMODITY_CRYSTAL_INGOT;
         case MODULE_TRACTOR_FAB: return COMMODITY_CUPRITE_INGOT;
+        case MODULE_ENGINE_FAB:  return COMMODITY_FRAME;
         default: break;
     }
     return (commodity_t)-1;
@@ -396,6 +403,7 @@ commodity_t station_primary_sell(const station_t *st) {
         case MODULE_FRAME_PRESS: return COMMODITY_FRAME;
         case MODULE_LASER_FAB:   return COMMODITY_LASER_MODULE;
         case MODULE_TRACTOR_FAB: return COMMODITY_TRACTOR_MODULE;
+        case MODULE_ENGINE_FAB:  return COMMODITY_ENGINE_MODULE;
         default: break;
     }
     return (commodity_t)-1;
@@ -787,14 +795,14 @@ float station_raw_ore_chain_need_score(const station_t *st, commodity_t ore) {
                           shortage01(station_inventory_amount(st, ingot), 12.0f) * 0.5f);
         }
         break;
-    case COMMODITY_CUPRITE_ORE:
+    case COMMODITY_CRYSTAL_ORE:
         if (station_has_module(st, MODULE_LASER_FAB)) {
             score = fmaxf(shortage01(station_inventory_amount(st, COMMODITY_LASER_MODULE),
                                       12.0f),
                           shortage01(station_inventory_amount(st, ingot), 12.0f) * 0.5f);
         }
         break;
-    case COMMODITY_CRYSTAL_ORE:
+    case COMMODITY_CUPRITE_ORE:
         if (station_has_module(st, MODULE_TRACTOR_FAB)) {
             score = fmaxf(shortage01(station_inventory_amount(st, COMMODITY_TRACTOR_MODULE),
                                       12.0f),
@@ -849,7 +857,8 @@ station_supply_need_t station_supply_need_for(const station_t *st,
         out.close_target = MAX_PRODUCT_STOCK * 0.95f;
     } else if (c == COMMODITY_FRAME ||
                c == COMMODITY_LASER_MODULE ||
-               c == COMMODITY_TRACTOR_MODULE) {
+               c == COMMODITY_TRACTOR_MODULE ||
+               c == COMMODITY_ENGINE_MODULE) {
         out.open_target = 12.0f;
         out.target = 12.0f;
         out.close_target = 12.0f;

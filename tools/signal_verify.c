@@ -220,6 +220,7 @@ static bool pubkey_from_filename(const char *path, uint8_t out[32], char *out_b5
 /* ------------------------------------------------------------------ */
 
 #define MAX_TRACKED_PUBS 8192
+#define VERIFY_LOG_SNAPSHOT_MAX_BYTES (64u * 1024u * 1024u)
 
 typedef struct {
     /* Registries of cargo_pubs / fragment_pubs / rock_pubs that have
@@ -243,6 +244,14 @@ typedef struct {
     uint64_t inv_orphan_violations;
     uint64_t inv_tower_violations;
 } inv_state_t;
+
+typedef struct {
+    uint64_t station_attested_v1;
+    uint64_t unbound_v0;
+    uint64_t semantic_rejections;
+    uint64_t first_rejection_event_id;
+    cargo_craft_provenance_status_t first_rejection;
+} craft_audit_t;
 
 static bool pub_is_zero(const uint8_t pub[32]) {
     for (int i = 0; i < 32; i++) if (pub[i]) return false;
@@ -281,14 +290,116 @@ static bool pub_set_remove(uint8_t (*set)[32], size_t *count, const uint8_t pub[
     return false;
 }
 
+static FILE *snapshot_log(FILE *source) {
+    if (!source) return NULL;
+    FILE *snapshot = tmpfile();
+    if (!snapshot) {
+        fprintf(stderr,
+                "signal_verify: cannot create anonymous log snapshot\n");
+        return NULL;
+    }
+    uint8_t buffer[64 * 1024];
+    size_t total = 0;
+    for (;;) {
+        size_t got = fread(buffer, 1, sizeof(buffer), source);
+        if (got > 0u) {
+            if (got > (size_t)VERIFY_LOG_SNAPSHOT_MAX_BYTES - total) {
+                fprintf(stderr,
+                        "signal_verify: log snapshot exceeds %u-byte limit\n",
+                        (unsigned)VERIFY_LOG_SNAPSHOT_MAX_BYTES);
+                fclose(snapshot);
+                return NULL;
+            }
+            if (fwrite(buffer, 1, got, snapshot) != got) {
+                fprintf(stderr,
+                        "signal_verify: anonymous snapshot write failed\n");
+                fclose(snapshot);
+                return NULL;
+            }
+            total += got;
+        }
+        if (got < sizeof(buffer)) {
+            if (ferror(source)) {
+                fprintf(stderr,
+                        "signal_verify: source snapshot read failed\n");
+                fclose(snapshot);
+                return NULL;
+            }
+            break;
+        }
+    }
+    if (fflush(snapshot) != 0 ||
+        fseek(snapshot, 0, SEEK_SET) != 0) {
+        fprintf(stderr,
+                "signal_verify: anonymous snapshot rewind failed\n");
+        fclose(snapshot);
+        return NULL;
+    }
+    return snapshot;
+}
+
+/*
+ * Interpret CRAFT semantics only after the exact same open descriptor has
+ * passed chain verification. This pass never upgrades V1 to input-lineage or
+ * conservation proof; it only distinguishes signed structural attestation
+ * from audit-only V0 and stable fail-closed rejections.
+ */
+static bool audit_verified_crafts(
+    FILE *f,
+    uint64_t verified_event_count,
+    craft_audit_t *out) {
+    if (!f || !out || fseek(f, 0, SEEK_SET) != 0) return false;
+    memset(out, 0, sizeof(*out));
+    for (uint64_t event_index = 0;
+         event_index < verified_event_count;
+         event_index++) {
+        uint8_t header[CHAIN_EVENT_HEADER_SIZE];
+        uint16_t payload_len = 0;
+        uint8_t payload[4096];
+        if (fread(header, 1, sizeof(header), f) != sizeof(header) ||
+            fread(&payload_len, sizeof(payload_len), 1, f) != 1 ||
+            payload_len > sizeof(payload) ||
+            (payload_len > 0u &&
+             fread(payload, 1, payload_len, f) != payload_len)) {
+            return false;
+        }
+        if (header[16] != CHAIN_EVT_CRAFT) continue;
+
+        cargo_craft_provenance_result_t result;
+        cargo_craft_provenance_status_t status =
+            cargo_craft_provenance_evaluate(
+                payload, payload_len, true, &result);
+        if (status ==
+            CARGO_CRAFT_PROVENANCE_STATION_ATTESTED_V1) {
+            out->station_attested_v1++;
+        } else if (status ==
+                   CARGO_CRAFT_PROVENANCE_UNBOUND_V0) {
+            out->unbound_v0++;
+        } else {
+            out->semantic_rejections++;
+            if (out->first_rejection_event_id == 0u) {
+                uint64_t event_id = 0;
+                for (int byte = 0; byte < 8; byte++) {
+                    event_id |=
+                        (uint64_t)header[8 + byte] << (byte * 8);
+                }
+                out->first_rejection_event_id = event_id;
+                out->first_rejection = status;
+            }
+        }
+    }
+    return !ferror(f);
+}
+
 /* Dump operator_post text entries from the log if --dump-text was specified. */
-static void dump_operator_post_text(const char *path,
+static void dump_operator_post_text(FILE *f,
+                                    uint64_t verified_event_count,
                                     uint64_t since, bool since_set,
                                     uint64_t until, bool until_set) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return;
-
-    for (;;) {
+    if (!f || fseek(f, 0, SEEK_SET) != 0) return;
+    for (uint64_t event_index = 0;
+         event_index < verified_event_count;
+         event_index++) {
         uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
         size_t got = fread(hdr_bytes, 1, CHAIN_EVENT_HEADER_SIZE, f);
         if (got != CHAIN_EVENT_HEADER_SIZE) break;
@@ -296,7 +407,6 @@ static void dump_operator_post_text(const char *path,
         if (fread(&plen, sizeof(plen), 1, f) != 1) break;
         uint8_t payload[4096];
         if (plen > sizeof(payload)) {
-            fclose(f);
             return;
         }
         if (plen > 0 && fread(payload, plen, 1, f) != 1) break;
@@ -325,13 +435,13 @@ static void dump_operator_post_text(const char *path,
             }
         }
     }
-    fclose(f);
 }
 
 /* Walk the log a second time and apply optional invariants. The
  * baked-in checks (signatures, linkage, monotonic) have already been
  * validated; this pass is just for the semantic predicates. */
-static bool apply_invariants(const char *path,
+static bool apply_invariants(FILE *f,
+                             uint64_t verified_event_count,
                              uint32_t invariants,
                              const cli_opts_t *opts,
                              inv_state_t *st,
@@ -341,20 +451,22 @@ static bool apply_invariants(const char *path,
          INV_TOWER_CONSISTENT)) == 0)
         return true;
 
-    FILE *f = fopen(path, "rb");
-    if (!f) return true;
+    if (!f || fseek(f, 0, SEEK_SET) != 0) return false;
     bool ok = true;
     uint64_t events_seen = 0;
 
-    for (;;) {
+    for (uint64_t event_index = 0;
+         event_index < verified_event_count;
+         event_index++) {
         uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
         size_t got = fread(hdr_bytes, 1, CHAIN_EVENT_HEADER_SIZE, f);
-        if (got != CHAIN_EVENT_HEADER_SIZE) break;
+        if (got != CHAIN_EVENT_HEADER_SIZE) return false;
         uint16_t plen = 0;
-        if (fread(&plen, sizeof(plen), 1, f) != 1) break;
+        if (fread(&plen, sizeof(plen), 1, f) != 1) return false;
         uint8_t payload[4096];
-        if (plen > sizeof(payload)) break;
-        if (plen > 0 && fread(payload, plen, 1, f) != 1) break;
+        if (plen > sizeof(payload)) return false;
+        if (plen > 0 && fread(payload, plen, 1, f) != 1)
+            return false;
 
         /* The header bytes we care about: epoch (8) + event_id (8) +
          * type at offset 16. We don't need the full unpack here. */
@@ -479,8 +591,6 @@ static bool apply_invariants(const char *path,
             break;
         }
     }
-    fclose(f);
-
     /* Anything still in pending_tows after the walk is a TOW with no
      * resolution at this station. Count as a violation but don't fail
      * the report — orphan tows can legitimately occur when a player
@@ -509,6 +619,9 @@ static const char *type_name(unsigned t) {
     case CHAIN_EVT_FRAGMENT_TOW:     return "FRAGMENT_TOW";
     case CHAIN_EVT_FRAGMENT_RELEASE: return "FRAGMENT_RELEASE";
     case CHAIN_EVT_DEATH:            return "DEATH";
+    case CHAIN_EVT_CONSTRUCTION:     return "CONSTRUCTION";
+    case CHAIN_EVT_ROUTE_HISTORY:    return "ROUTE_HISTORY";
+    case CHAIN_EVT_CLAIM_FRAGMENT:   return "CLAIM_FRAGMENT";
     default:                         return "UNKNOWN";
     }
 }
@@ -518,6 +631,7 @@ static void print_text(const char *path,
                        const char *station_name,
                        const chain_log_verify_report_t *r,
                        const inv_state_t *inv,
+                       const craft_audit_t *craft,
                        bool ok) {
     printf("=== Verifying %s%s%s%s ===\n",
            path,
@@ -543,6 +657,22 @@ static void print_text(const char *path,
                (unsigned long long)r->event_type_counts[t]);
     }
     printf("\n");
+    printf("craft provenance: station_attested_v1=%llu unbound_v0=%llu "
+           "rejected=%llu input_lineage_proven=false "
+           "conservation_proven=false\n",
+           (unsigned long long)(craft
+               ? craft->station_attested_v1 : 0),
+           (unsigned long long)(craft
+               ? craft->unbound_v0 : 0),
+           (unsigned long long)(craft
+               ? craft->semantic_rejections : 0));
+    if (craft && craft->semantic_rejections > 0u) {
+        printf("first craft rejection: event %llu %s\n",
+               (unsigned long long)
+                   craft->first_rejection_event_id,
+               cargo_craft_provenance_status_name(
+                   craft->first_rejection));
+    }
     if (inv) {
         if (inv->inv_smelt_violations)
             printf("smelt invariant viol: %llu\n", (unsigned long long)inv->inv_smelt_violations);
@@ -565,6 +695,7 @@ static void print_json(const char *path,
                        const char *station_name,
                        const chain_log_verify_report_t *r,
                        const inv_state_t *inv,
+                       const craft_audit_t *craft,
                        bool ok) {
     printf("{");
     printf("\"log\":\"%s\",", path);
@@ -590,6 +721,26 @@ static void print_json(const char *path,
         first = false;
     }
     printf("},");
+    printf("\"craft_provenance\":{");
+    printf("\"station_attested_v1\":%llu,",
+           (unsigned long long)(craft
+               ? craft->station_attested_v1 : 0));
+    printf("\"unbound_v0\":%llu,",
+           (unsigned long long)(craft
+               ? craft->unbound_v0 : 0));
+    printf("\"semantic_rejections\":%llu,",
+           (unsigned long long)(craft
+               ? craft->semantic_rejections : 0));
+    printf("\"first_rejection_event_id\":%llu,",
+           (unsigned long long)(craft
+               ? craft->first_rejection_event_id : 0));
+    printf("\"first_rejection\":\"%s\",",
+           craft && craft->semantic_rejections > 0u
+               ? cargo_craft_provenance_status_name(
+                     craft->first_rejection)
+               : "none");
+    printf("\"input_lineage_proven\":false,");
+    printf("\"conservation_proven\":false},");
     printf("\"smelt_invariant_violations\":%llu,",
            (unsigned long long)(inv ? inv->inv_smelt_violations : 0));
     printf("\"transfer_invariant_violations\":%llu,",
@@ -626,37 +777,105 @@ static int verify_one(const char *path, const cli_opts_t *opts) {
         }
     }
 
-    FILE *f = fopen(path, "rb");
-    if (!f) {
+    FILE *source = fopen(path, "rb");
+    if (!source) {
         fprintf(stderr, "signal_verify: cannot open %s\n", path);
         return 2;
     }
+    FILE *f = snapshot_log(source);
+    if (fclose(source) != 0) {
+        if (f) fclose(f);
+        fprintf(stderr,
+                "signal_verify: source descriptor close failed\n");
+        return 1;
+    }
+    if (!f) return 1;
 
     chain_log_verify_report_t report;
     bool ok = chain_log_verify_with_pubkey(f, pubkey, &report);
-    fclose(f);
+    craft_audit_t craft = {0};
+    if (ok &&
+        !audit_verified_crafts(
+            f, report.valid_events, &craft)) {
+        fprintf(stderr,
+                "signal_verify: failed to audit verified CRAFT snapshot\n");
+        ok = false;
+    }
+    if (craft.semantic_rejections > 0u) ok = false;
 
     inv_state_t inv = {0};
     char inv_fail[128] = {0};
     bool inv_ok = true;
     if (ok) {
-        inv_ok = apply_invariants(path, opts->invariants, opts, &inv,
-                                  inv_fail, sizeof(inv_fail));
+        inv_ok = apply_invariants(
+            f, report.valid_events, opts->invariants,
+            opts, &inv, inv_fail, sizeof(inv_fail));
     }
     if (!inv_ok && opts->strict) ok = false;
 
     if (opts->dump_text) {
-        dump_operator_post_text(path, opts->since, opts->since_set,
-                                opts->until, opts->until_set);
+        dump_operator_post_text(
+            f, report.valid_events,
+            opts->since, opts->since_set,
+            opts->until, opts->until_set);
     }
+    if (fclose(f) != 0) ok = false;
 
     const char *name = registry_name(pubkey);
     if (opts->fmt == REPORT_JSON)
-        print_json(path, b58, name, &report, &inv, ok);
+        print_json(path, b58, name, &report, &inv, &craft, ok);
     else
-        print_text(path, b58, name, &report, &inv, ok);
+        print_text(path, b58, name, &report, &inv, &craft, ok);
 
     return ok ? 0 : 1;
+}
+
+static bool merge_invariants_from_verified_snapshot(
+    const char *path,
+    const cli_opts_t *opts,
+    inv_state_t *merged,
+    char *fail,
+    size_t fail_cap) {
+    uint8_t pubkey[32];
+    char ignored_b58[80] = {0};
+    if (opts->station_pubkey_b58) {
+        if (base58_decode(
+                opts->station_pubkey_b58,
+                pubkey, sizeof(pubkey)) != 32) {
+            return false;
+        }
+    } else if (!pubkey_from_filename(
+                   path, pubkey, ignored_b58,
+                   sizeof(ignored_b58))) {
+        return false;
+    }
+
+    FILE *source = fopen(path, "rb");
+    if (!source) return false;
+    FILE *snapshot = snapshot_log(source);
+    bool close_ok = fclose(source) == 0;
+    if (!snapshot || !close_ok) {
+        if (snapshot) fclose(snapshot);
+        return false;
+    }
+
+    chain_log_verify_report_t report;
+    bool ok = chain_log_verify_with_pubkey(
+        snapshot, pubkey, &report);
+    craft_audit_t craft = {0};
+    if (ok) {
+        ok = audit_verified_crafts(
+            snapshot, report.valid_events, &craft) &&
+             craft.semantic_rejections == 0u;
+    }
+    if (ok) {
+        ok = apply_invariants(
+            snapshot, report.valid_events,
+            opts->invariants, opts, merged,
+            fail, fail_cap);
+    }
+    if (fclose(snapshot) != 0) ok = false;
+    return ok;
 }
 
 /* ------------------------------------------------------------------ */
@@ -740,8 +959,16 @@ int main(int argc, char **argv) {
         };
         (void)inv_passes;
         for (int i = positional_start; i < argc; i++) {
-            (void)apply_invariants(argv[i], opts.invariants, &inv_opts, &merged,
-                                   fail, sizeof(fail));
+            if (!merge_invariants_from_verified_snapshot(
+                    argv[i], &inv_opts, &merged,
+                    fail, sizeof(fail))) {
+                inv_ok = false;
+                fprintf(stderr,
+                        "signal_verify: cross-station snapshot "
+                        "verification failed for %s\n",
+                        argv[i]);
+                break;
+            }
         }
         /* If aggregate transfer violations remain, the cross-station
          * pass also fails. */

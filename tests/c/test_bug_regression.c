@@ -249,31 +249,89 @@ TEST(test_bug21_commodity_bits_fragile) {
 TEST(test_bug22_hauler_stuck_at_empty_station) {
     WORLD_DECL;
     world_reset(&w);
-    /* Empty the refinery inventory so haulers can't load from home */
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        w.stations[0]._inventory_cache[i] = 0.0f;
-    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++)
-        ASSERT(test_set_station_finished_units(
-            &w.stations[0], (commodity_t)i, 0));
-    /* Put enough ingots at station 1 to exceed the hauler reserve, so
-     * relocation can actually result in a load. */
+    memset(w.contracts, 0, sizeof(w.contracts));
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        w.npc_ships[i].active = false;
+
+    /* An empty-home hauler no longer scans omniscient world state or
+     * permanently migrates to the richest station.  Give it the demand
+     * and remote-supply memories that the dock-gossip model requires. */
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_REPAIR_KIT, 0));
     ASSERT(test_set_station_finished_units(&w.stations[1],
-                                           COMMODITY_FERRITE_INGOT, 40));
-    float initial_stock = station_inventory_amount(
-        &w.stations[1], COMMODITY_FERRITE_INGOT);
-    /* Run 60 seconds — haulers should relocate, load from station 1, and deliver */
-    for (int i = 0; i < 7200; i++)
-        world_sim_step(&w, SIM_DT);
-    /* Hauler should have relocated or picked up ingots from station 1 */
-    bool hauler_relocated = false;
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (w.npc_ships[i].role == NPC_ROLE_HAULER &&
-            w.npc_ships[i].home_station != 0) {
-            hauler_relocated = true;
-        }
-    }
-    ASSERT(hauler_relocated || station_inventory_amount(
-        &w.stations[1], COMMODITY_FERRITE_INGOT) < initial_stock);
+                                           COMMODITY_REPAIR_KIT,
+                                           (int)HAULER_RESERVE + 3));
+    ASSERT(test_anchor_station_legacy_cargo(&w, 1));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 0,
+        .commodity = COMMODITY_REPAIR_KIT,
+        .quantity_needed = 3.0f,
+        .base_price = 100.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    int hauler_slot = spawn_npc(&w, 0, NPC_ROLE_HAULER);
+    ASSERT(hauler_slot >= 0);
+    npc_ship_t *hauler = &w.npc_ships[hauler_slot];
+    ship_t *hauler_ship = world_npc_ship_for(&w, hauler_slot);
+    ASSERT(hauler_ship != NULL);
+    hauler->state = NPC_STATE_DOCKED;
+    hauler->state_timer = 0.0f;
+    hauler->home_station = 0;
+    hauler->dest_station = 0;
+    test_clear_knowledge(&hauler->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
+    contract_summary_t demand = contract_summary_make(&w.contracts[0]);
+    ASSERT(test_add_known_contract(&hauler->ship->knowledge, &demand));
+    market_memory_t supply = {0};
+    ASSERT(market_memory_from_station_supply(&w.stations[1], 1,
+                                             COMMODITY_REPAIR_KIT,
+                                             w.tick, &supply));
+    knowledge_item_t supply_item = {0};
+    ASSERT(knowledge_item_from_market_memory(&supply, &supply_item));
+    knowledge_view_insert(&hauler->ship->knowledge, &supply_item);
+
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(hauler->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(hauler->home_station, 0);
+    ASSERT_EQ_INT(hauler->pickup_station, 1);
+    ASSERT_EQ_INT(hauler->dest_station, 0);
+
+    /* Drive only the dock transitions: receipt-backed units must leave the
+     * remote source and remain deliverable at the empty home station. */
+    vec2 source_dock =
+        station_approach_target(&w.stations[1], hauler->ship->pos);
+    hauler->ship->pos = source_dock;
+    hauler_ship->pos = source_dock;
+    hauler->ship->vel = v2(0.0f, 0.0f);
+    hauler_ship->vel = v2(0.0f, 0.0f);
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(hauler->state, NPC_STATE_UNLOADING);
+    hauler->state_timer = 0.0f;
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(hauler->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[1],
+                                         COMMODITY_REPAIR_KIT),
+                  (int)HAULER_RESERVE);
+    ASSERT_EQ_INT(ship_finished_count(hauler_ship,
+                                      COMMODITY_REPAIR_KIT), 3);
+
+    vec2 home_dock =
+        station_approach_target(&w.stations[0], hauler->ship->pos);
+    hauler->ship->pos = home_dock;
+    hauler_ship->pos = home_dock;
+    hauler->ship->vel = v2(0.0f, 0.0f);
+    hauler_ship->vel = v2(0.0f, 0.0f);
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(hauler->state, NPC_STATE_UNLOADING);
+    hauler->state_timer = 0.0f;
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_REPAIR_KIT), 3);
+    ASSERT_EQ_INT(ship_finished_count(hauler_ship,
+                                      COMMODITY_REPAIR_KIT), 0);
 }
 
 TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
@@ -1440,7 +1498,9 @@ TEST(test_asteroid_collision_uses_deterministic_length_reference) {
     w.asteroids[1].vel = v2(0.0f, 0.0f);
 
     spatial_grid_build(&w);
-    resolve_asteroid_collisions(&w);
+    asteroid_pair_plan_t pair_plan;
+    ASSERT(asteroid_pair_plan_build(&w, &pair_plan));
+    resolve_asteroid_collisions(&w, &pair_plan);
 
     ASSERT_EQ_FLOAT(v2_len(v2_sub(w.asteroids[0].pos, w.asteroids[1].pos)),
                     30.0f, 0.001f);

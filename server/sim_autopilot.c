@@ -108,7 +108,8 @@ static bool autopilot_asteroid_claimed_by_peer(const world_t *w,
     for (int p = 0; p < MAX_PLAYERS; p++) {
         const server_player_t *other = &w->players[p];
         if (other == self) continue;
-        if (!other->connected || other->docked || other->autopilot_mode == 0)
+        if (!server_player_is_gameplay_ready(other) ||
+            other->docked || other->autopilot_mode == 0)
             continue;
         if (ship_has_towed_fragments(other->ship))
             continue;

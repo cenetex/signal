@@ -24,12 +24,17 @@ module input/output consequences visible in normal HUD, refit, station,
 station-level production summaries, and scan copy. The next pass should build
 on those cues rather than re-spec them.
 
-The immediate exception is the first gated progression step. The UI now
-correctly says that Cuprite requires L2 mining and Crystal requires L3 mining,
-and blocked starter laser refits expose that the first mining upgrade currently
-requires Laser Modules made from Crystal Ingots plus Frames. Before adding more
-economy, prove the intended bootstrap: seeded Laser Module stock, an
-L3-capable NPC/import path, or a starter-reachable first upgrade recipe.
+The first gated progression step now has a concrete baseline. The UI says that
+Cuprite requires L2 mining and Crystal requires L3, names the Laser Module
+recipe, and points a fresh pilot to Kepler's eight real modules plus a finite
+work order for eight recipe-smelted Ferrite Ingots from Prospect. Those ingots
+move as physical, receipt-backed cargo; the Kepler-local payout covers the live
+retail quote, and the refit consumes stock normally. The starter order remains
+public instead of acquiring a durable claimant and accepts its advertised
+eight-unit quota only as one bulk delivery. A one-unit actor therefore cannot
+claim or price-fragment it before leaving; a later fresh pilot still receives
+exactly the visible per-unit contract rate for all eight. Later replenishment
+stays on the Helios L3-miner, Laser-Fab, physical-import path.
 
 Self-revealing does not mean tutorial-heavy. It means the player can infer what
 the world knows, wants, remembers, and withholds by looking at the world and

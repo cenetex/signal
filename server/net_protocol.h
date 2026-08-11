@@ -15,9 +15,11 @@
 #include "cargo_receipt.h"
 #include "handoff_ticket.h"
 #include "manifest.h"
+#include "contract_ownership.h"
 #include "sim_ai.h"
 #include "sim_nav.h"
 #include "protocol.h"   /* shared/protocol.h — protocol enums & constants */
+#include "sha256.h"
 #include "wire_codec.h"
 
 /* Forward declaration — defined below. */
@@ -47,6 +49,25 @@ static inline uint64_t net_payload_hash(const uint8_t *data, size_t len) {
     for (size_t i = 0; i < len; i++)
         h = net_fnv1a64_update(h, data[i]);
     return h;
+}
+
+/*
+ * Keep the unauthenticated transport surface intentionally small. Latency
+ * probes are connection-local and bounded by their own rate bucket; identity
+ * registration/session messages are required to establish the live session.
+ * Client telemetry is deliberately excluded: accepting it before identity
+ * proof lets anonymous peers mutate per-player analytics state.
+ */
+static inline bool net_message_allowed_before_session(uint8_t type) {
+    switch (type) {
+    case NET_MSG_LATENCY_PING:
+    case NET_MSG_REGISTER_PUBKEY:
+    case NET_MSG_PROVE_PUBKEY:
+    case NET_MSG_SESSION:
+        return true;
+    default:
+        return false;
+    }
 }
 
 static inline bool net_payload_cache_should_send(net_payload_cache_t *cache,
@@ -153,6 +174,7 @@ static inline bool net_msg_is_deferable_snapshot(uint8_t msg) {
     case NET_MSG_WORLD_INTERACTIONS:
     case NET_MSG_WORLD_INTERACTIONS_Q:
     case NET_MSG_WORLD_INTERACTION_DRIFT:
+    case NET_MSG_WORLD_TOW_LINKS:
         return true;
     default:
         return false;
@@ -285,7 +307,7 @@ static inline bool server_fracture_player_in_range_for_world(
         asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
         return false;
     const server_player_t *sp = &w->players[player_id];
-    if (!sp->connected || !sp->session_ready ||
+    if (!server_player_is_gameplay_ready(sp) ||
         !w->asteroids[asteroid_idx].active) {
         return false;
     }
@@ -428,6 +450,12 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PROTOCOL_STREAM_FLAG_PER_PLAYER |
                         PROTOCOL_STREAM_FLAG_FIXED_SIZE,
                         NET_INPUT_APPLIED_SIZE, 0, 1, sim_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_EVENTS_V2, PROTOCOL_STREAM_CLASS_EVENT,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_RELEVANCE_FILTER,
+                        NET_EVENT_V2_HEADER_SIZE,
+                        NET_EVENT_V2_RECORD_SIZE,
+                        SIM_MAX_EVENTS, sim_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_STATION_IDENTITY, PROTOCOL_STREAM_CLASS_STATIC,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_DIRTY_ONLY |
@@ -660,6 +688,10 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         INTERACTION_DRIFT_MSG_HEADER,
                         INTERACTION_DRIFT_RECORD_SIZE, SIM_MAX_INTERACTIONS,
                         world_tick_ms);
+    ADD_PROTOCOL_STREAM(NET_MSG_WORLD_TOW_LINKS, PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT,
+                        TOW_LINKS_MSG_HEADER_SIZE, TOW_LINK_RECORD_SIZE,
+                        MAX_TOW_LINKS, world_tick_ms);
     ADD_PROTOCOL_STREAM(NET_MSG_PLAYER_SHIP, PROTOCOL_STREAM_CLASS_PLAYER,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_PER_PLAYER,
@@ -744,6 +776,18 @@ static inline int serialize_protocol_info(uint8_t *buf,
                         PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
                         PROTOCOL_STREAM_FLAG_FIXED_SIZE,
                         NET_HANDOFF_RESULT_SIZE, 0, 1, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_LEGACY_RECOVERY_OFFER,
+                        PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_LEGACY_RECOVERY_OFFER_SIZE, 0, 1, 0);
+    ADD_PROTOCOL_STREAM(NET_MSG_LEGACY_RECOVERY_RESULT,
+                        PROTOCOL_STREAM_CLASS_AUTH,
+                        PROTOCOL_STREAM_FLAG_SERVER_TO_CLIENT |
+                        PROTOCOL_STREAM_FLAG_PER_PLAYER |
+                        PROTOCOL_STREAM_FLAG_FIXED_SIZE,
+                        NET_LEGACY_RECOVERY_RESULT_SIZE, 0, 1, 0);
 
 #undef ADD_PROTOCOL_STREAM
     buf[7] = (uint8_t)count;
@@ -2661,6 +2705,215 @@ static inline int serialize_player_manifest(uint8_t *buf, const ship_t *ship) {
     return detail_offset + detail_count * MANIFEST_DETAIL_ENTRY;
 }
 
+/*
+ * Receipt bundles are sidecars to PLAYER_MANIFEST identities. They are
+ * replayable read-model state, so pace them independently from the durable
+ * transaction response and restart whenever either the admitted identity view
+ * or any aligned chain changes.
+ */
+typedef struct {
+    bool manifest_admitted;
+    bool receipt_revision_valid;
+    bool receipt_generation_valid;
+    uint16_t cursor;
+    uint16_t receipt_detail_count;
+    uint64_t receipt_generation;
+    uint8_t manifest_revision[32];
+    uint8_t receipt_revision[32];
+    /* Bounded work counters used by deterministic tests and diagnostics. */
+    uint64_t receipt_revision_scans;
+    uint64_t receipt_links_packed;
+    uint64_t receipt_generation_fast_hits;
+    uint64_t receipt_completed_fast_hits;
+} server_receipt_resend_state_t;
+
+typedef bool (*server_receipt_resend_sink_fn)(
+    void *user,
+    const cargo_receipt_chain_t *chain);
+
+static inline void server_receipt_manifest_revision(
+    const ship_t *ship,
+    uint8_t out[32]) {
+    static const uint8_t domain[] =
+        "signal/player-manifest-receipt-view/v1";
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, domain, sizeof(domain) - 1u);
+    uint16_t detail_count = 0;
+    if (ship && ship->manifest.units) {
+        for (uint16_t i = 0;
+             i < ship->manifest.count &&
+             detail_count < MANIFEST_DETAIL_MAX;
+             i++) {
+            const cargo_unit_t *unit = &ship->manifest.units[i];
+            if (!manifest_unit_needs_detail(unit)) continue;
+            sha256_update(&ctx, unit->pub, 32);
+            detail_count++;
+        }
+    }
+    uint8_t count_le[2] = {
+        (uint8_t)(detail_count & 0xFFu),
+        (uint8_t)(detail_count >> 8),
+    };
+    sha256_update(&ctx, count_le, sizeof(count_le));
+    sha256_final(&ctx, out);
+}
+
+static inline void server_receipt_view_revision(
+    const ship_t *ship,
+    uint8_t out[32],
+    uint16_t *out_detail_count,
+    uint32_t *out_links_packed) {
+    static const uint8_t domain[] =
+        "signal/player-receipt-sidecars/v1";
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, domain, sizeof(domain) - 1u);
+    const ship_receipts_t *receipts =
+        ship_get_receipts_const(ship);
+    uint16_t detail_count = 0;
+    uint32_t links_packed = 0;
+    if (ship && ship->manifest.units && receipts && receipts->chains) {
+        for (uint16_t i = 0;
+             i < ship->manifest.count &&
+             detail_count < MANIFEST_DETAIL_MAX;
+             i++) {
+            const cargo_unit_t *unit = &ship->manifest.units[i];
+            if (!manifest_unit_needs_detail(unit)) continue;
+            sha256_update(&ctx, unit->pub, 32);
+            uint8_t chain_len =
+                i < receipts->count ? receipts->chains[i].len : 0;
+            sha256_update(&ctx, &chain_len, sizeof(chain_len));
+            if (chain_len > 0 &&
+                chain_len <= CARGO_RECEIPT_CHAIN_MAX_LEN) {
+                uint8_t packed[CARGO_RECEIPT_SIZE];
+                for (uint8_t link = 0; link < chain_len; link++) {
+                    cargo_receipt_pack(
+                        &receipts->chains[i].links[link], packed);
+                    sha256_update(&ctx, packed, sizeof(packed));
+                    links_packed++;
+                }
+            }
+            detail_count++;
+        }
+    }
+    uint8_t count_le[2] = {
+        (uint8_t)(detail_count & 0xFFu),
+        (uint8_t)(detail_count >> 8),
+    };
+    sha256_update(&ctx, count_le, sizeof(count_le));
+    sha256_final(&ctx, out);
+    if (out_detail_count) *out_detail_count = detail_count;
+    if (out_links_packed) *out_links_packed = links_packed;
+}
+
+static inline void server_receipt_resend_note_manifest_admitted(
+    server_receipt_resend_state_t *state,
+    const ship_t *ship) {
+    if (!state) return;
+    uint8_t revision[32];
+    server_receipt_manifest_revision(ship, revision);
+    if (!state->manifest_admitted ||
+        memcmp(state->manifest_revision, revision, 32) != 0) {
+        state->cursor = 0;
+        state->receipt_revision_valid = false;
+        state->receipt_generation_valid = false;
+        state->receipt_detail_count = 0;
+    }
+    state->manifest_admitted = true;
+    memcpy(state->manifest_revision, revision, 32);
+}
+
+static inline uint16_t server_receipt_resend_drain(
+    server_receipt_resend_state_t *state,
+    const ship_t *ship,
+    uint16_t max_chains,
+    server_receipt_resend_sink_fn sink,
+    void *sink_user) {
+    if (!state || !state->manifest_admitted || !ship ||
+        !ship->manifest.units || !sink || max_chains == 0) {
+        return 0;
+    }
+    uint8_t manifest_revision[32];
+    server_receipt_manifest_revision(ship, manifest_revision);
+    if (memcmp(
+            state->manifest_revision,
+            manifest_revision, 32) != 0) {
+        return 0;
+    }
+
+    const ship_receipts_t *receipts =
+        ship_get_receipts_const(ship);
+    uint64_t receipt_generation =
+        receipts ? receipts->semantic_generation : 0;
+    bool generation_cacheable =
+        receipt_generation != 0 &&
+        receipt_generation != UINT64_MAX;
+    bool reuse_receipt_revision =
+        state->receipt_revision_valid &&
+        state->receipt_generation_valid &&
+        generation_cacheable &&
+        state->receipt_generation == receipt_generation;
+    if (reuse_receipt_revision) {
+        state->receipt_generation_fast_hits++;
+    } else {
+        uint8_t receipt_revision[32];
+        uint16_t receipt_detail_count = 0;
+        uint32_t receipt_links_packed = 0;
+        server_receipt_view_revision(
+            ship, receipt_revision, &receipt_detail_count,
+            &receipt_links_packed);
+        state->receipt_revision_scans++;
+        state->receipt_links_packed += receipt_links_packed;
+        if (!state->receipt_revision_valid ||
+            memcmp(state->receipt_revision,
+                   receipt_revision, 32) != 0) {
+            state->cursor = 0;
+            state->receipt_revision_valid = true;
+            memcpy(state->receipt_revision,
+                   receipt_revision, 32);
+        }
+        state->receipt_generation = receipt_generation;
+        state->receipt_generation_valid = generation_cacheable;
+        state->receipt_detail_count = receipt_detail_count;
+    }
+    if (state->cursor >= state->receipt_detail_count) {
+        if (reuse_receipt_revision)
+            state->receipt_completed_fast_hits++;
+        return 0;
+    }
+
+    uint16_t sent = 0;
+    uint16_t detail_ordinal = 0;
+    for (uint16_t index = 0;
+         index < ship->manifest.count &&
+         detail_ordinal < MANIFEST_DETAIL_MAX &&
+         sent < max_chains;
+         index++) {
+        const cargo_unit_t *unit = &ship->manifest.units[index];
+        if (!manifest_unit_needs_detail(unit)) continue;
+        if (detail_ordinal < state->cursor) {
+            detail_ordinal++;
+            continue;
+        }
+        const cargo_receipt_chain_t *chain =
+            receipts && index < receipts->count
+                ? &receipts->chains[index] : NULL;
+        if (!chain || chain->len == 0 ||
+            chain->len > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+            state->cursor++;
+            detail_ordinal++;
+            continue;
+        }
+        if (!sink(sink_user, chain))
+            break;
+        state->cursor++;
+        detail_ordinal++;
+        sent++;
+    }
+    return sent;
+}
+
 /* Laser/scan inspection snapshot. The target-only helper is used for
  * station/player scans so clients can still mirror authoritative scan
  * metadata even when there is no manifest to project. */
@@ -3094,7 +3347,7 @@ static inline int write_inspect_snapshot_matching_relay_receipt_rows(
     if (!buf || !receipt_world || !npc_diag) return row_count;
     for (int pidx = 0; pidx < MAX_PLAYERS && row_count < max_rows; pidx++) {
         const server_player_t *sp = &receipt_world->players[pidx];
-        if (!sp->connected) continue;
+        if (!server_player_is_gameplay_ready(sp)) continue;
         row_count = write_inspect_snapshot_matching_holder_receipt_rows(
             buf, row_count, max_rows, sp->ship, npc_diag,
             INSPECT_ROW_RELAY_RECEIPT);
@@ -3362,7 +3615,7 @@ static inline int serialize_inspect_snapshot_npc_with_world_receipts(
 static inline int serialize_inspect_snapshot_player(uint8_t *buf,
                                                      uint8_t target_index,
                                                      const server_player_t *player) {
-    if (!player || !player->connected)
+    if (!server_player_is_gameplay_ready(player))
         return serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NONE, -1, -1);
 
     uint8_t near_station =
@@ -3408,7 +3661,8 @@ static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t 
 /*
  * WORLD_NPCS message:
  * [type:1][count:1] + count * NPC_RECORD_SIZE-byte records
- * (29 legacy pose/target/tint bytes + 8 session-token bytes + 1 home-station byte)
+ * (29 pose/target/tint bytes + 8 zeroed legacy-reserved bytes +
+ *  1 home-station byte)
  */
 #define NPC_NET_METADATA_HEARTBEAT_TICKS 2400u /* 0.05 Hz metadata reconciliation */
 
@@ -3445,8 +3699,15 @@ static inline void serialize_one_npc(uint8_t *p, int index,
     p[26] = (uint8_t)(n->tint_r * 255.0f);
     p[27] = (uint8_t)(n->tint_g * 255.0f);
     p[28] = (uint8_t)(n->tint_b * 255.0f);
-    memcpy(&p[29], n->session_token, sizeof(n->session_token));
-    p[37] = (uint8_t)(n->home_station & 0xFF);
+    /*
+     * Bytes 29..36 carried a token-derived NPC custody identity before
+     * protocol v6. It is a bearer/offline-verifier surface, so preserve the
+     * record width for compatibility but emit zeros unconditionally.
+     */
+    memset(&p[NPC_RECORD_RESERVED_IDENTITY_OFFSET], 0,
+           NPC_RECORD_RESERVED_IDENTITY_SIZE);
+    p[NPC_RECORD_HOME_STATION_OFFSET] =
+        (uint8_t)(n->home_station & 0xFF);
 }
 
 static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
@@ -4011,7 +4272,8 @@ _Static_assert(
     "SCAFFOLD_MOTION_Q_RECORD_SIZE must match serialized scaffold q motion layout"
 );
 _Static_assert(
-    4 + 6 * 4 + 2 + 2 + 2 + 1 + 1 + 2 + 1 == CARGO_POD_RECORD_SIZE,
+    4 + 6 * 4 + 2 + 2 + 2 + 1 + 1 + 2 + 1 + 1 + 32 ==
+        CARGO_POD_RECORD_SIZE,
     "CARGO_POD_RECORD_SIZE must match serialized cargo pod layout"
 );
 _Static_assert(
@@ -4262,7 +4524,11 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     for (int p = 0; p < STATION_PENDING_SHIP_RECORD_COUNT; p++) {
         if (p < ship_n) {
             buf[moff + 0] = (uint8_t)st->pending_ship_builds[p].hull_class;
-            buf[moff + 1] = (uint8_t)st->pending_ship_builds[p].owner;
+            /*
+             * Preserve the legacy six-byte record shape, but never project a
+             * durable actor principal into its old runtime-owner byte.
+             */
+            buf[moff + 1] = 0xFF;
             write_f32_le(&buf[moff + 2], st->pending_ship_builds[p].build_progress);
         } else {
             buf[moff + 0] = 0;
@@ -4784,6 +5050,17 @@ static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_po
     p[37] = tractor_module < 0 ? 0 : (uint8_t)(tractor_module + 1);
     p[38] = pod->tow_hardpoint_tag <= CARGO_POD_HARDPOINT_COUNT
         ? pod->tow_hardpoint_tag : 0;
+    p[39] = pod->custody_station;
+    memcpy(&p[40], pod->selection_token, 32);
+}
+
+static inline void serialize_one_cargo_pod_for_world(
+    uint8_t *p, int index, cargo_pod_t *pod, world_t *w) {
+    serialize_one_cargo_pod(p, index, pod);
+    memset(&p[40], 0, 32);
+    uint8_t token[32] = {0};
+    if (server_cargo_pod_selection_token(w, index, token))
+        memcpy(&p[40], token, sizeof(token));
 }
 
 static inline uint16_t cargo_pod_motion_q_encode_rotation(float rotation);
@@ -4826,6 +5103,17 @@ static inline void serialize_one_cargo_pod_q(uint8_t *p,
     p[27] = tractor_module < 0 ? 0 : (uint8_t)(tractor_module + 1);
     p[28] = pod->tow_hardpoint_tag <= CARGO_POD_HARDPOINT_COUNT
         ? pod->tow_hardpoint_tag : 0;
+    p[29] = pod->custody_station;
+    memcpy(&p[30], pod->selection_token, 32);
+}
+
+static inline void serialize_one_cargo_pod_q_for_world(
+    uint8_t *p, int index, cargo_pod_t *pod, world_t *w) {
+    serialize_one_cargo_pod_q(p, index, pod);
+    memset(&p[30], 0, 32);
+    uint8_t token[32] = {0};
+    if (server_cargo_pod_selection_token(w, index, token))
+        memcpy(&p[30], token, sizeof(token));
 }
 
 static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {
@@ -4904,6 +5192,21 @@ static inline uint64_t cargo_pod_net_semantic_sig(
     return h;
 }
 
+static inline uint64_t cargo_pod_net_semantic_sig_for_world(
+    world_t *w, int index, cargo_pod_t *pod) {
+    uint8_t rec[CARGO_POD_RECORD_SIZE];
+    serialize_one_cargo_pod_for_world(rec, index, pod, w);
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < CARGO_POD_RECORD_SIZE; i++) {
+        bool ignored_byte =
+            (i >= 4 && i < 20) ||  /* pos + vel */
+            (i >= 24 && i < 28);   /* rotation */
+        if (!ignored_byte)
+            h = net_fnv1a64_update(h, rec[i]);
+    }
+    return h;
+}
+
 static inline int serialize_cargo_pods_for_player_delta(
     uint8_t *buf,
     uint8_t *remove_buf,
@@ -4956,11 +5259,12 @@ static inline int serialize_cargo_pods_for_player_delta(
     return 2 + count * CARGO_POD_RECORD_SIZE;
 }
 
-static inline int serialize_cargo_pods_q_for_player_delta(
+static inline int serialize_cargo_pods_q_for_player_delta_impl(
     uint8_t *buf,
     uint8_t *remove_buf,
     int *remove_len_out,
     const cargo_pod_t *pods,
+    world_t *selection_world,
     vec2 player_pos,
     bool *sent,
     uint64_t *sent_sig,
@@ -4975,10 +5279,22 @@ static inline int serialize_cargo_pods_q_for_player_delta(
         bool in_view = pod->active &&
             serialize_relevance_in_player_view(pod->pos, player_pos);
         if (in_view) {
-            uint64_t sig = cargo_pod_net_semantic_sig(i, pod);
+            uint64_t sig = selection_world
+                ? cargo_pod_net_semantic_sig_for_world(
+                      selection_world, i,
+                      &selection_world->cargo_pods[i])
+                : cargo_pod_net_semantic_sig(i, pod);
             if (!sent[i] || sent_sig[i] != sig || refresh_all_known) {
-                serialize_one_cargo_pod_q(
-                    &buf[2 + count * CARGO_POD_Q_RECORD_SIZE], i, pod);
+                if (selection_world) {
+                    serialize_one_cargo_pod_q_for_world(
+                        &buf[2 + count * CARGO_POD_Q_RECORD_SIZE],
+                        i, &selection_world->cargo_pods[i],
+                        selection_world);
+                } else {
+                    serialize_one_cargo_pod_q(
+                        &buf[2 + count * CARGO_POD_Q_RECORD_SIZE],
+                        i, pod);
+                }
                 count++;
                 sent[i] = true;
                 sent_sig[i] = sig;
@@ -5006,6 +5322,35 @@ static inline int serialize_cargo_pods_q_for_player_delta(
         }
     }
     return 2 + count * CARGO_POD_Q_RECORD_SIZE;
+}
+
+static inline int serialize_cargo_pods_q_for_player_delta(
+    uint8_t *buf,
+    uint8_t *remove_buf,
+    int *remove_len_out,
+    const cargo_pod_t *pods,
+    vec2 player_pos,
+    bool *sent,
+    uint64_t *sent_sig,
+    bool refresh_all_known) {
+    return serialize_cargo_pods_q_for_player_delta_impl(
+        buf, remove_buf, remove_len_out, pods, NULL,
+        player_pos, sent, sent_sig, refresh_all_known);
+}
+
+static inline int serialize_cargo_pods_q_for_player_delta_world(
+    uint8_t *buf,
+    uint8_t *remove_buf,
+    int *remove_len_out,
+    world_t *w,
+    vec2 player_pos,
+    bool *sent,
+    uint64_t *sent_sig,
+    bool refresh_all_known) {
+    if (!w) return 0;
+    return serialize_cargo_pods_q_for_player_delta_impl(
+        buf, remove_buf, remove_len_out, w->cargo_pods, w,
+        player_pos, sent, sent_sig, refresh_all_known);
 }
 
 static inline void serialize_one_cargo_pod_motion(uint8_t *p,
@@ -5497,6 +5842,38 @@ static inline int serialize_interaction_drift_for_player(
            count * INTERACTION_DRIFT_RECORD_SIZE;
 }
 
+static inline void serialize_entity_ref(uint8_t *buf, entity_ref_t ref) {
+    buf[0] = ref.kind;
+    write_u16_le(&buf[1], (uint16_t)ref.index);
+    write_u16_le(&buf[3], (uint16_t)ref.part);
+    write_u16_le(&buf[5], ref.generation);
+}
+
+static inline int serialize_tow_links(uint8_t *buf, const world_t *w) {
+    if (!buf || !w) return 0;
+    const tow_link_t *ordered[MAX_TOW_LINKS];
+    int count = world_tow_collect_links_canonical(
+        w, ordered, MAX_TOW_LINKS);
+    for (int i = 0; i < count; i++) {
+        const tow_link_t *link = ordered[i];
+        uint8_t *record = &buf[TOW_LINKS_MSG_HEADER_SIZE +
+                               i * TOW_LINK_RECORD_SIZE];
+        serialize_entity_ref(&record[0], link->source);
+        serialize_entity_ref(&record[7], link->target);
+        record[14] = link->profile;
+        record[15] = link->slot;
+        record[16] = link->state;
+        record[17] = 0;
+        write_u32_le(&record[18], link->attached_tick);
+        write_u32_le(&record[22], link->revision);
+    }
+    buf[0] = NET_MSG_WORLD_TOW_LINKS;
+    write_u16_le(&buf[1], (uint16_t)count);
+    write_u32_le(&buf[3], w->tow_revision);
+    write_u32_le(&buf[7], w->tow_revision_tick);
+    return TOW_LINKS_MSG_HEADER_SIZE + count * TOW_LINK_RECORD_SIZE;
+}
+
 static inline uint64_t net_world_interactions_semantic_hash(const uint8_t *data,
                                                             int len) {
     if (!data || len <= 0) return 0;
@@ -5820,6 +6197,7 @@ typedef struct {
     uint8_t interactions_q[2 + SIM_MAX_INTERACTIONS * INTERACTION_Q_RECORD_SIZE];
     uint8_t interaction_drift[INTERACTION_DRIFT_MSG_HEADER +
                               SIM_MAX_INTERACTIONS * INTERACTION_DRIFT_RECORD_SIZE];
+    uint8_t tow_links[TOW_LINKS_MAX_SIZE];
     uint8_t world_time[5];
 } server_world_snapshot_scratch_t;
 
@@ -5845,7 +6223,7 @@ static inline void server_emit_world_snapshot_for_player(
     if (!w || !send || !scratch) return;
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_slot];
-    if (!sp->connected) return;
+    if (!server_player_is_gameplay_ready(sp)) return;
     bool emit_live_world_drift = !sp->docked;
 
     if (emit_live_world_drift) {
@@ -5952,9 +6330,9 @@ static inline void server_emit_world_snapshot_for_player(
     int cargo_remove_len = 0;
     bool cargo_refresh_due = cargo_pod_net_metadata_refresh_due(
         sp->replication->world_cargo_pods_last_sent_tick, w->tick);
-    int clen = serialize_cargo_pods_q_for_player_delta(
+    int clen = serialize_cargo_pods_q_for_player_delta_world(
         scratch->cargo_pods_q, scratch->cargo_pod_remove, &cargo_remove_len,
-        w->cargo_pods, sp->ship->pos, sp->replication->cargo_pod_sent,
+        w, sp->ship->pos, sp->replication->cargo_pod_sent,
         sp->replication->cargo_pod_sent_sig, cargo_refresh_due);
     if (clen > 2)
         send(send_user, scratch->cargo_pods_q, clen);
@@ -5976,6 +6354,10 @@ static inline void server_emit_world_snapshot_for_player(
         if (idrift_len > INTERACTION_DRIFT_MSG_HEADER)
             send(send_user, scratch->interaction_drift, idrift_len);
     }
+
+    int tow_len = serialize_tow_links(scratch->tow_links, w);
+    if (tow_len >= TOW_LINKS_MSG_HEADER_SIZE)
+        send(send_user, scratch->tow_links, tow_len);
 
     if (!sp->replication->world_time_sent ||
         (uint32_t)(w->tick - sp->replication->world_time_last_sent_tick) >=
@@ -6043,7 +6425,7 @@ static inline void server_emit_fracture_updates(
                 if (!server_player_slot_in_emit_range(p, only_player_slot))
                     continue;
                 server_player_t *sp = &w->players[p];
-                if (!sp->connected) continue;
+                if (!server_player_is_gameplay_ready(sp)) continue;
                 if (sp->replication->fracture_challenge_sent_id[i] == state->fracture_id)
                     continue;
                 if (server_fracture_player_in_range_for_world(w, p, i)) {
@@ -6061,7 +6443,7 @@ static inline void server_emit_fracture_updates(
                 if (!server_player_slot_in_emit_range(p, only_player_slot))
                     continue;
                 server_player_t *sp = &w->players[p];
-                if (!sp->connected) continue;
+                if (!server_player_is_gameplay_ready(sp)) continue;
                 if (server_player_fracture_resolved_sent(sp,
                                                          state->fracture_id))
                     continue;
@@ -6088,7 +6470,7 @@ static inline void server_emit_fracture_updates(
             if (!server_player_slot_in_emit_range(pi, only_player_slot))
                 continue;
             server_player_t *sp = &w->players[pi];
-            if (!sp->connected) continue;
+            if (!server_player_is_gameplay_ready(sp)) continue;
             if (server_player_fracture_resolved_sent(sp, pr->fracture_id))
                 continue;
             send(send_user, pi, buf, len);
@@ -6683,7 +7065,11 @@ static inline int serialize_delivery_ledger(uint8_t *buf,
                     count < DELIVERY_LEDGER_MAX_RECORDS; i++) {
         const delivery_shipment_t *s = &w->delivery_shipments[i];
         if (!s->active) continue;
-        if (s->debtor_player != player_id) continue;
+        if (player_id >= MAX_PLAYERS ||
+            !delivery_ownership_matches_player(
+                s, w, player_id)) {
+            continue;
+        }
         if (s->status == DELIVERY_SHIPMENT_CLEARED) continue;
         uint8_t *p = &buf[DELIVERY_LEDGER_HEADER +
                           count * DELIVERY_LEDGER_RECORD_SIZE];
@@ -6702,7 +7088,8 @@ static inline int serialize_delivery_ledger(uint8_t *buf,
         write_f32_le(&p[21], s->origin_completion_credit);
         write_u32_le(&p[25], s->due_tick);
         uint16_t held_bound = 0;
-        if (player_id < MAX_PLAYERS) {
+        if (player_id < MAX_PLAYERS &&
+            w->players[player_id].ship) {
             const ship_t *ship = w->players[player_id].ship;
             for (int t = 0; t < ship->towed_pod_count && t < 10; t++) {
                 int pod_idx = ship->towed_pods[t];
@@ -6739,6 +7126,12 @@ typedef struct {
         DELIVERY_LEDGER_MAX_RECORDS * DELIVERY_LEDGER_RECORD_SIZE
     ];
 } server_private_snapshot_scratch_t;
+
+enum {
+    SERVER_PRIVATE_SNAPSHOT_PACKET_COUNT = 7,
+    SERVER_INITIAL_PRIVATE_SNAPSHOT_PACKET_COUNT =
+        SERVER_PRIVATE_SNAPSHOT_PACKET_COUNT + 1
+};
 
 typedef struct {
     uint8_t station_identity[STATION_IDENTITY_SIZE + 4];
@@ -6788,7 +7181,7 @@ static inline void server_emit_private_snapshot_for_player(
     if (!w || !send || !scratch) return;
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_slot];
-    if (!sp->connected) return;
+    if (!server_player_is_gameplay_ready(sp)) return;
 
     /* This is the recipient's only periodic authoritative pose lane: the
      * shared player stream deliberately excludes its own player. Keep the
@@ -7229,13 +7622,17 @@ static inline void serialize_event_record(uint8_t *p,
     case SIM_EVENT_NPC_KILL:
         p[2] = ev->npc_kill.cause;
         p[3] = ev->npc_kill.npc_role;
-        memcpy(&p[4], ev->npc_kill.killer_token, 8);
+        /*
+         * p[4..11] stays zero in protocol v5. Session tokens are reconnect
+         * bearer credentials and must never cross the public event stream.
+         * Public attribution will use a versioned public-actor record rather
+         * than reinterpreting these reserved bytes.
+         */
         break;
     case SIM_EVENT_DEATH:
-        /* Broadcast the killer-attribution slice only; the
-         * victim's cinematic payload travels in NET_MSG_DEATH. */
+        /* The victim's cinematic payload travels in NET_MSG_DEATH. The
+         * broadcast deliberately carries no bearer-backed attribution. */
         p[2] = ev->death.cause;
-        memcpy(&p[3], ev->death.killer_token, 8);
         break;
     case SIM_EVENT_OUTPOST_PLACED:
         p[2] = (uint8_t)ev->outpost_placed.slot;
@@ -7288,11 +7685,11 @@ static inline void serialize_event_record(uint8_t *p,
 }
 
 /* Serialize all events from the current sim step into a NET_MSG_EVENTS
- * packet. HAIL_RESPONSE has its own per-recipient message and is
- * skipped here. DEATH is broadcast in stripped form (killer_token +
- * cause + victim id only) so the killer can render a kill confirm
- * even though the cinematic payload still goes to the victim via
- * NET_MSG_DEATH. Returns total packet length. */
+ * packet. HAIL_RESPONSE has its own per-recipient message and is skipped
+ * here. DEATH is broadcast in stripped form (cause + victim id only);
+ * reconnect/session bearer credentials are never public attribution.
+ * The cinematic payload still goes privately via NET_MSG_DEATH.
+ * Returns total packet length. */
 static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
     int count = 0;
     for (int i = 0; i < events->count; i++) {
@@ -7325,6 +7722,82 @@ static inline int serialize_events_for_recipient(uint8_t *buf,
     buf[0] = NET_MSG_EVENTS;
     buf[1] = (uint8_t)count;
     return 2 + count * NET_EVENT_RECORD_SIZE;
+}
+
+/*
+ * Serialize the protocol-v6 public attribution envelope. Any absent or
+ * malformed internal projection becomes explicit UNATTRIBUTED; NONE is never
+ * emitted. The legacy payload encoder remains the single source of payload
+ * layout and is bearer-redacted before those 16 bytes are copied here.
+ */
+static inline void serialize_event_record_v2(
+    uint8_t *p,
+    const sim_event_t *ev) {
+    uint8_t legacy[NET_EVENT_RECORD_SIZE];
+    public_actor_id_t subject = public_actor_id_unattributed();
+    public_actor_id_t source = public_actor_id_unattributed();
+
+    memset(p, 0, NET_EVENT_V2_RECORD_SIZE);
+    p[0] = (uint8_t)ev->type;
+    p[1] = (uint8_t)ev->player_id;
+
+    if (public_actor_id_is_canonical(&ev->subject_actor) &&
+        ev->subject_actor.kind != (uint8_t)PUBLIC_ACTOR_ID_NONE) {
+        subject = ev->subject_actor;
+    }
+    if (public_actor_id_is_canonical(&ev->source_actor) &&
+        ev->source_actor.kind != (uint8_t)PUBLIC_ACTOR_ID_NONE) {
+        source = ev->source_actor;
+    }
+    (void)public_actor_id_pack(
+        &subject, &p[NET_EVENT_V2_SUBJECT_OFFSET]);
+    (void)public_actor_id_pack(
+        &source, &p[NET_EVENT_V2_SOURCE_OFFSET]);
+
+    serialize_event_record(legacy, ev);
+    memcpy(&p[NET_EVENT_V2_PAYLOAD_OFFSET], &legacy[2],
+           NET_EVENT_V2_PAYLOAD_SIZE);
+}
+
+static inline int serialize_events_v2(uint8_t *buf,
+                                      const sim_events_t *events) {
+    int count = 0;
+    if (!buf || !events) return 0;
+    for (int i = 0; i < events->count; i++) {
+        const sim_event_t *ev = &events->events[i];
+        if (ev->type == SIM_EVENT_HAIL_RESPONSE) continue;
+        serialize_event_record_v2(
+            &buf[NET_EVENT_V2_HEADER_SIZE +
+                 count * NET_EVENT_V2_RECORD_SIZE],
+            ev);
+        count++;
+    }
+    buf[0] = NET_MSG_EVENTS_V2;
+    buf[1] = (uint8_t)count;
+    return NET_EVENT_V2_HEADER_SIZE +
+        count * NET_EVENT_V2_RECORD_SIZE;
+}
+
+static inline int serialize_events_v2_for_recipient(
+    uint8_t *buf,
+    const sim_events_t *events,
+    int recipient_slot) {
+    int count = 0;
+    if (!buf || !events) return 0;
+    for (int i = 0; i < events->count; i++) {
+        const sim_event_t *ev = &events->events[i];
+        if (!sim_event_visible_to_recipient(ev, recipient_slot))
+            continue;
+        serialize_event_record_v2(
+            &buf[NET_EVENT_V2_HEADER_SIZE +
+                 count * NET_EVENT_V2_RECORD_SIZE],
+            ev);
+        count++;
+    }
+    buf[0] = NET_MSG_EVENTS_V2;
+    buf[1] = (uint8_t)count;
+    return NET_EVENT_V2_HEADER_SIZE +
+        count * NET_EVENT_V2_RECORD_SIZE;
 }
 
 #endif /* NET_PROTOCOL_H */

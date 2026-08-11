@@ -12,9 +12,9 @@
 #include <stdio.h>
 #include <math.h>
 
-#define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"
 #include "episode.h"
+#include "episode_media.h"
 #include "render.h"
 #include "sokol_gfx.h"
 #include "sokol_gl.h"
@@ -22,6 +22,7 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+static episode_state_t *episode_smoke_state;
 #endif
 
 #ifndef SIGNAL_HAS_WEB_EPISODE_ASSETS
@@ -69,53 +70,156 @@ static void audio_buf_write(episode_state_t *ep, const float *samples, int count
     }
 }
 
+static void episode_clear_pending_frame(episode_state_t *ep) {
+    ep->pending_rgba = NULL;
+    ep->pending_w = 0;
+    ep->pending_h = 0;
+}
+
+static void episode_destroy_texture(episode_state_t *ep) {
+    if (ep->texture_valid) {
+        sg_destroy_view((sg_view){ ep->view_id });
+        sg_destroy_image((sg_image){ ep->texture_id });
+    }
+    ep->texture_id = 0;
+    ep->view_id = 0;
+    ep->video_width = 0;
+    ep->video_height = 0;
+    ep->texture_valid = false;
+    episode_clear_pending_frame(ep);
+}
+
+static void episode_stop_media(episode_state_t *ep) {
+    if (ep->plm) {
+        plm_destroy((plm_t *)ep->plm);
+        ep->plm = NULL;
+    }
+    episode_destroy_texture(ep);
+    ep->active = false;
+    ep->loading = false;
+    ep->deferred_failure = EPISODE_FAILURE_NONE;
+    ep->deferred_failure_index = -1;
+    ep->audio_write_pos = 0;
+    ep->audio_read_pos = 0;
+}
+
+static bool episode_fail_attempt(episode_state_t *ep, int index,
+                                 episode_attempt_token_t token,
+                                 episode_failure_t failure) {
+    if (!episode_lifecycle_fail(&ep->lifecycle, index, token, failure))
+        return false;
+    episode_stop_media(ep);
+    return true;
+}
+
+/*
+ * Video callbacks run inside plm_decode(). Transition a pending attempt to
+ * failed immediately, but destroy the decoder only after plm_decode() returns;
+ * destroying it reentrantly from its own callback is unsafe.
+ *
+ * plm_decode() may emit several frames in one call. Clearing pending here is
+ * what prevents a later callback in that same call from committing watched
+ * state after an earlier allocation or texture failure.
+ */
+static void episode_defer_failure(episode_state_t *ep,
+                                  episode_failure_t failure) {
+    if (!ep || failure == EPISODE_FAILURE_NONE ||
+        ep->deferred_failure != EPISODE_FAILURE_NONE) {
+        return;
+    }
+
+    int index = ep->lifecycle.pending;
+    episode_attempt_token_t token = ep->lifecycle.pending_token;
+    if (index >= 0) {
+        if (!episode_lifecycle_fail(&ep->lifecycle, index, token, failure))
+            return;
+    } else if (ep->lifecycle.current < 0) {
+        return;
+    }
+
+    ep->deferred_failure = failure;
+    ep->deferred_failure_index = index;
+}
+
 /* --- pl_mpeg callbacks --- */
 
 static void on_video_frame(plm_t *plm, plm_frame_t *frame, void *user) {
     (void)plm;
     episode_state_t *ep = (episode_state_t *)user;
+    if (ep->deferred_failure != EPISODE_FAILURE_NONE) return;
 
     int w = frame->width;
     int h = frame->height;
 
-    int rgba_size = w * h * 4;
-    if (rgba_size <= 0) return;
-    if ((size_t)rgba_size > ep->rgba_buffer_size) {
-        uint8_t *next = (uint8_t *)realloc(ep->rgba_buffer, (size_t)rgba_size);
-        if (!next) return;
+    if (w <= 0 || h <= 0 ||
+        (size_t)w > SIZE_MAX / (size_t)h / 4u) {
+        episode_defer_failure(ep, EPISODE_FAILURE_DECODER);
+        return;
+    }
+    size_t rgba_size = (size_t)w * (size_t)h * 4u;
+    if (rgba_size > ep->rgba_buffer_size) {
+        uint8_t *next = (uint8_t *)realloc(ep->rgba_buffer, rgba_size);
+        if (!next) {
+            episode_defer_failure(ep, EPISODE_FAILURE_ALLOCATION);
+            return;
+        }
         ep->rgba_buffer = next;
-        ep->rgba_buffer_size = (size_t)rgba_size;
+        ep->rgba_buffer_size = rgba_size;
     }
 
     plm_frame_to_rgba(frame, ep->rgba_buffer, w * 4);
 
     if (!ep->texture_valid || ep->video_width != w || ep->video_height != h) {
-        if (ep->texture_valid) {
-            sg_destroy_view((sg_view){ ep->view_id });
-            sg_destroy_image((sg_image){ ep->texture_id });
+        sg_sampler new_sampler = { ep->sampler_id };
+        bool made_sampler = false;
+        if (new_sampler.id == 0) {
+            new_sampler = sg_make_sampler(&(sg_sampler_desc){
+                .min_filter = SG_FILTER_LINEAR,
+                .mag_filter = SG_FILTER_LINEAR,
+            });
+            made_sampler = true;
         }
+        if (new_sampler.id == 0 ||
+            sg_query_sampler_state(new_sampler) != SG_RESOURCESTATE_VALID) {
+            if (new_sampler.id != 0) sg_destroy_sampler(new_sampler);
+            if (!made_sampler) ep->sampler_id = 0;
+            episode_defer_failure(ep, EPISODE_FAILURE_TEXTURE);
+            return;
+        }
+
         sg_image img = sg_make_image(&(sg_image_desc){
             .width = w,
             .height = h,
             .pixel_format = SG_PIXELFORMAT_RGBA8,
             .usage.stream_update = true,
         });
+        if (img.id == 0 ||
+            sg_query_image_state(img) != SG_RESOURCESTATE_VALID) {
+            if (img.id != 0) sg_destroy_image(img);
+            if (made_sampler) sg_destroy_sampler(new_sampler);
+            episode_defer_failure(ep, EPISODE_FAILURE_TEXTURE);
+            return;
+        }
+
         sg_view view = sg_make_view(&(sg_view_desc){
             .texture.image = img,
         });
+        if (view.id == 0 ||
+            sg_query_view_state(view) != SG_RESOURCESTATE_VALID) {
+            if (view.id != 0) sg_destroy_view(view);
+            sg_destroy_image(img);
+            if (made_sampler) sg_destroy_sampler(new_sampler);
+            episode_defer_failure(ep, EPISODE_FAILURE_TEXTURE);
+            return;
+        }
+
+        episode_destroy_texture(ep);
         ep->texture_id = img.id;
         ep->view_id = view.id;
+        ep->sampler_id = new_sampler.id;
         ep->video_width = w;
         ep->video_height = h;
         ep->texture_valid = true;
-
-        if (ep->sampler_id == 0) {
-            sg_sampler smp = sg_make_sampler(&(sg_sampler_desc){
-                .min_filter = SG_FILTER_LINEAR,
-                .mag_filter = SG_FILTER_LINEAR,
-            });
-            ep->sampler_id = smp.id;
-        }
     }
 
     /* Stash the reusable RGBA buffer as the pending upload. If multiple
@@ -124,23 +228,41 @@ static void on_video_frame(plm_t *plm, plm_frame_t *frame, void *user) {
     ep->pending_rgba = ep->rgba_buffer;
     ep->pending_w = w;
     ep->pending_h = h;
+
+    if (ep->lifecycle.pending >= 0) {
+        int index = ep->lifecycle.pending;
+        episode_attempt_token_t token = ep->lifecycle.pending_token;
+        if (episode_lifecycle_start(&ep->lifecycle, index, token)) {
+            ep->loading = false;
+            episode_save(ep);
+        }
+    }
 }
 
 static void on_audio_frame(plm_t *plm, plm_samples_t *samples, void *user) {
     (void)plm;
     episode_state_t *ep = (episode_state_t *)user;
+    if (ep->deferred_failure != EPISODE_FAILURE_NONE) return;
     int count = samples->count * 2; /* stereo interleaved */
     audio_buf_write(ep, samples->interleaved, count);
 }
 
 /* --- Start playback once data is in memory --- */
 
-static void episode_start_playback(episode_state_t *ep, uint8_t *data, size_t size) {
-    plm_t *plm = plm_create_with_memory(data, size, 1); /* 1 = free data when done */
-    if (!plm) {
+static void episode_start_playback(episode_state_t *ep, int index,
+                                   episode_attempt_token_t token,
+                                   uint8_t *data, size_t size) {
+    if (!episode_lifecycle_matches(&ep->lifecycle, index, token)) {
         free(data);
-        fprintf(stderr, "episode: failed to create decoder\n");
-        ep->loading = false;
+        return;
+    }
+
+    episode_failure_t failure = EPISODE_FAILURE_DECODER;
+    plm_t *plm = (plm_t *)episode_media_create_decoder(
+        data, size, &failure);
+    if (!plm) {
+        fprintf(stderr, "episode: invalid or unsupported video stream\n");
+        (void)episode_fail_attempt(ep, index, token, failure);
         return;
     }
 
@@ -152,7 +274,7 @@ static void episode_start_playback(episode_state_t *ep, uint8_t *data, size_t si
 
     ep->plm = plm;
     ep->active = true;
-    ep->loading = false;
+    ep->loading = true;
     ep->fade_timer = 0.0f;
     ep->audio_write_pos = 0;
     ep->audio_read_pos = 0;
@@ -161,43 +283,49 @@ static void episode_start_playback(episode_state_t *ep, uint8_t *data, size_t si
 /* --- Async fetch (Emscripten) --- */
 
 #ifdef __EMSCRIPTEN__
+typedef struct {
+    episode_state_t *ep;
+    int index;
+    episode_attempt_token_t token;
+} episode_fetch_context_t;
+
 static void on_fetch_success(void *user, void *data, int size) {
-    episode_state_t *ep = (episode_state_t *)user;
+    episode_fetch_context_t *ctx = (episode_fetch_context_t *)user;
+    episode_state_t *ep = ctx->ep;
+    if (!episode_lifecycle_matches(&ep->lifecycle, ctx->index, ctx->token)) {
+        free(ctx);
+        return;
+    }
+    if (size <= 0) {
+        (void)episode_fail_attempt(ep, ctx->index, ctx->token,
+                                   EPISODE_FAILURE_FETCH);
+        free(ctx);
+        return;
+    }
     uint8_t *copy = (uint8_t *)malloc((size_t)size);
     if (!copy) {
         fprintf(stderr, "episode: out of memory for %d bytes\n", size);
-        ep->loading = false;
+        (void)episode_fail_attempt(ep, ctx->index, ctx->token,
+                                   EPISODE_FAILURE_ALLOCATION);
+        free(ctx);
         return;
     }
     memcpy(copy, data, (size_t)size);
-    episode_start_playback(ep, copy, (size_t)size);
+    episode_start_playback(ep, ctx->index, ctx->token, copy, (size_t)size);
+    free(ctx);
 }
 
 static void on_fetch_error(void *user) {
-    episode_state_t *ep = (episode_state_t *)user;
-    fprintf(stderr, "episode: fetch failed for ep %d (no internet?)\n", ep->pending);
-    ep->loading = false;
-    ep->pending = -1;
-}
-#endif
-
-/* --- Native file loading (dev fallback) --- */
-
-#ifndef __EMSCRIPTEN__
-static uint8_t *load_file(const char *path, size_t *out_size) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { fclose(f); return NULL; }
-    uint8_t *data = (uint8_t *)malloc((size_t)sz);
-    if (!data) { fclose(f); return NULL; }
-    size_t rd = fread(data, 1, (size_t)sz, f);
-    fclose(f);
-    if (rd != (size_t)sz) { free(data); return NULL; }
-    *out_size = (size_t)sz;
-    return data;
+    episode_fetch_context_t *ctx = (episode_fetch_context_t *)user;
+    episode_state_t *ep = ctx->ep;
+    if (episode_lifecycle_matches(&ep->lifecycle,
+                                  ctx->index, ctx->token)) {
+        fprintf(stderr, "episode: fetch failed for ep %d (no internet?)\n",
+                ctx->index);
+        (void)episode_fail_attempt(ep, ctx->index, ctx->token,
+                                   EPISODE_FAILURE_FETCH);
+    }
+    free(ctx);
 }
 #endif
 
@@ -205,10 +333,13 @@ static uint8_t *load_file(const char *path, size_t *out_size) {
 
 void episode_init(episode_state_t *ep) {
     memset(ep, 0, sizeof(*ep));
-    ep->current = -1;
-    ep->pending = -1;
+    episode_lifecycle_init(&ep->lifecycle);
+    ep->deferred_failure_index = -1;
     ep->fade_duration = 0.5f;
     ep->audio_buffer_size = (int)(sizeof(ep->audio_buffer) / sizeof(ep->audio_buffer[0]));
+#ifdef __EMSCRIPTEN__
+    episode_smoke_state = ep;
+#endif
 }
 
 void episode_load(episode_state_t *ep) {
@@ -219,7 +350,7 @@ void episode_load(episode_state_t *ep) {
         "(function(){var s=localStorage.getItem('signal_episodes');"
         "if(!s)return 0;return parseInt(s,10)||0;})()");
     for (int i = 0; i < EPISODE_COUNT; i++)
-        ep->watched[i] = (flags & (1 << i)) != 0;
+        ep->lifecycle.watched[i] = (flags & (1 << i)) != 0;
 #endif
 }
 
@@ -227,7 +358,7 @@ void episode_save(episode_state_t *ep) {
 #ifdef __EMSCRIPTEN__
     int flags = 0;
     for (int i = 0; i < EPISODE_COUNT; i++)
-        if (ep->watched[i]) flags |= (1 << i);
+        if (ep->lifecycle.watched[i]) flags |= (1 << i);
     char js[80];
     snprintf(js, sizeof(js),
         "localStorage.setItem('signal_episodes','%d')", flags);
@@ -237,16 +368,15 @@ void episode_save(episode_state_t *ep) {
 #endif
 }
 
-void episode_trigger(episode_state_t *ep, int index) {
+static void episode_trigger_internal(episode_state_t *ep, int index,
+                                     bool allow_unpublished_asset) {
     if (index < 0 || index >= EPISODE_COUNT) return;
-    if (!episode_assets_available()) return;
-    if (ep->watched[index]) return;
-    if (ep->active || ep->loading) return;
-
-    ep->watched[index] = true;
-    ep->current = index;
-    ep->pending = index;
-    episode_save(ep);
+    if (!allow_unpublished_asset && !episode_assets_available()) return;
+    episode_attempt_token_t token = 0;
+    if (!episode_lifecycle_begin(&ep->lifecycle, index, &token)) return;
+    ep->loading = true;
+    ep->deferred_failure = EPISODE_FAILURE_NONE;
+    ep->deferred_failure_index = -1;
 
     const episode_info_t *info = &episodes[index];
 
@@ -254,42 +384,56 @@ void episode_trigger(episode_state_t *ep, int index) {
     /* Async fetch from the same-origin asset Worker */
     char url[256];
     snprintf(url, sizeof(url), "/%s", info->filename);
-    ep->loading = true;
-    emscripten_async_wget_data(url, ep, on_fetch_success, on_fetch_error);
+    episode_fetch_context_t *ctx =
+        (episode_fetch_context_t *)malloc(sizeof(*ctx));
+    if (!ctx) {
+        (void)episode_fail_attempt(ep, index, token,
+                                   EPISODE_FAILURE_ALLOCATION);
+        return;
+    }
+    ctx->ep = ep;
+    ctx->index = index;
+    ctx->token = token;
+    emscripten_async_wget_data(url, ctx, on_fetch_success, on_fetch_error);
 #else
     /* Native: try local file */
     char path[256];
     snprintf(path, sizeof(path), "assets/%s", info->filename);
     size_t file_size = 0;
-    uint8_t *file_data = load_file(path, &file_size);
+    episode_failure_t failure = EPISODE_FAILURE_FILE_READ;
+    uint8_t *file_data =
+        episode_media_read_file(path, &file_size, &failure);
     if (!file_data) {
-        fprintf(stderr, "episode: %s not found locally, skipping\n", path);
+        if (failure == EPISODE_FAILURE_ALLOCATION) {
+            fprintf(stderr, "episode: out of memory loading %s\n", path);
+        } else {
+            fprintf(stderr, "episode: %s not found locally, skipping\n",
+                    path);
+        }
+        (void)episode_fail_attempt(ep, index, token, failure);
         return;
     }
-    episode_start_playback(ep, file_data, file_size);
+    episode_start_playback(ep, index, token, file_data, file_size);
 #endif
 }
 
-void episode_skip(episode_state_t *ep) {
-    if (!ep->active) return;
+void episode_trigger(episode_state_t *ep, int index) {
+    episode_trigger_internal(ep, index, false);
+}
 
-    if (ep->plm) {
-        plm_destroy((plm_t *)ep->plm);
-        ep->plm = NULL;
-    }
-    if (ep->texture_valid) {
-        sg_destroy_view((sg_view){ ep->view_id });
-        sg_destroy_image((sg_image){ ep->texture_id });
-        ep->texture_valid = false;
-    }
-    ep->pending_rgba = NULL;
-    ep->pending_w = 0;
-    ep->pending_h = 0;
-    ep->active = false;
-    ep->current = -1;
-    ep->pending = -1;
-    ep->audio_write_pos = 0;
-    ep->audio_read_pos = 0;
+static bool episode_stop_started(episode_state_t *ep) {
+    if (!episode_lifecycle_stop_started(&ep->lifecycle)) return false;
+    episode_stop_media(ep);
+    return true;
+}
+
+void episode_skip(episode_state_t *ep) {
+    (void)episode_stop_started(ep);
+}
+
+void episode_reset(episode_state_t *ep) {
+    episode_lifecycle_reset(&ep->lifecycle);
+    episode_stop_media(ep);
 }
 
 void episode_update(episode_state_t *ep, float dt) {
@@ -300,6 +444,20 @@ void episode_update(episode_state_t *ep, float dt) {
     ep->fade_timer += dt;
 
     plm_decode((plm_t *)ep->plm, (double)dt);
+    if (ep->deferred_failure != EPISODE_FAILURE_NONE) {
+        int index = ep->deferred_failure_index;
+        if (index >= 0) {
+            /*
+             * episode_defer_failure already made this attempt terminal so a
+             * later callback in the same decode call could not start it.
+             * Teardown is the only operation that had to wait until now.
+             */
+            episode_stop_media(ep);
+        } else {
+            fprintf(stderr, "episode: playback stopped after media failure\n");
+            (void)episode_stop_started(ep);
+        }
+    }
 }
 
 void episode_upload_frame(episode_state_t *ep) {
@@ -307,22 +465,30 @@ void episode_upload_frame(episode_state_t *ep) {
 
     if (ep->pending_rgba && ep->texture_valid &&
         ep->pending_w == ep->video_width && ep->pending_h == ep->video_height) {
-        int rgba_size = ep->pending_w * ep->pending_h * 4;
+        size_t rgba_size =
+            (size_t)ep->pending_w * (size_t)ep->pending_h * 4u;
         sg_update_image((sg_image){ ep->texture_id }, &(sg_image_data){
-            .mip_levels[0] = { .ptr = ep->pending_rgba, .size = (size_t)rgba_size },
+            .mip_levels[0] = { .ptr = ep->pending_rgba, .size = rgba_size },
         });
     }
-    ep->pending_rgba = NULL;
-    ep->pending_w = 0;
-    ep->pending_h = 0;
+    episode_clear_pending_frame(ep);
 
     if (plm_has_ended((plm_t *)ep->plm)) {
-        episode_skip(ep);
+        if (ep->lifecycle.current >= 0) {
+            (void)episode_stop_started(ep);
+        } else {
+            int index = ep->lifecycle.pending;
+            episode_attempt_token_t token = ep->lifecycle.pending_token;
+            (void)episode_fail_attempt(ep, index, token,
+                                       EPISODE_FAILURE_DECODER);
+        }
     }
 }
 
 void episode_render(episode_state_t *ep, float screen_w, float screen_h) {
     if (!ep->active) return;
+    int display_index = ep->lifecycle.current >= 0
+        ? ep->lifecycle.current : ep->lifecycle.pending;
 
     float t = ep->fade_timer;
     const float INTRO_DURATION = 2.0f; /* flicker intro before video */
@@ -422,7 +588,7 @@ void episode_render(episode_state_t *ep, float screen_w, float screen_h) {
             sdtx_puts(msg);
         } else {
             /* Phase 2: episode title + "MILESTONE ACHIEVED" */
-            const episode_info_t *info = episode_get_info(ep->current);
+            const episode_info_t *info = episode_get_info(display_index);
             if (info) {
                 float tw = (float)strlen(info->title) * cell;
                 sdtx_color3b(200, 160, 48);
@@ -469,7 +635,7 @@ void episode_render(episode_state_t *ep, float screen_w, float screen_h) {
         }
 
         /* Title text above video */
-        const episode_info_t *info = episode_get_info(ep->current);
+        const episode_info_t *info = episode_get_info(display_index);
         if (info) {
             sdtx_canvas(screen_w, screen_h);
             sdtx_origin(0.0f, 0.0f);
@@ -481,15 +647,7 @@ void episode_render(episode_state_t *ep, float screen_w, float screen_h) {
 }
 
 void episode_shutdown(episode_state_t *ep) {
-    if (ep->plm) {
-        plm_destroy((plm_t *)ep->plm);
-        ep->plm = NULL;
-    }
-    if (ep->texture_valid) {
-        sg_destroy_view((sg_view){ ep->view_id });
-        sg_destroy_image((sg_image){ ep->texture_id });
-        ep->texture_valid = false;
-    }
+    episode_reset(ep);
     if (ep->sampler_id != 0) {
         sg_destroy_sampler((sg_sampler){ ep->sampler_id });
         ep->sampler_id = 0;
@@ -503,6 +661,88 @@ void episode_shutdown(episode_state_t *ep) {
 bool episode_is_active(episode_state_t *ep) {
     return ep->active;
 }
+
+bool episode_was_watched(const episode_state_t *ep, int index) {
+    return ep && index >= 0 && index < EPISODE_COUNT &&
+           ep->lifecycle.watched[index];
+}
+
+void episode_set_watched(episode_state_t *ep, int index, bool watched) {
+    if (!ep || index < 0 || index >= EPISODE_COUNT) return;
+    ep->lifecycle.watched[index] = watched;
+}
+
+void episode_clear_watched(episode_state_t *ep) {
+    if (!ep) return;
+    memset(ep->lifecycle.watched, 0, sizeof(ep->lifecycle.watched));
+}
+
+#ifdef __EMSCRIPTEN__
+enum {
+    EPISODE_SMOKE_WATCHED = 1 << 0,
+    EPISODE_SMOKE_PENDING = 1 << 1,
+    EPISODE_SMOKE_STARTED = 1 << 2,
+    EPISODE_SMOKE_ACTIVE = 1 << 3,
+    EPISODE_SMOKE_LOADING = 1 << 4,
+    EPISODE_SMOKE_FAILURE_SHIFT = 8,
+};
+
+static bool episode_smoke_hooks_enabled(void) {
+    return emscripten_run_script_int(
+        "(new URLSearchParams(location.search).get('smoke')==='1')") != 0;
+}
+
+/*
+ * Isolate one episode for the browser retry test. Marking every other story
+ * watched prevents normal gameplay milestones from racing the injected fetch.
+ */
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_episode_prepare(int index) {
+    if (!episode_smoke_hooks_enabled() || !episode_smoke_state ||
+        index < 0 || index >= EPISODE_COUNT) {
+        return 0;
+    }
+    episode_reset(episode_smoke_state);
+    for (int i = 0; i < EPISODE_COUNT; i++)
+        episode_smoke_state->lifecycle.watched[i] = i != index;
+    episode_save(episode_smoke_state);
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_episode_trigger(int index) {
+    if (!episode_smoke_hooks_enabled() || !episode_smoke_state ||
+        index < 0 || index >= EPISODE_COUNT) {
+        return 0;
+    }
+    episode_trigger_internal(episode_smoke_state, index, true);
+    return episode_smoke_state->lifecycle.watched[index] ||
+           episode_smoke_state->lifecycle.pending == index ||
+           episode_smoke_state->lifecycle.current == index;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_episode_state(int index) {
+    if (!episode_smoke_hooks_enabled() || !episode_smoke_state ||
+        index < 0 || index >= EPISODE_COUNT) {
+        return 0;
+    }
+    int state = 0;
+    if (episode_smoke_state->lifecycle.watched[index])
+        state |= EPISODE_SMOKE_WATCHED;
+    if (episode_smoke_state->lifecycle.pending == index)
+        state |= EPISODE_SMOKE_PENDING;
+    if (episode_smoke_state->lifecycle.current == index)
+        state |= EPISODE_SMOKE_STARTED;
+    if (episode_smoke_state->active)
+        state |= EPISODE_SMOKE_ACTIVE;
+    if (episode_smoke_state->loading)
+        state |= EPISODE_SMOKE_LOADING;
+    state |= (int)episode_smoke_state->lifecycle.last_failure
+             << EPISODE_SMOKE_FAILURE_SHIFT;
+    return state;
+}
+#endif
 
 int episode_read_audio(episode_state_t *ep, float *buffer, int frames, int channels) {
     if (!ep->active) return 0;

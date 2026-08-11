@@ -52,8 +52,7 @@ static npc_ship_t *place_npc(world_t *w,
                              vec2 pos) {
     if (!w || index < 0 || index >= MAX_NPC_SHIPS) return NULL;
     npc_ship_t *npc = &w->npc_ships[index];
-    memset(npc, 0, sizeof(*npc));
-    if (!world_npc_ship_slot_activate(w, index)) return NULL;
+    if (!test_world_npc_slot_reset(w, index)) return NULL;
     npc->active = true;
     npc->role = role;
     npc->ship->pos = pos;
@@ -202,7 +201,7 @@ TEST(test_npc_radio_formats_supply_route_and_scaffold_memories) {
 TEST(test_npc_radio_choice_prompt_and_response_apply) {
     WORLD_DECL;
     world_reset(&w);
-    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+    test_world_clear_npcs(&w);
 
     npc_ship_t *hauler = place_npc(&w, 2, NPC_ROLE_HAULER, v2(10.0f, 0.0f));
     ASSERT(hauler != NULL);
@@ -265,7 +264,7 @@ TEST(test_npc_radio_choice_prompt_and_response_apply) {
 TEST(test_npc_radio_choice_prompt_varies_by_hail_request) {
     WORLD_DECL;
     world_reset(&w);
-    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+    test_world_clear_npcs(&w);
 
     npc_ship_t *hauler = place_npc(&w, 2, NPC_ROLE_HAULER, v2(10.0f, 0.0f));
     ASSERT(hauler != NULL);
@@ -305,7 +304,7 @@ TEST(test_npc_radio_choice_prompt_varies_by_hail_request) {
 TEST(test_npc_radio_choice_prompt_omits_ungrounded_example_keys) {
     WORLD_DECL;
     world_reset(&w);
-    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+    test_world_clear_npcs(&w);
 
     npc_ship_t *ungrounded =
         place_npc(&w, 1, NPC_ROLE_HAULER, v2(10.0f, 0.0f));
@@ -364,7 +363,7 @@ TEST(test_npc_radio_player_choices_apply) {
 TEST(test_npc_radio_hail_conversation_orders_by_proximity) {
     WORLD_DECL;
     world_reset(&w);
-    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+    test_world_clear_npcs(&w);
 
     npc_ship_t *far_miner = place_npc(&w, 4, NPC_ROLE_MINER, v2(50.0f, 0.0f));
     ASSERT(far_miner != NULL);
@@ -403,7 +402,7 @@ TEST(test_npc_radio_hail_conversation_orders_by_proximity) {
 TEST(test_npc_radio_hail_conversation_caps_nearest_four) {
     WORLD_DECL;
     world_reset(&w);
-    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+    test_world_clear_npcs(&w);
 
     for (int i = 0; i < 6; i++) {
         npc_ship_t *npc = place_npc(&w, i, NPC_ROLE_MINER,
