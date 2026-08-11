@@ -603,7 +603,7 @@ int signal_intelligence_choose_npc_worker_with_scores_and_reason(
     bool neural_score_used =
         loaded &&
         (int)picked->option >= 0 &&
-        (int)picked->option < SIGNAL_NPC_WORKER_OPTION_V1_COUNT;
+        (int)picked->option < SIGNAL_NPC_WORKER_OPTION_COUNT;
     if (neural_score_used) {
         reason->neural_score = reason->selected_score;
         reason->flags |= SIGNAL_DECISION_REASON_USED_NEURAL;

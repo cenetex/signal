@@ -105,6 +105,7 @@ void register_asteroid_presentation_tests(void);
 void register_tow_presentation_diagnostics_tests(void);
 void register_gossip_tests(void);
 void register_npc_radio_tests(void);
+void register_ai_feature_contract_tests(void);
 void register_hud_attention_tests(void);
 void register_ws_outbox_tests(void);
 
@@ -257,6 +258,7 @@ int main(int argc, char **argv) {
     register_tow_presentation_diagnostics_tests();
     register_gossip_tests();
     register_npc_radio_tests();
+    register_ai_feature_contract_tests();
     register_hud_attention_tests();
     register_ws_outbox_tests();
 
