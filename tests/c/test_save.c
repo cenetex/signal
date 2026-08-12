@@ -3095,8 +3095,9 @@ TEST(test_v81_cargo_pod_player_slot_migrates_to_bound_quarantine) {
              * quarantine bindings (+1,920 bytes).
              * v82: each active cargo pod replaces its 1-byte player slot
              * with a 33-byte principal plus 8-byte quarantine binding.
-             * Fresh worlds have two starter pods, so +80 bytes. */
-#define EXPECTED_SAVE_SIZE 846454
+             * Fresh worlds have two starter pods, so +80 bytes.
+             * v84: +4B empty durable payout-journal count. */
+#define EXPECTED_SAVE_SIZE 846458
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -3133,7 +3134,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 83);
+    ASSERT_EQ_INT((int)version, 84);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -4272,6 +4273,54 @@ TEST(test_world_load_rejects_nested_crc_trailer) {
     remove(path);
 }
 
+TEST(test_world_save_load_preserves_payout_replay_barrier) {
+    const char *path = TMP("test_payout_replay_barrier.sav");
+    WORLD_HEAP saved = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(saved != NULL);
+    ASSERT(loaded != NULL);
+    world_reset(saved);
+
+    uint8_t recipient[32] = {0};
+    uint8_t sources[1][32] = {{0}};
+    float amounts[1] = {73.0f};
+    recipient[0] = 0x84;
+    recipient[31] = 0x2a;
+    sources[0][0] = 0x51;
+    sources[0][31] = 0x9d;
+    station_payout_credit_batch_stage_t stage = {0};
+    ASSERT(station_payout_credit_batch_prepare(
+        saved, 1, STATION_PAYOUT_POD_INTAKE,
+        sources, amounts, 1, recipient, &stage));
+    uint8_t payout_id[32];
+    memcpy(payout_id, stage.payout_stages[0].receipt.payout_id, 32);
+    ASSERT(station_payout_credit_batch_commit(
+        saved, &saved->stations[1], NULL, &stage));
+    ASSERT(world_save(saved, path));
+
+    world_reset(loaded);
+    ASSERT(world_load(loaded, path));
+    ASSERT_EQ_INT((int)loaded->payout_journal.count, 1);
+    const station_payout_receipt_t *receipt =
+        station_payout_find(loaded, payout_id);
+    ASSERT(receipt != NULL);
+    ASSERT_EQ_FLOAT(receipt->amount, 73.0f, 0.001f);
+    float balance = ledger_balance_by_pubkey(
+        &loaded->stations[1], recipient);
+    ASSERT_EQ_FLOAT(balance, 73.0f, 0.001f);
+
+    station_payout_stage_t replay = {0};
+    ASSERT_EQ_INT(station_payout_prepare(
+        loaded, 1, STATION_PAYOUT_POD_INTAKE,
+        sources[0], recipient, 73.0f, &replay),
+        STATION_PAYOUT_PREPARE_DUPLICATE);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(
+                        &loaded->stations[1], recipient),
+                    balance, 0.001f);
+    ASSERT_EQ_INT((int)loaded->payout_journal.count, 1);
+    remove(path);
+}
+
 void register_save_persistence_tests(void) {
     TEST_SECTION("\nPersistence tests:\n");
     RUN(test_player_save_load_roundtrip);
@@ -4344,6 +4393,7 @@ void register_save_persistence_tests(void) {
     RUN(test_v79_birth_proofs_recompute_and_reject_fragment_reuse);
     RUN(test_world_save_rejects_invalid_station_actor_preserving_destination);
     RUN(test_world_save_invalid_ownership_quarantine_preserves_destination);
+    RUN(test_world_save_load_preserves_payout_replay_barrier);
 }
 
 void register_save_format_tests(void) {

@@ -557,6 +557,85 @@ typedef struct {
     cargo_receipt_chain_t cargo_chains[MAX_DELIVERY_BOUND_CARGO];
 } delivery_shipment_t;
 
+/* Durable at-most-once settlement receipts (#686).
+ *
+ * The source identity is folded into payout_id together with the immutable
+ * station actor, live signing authority generation, and action kind.  The
+ * journal is server-only: clients receive ordinary ledger/event projections,
+ * never the recipient identity stored here.  Entries are append-only and are
+ * persisted with the world snapshot; capacity is runtime allocation state. */
+typedef enum {
+    STATION_PAYOUT_NONE = 0,
+    STATION_PAYOUT_POD_INTAKE,
+    STATION_PAYOUT_CONTRACT_CARGO,
+    STATION_PAYOUT_CONTRACT_FRAGMENT,
+    STATION_PAYOUT_BOUND_FREIGHT,
+    STATION_PAYOUT_BOUND_FREIGHT_ORIGIN,
+    STATION_PAYOUT_BLACK_MARKET,
+    STATION_PAYOUT_SMELT_TOWER,
+    STATION_PAYOUT_SMELT_FRACTURER,
+    STATION_PAYOUT_BUILD_DELIVERY,
+    STATION_PAYOUT_COUNT,
+} station_payout_action_t;
+
+typedef struct {
+    uint8_t payout_id[32];
+    uint8_t recipient_hash[32]; /* one-way hash; never bearer/session bytes */
+    uint32_t station_id;
+    uint64_t committed_tick;
+    float amount;
+    uint8_t action;              /* station_payout_action_t */
+    uint8_t authority_generation;
+    uint8_t _pad[2];
+} station_payout_receipt_t;
+
+typedef struct {
+    station_payout_receipt_t *entries;
+    uint32_t count;
+    uint32_t capacity;
+} station_payout_journal_t;
+
+typedef enum {
+    STATION_PAYOUT_PREPARE_INVALID = 0,
+    STATION_PAYOUT_PREPARE_READY,
+    STATION_PAYOUT_PREPARE_DUPLICATE,
+    STATION_PAYOUT_PREPARE_NO_MEMORY,
+} station_payout_prepare_status_t;
+
+typedef struct {
+    station_payout_prepare_status_t status;
+    station_payout_receipt_t receipt;
+} station_payout_stage_t;
+
+enum {
+    STATION_PAYOUT_BATCH_MAX = 128,
+    STATION_PAYOUT_JOURNAL_MAX_ENTRIES = 65536,
+};
+
+_Static_assert(
+    STATION_PAYOUT_JOURNAL_MAX_ENTRIES <=
+        SIZE_MAX / sizeof(station_payout_receipt_t),
+    "station payout journal cap must fit in size_t");
+
+typedef struct {
+    bool ready;
+    int ledger_index;
+    int ledger_count;
+    station_ledger_entry_t ledger_row;
+    uint16_t payout_count;
+    station_payout_stage_t payout_stages[STATION_PAYOUT_BATCH_MAX];
+    float total_amount;
+} station_payout_credit_batch_stage_t;
+
+typedef struct {
+    bool ready;
+    int ledger_index;
+    int ledger_count;
+    station_ledger_entry_t ledger_row;
+    station_payout_stage_t payout_stage;
+    float credited_amount;
+} station_payout_supply_stage_t;
+
 typedef struct {
     station_t stations[MAX_STATIONS];
     int station_count;              /* highest existing slot + 1 (seeded stations, then outposts) */
@@ -779,6 +858,7 @@ typedef struct {
     sim_interactions_t interactions;
     contract_t contracts[MAX_CONTRACTS];
     delivery_shipment_t delivery_shipments[MAX_DELIVERY_SHIPMENTS];
+    station_payout_journal_t payout_journal;
     /* Server-only, inert diagnostics for legacy owner rows that could not be
      * rebound to a proven stable principal. Never replicated to clients and
      * deliberately incapable of storing bearer/session material. */
@@ -931,6 +1011,35 @@ bool world_anchor_validated_legacy_cargo_origins(world_t *w);
  * in game_sim.c. */
 void world_seed_station_chain_genesis(world_t *w);
 void world_cleanup(world_t *w);
+
+bool station_payout_identity(const station_t *station,
+                             station_payout_action_t action,
+                             const uint8_t source_identity[32],
+                             uint8_t out[32]);
+station_payout_prepare_status_t station_payout_prepare(
+    world_t *w, int station_idx, station_payout_action_t action,
+    const uint8_t source_identity[32], const uint8_t recipient_pubkey[32],
+    float amount, station_payout_stage_t *out);
+bool station_payout_commit(world_t *w,
+                           const station_payout_stage_t *stage);
+const station_payout_receipt_t *station_payout_find(
+    const world_t *w, const uint8_t payout_id[32]);
+bool station_payout_credit_batch_prepare(
+    world_t *w, int station_idx, station_payout_action_t action,
+    uint8_t (*source_identities)[32], const float *amounts,
+    uint16_t count, const uint8_t recipient_pubkey[32],
+    station_payout_credit_batch_stage_t *out);
+bool station_payout_credit_batch_commit(
+    world_t *w, station_t *station, ship_t *recipient_ship,
+    const station_payout_credit_batch_stage_t *stage);
+bool station_payout_supply_prepare(
+    world_t *w, int station_idx, station_payout_action_t action,
+    const uint8_t source_identity[32], const uint8_t recipient_pubkey[32],
+    float supply_value, const station_payout_supply_stage_t *prior,
+    station_payout_supply_stage_t *out);
+bool station_payout_supply_commit(
+    world_t *w, station_t *station, ship_t *recipient_ship,
+    const station_payout_supply_stage_t *stage);
 void world_sim_step(world_t *w, float dt);
 void world_sim_step_player_only(world_t *w, int player_idx, float dt);
 void server_player_queue_movement_input(server_player_t *sp,

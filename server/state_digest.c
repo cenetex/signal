@@ -1249,6 +1249,26 @@ void signal_authoritative_state_digest(
         digest_delivery_shipment(&ctx, &world->delivery_shipments[i]);
     }
 
+    uint32_t payout_count = world->payout_journal.count;
+    if (payout_count > world->payout_journal.capacity ||
+        (payout_count > 0 && !world->payout_journal.entries)) {
+        payout_count = 0;
+    }
+    digest_u32(&ctx, payout_count);
+    for (uint32_t i = 0; i < payout_count; i++) {
+        const station_payout_receipt_t *receipt =
+            &world->payout_journal.entries[i];
+        digest_bytes(&ctx, receipt->payout_id,
+                     sizeof(receipt->payout_id));
+        digest_bytes(&ctx, receipt->recipient_hash,
+                     sizeof(receipt->recipient_hash));
+        digest_u32(&ctx, receipt->station_id);
+        digest_u64(&ctx, receipt->committed_tick);
+        digest_float(&ctx, receipt->amount);
+        digest_u8(&ctx, receipt->action);
+        digest_u8(&ctx, receipt->authority_generation);
+    }
+
     digest_ownership_quarantine(&ctx, &world->ownership_quarantine);
     digest_signal_channel(&ctx, &world->signal_channel);
 

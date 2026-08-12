@@ -44,6 +44,121 @@ static void economy_finalize_token_identity(
     player->pubkey_identity_finalized = true;
 }
 
+TEST(test_station_payout_journal_covers_every_action_and_replays_inert) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *station = &w.stations[1];
+    uint8_t recipient[32];
+    economy_fill_pubkey(recipient, 0x91);
+    float expected = 0.0f;
+
+    for (int raw = STATION_PAYOUT_NONE + 1;
+         raw < STATION_PAYOUT_COUNT; raw++) {
+        uint8_t sources[1][32] = {{0}};
+        float amounts[1] = {10.0f + (float)raw};
+        sources[0][0] = 0xA6;
+        sources[0][31] = (uint8_t)raw;
+        station_payout_credit_batch_stage_t stage = {0};
+        ASSERT(station_payout_credit_batch_prepare(
+            &w, 1, (station_payout_action_t)raw,
+            sources, amounts, 1, recipient, &stage));
+        ASSERT(station_payout_credit_batch_commit(
+            &w, station, NULL, &stage));
+        expected += amounts[0];
+    }
+
+    ASSERT_EQ_INT((int)w.payout_journal.count,
+                  STATION_PAYOUT_COUNT - 1);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(station, recipient),
+                    expected, 0.001f);
+
+    uint8_t source[32] = {0};
+    source[0] = 0xA6;
+    source[31] = STATION_PAYOUT_POD_INTAKE;
+    float balance_after = ledger_balance_by_pubkey(station, recipient);
+    for (int retry = 0; retry < 1000; retry++) {
+        station_payout_stage_t replay = {0};
+        ASSERT_EQ_INT(station_payout_prepare(
+            &w, 1, STATION_PAYOUT_POD_INTAKE,
+            source, recipient,
+            10.0f + (float)STATION_PAYOUT_POD_INTAKE,
+            &replay),
+            STATION_PAYOUT_PREPARE_DUPLICATE);
+        ASSERT_EQ_FLOAT(
+            replay.receipt.amount,
+            10.0f + (float)STATION_PAYOUT_POD_INTAKE,
+            0.001f);
+    }
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(station, recipient),
+                    balance_after, 0.001f);
+    ASSERT_EQ_INT((int)w.payout_journal.count,
+                  STATION_PAYOUT_COUNT - 1);
+}
+
+TEST(test_station_payout_identity_binds_station_action_and_authority) {
+    WORLD_DECL;
+    world_reset(&w);
+    uint8_t source[32] = {0};
+    uint8_t first[32] = {0};
+    uint8_t other_action[32] = {0};
+    uint8_t other_station[32] = {0};
+    uint8_t other_authority[32] = {0};
+    source[31] = 0x6e;
+    station_t *station = &w.stations[1];
+    ASSERT(station_payout_identity(
+        station, STATION_PAYOUT_POD_INTAKE, source, first));
+    ASSERT(station_payout_identity(
+        station, STATION_PAYOUT_BUILD_DELIVERY,
+        source, other_action));
+    ASSERT(station_payout_identity(
+        &w.stations[0], STATION_PAYOUT_POD_INTAKE,
+        source, other_station));
+    station->authority_registry_version++;
+    ASSERT(station_payout_identity(
+        station, STATION_PAYOUT_POD_INTAKE,
+        source, other_authority));
+    ASSERT(memcmp(first, other_action, 32) != 0);
+    ASSERT(memcmp(first, other_station, 32) != 0);
+    ASSERT(memcmp(first, other_authority, 32) != 0);
+}
+
+TEST(test_station_payout_stages_two_new_smelt_recipients_in_order) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *station = &w.stations[1];
+    uint8_t source[32] = {0};
+    uint8_t tower[32];
+    uint8_t fracturer[32];
+    source[31] = 0x71;
+    economy_fill_pubkey(tower, 0x31);
+    economy_fill_pubkey(fracturer, 0x61);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(station, tower),
+                    0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(station, fracturer),
+                    0.0f, 0.001f);
+
+    station_payout_supply_stage_t tower_stage = {0};
+    station_payout_supply_stage_t fracturer_stage = {0};
+    ASSERT(station_payout_supply_prepare(
+        &w, 1, STATION_PAYOUT_SMELT_TOWER,
+        source, tower, 100.0f, NULL, &tower_stage));
+    ASSERT(station_payout_supply_prepare(
+        &w, 1, STATION_PAYOUT_SMELT_FRACTURER,
+        source, fracturer, 25.0f, &tower_stage,
+        &fracturer_stage));
+    ASSERT(tower_stage.ledger_index != fracturer_stage.ledger_index);
+    ASSERT(station_payout_supply_commit(
+        &w, station, NULL, &tower_stage));
+    ASSERT(station_payout_supply_commit(
+        &w, station, NULL, &fracturer_stage));
+
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(station, tower),
+                    65.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(station, fracturer),
+                    16.25f, 0.001f);
+    ASSERT_EQ_INT((int)w.payout_journal.count, 2);
+}
+
 static cargo_unit_t economy_test_cargo_unit(
     const uint8_t fragment_pub[32],
     uint16_t *out_output_index) {
@@ -5238,6 +5353,9 @@ void register_economy_basic_tests(void) {
     RUN(test_can_afford_upgrade_rejects_float_only_finished_goods);
     RUN(test_commodity_volume_kit_dense);
     RUN(test_ship_total_cargo_kit_density);
+    RUN(test_station_payout_journal_covers_every_action_and_replays_inert);
+    RUN(test_station_payout_identity_binds_station_action_and_authority);
+    RUN(test_station_payout_stages_two_new_smelt_recipients_in_order);
 }
 
 void register_economy_contracts_tests(void) {

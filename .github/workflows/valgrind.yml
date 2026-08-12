@@ -23,27 +23,49 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The test runner shards by test index. Eight buckets cut the
-        # long-tail Valgrind shards roughly in half versus the old 4-way
-        # post-deploy sweep while preserving full non-soak coverage.
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        # The test runner shards by test index. Sixteen buckets keep the
+        # slowest persistence/simulation bucket below the one-hour job limit
+        # while preserving full non-soak coverage.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@v6
 
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
 
-      - name: Valgrind memcheck (shard ${{ matrix.shard }}/8)
+      - name: Valgrind memcheck (shard ${{ matrix.shard }}/16)
         run: |
           set -o pipefail
           cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
           cmake --build build-valgrind --parallel
           # `--track-origins=yes` dropped per #525 — leaks still detected
-          # by `--leak-check=full`. `--quiet` cuts stdout so valgrind's
-          # interleaved logs don't dominate runtime via I/O.
+          # by `--leak-check=full`. Keep memcheck diagnostics separate from
+          # the intentionally quiet test stream so the actual first error is
+          # visible and retained as a failure artifact.
+          set +e
           scripts/run_signal_test.sh valgrind --error-exitcode=1 \
             --leak-check=full \
             --show-leak-kinds=definite \
             --errors-for-leak-kinds=definite \
             --main-stacksize=67108864 \
-            ./build-valgrind/signal_test --quiet --no-soak --shard=${{ matrix.shard }}/8 2>&1 | tail -30
+            --log-file=valgrind-${{ matrix.shard }}.log \
+            ./build-valgrind/signal_test --quiet --no-soak \
+            --shard=${{ matrix.shard }}/16 \
+            > test-${{ matrix.shard }}.log 2>&1
+          status=$?
+          set -e
+          tail -30 test-${{ matrix.shard }}.log
+          if [ -s valgrind-${{ matrix.shard }}.log ]; then
+            tail -200 valgrind-${{ matrix.shard }}.log
+          fi
+          exit "$status"
+
+      - name: Upload Valgrind failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: valgrind-${{ matrix.shard }}-${{ github.sha }}
+          path: |
+            valgrind-${{ matrix.shard }}.log
+            test-${{ matrix.shard }}.log
+          if-no-files-found: error

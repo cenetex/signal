@@ -135,6 +135,7 @@ void ledger_pubkey_from_token(const uint8_t token[8], uint8_t out[32]) {
 
 static bool secure_bytes_nonzero(const uint8_t *bytes, size_t len);
 static bool pubkey_is_zero(const uint8_t pk[32]);
+static bool bytes_any(const uint8_t *bytes, size_t len);
 
 static float ledger_sanitize_float(float value) {
     if (!isfinite(value)) return 0.0f;
@@ -341,6 +342,370 @@ static bool ledger_stage_pod_sale_by_pubkey(
         ledger_saturating_u32_sum(
             out->row.lifetime_ore_units, units);
     out->row.top_commodity = commodity;
+    return true;
+}
+
+static bool ledger_stage_supply_credit_by_pubkey(
+    const station_t *st, const uint8_t pubkey[32], float ore_value,
+    uint32_t ore_units, uint8_t commodity,
+    ledger_earn_stage_t *out, float *out_credited) {
+    if (out_credited) *out_credited = 0.0f;
+    if (!isfinite(ore_value) || ore_value <= 0.0f ||
+        !out || !out_credited) {
+        return false;
+    }
+    float credited = ore_value * 0.65f;
+    if (!isfinite(credited) || credited < 0.01f ||
+        !ledger_stage_earn_by_pubkey(st, pubkey, credited, out)) {
+        return false;
+    }
+    float lifetime_before = ledger_sanitize_float(out->row.lifetime_supply);
+    float lifetime_after = ledger_sanitize_float(lifetime_before + ore_value);
+    if (!isfinite(lifetime_after) ||
+        fabsf((lifetime_after - lifetime_before) - ore_value) > 0.001f) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    out->row.lifetime_supply = lifetime_after;
+    if (ore_units > 0) {
+        out->row.lifetime_ore_units = ledger_saturating_u32_sum(
+            out->row.lifetime_ore_units, ore_units);
+        out->row.top_commodity = commodity;
+    }
+    *out_credited = credited;
+    return true;
+}
+
+static bool server_player_ledger_identity(const server_player_t *sp,
+                                          uint8_t out[32]) {
+    if (!sp || !out) return false;
+    if (server_player_copy_verified_pubkey(sp, out)) return true;
+    ledger_pubkey_from_token(sp->session_token, out);
+    return bytes_any(out, 32);
+}
+
+/* ---- Durable payout idempotence (#686) --------------------------- */
+
+enum {
+    STATION_PAYOUT_JOURNAL_INITIAL_CAPACITY = 64,
+};
+
+static bool bytes_any(const uint8_t *bytes, size_t len) {
+    if (!bytes) return false;
+    uint8_t any = 0;
+    for (size_t i = 0; i < len; i++) any |= bytes[i];
+    return any != 0;
+}
+
+static SIGNAL_MAYBE_UNUSED const char *station_payout_action_name(
+    station_payout_action_t action) {
+    switch (action) {
+    case STATION_PAYOUT_POD_INTAKE: return "pod-intake";
+    case STATION_PAYOUT_CONTRACT_CARGO: return "contract-cargo";
+    case STATION_PAYOUT_CONTRACT_FRAGMENT: return "contract-fragment";
+    case STATION_PAYOUT_BOUND_FREIGHT: return "bound-freight";
+    case STATION_PAYOUT_BOUND_FREIGHT_ORIGIN:
+        return "bound-freight-origin";
+    case STATION_PAYOUT_BLACK_MARKET: return "black-market";
+    case STATION_PAYOUT_SMELT_TOWER: return "smelt-tower";
+    case STATION_PAYOUT_SMELT_FRACTURER: return "smelt-fracturer";
+    case STATION_PAYOUT_BUILD_DELIVERY: return "build-delivery";
+    default: return "invalid";
+    }
+}
+
+bool station_payout_identity(const station_t *station,
+                             station_payout_action_t action,
+                             const uint8_t source_identity[32],
+                             uint8_t out[32]) {
+    static const uint8_t domain[] = "signal/station-payout/v1";
+    if (out) memset(out, 0, 32);
+    if (!station || !out || !source_identity ||
+        action <= STATION_PAYOUT_NONE || action >= STATION_PAYOUT_COUNT ||
+        station->id == 0 ||
+        !bytes_any(station->station_actor_id,
+                   sizeof(station->station_actor_id)) ||
+        !bytes_any(station->station_pubkey,
+                   sizeof(station->station_pubkey)) ||
+        !bytes_any(source_identity, 32)) {
+        return false;
+    }
+
+    uint8_t header[6] = {0};
+    wire_write_u32_le(header, station->id);
+    header[4] = (uint8_t)action;
+    header[5] = station->authority_registry_version;
+    sha256_ctx_t hash;
+    sha256_init(&hash);
+    sha256_update(&hash, domain, sizeof(domain) - 1u);
+    sha256_update(&hash, header, sizeof(header));
+    sha256_update(&hash, station->station_actor_id,
+                  sizeof(station->station_actor_id));
+    sha256_update(&hash, station->station_pubkey,
+                  sizeof(station->station_pubkey));
+    sha256_update(&hash, source_identity, 32);
+    sha256_final(&hash, out);
+    return true;
+}
+
+const station_payout_receipt_t *station_payout_find(
+    const world_t *w, const uint8_t payout_id[32]) {
+    if (!w || !payout_id ||
+        w->payout_journal.count > w->payout_journal.capacity ||
+        (w->payout_journal.count > 0 && !w->payout_journal.entries)) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < w->payout_journal.count; i++) {
+        if (memcmp(w->payout_journal.entries[i].payout_id,
+                   payout_id, 32) == 0) {
+            return &w->payout_journal.entries[i];
+        }
+    }
+    return NULL;
+}
+
+static bool station_payout_journal_reserve(world_t *w, uint32_t needed) {
+    if (!w || needed > STATION_PAYOUT_JOURNAL_MAX_ENTRIES ||
+        w->payout_journal.count > w->payout_journal.capacity ||
+        (w->payout_journal.count > 0 && !w->payout_journal.entries)) {
+        return false;
+    }
+    if (needed <= w->payout_journal.capacity) return true;
+    uint32_t capacity = w->payout_journal.capacity;
+    if (capacity == 0) capacity = STATION_PAYOUT_JOURNAL_INITIAL_CAPACITY;
+    while (capacity < needed) {
+        if (capacity > STATION_PAYOUT_JOURNAL_MAX_ENTRIES / 2u) {
+            capacity = STATION_PAYOUT_JOURNAL_MAX_ENTRIES;
+            break;
+        }
+        capacity *= 2u;
+    }
+    /* The hard journal cap keeps the allocation below SIZE_MAX even on
+     * 32-bit targets, so no second multiplication-overflow guard is needed. */
+    if (capacity < needed) {
+        return false;
+    }
+    station_payout_receipt_t *entries = realloc(
+        w->payout_journal.entries,
+        (size_t)capacity * sizeof(*entries));
+    if (!entries) return false;
+    if (capacity > w->payout_journal.capacity) {
+        memset(entries + w->payout_journal.capacity, 0,
+               (size_t)(capacity - w->payout_journal.capacity) *
+                   sizeof(*entries));
+    }
+    w->payout_journal.entries = entries;
+    w->payout_journal.capacity = capacity;
+    return true;
+}
+
+station_payout_prepare_status_t station_payout_prepare(
+    world_t *w, int station_idx, station_payout_action_t action,
+    const uint8_t source_identity[32], const uint8_t recipient_pubkey[32],
+    float amount, station_payout_stage_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!w || !out || station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&w->stations[station_idx]) ||
+        !recipient_pubkey || !bytes_any(recipient_pubkey, 32) ||
+        !isfinite(amount) || amount <= 0.0f || amount > LEDGER_FLOAT_LIMIT) {
+        return STATION_PAYOUT_PREPARE_INVALID;
+    }
+    station_payout_receipt_t receipt = {0};
+    if (!station_payout_identity(&w->stations[station_idx], action,
+                                 source_identity, receipt.payout_id)) {
+        return STATION_PAYOUT_PREPARE_INVALID;
+    }
+    const station_payout_receipt_t *duplicate =
+        station_payout_find(w, receipt.payout_id);
+    if (duplicate) {
+        out->status = STATION_PAYOUT_PREPARE_DUPLICATE;
+        out->receipt = *duplicate;
+        SIM_LOG("[payout] replay %02x%02x%02x%02x action=%s amount=%.2f\n",
+                duplicate->payout_id[0], duplicate->payout_id[1],
+                duplicate->payout_id[2], duplicate->payout_id[3],
+                station_payout_action_name(action), duplicate->amount);
+        return out->status;
+    }
+    if (w->payout_journal.count == UINT32_MAX ||
+        !station_payout_journal_reserve(
+            w, w->payout_journal.count + 1u)) {
+        out->status = STATION_PAYOUT_PREPARE_NO_MEMORY;
+        return out->status;
+    }
+    static const uint8_t recipient_domain[] =
+        "signal/station-payout-recipient/v1";
+    sha256_ctx_t recipient_hash;
+    sha256_init(&recipient_hash);
+    sha256_update(&recipient_hash, recipient_domain,
+                  sizeof(recipient_domain) - 1u);
+    sha256_update(&recipient_hash, recipient_pubkey, 32);
+    sha256_final(&recipient_hash, receipt.recipient_hash);
+    receipt.station_id = w->stations[station_idx].id;
+    receipt.committed_tick = w->tick;
+    receipt.amount = amount;
+    receipt.action = (uint8_t)action;
+    receipt.authority_generation =
+        w->stations[station_idx].authority_registry_version;
+    out->status = STATION_PAYOUT_PREPARE_READY;
+    out->receipt = receipt;
+    return out->status;
+}
+
+bool station_payout_commit(world_t *w,
+                           const station_payout_stage_t *stage) {
+    if (!w || !stage || stage->status != STATION_PAYOUT_PREPARE_READY ||
+        w->payout_journal.count >= w->payout_journal.capacity ||
+        !w->payout_journal.entries ||
+        station_payout_find(w, stage->receipt.payout_id)) {
+        return false;
+    }
+    w->payout_journal.entries[w->payout_journal.count++] = stage->receipt;
+    SIM_LOG("[payout] commit %02x%02x%02x%02x action=%s amount=%.2f\n",
+            stage->receipt.payout_id[0], stage->receipt.payout_id[1],
+            stage->receipt.payout_id[2], stage->receipt.payout_id[3],
+            station_payout_action_name(
+                (station_payout_action_t)stage->receipt.action),
+            stage->receipt.amount);
+    return true;
+}
+
+bool station_payout_credit_batch_prepare(
+    world_t *w, int station_idx, station_payout_action_t action,
+    uint8_t (*source_identities)[32], const float *amounts,
+    uint16_t count, const uint8_t recipient_pubkey[32],
+    station_payout_credit_batch_stage_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!w || !out || !source_identities || !amounts ||
+        !recipient_pubkey || count == 0 ||
+        count > STATION_PAYOUT_BATCH_MAX ||
+        station_idx < 0 || station_idx >= MAX_STATIONS ||
+        (uint32_t)count > UINT32_MAX - w->payout_journal.count ||
+        !station_payout_journal_reserve(
+            w, w->payout_journal.count + (uint32_t)count)) {
+        return false;
+    }
+    float total = 0.0f;
+    for (uint16_t i = 0; i < count; i++) {
+        if (!isfinite(amounts[i]) || amounts[i] <= 0.0f ||
+            total > LEDGER_FLOAT_LIMIT - amounts[i]) {
+            return false;
+        }
+        if (station_payout_prepare(
+                w, station_idx, action, source_identities[i],
+                recipient_pubkey, amounts[i],
+                &out->payout_stages[i]) !=
+                STATION_PAYOUT_PREPARE_READY) {
+            memset(out, 0, sizeof(*out));
+            return false;
+        }
+        for (uint16_t prior = 0; prior < i; prior++) {
+            if (memcmp(
+                    out->payout_stages[prior].receipt.payout_id,
+                    out->payout_stages[i].receipt.payout_id, 32) == 0) {
+                memset(out, 0, sizeof(*out));
+                return false;
+            }
+        }
+        total += amounts[i];
+    }
+    ledger_earn_stage_t ledger = {0};
+    if (!ledger_stage_earn_by_pubkey(
+            &w->stations[station_idx], recipient_pubkey,
+            total, &ledger)) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    out->ready = true;
+    out->ledger_index = ledger.index;
+    out->ledger_count = ledger.ledger_count;
+    out->ledger_row = ledger.row;
+    out->payout_count = count;
+    out->total_amount = total;
+    return true;
+}
+
+bool station_payout_credit_batch_commit(
+    world_t *w, station_t *station, ship_t *recipient_ship,
+    const station_payout_credit_batch_stage_t *stage) {
+    if (!w || !station || !stage || !stage->ready ||
+        stage->payout_count == 0 ||
+        stage->payout_count > STATION_PAYOUT_BATCH_MAX ||
+        stage->ledger_index < 0 ||
+        stage->ledger_index >= STATION_LEDGER_MAX ||
+        stage->ledger_count < 0 ||
+        stage->ledger_count > STATION_LEDGER_MAX) {
+        return false;
+    }
+    for (uint16_t i = 0; i < stage->payout_count; i++) {
+        if (!station_payout_commit(w, &stage->payout_stages[i]))
+            return false;
+    }
+    station->ledger[stage->ledger_index] = stage->ledger_row;
+    station->ledger_count = stage->ledger_count;
+    if (recipient_ship)
+        recipient_ship->stat_credits_earned += stage->total_amount;
+    return true;
+}
+
+bool station_payout_supply_prepare(
+    world_t *w, int station_idx, station_payout_action_t action,
+    const uint8_t source_identity[32], const uint8_t recipient_pubkey[32],
+    float supply_value, const station_payout_supply_stage_t *prior,
+    station_payout_supply_stage_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!w || !out || station_idx < 0 || station_idx >= MAX_STATIONS)
+        return false;
+    const station_t *ledger_source = &w->stations[station_idx];
+    station_t staged_station = {0};
+    if (prior) {
+        if (!prior->ready || prior->ledger_index < 0 ||
+            prior->ledger_index >= STATION_LEDGER_MAX ||
+            prior->ledger_count < 0 ||
+            prior->ledger_count > STATION_LEDGER_MAX) {
+            return false;
+        }
+        staged_station.ledger_count = ledger_source->ledger_count;
+        memcpy(staged_station.ledger, ledger_source->ledger,
+               sizeof(staged_station.ledger));
+        staged_station.ledger[prior->ledger_index] = prior->ledger_row;
+        staged_station.ledger_count = prior->ledger_count;
+        ledger_source = &staged_station;
+    }
+    ledger_earn_stage_t ledger = {0};
+    float credited = 0.0f;
+    if (!ledger_stage_supply_credit_by_pubkey(
+            ledger_source, recipient_pubkey,
+            supply_value, 0, 0, &ledger, &credited) ||
+        station_payout_prepare(
+            w, station_idx, action, source_identity,
+            recipient_pubkey, credited,
+            &out->payout_stage) != STATION_PAYOUT_PREPARE_READY) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    out->ready = true;
+    out->ledger_index = ledger.index;
+    out->ledger_count = ledger.ledger_count;
+    out->ledger_row = ledger.row;
+    out->credited_amount = credited;
+    return true;
+}
+
+bool station_payout_supply_commit(
+    world_t *w, station_t *station, ship_t *recipient_ship,
+    const station_payout_supply_stage_t *stage) {
+    if (!w || !station || !stage || !stage->ready ||
+        stage->ledger_index < 0 ||
+        stage->ledger_index >= STATION_LEDGER_MAX ||
+        stage->ledger_count < 0 ||
+        stage->ledger_count > STATION_LEDGER_MAX ||
+        !station_payout_commit(w, &stage->payout_stage)) {
+        return false;
+    }
+    station->ledger[stage->ledger_index] = stage->ledger_row;
+    station->ledger_count = stage->ledger_count;
+    if (recipient_ship)
+        recipient_ship->stat_credits_earned += stage->credited_amount;
     return true;
 }
 
@@ -4744,6 +5109,7 @@ typedef struct {
     uint16_t units;
     contract_t staged_claim;
     ledger_earn_stage_t ledger_stage;
+    station_payout_stage_t payout_stage;
 } station_intake_sale_t;
 
 /*
@@ -4782,6 +5148,23 @@ static bool station_intake_stage_pod_sale(
             &ledger_stage)) {
         return false;
     }
+    uint8_t source_identity[32];
+    cargo_pod_t identity_pod = *pod;
+    if (identity_pod.manifest_count == 0 &&
+        !identity_pod.has_shell_frame) {
+        return false;
+    }
+    identity_pod.custody_station = 0;
+    cargo_pod_clear_custody_charge_anchor(&identity_pod);
+    if (!cargo_pod_selection_digest(&identity_pod, source_identity))
+        return false;
+    station_payout_stage_t payout_stage = {0};
+    if (station_payout_prepare(
+            w, station_idx, STATION_PAYOUT_POD_INTAKE,
+            source_identity, ledger_identity, value,
+            &payout_stage) != STATION_PAYOUT_PREPARE_READY) {
+        return false;
+    }
 
     *out = (station_intake_sale_t){
         .ready = true,
@@ -4791,16 +5174,17 @@ static bool station_intake_stage_pod_sale(
         .units = units,
         .staged_claim = staged_claim,
         .ledger_stage = ledger_stage,
+        .payout_stage = payout_stage,
     };
     return true;
 }
 
-static void station_intake_commit_pod_sale(
+static bool station_intake_commit_pod_sale(
     world_t *w, server_player_t *sp, station_t *st,
     int station_idx, int module_idx, cargo_pod_t *pod,
     const station_intake_sale_t *sale) {
     if (!w || !sp || !st || !pod || !sale || !sale->ready)
-        return;
+        return false;
 
     /*
      * The physical tow relation already belongs to the station module. Quote,
@@ -4809,6 +5193,8 @@ static void station_intake_commit_pod_sale(
      * visible together and a retry observes station ownership before it can
      * ever reach another payout.
      */
+    if (!station_payout_commit(w, &sale->payout_stage))
+        return false;
     cargo_pod_set_station_custody(pod, station_idx);
     st->ledger[sale->ledger_stage.index] =
         sale->ledger_stage.row;
@@ -4858,6 +5244,7 @@ static void station_intake_commit_pod_sale(
                   .module = (module_idx >= 0 &&
                              module_idx < MAX_MODULES_PER_STATION)
                       ? (uint8_t)module_idx : UINT8_MAX }});
+    return true;
 }
 
 static bool cargo_pod_matches_buy_grade(const cargo_pod_t *pod,
@@ -5551,14 +5938,52 @@ static void sync_station_finished_inventory(station_t *st, commodity_t c) {
 static const float DELIVERY_ORIGIN_CREDIT_RATE = 0.10f;
 static const uint32_t DELIVERY_DUE_TICKS = 120u * 60u * 8u; /* 8 minutes */
 
-static void player_ledger_earn_at(server_player_t *sp, station_t *st,
-                                  float amount) {
-    if (!sp || !st || amount <= 0.0f) return;
-    if (server_player_can_use_pubkey_persistence(sp))
-        ledger_earn_by_pubkey(st, sp->pubkey, amount);
-    else
-        ledger_earn(st, sp->session_token, amount);
-    sp->ship->stat_credits_earned += amount;
+static bool delivery_shipment_source_identity(
+    const delivery_shipment_t *shipment, uint8_t out[32]) {
+    static const uint8_t domain[] = "signal/delivery-shipment-source/v1";
+    if (out) memset(out, 0, 32);
+    if (!shipment || !out || !shipment->active ||
+        shipment->shipment_id == 0 || shipment->quantity_bound == 0 ||
+        shipment->quantity_bound > MAX_DELIVERY_BOUND_CARGO) {
+        return false;
+    }
+    uint8_t header[8] = {0};
+    wire_write_u16_le(header, shipment->shipment_id);
+    header[2] = shipment->origin_station;
+    header[3] = shipment->destination_station;
+    header[4] = shipment->contract_index;
+    header[5] = shipment->commodity;
+    wire_write_u16_le(&header[6], shipment->quantity_bound);
+    sha256_ctx_t hash;
+    sha256_init(&hash);
+    sha256_update(&hash, domain, sizeof(domain) - 1u);
+    sha256_update(&hash, header, sizeof(header));
+    for (uint16_t i = 0; i < shipment->quantity_bound; i++)
+        sha256_update(&hash, shipment->cargo_pub[i], 32);
+    sha256_final(&hash, out);
+    return bytes_any(out, 32);
+}
+
+static bool fragment_payout_source_identity(asteroid_t *fragment,
+                                            uint8_t out[32]) {
+    uint8_t zero_player_pub[32] = {0};
+    if (out) memset(out, 0, 32);
+    if (!fragment || !out || !fragment->active ||
+        !fragment->fracture_child) {
+        return false;
+    }
+    if (!bytes_any(fragment->fragment_pub,
+                   sizeof(fragment->fragment_pub))) {
+        mining_fragment_pub_compute(
+            fragment->fracture_seed, zero_player_pub, 0,
+            fragment->fragment_pub);
+    }
+    if (!bytes_any(fragment->fragment_pub,
+                   sizeof(fragment->fragment_pub))) {
+        return false;
+    }
+    memcpy(out, fragment->fragment_pub, 32);
+    return true;
 }
 
 static void player_ledger_force_debit_at(server_player_t *sp, station_t *st,
@@ -6137,14 +6562,36 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
                 : 0.0f;
             shipment_payout += unit_pay;
         }
-        if (!ok ||
+        uint8_t source_identity[32];
+        uint8_t ledger_identity[32];
+        ledger_earn_stage_t ledger_stage = {0};
+        station_payout_stage_t payout_stage = {0};
+        if (!ok || !isfinite(shipment_payout) ||
+            shipment_payout <= FLOAT_EPSILON ||
+            !delivery_shipment_source_identity(
+                shipment, source_identity) ||
+            !server_player_ledger_identity(sp, ledger_identity) ||
+            !ledger_stage_earn_by_pubkey(
+                st, ledger_identity, shipment_payout,
+                &ledger_stage) ||
+            station_payout_prepare(
+                w, station_idx,
+                STATION_PAYOUT_BOUND_FREIGHT,
+                source_identity, ledger_identity,
+                shipment_payout, &payout_stage) !=
+                STATION_PAYOUT_PREPARE_READY ||
             !delivery_transfer_towed_pod_to_station_custody(
                 w, sp, shipment, shipment->quantity_delivered,
                 remaining, station_idx)) {
             continue;
         }
+        if (!station_payout_commit(w, &payout_stage))
+            continue;
         contract_ownership_commit_staged_claim(
             contract, &staged_claim);
+        st->ledger[ledger_stage.index] = ledger_stage.row;
+        st->ledger_count = ledger_stage.ledger_count;
+        sp->ship->stat_credits_earned += shipment_payout;
         shipment->quantity_delivered =
             (uint16_t)(shipment->quantity_delivered + remaining);
         payout += shipment_payout;
@@ -6158,7 +6605,6 @@ static float delivery_try_deliver_bound_cargo(world_t *w,
         }
     }
     if (payout > 0.01f) {
-        player_ledger_earn_at(sp, st, payout);
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_SELL, .player_id = sp->id,
             .sell = { .station = sp->current_station,
@@ -6233,14 +6679,36 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
                 unit_price = station_buy_price(st, c);
             shipment_payout += unit_price * BLACK_MARKET_CARGO_MARKDOWN;
         }
-        if (!ok ||
+        uint8_t source_identity[32];
+        uint8_t ledger_identity[32];
+        ledger_earn_stage_t ledger_stage = {0};
+        station_payout_stage_t payout_stage = {0};
+        if (!ok || !isfinite(shipment_payout) ||
+            shipment_payout <= FLOAT_EPSILON ||
+            !delivery_shipment_source_identity(
+                shipment, source_identity) ||
+            !server_player_ledger_identity(sp, ledger_identity) ||
+            !ledger_stage_earn_by_pubkey(
+                st, ledger_identity, shipment_payout,
+                &ledger_stage) ||
+            station_payout_prepare(
+                w, sp->current_station,
+                STATION_PAYOUT_BLACK_MARKET,
+                source_identity, ledger_identity,
+                shipment_payout, &payout_stage) !=
+                STATION_PAYOUT_PREPARE_READY ||
             !delivery_transfer_towed_pod_to_station_custody(
                 w, sp, shipment, cargo_offset, remaining,
                 sp->current_station)) {
             continue;
         }
+        if (!station_payout_commit(w, &payout_stage))
+            continue;
         contract_ownership_commit_staged_claim(
             contract, &staged_claim);
+        st->ledger[ledger_stage.index] = ledger_stage.row;
+        st->ledger_count = ledger_stage.ledger_count;
+        sp->ship->stat_credits_earned += shipment_payout;
         payout += shipment_payout;
         shipment->quantity_black_market_sold =
             (uint16_t)(shipment->quantity_black_market_sold + remaining);
@@ -6257,7 +6725,6 @@ static float delivery_try_black_market_sell(world_t *w, server_player_t *sp,
         if (single_unit && sold_bound_any) break;
     }
     if (payout > 0.01f) {
-        player_ledger_earn_at(sp, st, payout);
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_SELL, .player_id = sp->id,
             .sell = { .station = sp->current_station,
@@ -6292,11 +6759,32 @@ static void delivery_clear_origin_proofs(world_t *w, server_player_t *sp,
             delivery_stage_contract_use_for_player(
                 w, sp, shipment, &staged_claim);
         if (!contract) continue;
-        contract_ownership_commit_staged_claim(
-            contract, &staged_claim);
         float credit = shipment->debt_principal +
                        shipment->origin_completion_credit;
-        player_ledger_earn_at(sp, origin, credit);
+        uint8_t source_identity[32];
+        uint8_t ledger_identity[32];
+        ledger_earn_stage_t ledger_stage = {0};
+        station_payout_stage_t payout_stage = {0};
+        if (!isfinite(credit) || credit <= FLOAT_EPSILON ||
+            !delivery_shipment_source_identity(
+                shipment, source_identity) ||
+            !server_player_ledger_identity(sp, ledger_identity) ||
+            !ledger_stage_earn_by_pubkey(
+                origin, ledger_identity, credit,
+                &ledger_stage) ||
+            station_payout_prepare(
+                w, station_idx,
+                STATION_PAYOUT_BOUND_FREIGHT_ORIGIN,
+                source_identity, ledger_identity, credit,
+                &payout_stage) != STATION_PAYOUT_PREPARE_READY ||
+            !station_payout_commit(w, &payout_stage)) {
+            continue;
+        }
+        contract_ownership_commit_staged_claim(
+            contract, &staged_claim);
+        origin->ledger[ledger_stage.index] = ledger_stage.row;
+        origin->ledger_count = ledger_stage.ledger_count;
+        sp->ship->stat_credits_earned += credit;
         shipment->status = DELIVERY_SHIPMENT_CLEARED;
         contract->active = false;
         SIM_LOG("[delivery] player %d cleared shipment %u at %s for %.0f\n",
@@ -6414,24 +6902,36 @@ static float try_deliver_towed_fragments_to_contracts(world_t *w,
         float ore_units = a->ore;
         if (ore_units <= 0.0f) continue;
 
+        float ore_value = ore_units * best_price;
+        float graded_value = ore_value * mining_payout_multiplier(grade);
+        uint8_t ledger_identity[32];
+        ledger_earn_stage_t ledger_stage = {0};
+        float credited = 0.0f;
+        station_payout_stage_t payout_stage = {0};
+        uint8_t fragment_source[32];
+        if (!server_player_ledger_identity(sp, ledger_identity) ||
+            !fragment_payout_source_identity(a, fragment_source) ||
+            !ledger_stage_supply_credit_by_pubkey(
+                st, ledger_identity, graded_value,
+                (uint32_t)lroundf(ore_units),
+                (uint8_t)a->commodity, &ledger_stage,
+                &credited) ||
+            station_payout_prepare(
+                w, sp->current_station,
+                STATION_PAYOUT_CONTRACT_FRAGMENT,
+                fragment_source, ledger_identity, credited,
+                &payout_stage) != STATION_PAYOUT_PREPARE_READY ||
+            !station_payout_commit(w, &payout_stage)) {
+            continue;
+        }
+
         contract_ownership_commit_staged_claim(
             ct, &best_staged_claim);
         st->_inventory_cache[a->commodity] += ore_units;
         if (st->_inventory_cache[a->commodity] > REFINERY_HOPPER_CAPACITY)
             st->_inventory_cache[a->commodity] = REFINERY_HOPPER_CAPACITY;
-
-        float ore_value = ore_units * best_price;
-        float graded_value = ore_value * mining_payout_multiplier(grade);
-        float credited = 0.0f;
-        if (server_player_can_use_pubkey_persistence(sp)) {
-            credited = ledger_credit_supply_amount_by_pubkey(st, sp->pubkey,
-                                                             graded_value);
-            ledger_record_ore_sold(st, sp->pubkey, (uint32_t)lroundf(ore_units),
-                                   (uint8_t)a->commodity);
-        } else {
-            credited = ledger_credit_supply_amount(st, sp->session_token,
-                                                   graded_value);
-        }
+        st->ledger[ledger_stage.index] = ledger_stage.row;
+        st->ledger_count = ledger_stage.ledger_count;
         sp->ship->stat_credits_earned += credited;
         payout += credited;
 
@@ -6567,6 +7067,31 @@ static bool try_deliver_starter_refit_manifest_batch(
             (float)total_payout, &ledger_stage)) {
         return true;
     }
+    station_payout_stage_t
+        payout_stages[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
+    if ((uint32_t)needed > UINT32_MAX - w->payout_journal.count ||
+        !station_payout_journal_reserve(
+            w, w->payout_journal.count + (uint32_t)needed)) {
+        return true;
+    }
+    for (int i = 0; i < needed; i++) {
+        if (station_payout_prepare(
+                w, sp->current_station,
+                STATION_PAYOUT_CONTRACT_CARGO,
+                units[i].pub, player_identity,
+                (float)unit_payouts[i],
+                &payout_stages[i]) !=
+                STATION_PAYOUT_PREPARE_READY) {
+            return true;
+        }
+        for (int prior = 0; prior < i; prior++) {
+            if (memcmp(
+                    payout_stages[prior].receipt.payout_id,
+                    payout_stages[i].receipt.payout_id, 32) == 0) {
+                return true;
+            }
+        }
+    }
 
     chain_payload_transfer_t
         transfers[STARTER_REFIT_BATCH_MAX_UNITS] = {0};
@@ -6688,6 +7213,14 @@ static bool try_deliver_starter_refit_manifest_batch(
      * it and let the next lookup rebuild from the now-durable chain.
      */
     cargo_receipt_origin_cache_reset();
+
+    for (int i = 0; i < needed; i++) {
+        if (!station_payout_commit(w, &payout_stages[i])) {
+            cargo_store_cleanup(&staged_ship);
+            cargo_store_cleanup(&staged_station);
+            return true;
+        }
+    }
 
     cargo_store_cleanup(&sp->ship->cargo_store);
     sp->ship->cargo_store = staged_ship;
@@ -6849,6 +7382,14 @@ static float try_deliver_trusted_ship_manifest_to_contracts(
                 &ledger_stage)) {
             break;
         }
+        station_payout_stage_t payout_stage = {0};
+        if (station_payout_prepare(
+                w, sp->current_station,
+                STATION_PAYOUT_CONTRACT_CARGO,
+                unit.pub, player_identity, (float)payout,
+                &payout_stage) != STATION_PAYOUT_PREPARE_READY) {
+            break;
+        }
 
         cargo_receipt_prepared_transfer_t prepared =
             cargo_receipt_prepare_transfer(
@@ -6898,6 +7439,11 @@ static float try_deliver_trusted_ship_manifest_to_contracts(
             cargo_receipt_commit_prepared_transfer(
                 w, &prepared);
         if (appended.status != CHAIN_LOG_APPEND_OK) {
+            cargo_store_cleanup(&staged_ship);
+            cargo_store_cleanup(&staged_station);
+            break;
+        }
+        if (!station_payout_commit(w, &payout_stage)) {
             cargo_store_cleanup(&staged_ship);
             cargo_store_cleanup(&staged_station);
             break;
@@ -9406,8 +9952,13 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
             w, pod_idx, tractor_player);
         return false;
     }
-    station_intake_commit_pod_sale(
-        w, sp, st, best_station, best_module, pod, &sale);
+    if (!station_intake_commit_pod_sale(
+            w, sp, st, best_station, best_module, pod, &sale)) {
+        world_cargo_pod_clear_module_tractor(w, pod_idx);
+        (void)world_cargo_pod_set_player_tractor(
+            w, pod_idx, tractor_player);
+        return false;
+    }
     if (best_station >= 0 && best_station < MAX_STATIONS &&
         best_module >= 0 && best_module < MAX_MODULES_PER_STATION) {
         w->stations[best_station].modules[best_module].active_pulse = 1.0f;
@@ -10844,12 +11395,6 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                                                   sp->current_station,
                                                   sp->ship, filter);
         if (build_payout > 0.01f) {
-            if (server_player_can_use_pubkey_persistence(sp)) {
-                ledger_earn_by_pubkey(docked_st, sp->pubkey, build_payout);
-            } else {
-                ledger_earn(docked_st, sp->session_token, build_payout);
-            }
-            sp->ship->stat_credits_earned += build_payout;
             int base_cr = (int)lroundf(build_payout);
             emit_event(w, (sim_event_t){
                 .type = SIM_EVENT_SELL, .player_id = sp->id,
@@ -16809,6 +17354,10 @@ void world_cleanup(world_t *w) {
         ship_cleanup(&w->ship_assets[i].stored_ship);
     for (int i = 0; i < MAX_STATIONS; i++)
         station_cleanup(&w->stations[i]);
+    free(w->payout_journal.entries);
+    w->payout_journal.entries = NULL;
+    w->payout_journal.count = 0;
+    w->payout_journal.capacity = 0;
     free(w->signal_cache.strength);
     w->signal_cache.strength = NULL;
     w->signal_cache.beacon_count = 0;
@@ -17378,12 +17927,15 @@ bool world_reseed_genesis_ship_assets(world_t *w) {
 void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
+    station_payout_receipt_t *payout_entries =
+        w->payout_journal.entries;
     for (int i = 0; i < WORLD_SHIP_CAP; i++)
         ship_cleanup(&w->ships[i].component);
     for (int i = 0; i < MAX_SHIP_ASSETS; i++)
         ship_cleanup(&w->ship_assets[i].stored_ship);
     for (int i = 0; i < MAX_STATIONS; i++)
         station_cleanup(&w->stations[i]);
+    free(payout_entries);
     spatial_grid_destroy(&w->asteroid_grid);
     memset(w, 0, sizeof(*w));
     w->signal_cache.strength = sig_buf; /* restore — signal_grid_build reuses it */
