@@ -2171,11 +2171,15 @@ static bool world_tow_link_capacity_allows(const world_t *w,
         default: break;
         }
     }
-    if (profile == TOW_PROFILE_SHIP_SCAFFOLD) return scaffolds < 1;
     if (profile != TOW_PROFILE_SHIP_FRAGMENT &&
-        profile != TOW_PROFILE_SHIP_POD) return false;
-    if (source.index >= WORLD_NPC_SHIP_BASE)
-        return profile == TOW_PROFILE_SHIP_FRAGMENT && fragments < 1;
+        profile != TOW_PROFILE_SHIP_POD &&
+        profile != TOW_PROFILE_SHIP_SCAFFOLD) return false;
+    if (source.index >= WORLD_NPC_SHIP_BASE) {
+        if (profile != TOW_PROFILE_SHIP_FRAGMENT &&
+            profile != TOW_PROFILE_SHIP_SCAFFOLD) return false;
+        return fragments + scaffolds < 1;
+    }
+    if (profile == TOW_PROFILE_SHIP_SCAFFOLD) return scaffolds < 1;
     if (profile == TOW_PROFILE_SHIP_FRAGMENT && fragments >= 10) return false;
     if (profile == TOW_PROFILE_SHIP_POD && pods >= 10) return false;
     return fragments + pods < ship_tow_body_capacity(ship);

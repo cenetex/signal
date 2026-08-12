@@ -562,9 +562,7 @@ static void reset_world(void) {
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     reset_local_asteroid_motion_telemetry();
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
-    g.npc_interp.interval = 0.1f;
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
-    g.scaffold_interp.interval = 0.1f;
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
     memset(&g.player_interp, 0, sizeof(g.player_interp));
     g.player_interp.interval = 0.1f;
@@ -1741,9 +1739,9 @@ static void sim_step(float dt) {
 
     /* Advance interpolation timers (both modes) */
     net_advance_asteroid_interpolation(dt);
+    net_advance_npc_interpolation(dt);
+    net_advance_scaffold_interpolation(dt);
     net_advance_cargo_pod_interpolation(dt);
-    g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
-    g.scaffold_interp.t += dt / fmaxf(g.scaffold_interp.interval, 0.01f);
     g.player_interp.t += dt / fmaxf(g.player_interp.interval, 0.01f);
 
     /* Thrust flame: local input for manual, server input for autopilot.
@@ -3698,16 +3696,18 @@ int signal_smoke_remote_towable_interp_check(void) {
     asteroid_t saved_asteroid_prev[MAX_ASTEROIDS];
     asteroid_t saved_asteroid_curr[MAX_ASTEROIDS];
     float saved_asteroid_elapsed[MAX_ASTEROIDS];
+    client_npc_render_state_t saved_npc_prev[MAX_NPC_SHIPS];
+    client_npc_render_state_t saved_npc_curr[MAX_NPC_SHIPS];
+    float saved_npc_elapsed[MAX_NPC_SHIPS];
     sim_interactions_t saved_world_interactions = g.world.interactions;
     scaffold_t saved_world_scaffolds[MAX_SCAFFOLDS];
     scaffold_t saved_scaffold_prev[MAX_SCAFFOLDS];
     scaffold_t saved_scaffold_curr[MAX_SCAFFOLDS];
+    float saved_scaffold_elapsed[MAX_SCAFFOLDS];
     cargo_pod_t saved_world_cargo_pods[MAX_CARGO_PODS];
     cargo_pod_t saved_cargo_pod_prev[MAX_CARGO_PODS];
     cargo_pod_t saved_cargo_pod_curr[MAX_CARGO_PODS];
     float saved_cargo_pod_elapsed[MAX_CARGO_PODS];
-    float saved_scaffold_t = g.scaffold_interp.t;
-    float saved_scaffold_interval = g.scaffold_interp.interval;
 
     memcpy(saved_player0_towed_fragments,
            g.world.players[0].ship->towed_fragments,
@@ -3724,9 +3724,15 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(saved_asteroid_curr, g.asteroid_interp.curr, sizeof(saved_asteroid_curr));
     memcpy(saved_asteroid_elapsed, g.asteroid_interp.elapsed,
            sizeof(saved_asteroid_elapsed));
+    memcpy(saved_npc_prev, g.npc_interp.prev, sizeof(saved_npc_prev));
+    memcpy(saved_npc_curr, g.npc_interp.curr, sizeof(saved_npc_curr));
+    memcpy(saved_npc_elapsed, g.npc_interp.elapsed,
+           sizeof(saved_npc_elapsed));
     memcpy(saved_world_scaffolds, g.world.scaffolds, sizeof(saved_world_scaffolds));
     memcpy(saved_scaffold_prev, g.scaffold_interp.prev, sizeof(saved_scaffold_prev));
     memcpy(saved_scaffold_curr, g.scaffold_interp.curr, sizeof(saved_scaffold_curr));
+    memcpy(saved_scaffold_elapsed, g.scaffold_interp.elapsed,
+           sizeof(saved_scaffold_elapsed));
     memcpy(saved_world_cargo_pods, g.world.cargo_pods, sizeof(saved_world_cargo_pods));
     memcpy(saved_cargo_pod_prev, g.cargo_pod_interp.prev, sizeof(saved_cargo_pod_prev));
     memcpy(saved_cargo_pod_curr, g.cargo_pod_interp.curr, sizeof(saved_cargo_pod_curr));
@@ -3752,9 +3758,51 @@ int signal_smoke_remote_towable_interp_check(void) {
     memset(&g.world.interactions, 0, sizeof(g.world.interactions));
     memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
     memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
-    g.scaffold_interp.interval = 0.1f;
     memset(g.world.cargo_pods, 0, sizeof(g.world.cargo_pods));
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
+
+    memset(&g.npc_interp, 0, sizeof(g.npc_interp));
+    NetNpcState npc_pair[2] = {
+        {
+            .index = 3,
+            .flags = 1u,
+            .x = 0.0f,
+            .y = 0.0f,
+            .vx = 100.0f,
+            .vy = 0.0f,
+            .target_asteroid = -1,
+            .towed_fragment = -1,
+            .home_station = 0xFFu,
+        },
+        {
+            .index = 4,
+            .flags = 1u,
+            .x = 0.0f,
+            .y = 90.0f,
+            .vx = 0.0f,
+            .vy = 0.0f,
+            .target_asteroid = -1,
+            .towed_fragment = -1,
+            .home_station = 0xFFu,
+        },
+    };
+    apply_remote_npcs(npc_pair, 2);
+    g.npc_interp.elapsed[3] = 0.1f;
+    vec2 npc_before_unrelated_pos = {0};
+    vec2 npc_before_unrelated_vel = {0};
+    bool npc_before_unrelated_visible = net_remote_npc_presentation(
+        3, &npc_before_unrelated_pos, &npc_before_unrelated_vel);
+    NetNpcPosState unrelated_npc_pos = {
+        .index = 4,
+        .x = 5.0f,
+        .y = 90.0f,
+    };
+    apply_remote_npc_pos(&unrelated_npc_pos, 1);
+    net_advance_npc_interpolation(0.05f);
+    vec2 npc_after_unrelated_pos = {0};
+    vec2 npc_after_unrelated_vel = {0};
+    bool npc_after_unrelated_visible = net_remote_npc_presentation(
+        3, &npc_after_unrelated_pos, &npc_after_unrelated_vel);
 
     NetScaffoldState scaffold = {
         .index = 3,
@@ -3772,15 +3820,41 @@ int signal_smoke_remote_towable_interp_check(void) {
     apply_remote_scaffolds(&scaffold, 1);
     bool scaffold_station_authoritative =
         g.scaffold_interp.curr[3].built_at_station == 2;
-    g.scaffold_interp.t = 0.1f / fmaxf(g.scaffold_interp.interval, 0.001f);
+    g.scaffold_interp.elapsed[3] = 0.1f;
     interpolate_world_for_render();
     float scaffold_first_x = g.world.scaffolds[3].pos.x;
     scaffold.pos_x = 100.0f;
     scaffold.vel_x = 0.0f;
     apply_remote_scaffolds(&scaffold, 1);
-    g.scaffold_interp.t = 0.05f / fmaxf(g.scaffold_interp.interval, 0.001f);
+    g.scaffold_interp.elapsed[3] = 0.05f;
     interpolate_world_for_render();
     float scaffold_blended_x = g.world.scaffolds[3].pos.x;
+
+    memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
+    memset(&g.scaffold_interp, 0, sizeof(g.scaffold_interp));
+    scaffold.pos_x = 0.0f;
+    scaffold.pos_y = 0.0f;
+    scaffold.vel_x = 100.0f;
+    NetScaffoldState unrelated_scaffold = scaffold;
+    unrelated_scaffold.index = 4;
+    unrelated_scaffold.pos_y = 90.0f;
+    unrelated_scaffold.vel_x = 0.0f;
+    NetScaffoldState scaffold_pair[2] = {scaffold, unrelated_scaffold};
+    apply_remote_scaffolds(scaffold_pair, 2);
+    g.scaffold_interp.elapsed[3] = 0.1f;
+    interpolate_world_for_render();
+    float scaffold_before_unrelated_x = g.world.scaffolds[3].pos.x;
+    NetScaffoldMotionState unrelated_scaffold_motion = {
+        .index = 4,
+        .pos_x = 5.0f,
+        .pos_y = 90.0f,
+        .vel_x = 0.0f,
+        .vel_y = 0.0f,
+    };
+    apply_remote_scaffold_motion(&unrelated_scaffold_motion, 1);
+    net_advance_scaffold_interpolation(0.05f);
+    interpolate_world_for_render();
+    float scaffold_after_unrelated_x = g.world.scaffolds[3].pos.x;
 
     NetCargoPodState pod = {
         .index = 5,
@@ -4303,9 +4377,21 @@ int signal_smoke_remote_towable_interp_check(void) {
         !net_is_loopback() || net_local_prediction_enabled();
 
     int ok = scaffold_first_x > 9.0f && scaffold_first_x < 11.5f &&
+             npc_before_unrelated_visible &&
+             npc_after_unrelated_visible &&
+             npc_before_unrelated_pos.x > 9.0f &&
+             npc_before_unrelated_pos.x < 11.5f &&
+             npc_after_unrelated_pos.x > 14.0f &&
+             npc_after_unrelated_pos.x < 16.0f &&
+             npc_before_unrelated_vel.x > 99.9f &&
+             npc_after_unrelated_vel.x > 99.9f &&
              scaffold_blended_x > scaffold_first_x &&
              scaffold_blended_x < 95.0f &&
              scaffold_station_authoritative &&
+             scaffold_before_unrelated_x > 9.0f &&
+             scaffold_before_unrelated_x < 11.5f &&
+             scaffold_after_unrelated_x > 14.0f &&
+             scaffold_after_unrelated_x < 16.0f &&
              pod_first_x > 9.0f && pod_first_x < 11.5f &&
              pod_blended_x > pod_first_x &&
              pod_blended_x < 95.0f &&
@@ -4356,17 +4442,21 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(g.asteroid_interp.curr, saved_asteroid_curr, sizeof(saved_asteroid_curr));
     memcpy(g.asteroid_interp.elapsed, saved_asteroid_elapsed,
            sizeof(saved_asteroid_elapsed));
+    memcpy(g.npc_interp.prev, saved_npc_prev, sizeof(saved_npc_prev));
+    memcpy(g.npc_interp.curr, saved_npc_curr, sizeof(saved_npc_curr));
+    memcpy(g.npc_interp.elapsed, saved_npc_elapsed,
+           sizeof(saved_npc_elapsed));
     g.world.interactions = saved_world_interactions;
     memcpy(g.world.scaffolds, saved_world_scaffolds, sizeof(saved_world_scaffolds));
     memcpy(g.scaffold_interp.prev, saved_scaffold_prev, sizeof(saved_scaffold_prev));
     memcpy(g.scaffold_interp.curr, saved_scaffold_curr, sizeof(saved_scaffold_curr));
+    memcpy(g.scaffold_interp.elapsed, saved_scaffold_elapsed,
+           sizeof(saved_scaffold_elapsed));
     memcpy(g.world.cargo_pods, saved_world_cargo_pods, sizeof(saved_world_cargo_pods));
     memcpy(g.cargo_pod_interp.prev, saved_cargo_pod_prev, sizeof(saved_cargo_pod_prev));
     memcpy(g.cargo_pod_interp.curr, saved_cargo_pod_curr, sizeof(saved_cargo_pod_curr));
     memcpy(g.cargo_pod_interp.elapsed, saved_cargo_pod_elapsed,
            sizeof(saved_cargo_pod_elapsed));
-    g.scaffold_interp.t = saved_scaffold_t;
-    g.scaffold_interp.interval = saved_scaffold_interval;
     g.local_server.active = saved_local_server_active;
     g.net_authority_enabled = saved_net_authority_enabled;
     g.net_input_tick_protocol = saved_net_input_tick_protocol;
@@ -4389,6 +4479,64 @@ int signal_smoke_remote_towable_interp_check(void) {
            saved_player0_towed_pods,
            sizeof(saved_player0_towed_pods));
     return ok ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_prepare_npc_scaffold_tether(void) {
+    const int npc_idx = 0;
+    const int scaffold_idx = MAX_SCAFFOLDS - 1;
+    g.local_server.active = false;
+
+    if (!world_npc_ship_slot_activate(&g.world, npc_idx)) return 0;
+    npc_ship_t *npc = &g.world.npc_ships[npc_idx];
+    npc->active = true;
+    npc->role = NPC_ROLE_HAULER;
+    npc->ship->pos = v2_add(LOCAL_PLAYER.ship->pos, v2(80.0f, 0.0f));
+    npc->ship->vel = v2(0.0f, 0.0f);
+
+    client_npc_render_state_t render_npc = {
+        .active = true,
+        .role = NPC_ROLE_HAULER,
+        .state = NPC_STATE_IDLE,
+        .hull_class = npc->ship->hull_class,
+        .pos = npc->ship->pos,
+        .vel = npc->ship->vel,
+        .angle = npc->ship->angle,
+        .target_asteroid = -1,
+        .towed_fragment = -1,
+        .towed_scaffold = scaffold_idx,
+        .home_station = -1,
+    };
+    g.npc_interp.prev[npc_idx] = render_npc;
+    g.npc_interp.curr[npc_idx] = render_npc;
+    g.npc_interp.elapsed[npc_idx] = 0.0f;
+
+    scaffold_t scaffold = {
+        .active = true,
+        .state = SCAFFOLD_TOWING,
+        .module_type = MODULE_DOCK,
+        .owner = -1,
+        .pos = v2_add(npc->ship->pos, v2(90.0f, 0.0f)),
+        .vel = v2(0.0f, 0.0f),
+        .radius = 18.0f,
+        .built_at_station = -1,
+    };
+    g.world.scaffolds[scaffold_idx] = scaffold;
+    g.scaffold_interp.prev[scaffold_idx] = scaffold;
+    g.scaffold_interp.curr[scaffold_idx] = scaffold;
+    g.scaffold_interp.elapsed[scaffold_idx] = 0.0f;
+
+    world_tow_links_clear_source(&g.world, npc->ship_ref);
+    if (!world_scaffold_set_npc_tractor(
+            &g.world, scaffold_idx, npc_idx)) return 0;
+    g.scaffold_interp.prev[scaffold_idx].tractor =
+        g.world.scaffolds[scaffold_idx].tractor;
+    g.scaffold_interp.curr[scaffold_idx].tractor =
+        g.world.scaffolds[scaffold_idx].tractor;
+    g.tow_snapshot_received = true;
+    g.tow_snapshot_revision = g.world.tow_revision;
+    g.tow_snapshot_server_tick = g.world.tow_revision_tick;
+    return 1;
 }
 #endif
 

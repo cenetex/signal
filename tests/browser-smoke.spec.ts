@@ -2875,7 +2875,30 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
-  rootBundleSmokeTest('bounds player-to-cargo-pod presentation under deterministic adverse delivery', async ({ page }) => {
+  rootBundleSmokeTest('renders an NPC-owned scaffold tether from canonical tow state', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page, false, { singleplayer: true });
+
+    expect(
+      await wasmNumber(page, 'signal_smoke_prepare_npc_scaffold_tether'),
+    ).toBe(1);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+        timeout: 3_000,
+        message: 'the NPC-scaffold canonical relation should render a tether',
+      })
+      .toBeGreaterThanOrEqual(1);
+    const tether = await tractorDrawTelemetry(page, 0);
+    expect(tether.sourceType).toBe(3); // ship
+    expect(tether.targetType).toBe(5); // scaffold
+    expect(tether.span).toBeGreaterThan(40);
+    expect(tether.intensity).toBeGreaterThan(0);
+
+    expectNoFatalErrors(logs);
+  });
+
+  rootBundleSmokeTest('keeps every supported tow owner and target atomic under deterministic adverse delivery', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     await loadGame(page, false, { singleplayer: true });
@@ -2896,9 +2919,18 @@ test.describe('Browser smoke tests', () => {
         stale: number;
         post_reentry_relation: number;
       }>;
+      matrix: {
+        scenarios: string[];
+        scenario_count: number;
+        profile_count: number;
+        passed_profiles: number;
+        stale: number;
+        lifecycle_failures: number;
+        failure: string;
+      };
     };
     expect(report.status).toBe(1);
-    expect(report.scope).toBe('player_ship_to_cargo_pod');
+    expect(report.scope).toBe('valid_owner_target_lifecycle_matrix');
     expect(report.profiles.map((profile) => profile.latency_ms)).toEqual([50, 125, 250]);
     for (const profile of report.profiles) {
       expect(profile.pass).toBe(1);
@@ -2909,6 +2941,20 @@ test.describe('Browser smoke tests', () => {
       expect(profile.stale).toBe(0);
       expect(profile.post_reentry_relation).toBe(0);
     }
+    expect(report.matrix.scenarios).toEqual([
+      'player_fragment',
+      'npc_fragment',
+      'player_cargo',
+      'station_cargo',
+      'player_scaffold',
+      'npc_scaffold',
+    ]);
+    expect(report.matrix.scenario_count).toBe(6);
+    expect(report.matrix.profile_count).toBe(18);
+    expect(report.matrix.passed_profiles).toBe(18);
+    expect(report.matrix.stale).toBe(0);
+    expect(report.matrix.lifecycle_failures).toBe(0);
+    expect(report.matrix.failure).toBe('none');
 
     expectNoFatalErrors(logs);
   });

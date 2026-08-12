@@ -99,7 +99,6 @@ static void zero_latency_clear_client_interpolation(void)
 {
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
-    g.npc_interp.interval = 0.1f;
     memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
 }
 

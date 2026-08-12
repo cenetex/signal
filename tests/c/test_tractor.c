@@ -313,6 +313,158 @@ TEST(test_tow_links_ignore_stale_projection_capacity_and_collect_stably) {
     ASSERT_EQ_INT(sp->ship->towed_pods[1], 7);
 }
 
+static int test_active_tow_link_count(const world_t *w) {
+    int count = 0;
+    for (int i = 0; i < MAX_TOW_LINKS; i++)
+        if (w->tow_links[i].active) count++;
+    return count;
+}
+
+TEST(test_supported_tow_owner_target_matrix_is_atomic_and_idempotent) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    server_player_t *player = &w.players[0];
+    player->connected = true;
+    player->session_ready = true;
+    player->id = 0;
+    player_init_ship(player, &w);
+
+    ASSERT(world_npc_ship_slot_activate(&w, 0));
+    npc_ship_t *npc = &w.npc_ships[0];
+    npc->active = true;
+    ASSERT(world_npc_ship_slot_activate(&w, 1));
+    npc_ship_t *scaffold_npc = &w.npc_ships[1];
+    scaffold_npc->active = true;
+
+    const int player_fragment = MAX_ASTEROIDS - 1;
+    const int npc_fragment = MAX_ASTEROIDS - 2;
+    const int player_pod = MAX_CARGO_PODS - 1;
+    const int station_pod = MAX_CARGO_PODS - 2;
+    const int player_scaffold = MAX_SCAFFOLDS - 1;
+    const int npc_scaffold = MAX_SCAFFOLDS - 2;
+
+    w.asteroids[player_fragment] = (asteroid_t){
+        .active = true, .fracture_child = true, .radius = 8.0f,
+    };
+    w.asteroids[npc_fragment] = (asteroid_t){
+        .active = true, .fracture_child = true, .radius = 8.0f,
+    };
+    w.cargo_pods[player_pod] = (cargo_pod_t){
+        .active = true, .kind = CARGO_POD_CARGO, .radius = 12.0f,
+    };
+    w.cargo_pods[station_pod] = (cargo_pod_t){
+        .active = true, .kind = CARGO_POD_CARGO, .radius = 12.0f,
+    };
+    w.scaffolds[player_scaffold] = (scaffold_t){
+        .active = true, .state = SCAFFOLD_TOWING, .radius = 18.0f,
+    };
+    w.scaffolds[npc_scaffold] = (scaffold_t){
+        .active = true, .state = SCAFFOLD_TOWING, .radius = 18.0f,
+    };
+
+    ASSERT(station_exists(&w.stations[0]));
+    ASSERT(w.stations[0].module_count > 0);
+    ASSERT(world_asteroid_set_player_tractor(&w, player_fragment, 0));
+    ASSERT(world_asteroid_set_npc_tractor(&w, npc_fragment, 0));
+    ASSERT(world_cargo_pod_set_player_tractor(&w, player_pod, 0));
+    ASSERT(world_cargo_pod_set_module_tractor(&w, station_pod, 0, 0));
+    ASSERT(world_scaffold_set_player_tractor(&w, player_scaffold, 0));
+    ASSERT(world_scaffold_set_npc_tractor(&w, npc_scaffold, 1));
+    ASSERT_EQ_INT(test_active_tow_link_count(&w), 6);
+
+    ASSERT_EQ_INT(asteroid_tractor_player(
+                      &w.asteroids[player_fragment]), 0);
+    ASSERT_EQ_INT(asteroid_tractor_npc(
+                      &w.asteroids[npc_fragment]), 0);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(
+                      &w.cargo_pods[player_pod]), 0);
+    ASSERT(cargo_pod_is_tractored_by_module(
+        &w.cargo_pods[station_pod], 0, 0));
+    ASSERT_EQ_INT(scaffold_tractor_player(
+                      &w.scaffolds[player_scaffold]), 0);
+    ASSERT_EQ_INT(scaffold_tractor_npc(
+                      &w.scaffolds[npc_scaffold]), 1);
+    ASSERT_EQ_INT(player->ship->towed_count, 1);
+    ASSERT_EQ_INT(player->ship->towed_fragments[0], player_fragment);
+    ASSERT_EQ_INT(player->ship->towed_pod_count, 1);
+    ASSERT_EQ_INT(player->ship->towed_pods[0], player_pod);
+    ASSERT_EQ_INT(player->ship->towed_scaffold, player_scaffold);
+    ASSERT_EQ_INT(npc_towed_fragment_index(npc), npc_fragment);
+    ASSERT_EQ_INT(scaffold_npc->ship->towed_scaffold, npc_scaffold);
+
+    entity_ref_t targets[] = {
+        world_entity_ref_for_slot(
+            &w, ENTITY_KIND_ASTEROID, player_fragment, -1),
+        world_entity_ref_for_slot(
+            &w, ENTITY_KIND_ASTEROID, npc_fragment, -1),
+        world_entity_ref_for_slot(
+            &w, ENTITY_KIND_CARGO_POD, player_pod, -1),
+        world_entity_ref_for_slot(
+            &w, ENTITY_KIND_CARGO_POD, station_pod, -1),
+        world_entity_ref_for_slot(
+            &w, ENTITY_KIND_SCAFFOLD, player_scaffold, -1),
+        world_entity_ref_for_slot(
+            &w, ENTITY_KIND_SCAFFOLD, npc_scaffold, -1),
+    };
+    const tow_profile_t profiles[] = {
+        TOW_PROFILE_SHIP_FRAGMENT,
+        TOW_PROFILE_SHIP_FRAGMENT,
+        TOW_PROFILE_SHIP_POD,
+        TOW_PROFILE_MODULE_POD,
+        TOW_PROFILE_SHIP_SCAFFOLD,
+        TOW_PROFILE_SHIP_SCAFFOLD,
+    };
+    for (int i = 0; i < 6; i++) {
+        const tow_link_t *link =
+            world_tow_link_for_target_const(&w, targets[i]);
+        ASSERT(link != NULL);
+        ASSERT_EQ_INT(link->profile, profiles[i]);
+        ASSERT_EQ_INT(link->state, TOW_LINK_HELD);
+    }
+
+    uint32_t attached_revision = w.tow_revision;
+    ASSERT(world_asteroid_set_player_tractor(&w, player_fragment, 0));
+    ASSERT(world_asteroid_set_npc_tractor(&w, npc_fragment, 0));
+    ASSERT(world_cargo_pod_set_player_tractor(&w, player_pod, 0));
+    ASSERT(world_cargo_pod_set_module_tractor(&w, station_pod, 0, 0));
+    ASSERT(world_scaffold_set_player_tractor(&w, player_scaffold, 0));
+    ASSERT(world_scaffold_set_npc_tractor(&w, npc_scaffold, 1));
+    ASSERT_EQ_INT(w.tow_revision, attached_revision);
+    ASSERT_EQ_INT(test_active_tow_link_count(&w), 6);
+
+    /* NPC cargo pods are deliberately not a supported relation: NPC haulers
+     * carry manifests in their ship hold, while towable pods have player or
+     * station-module custody. */
+    ASSERT(!world_tow_link_set(
+        &w, npc->ship_ref, targets[2], TOW_PROFILE_SHIP_POD,
+        0, TOW_LINK_HELD));
+    ASSERT_EQ_INT(w.tow_revision, attached_revision);
+
+    world_asteroid_clear_tractor(&w, player_fragment);
+    world_asteroid_clear_tractor(&w, npc_fragment);
+    world_cargo_pod_clear_tractor(&w, player_pod);
+    world_cargo_pod_clear_tractor(&w, station_pod);
+    world_scaffold_clear_tractor(&w, player_scaffold);
+    world_scaffold_clear_tractor(&w, npc_scaffold);
+    ASSERT_EQ_INT(test_active_tow_link_count(&w), 0);
+    ASSERT_EQ_INT(player->ship->towed_count, 0);
+    ASSERT_EQ_INT(player->ship->towed_pod_count, 0);
+    ASSERT_EQ_INT(player->ship->towed_scaffold, -1);
+    ASSERT_EQ_INT(npc_towed_fragment_index(npc), -1);
+    ASSERT_EQ_INT(scaffold_npc->ship->towed_scaffold, -1);
+
+    uint32_t released_revision = w.tow_revision;
+    world_asteroid_clear_tractor(&w, player_fragment);
+    world_asteroid_clear_tractor(&w, npc_fragment);
+    world_cargo_pod_clear_tractor(&w, player_pod);
+    world_cargo_pod_clear_tractor(&w, station_pod);
+    world_scaffold_clear_tractor(&w, player_scaffold);
+    world_scaffold_clear_tractor(&w, npc_scaffold);
+    ASSERT_EQ_INT(w.tow_revision, released_revision);
+    ASSERT_EQ_INT(test_active_tow_link_count(&w), 0);
+}
+
 TEST(test_ship_pointer_cache_rebinds_and_clears_stale_views) {
     WORLD_DECL;
     world_reset(&w);
@@ -615,6 +767,7 @@ void register_tractor_tests(void) {
     RUN(test_tow_link_revision_is_monotonic_and_idempotent);
     RUN(test_cargo_tow_slot_teardown_preserves_owner_until_explicit_release);
     RUN(test_tow_links_ignore_stale_projection_capacity_and_collect_stably);
+    RUN(test_supported_tow_owner_target_matrix_is_atomic_and_idempotent);
     RUN(test_ship_pointer_cache_rebinds_and_clears_stale_views);
     RUN(test_tractor_pull_engages_beyond_rest);
     RUN(test_tractor_push_engages_below_rest);

@@ -768,14 +768,16 @@ typedef struct {
     struct {
         client_npc_render_state_t prev[MAX_NPC_SHIPS];
         client_npc_render_state_t curr[MAX_NPC_SHIPS];
-        float t;
-        float interval;
+        /* Sparse NPC identity, pose, and linear packets arrive on separate
+         * schedules. One clock per slot prevents traffic for NPC B from
+         * restarting NPC A's correction baseline. */
+        float elapsed[MAX_NPC_SHIPS];
     } npc_interp;
     struct {
         scaffold_t prev[MAX_SCAFFOLDS];
         scaffold_t curr[MAX_SCAFFOLDS];
-        float t;
-        float interval;
+        /* Scaffold metadata and motion are sparse independent streams. */
+        float elapsed[MAX_SCAFFOLDS];
     } scaffold_interp;
     struct {
         cargo_pod_t prev[MAX_CARGO_PODS];
