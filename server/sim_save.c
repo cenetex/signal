@@ -90,7 +90,10 @@
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
 #define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
-#define SAVE_VERSION 83  /* v83: append Engine commodity/module identities and
+#define SAVE_VERSION 84  /* v84: append the durable station payout journal so
+                          * a source/action identity cannot credit twice across
+                          * retries, reconnects, or save/load.
+                          * v83: append Engine commodity/module identities and
                           * expand station module slots from 16 to 18.
                           * v82: cargo-pod player tow custody uses canonical
                           * actor principals. Runtime player slots are
@@ -3448,9 +3451,34 @@ static bool world_save_payload(const world_t *w, FILE *f,
         }
     }
 
-    /* v78: bounded, server-only legacy ownership quarantine. Rows are
-     * serialized field-by-field in canonical record-ID order and contain no
-     * pubkeys, session tokens, reconnect secrets, or other bearer material. */
+    /* v84: append-only at-most-once station settlement receipts. Runtime
+     * allocation capacity is deliberately omitted. */
+    if (output_version >= 84) {
+        if (w->payout_journal.count >
+                STATION_PAYOUT_JOURNAL_MAX_ENTRIES ||
+            w->payout_journal.count > w->payout_journal.capacity ||
+            (w->payout_journal.count > 0 &&
+             !w->payout_journal.entries)) {
+            return false;
+        }
+        WRITE_FIELD(f, w->payout_journal.count);
+        for (uint32_t i = 0; i < w->payout_journal.count; i++) {
+            const station_payout_receipt_t *receipt =
+                &w->payout_journal.entries[i];
+            WRITE_FIELD(f, receipt->payout_id);
+            WRITE_FIELD(f, receipt->recipient_hash);
+            WRITE_FIELD(f, receipt->station_id);
+            WRITE_FIELD(f, receipt->committed_tick);
+            WRITE_FIELD(f, receipt->amount);
+            WRITE_FIELD(f, receipt->action);
+            WRITE_FIELD(f, receipt->authority_generation);
+            WRITE_FIELD(f, receipt->_pad);
+        }
+    }
+
+    /* v78: bounded, server-only legacy ownership quarantine. Keep this
+     * immediately before CRC2 so its corruption fixtures remain a stable
+     * tail contract across later append-only sections. */
     if (!write_ownership_quarantine(f, &w->ownership_quarantine))
         return false;
 
@@ -3816,6 +3844,70 @@ static bool world_load_payload(
                 return false;
             }
         }
+    }
+
+    free(w->payout_journal.entries);
+    w->payout_journal = (station_payout_journal_t){0};
+    if (version >= 84) {
+        uint32_t count = 0;
+        READ_FIELD(f, count);
+        if (count > STATION_PAYOUT_JOURNAL_MAX_ENTRIES ||
+            (size_t)count > SIZE_MAX /
+                sizeof(*w->payout_journal.entries)) {
+            return false;
+        }
+        if (count > 0) {
+            w->payout_journal.entries = calloc(
+                count, sizeof(*w->payout_journal.entries));
+            if (!w->payout_journal.entries)
+                return world_load_record_oom(result);
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            station_payout_receipt_t *receipt =
+                &w->payout_journal.entries[i];
+            READ_FIELD(f, receipt->payout_id);
+            READ_FIELD(f, receipt->recipient_hash);
+            READ_FIELD(f, receipt->station_id);
+            READ_FIELD(f, receipt->committed_tick);
+            READ_FIELD(f, receipt->amount);
+            READ_FIELD(f, receipt->action);
+            READ_FIELD(f, receipt->authority_generation);
+            READ_FIELD(f, receipt->_pad);
+            bool payout_nonzero = false;
+            bool recipient_nonzero = false;
+            bool station_known = false;
+            for (size_t b = 0; b < 32; b++) {
+                payout_nonzero |= receipt->payout_id[b] != 0;
+                recipient_nonzero |=
+                    receipt->recipient_hash[b] != 0;
+            }
+            for (int station_idx = 0;
+                 station_idx < MAX_STATIONS; station_idx++) {
+                if (station_exists(&w->stations[station_idx]) &&
+                    w->stations[station_idx].id == receipt->station_id) {
+                    station_known = true;
+                    break;
+                }
+            }
+            if (!payout_nonzero || !recipient_nonzero ||
+                receipt->station_id == 0 || !station_known ||
+                !isfinite(receipt->amount) || receipt->amount <= 0.0f ||
+                receipt->amount > LEDGER_FLOAT_LIMIT ||
+                receipt->action <= STATION_PAYOUT_NONE ||
+                receipt->action >= STATION_PAYOUT_COUNT ||
+                receipt->_pad[0] != 0 || receipt->_pad[1] != 0) {
+                return false;
+            }
+            for (uint32_t prior = 0; prior < i; prior++) {
+                if (memcmp(
+                        w->payout_journal.entries[prior].payout_id,
+                        receipt->payout_id, 32) == 0) {
+                    return false;
+                }
+            }
+        }
+        w->payout_journal.count = count;
+        w->payout_journal.capacity = count;
     }
 
     if (version >= 78) {
@@ -4400,6 +4492,7 @@ static world_t *world_load_candidate_create(const world_t *source) {
            sizeof(candidate->signal_cache));
     memset(&candidate->asteroid_grid, 0,
            sizeof(candidate->asteroid_grid));
+    candidate->payout_journal = (station_payout_journal_t){0};
 
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_copy(&candidate->stations[i],
@@ -4425,6 +4518,30 @@ static world_t *world_load_candidate_create(const world_t *source) {
             free(candidate);
             return NULL;
         }
+    }
+    if (source->payout_journal.count > 0) {
+        if (source->payout_journal.count > source->payout_journal.capacity ||
+            !source->payout_journal.entries ||
+            (size_t)source->payout_journal.count >
+                SIZE_MAX / sizeof(*source->payout_journal.entries)) {
+            world_cleanup(candidate);
+            free(candidate);
+            return NULL;
+        }
+        candidate->payout_journal.entries = calloc(
+            source->payout_journal.count,
+            sizeof(*candidate->payout_journal.entries));
+        if (!candidate->payout_journal.entries) {
+            world_cleanup(candidate);
+            free(candidate);
+            return NULL;
+        }
+        memcpy(candidate->payout_journal.entries,
+               source->payout_journal.entries,
+               (size_t)source->payout_journal.count *
+                   sizeof(*candidate->payout_journal.entries));
+        candidate->payout_journal.count = source->payout_journal.count;
+        candidate->payout_journal.capacity = source->payout_journal.count;
     }
     for (int i = 0; i < MAX_PLAYERS; i++) {
         candidate->players[i].connection =

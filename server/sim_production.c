@@ -19,6 +19,9 @@
 #include <stdio.h>
 #include <string.h>
 
+static bool production_player_ledger_identity(
+    const server_player_t *sp, uint8_t identity[32]);
+
 /* ------------------------------------------------------------------ */
 /* Smelting helpers                                                    */
 /* ------------------------------------------------------------------ */
@@ -1488,6 +1491,88 @@ void step_furnace_smelting(world_t *w, float dt) {
                 pushed++;
             }
 
+            /* Stage the complete economic side of this smelt before the
+             * durable SMELT append or physical shell/output commit. The
+             * fragment pub is the immutable source; tower and finder use
+             * distinct action kinds so the intentional split remains legal. */
+            float price = station_buy_price(st, a->commodity);
+            bool by_contract = false;
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (!w->contracts[k].active) continue;
+                if (w->contracts[k].action != CONTRACT_TRACTOR) continue;
+                if (w->contracts[k].station_index != smelt_station) continue;
+                if (w->contracts[k].commodity != a->commodity) continue;
+                float cp = contract_price(&w->contracts[k]);
+                if (cp > price) { price = cp; by_contract = true; }
+            }
+            float ore_value = a->ore * price;
+            if (!by_contract && output != a->commodity && pushed > 0) {
+                float sum_mult = 0.0f;
+                for (int idx = 0; idx < pushed; idx++) {
+                    sum_mult += prefix_class_price_multiplier(
+                        (int)units[idx].prefix_class);
+                }
+                ore_value *= sum_mult / (float)pushed;
+            }
+            int tower = connected_player_by_token(
+                w, a->last_towed_token);
+            int fracturer = connected_player_by_token(
+                w, a->last_fractured_token);
+            float bonus_mult = mining_payout_multiplier(grade);
+            float graded_value = ore_value * bonus_mult;
+            int base_cr = (int)lroundf(ore_value);
+            int bonus_cr = (int)lroundf(graded_value - ore_value);
+            int roller = (tower >= 0) ? tower : fracturer;
+            station_payout_supply_stage_t tower_stage = {0};
+            station_payout_supply_stage_t finder_stage = {0};
+            bool tower_staged = false;
+            bool finder_staged = false;
+            uint8_t payout_identity[32] = {0};
+            if (ore_value > 0.0f && tower >= 0) {
+                server_player_t *pt = &w->players[tower];
+                if (production_player_ledger_identity(
+                        pt, payout_identity)) {
+                    if (!station_payout_supply_prepare(
+                            w, smelt_station,
+                            STATION_PAYOUT_SMELT_TOWER,
+                            a->fragment_pub, payout_identity,
+                            graded_value, NULL, &tower_stage)) {
+                        continue;
+                    }
+                    tower_staged = true;
+                }
+                if (fracturer >= 0 && fracturer != tower) {
+                    server_player_t *pf = &w->players[fracturer];
+                    if (production_player_ledger_identity(
+                            pf, payout_identity)) {
+                        float finders = graded_value * 0.25f;
+                        if (!station_payout_supply_prepare(
+                                w, smelt_station,
+                                STATION_PAYOUT_SMELT_FRACTURER,
+                                a->fragment_pub, payout_identity,
+                                finders, &tower_stage,
+                                &finder_stage)) {
+                            continue;
+                        }
+                        finder_staged = true;
+                    }
+                }
+            } else if (ore_value > 0.0f && fracturer >= 0) {
+                server_player_t *pf = &w->players[fracturer];
+                if (production_player_ledger_identity(
+                        pf, payout_identity)) {
+                    float half = graded_value * 0.5f;
+                    if (!station_payout_supply_prepare(
+                            w, smelt_station,
+                            STATION_PAYOUT_SMELT_FRACTURER,
+                            a->fragment_pub, payout_identity,
+                            half, NULL, &finder_stage)) {
+                        continue;
+                    }
+                    finder_staged = true;
+                }
+            }
+
             int pod_idx = -1;
             cargo_unit_t pod_shell = {0};
             if (pushed <= 0) continue;
@@ -1617,6 +1702,22 @@ void step_furnace_smelting(world_t *w, float dt) {
                             &staged_station);
                     continue;
                 }
+                if (tower_staged &&
+                    !station_payout_supply_commit(
+                        w, st, w->players[tower].ship,
+                        &tower_stage)) {
+                    if (staged_station_live)
+                        cargo_store_cleanup(&staged_station);
+                    continue;
+                }
+                if (finder_staged &&
+                    !station_payout_supply_commit(
+                        w, st, w->players[fracturer].ship,
+                        &finder_stage)) {
+                    if (staged_station_live)
+                        cargo_store_cleanup(&staged_station);
+                    continue;
+                }
 
                 if (staged_station_live) {
                     cargo_store_cleanup(&st->cargo_store);
@@ -1647,83 +1748,9 @@ void step_furnace_smelting(world_t *w, float dt) {
                 st->modules[smelt_module].active_pulse = 1.0f;
             }
 
-            /* M3: scan all matching contracts (was break-on-first). Pick the
-             * contract whose price is highest above the station buy price. */
-            float price = station_buy_price(st, a->commodity);
-            bool by_contract = false;
-            for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (!w->contracts[k].active) continue;
-                if (w->contracts[k].action != CONTRACT_TRACTOR) continue;
-                if (w->contracts[k].station_index != smelt_station) continue;
-                if (w->contracts[k].commodity != a->commodity) continue;
-                float cp = contract_price(&w->contracts[k]);
-                if (cp > price) { price = cp; by_contract = true; }
-            }
-            float ore_value = a->ore * price;
-
-            /* Prefix-class price multipliers (#prefix-pricing): project
-             * the to-be-minted ingot units and lift ore_value by the
-             * mean prefix multiplier across them. Anonymous-class units
-             * (the bulk of mining output) have multiplier 1.0×, so the
-             * historical balance is unchanged in expectation; the rare
-             * M/RATi-class fragment lifts the whole payout.
-             *
-             * The minted-unit pubkeys are deterministic in
-             * (output, grade, fragment_pub, idx) — see hash_ingot — so
-             * projecting here picks the same prefixes the manifest push
-             * below will mint. We project against the OUTPUT ingot
-             * commodity, not the raw ore, because the lineage substrate
-             * tags ingots, not ore.
-             *
-             * Skipped on contract payouts — by_contract paths pay the
-             * flat per-unit contract_price by design (see #496 / spec
-             * out-of-scope: filtered contracts come in a follow-up PR). */
-            if (!by_contract) {
-                if (output != a->commodity && pushed > 0) {
-                    float sum_mult = 0.0f;
-                    int counted = 0;
-                    for (int idx = 0; idx < pushed; idx++) {
-                        sum_mult += prefix_class_price_multiplier(
-                                        (int)units[idx].prefix_class);
-                        counted++;
-                    }
-                    if (counted > 0)
-                        ore_value *= (sum_mult / (float)counted);
-                }
-            }
-
-            /* Credit fracturer and tower.
-             *
-             * Credit attribution is strictly token-based: we look up each
-             * role's session_token against currently-connected sessions.
-             * The legacy `last_towed_by` / `last_fractured_by` slot
-             * fallback was REMOVED — it could pay the wrong player when a
-             * slot gets reused on disconnect/rejoin. Do not restore it
-             * without a token-match guard.
-             *
-             * Known gap: fragments in saves from before the token fields
-             * existed, or fragments towed/fractured before the player's
-             * session was `session_ready` (zero token at tow time), will
-             * now smelt with no credit recipient. The ore still becomes
-             * a loose ingot pod as infrastructure value; the embedded pod
-             * manifest still records the hash. If that's not acceptable
-             * for in-the-wild saves, add a one-time migration that
-             * stamps a synthetic-but-valid owner token on pre-token
-             * fragments at save-load time — do NOT re-enable the slot
-             * fallback. */
-            int tower = connected_player_by_token(w, a->last_towed_token);
-            int fracturer = connected_player_by_token(w, a->last_fractured_token);
             SIM_LOG("[smelt-attr] tower_match=%s fracturer_match=%s\n",
                     tower >= 0 ? "connected" : "unresolved",
                     fracturer >= 0 ? "connected" : "unresolved");
-
-            /* Grade is committed when the fracture claim resolves.
-             * Smelt only publishes that cached value — no fresh dice. */
-            float bonus_mult = mining_payout_multiplier(grade);
-            float graded_value = ore_value * bonus_mult;
-            int base_cr  = (int)lroundf(ore_value);
-            int bonus_cr = (int)lroundf(graded_value - ore_value);
-            int roller = (tower >= 0) ? tower : fracturer;
 
             /* Announce rare strikes on the station signal channel so
              * other players see them flicker across the Network tab. */
@@ -1743,25 +1770,13 @@ void step_furnace_smelting(world_t *w, float dt) {
 
             if (ore_value > 0.0f) {
                 uint8_t bc = by_contract ? 1 : 0;
-                /* Credit to the same identity the buy/balance paths read:
-                 * pubkey when registered, session_token-pseudokey otherwise.
-                 * Mismatched identity here was the visible-bug:
-                 * smelt-payouts landed on the session-token ledger entry
-                 * but the buy path read the pubkey entry → balance shown
-                 * as 0, "REJECT: finished good but whole=0 (afford=0)". */
-                if (tower >= 0) {
-                    float credited = 0.0f;
-                    server_player_t *pt = &w->players[tower];
-                    if (pt->session_ready) {
-                        credited = server_player_can_use_pubkey_persistence(pt)
-                            ? ledger_credit_supply_amount_by_pubkey(st, pt->pubkey, graded_value)
-                            : ledger_credit_supply_amount(st, pt->session_token, graded_value);
-                    }
+                if (tower_staged) {
                     SIM_LOG("[smelt-pay] player %d tower credit: graded=%.2f credited=%.2f pubkey_ledger=%d session_ready=%d\n",
-                            tower, graded_value, credited,
-                            server_player_can_use_pubkey_persistence(pt) ? 1 : 0,
-                            pt->session_ready ? 1 : 0);
-                    pt->ship->stat_credits_earned += credited;
+                            tower, graded_value,
+                            tower_stage.credited_amount,
+                            server_player_can_use_pubkey_persistence(
+                                &w->players[tower]) ? 1 : 0,
+                            w->players[tower].session_ready ? 1 : 0);
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = tower,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -1771,16 +1786,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                                   .origin_station = (uint8_t)smelt_station,
                                   .quantity = (uint16_t)pushed,
                                   .module = (uint8_t)smelt_module }});
-                    if (fracturer >= 0 && fracturer != tower) {
+                    if (finder_staged) {
                         float finders = graded_value * 0.25f;
-                        float fcredited = 0.0f;
-                        server_player_t *pf = &w->players[fracturer];
-                        if (pf->session_ready) {
-                            fcredited = server_player_can_use_pubkey_persistence(pf)
-                                ? ledger_credit_supply_amount_by_pubkey(st, pf->pubkey, finders)
-                                : ledger_credit_supply_amount(st, pf->session_token, finders);
-                        }
-                        pf->ship->stat_credits_earned += fcredited;
                         emit_event(w, (sim_event_t){
                             .type = SIM_EVENT_SELL, .player_id = fracturer,
                             .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -1792,16 +1799,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                                       .quantity = (uint16_t)pushed,
                                       .module = (uint8_t)smelt_module }});
                     }
-                } else if (fracturer >= 0) {
+                } else if (finder_staged) {
                     float half = graded_value * 0.5f;
-                    float credited = 0.0f;
-                    server_player_t *pf = &w->players[fracturer];
-                    if (pf->session_ready) {
-                        credited = server_player_can_use_pubkey_persistence(pf)
-                            ? ledger_credit_supply_amount_by_pubkey(st, pf->pubkey, half)
-                            : ledger_credit_supply_amount(st, pf->session_token, half);
-                    }
-                    pf->ship->stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = fracturer,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -2043,6 +2042,55 @@ static bool cargo_pub_nonzero(const cargo_unit_t *unit) {
     return unit && memcmp(unit->pub, zero, sizeof(zero)) != 0;
 }
 
+static bool production_player_ledger_identity(
+    const server_player_t *sp, uint8_t identity[32]) {
+    if (identity) memset(identity, 0, 32);
+    if (!sp || !identity || !sp->session_ready) return false;
+    if (!server_player_copy_verified_pubkey(sp, identity))
+        ledger_pubkey_from_token(sp->session_token, identity);
+    uint8_t any = 0;
+    for (size_t b = 0; b < 32; b++) any |= identity[b];
+    return any != 0;
+}
+
+static server_player_t *production_player_for_ship(world_t *w,
+                                                   ship_t *ship,
+                                                   uint8_t identity[32]) {
+    if (identity) memset(identity, 0, 32);
+    if (!w || !ship || !identity) return NULL;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        server_player_t *sp = &w->players[i];
+        if (!server_player_is_gameplay_ready(sp) || sp->ship != ship)
+            continue;
+        if (!production_player_ledger_identity(sp, identity)) return NULL;
+        return sp;
+    }
+    return NULL;
+}
+
+static bool production_prepare_build_payout(
+    world_t *w, int station_idx, const cargo_unit_t *units,
+    int unit_count, float unit_price, const uint8_t recipient[32],
+    station_payout_credit_batch_stage_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!w || !units || !recipient || !out || unit_count <= 0 ||
+        unit_count > STATION_PAYOUT_BATCH_MAX ||
+        !isfinite(unit_price) || unit_price <= 0.0f) {
+        return false;
+    }
+    uint8_t sources[STATION_PAYOUT_BATCH_MAX][32] = {{0}};
+    float amounts[STATION_PAYOUT_BATCH_MAX] = {0};
+    for (int i = 0; i < unit_count; i++) {
+        memcpy(sources[i], units[i].pub, 32);
+        amounts[i] = mining_payout_multiplier(
+            (mining_grade_t)units[i].grade) * unit_price;
+    }
+    return station_payout_credit_batch_prepare(
+        w, station_idx, STATION_PAYOUT_BUILD_DELIVERY,
+        sources, amounts, (uint16_t)unit_count,
+        recipient, out);
+}
+
 static bool emit_construction_contribution_batch(
     world_t *w, station_t *st, int station_idx, int module_idx,
     const station_module_t *module, commodity_t commodity,
@@ -2094,12 +2142,15 @@ static bool emit_construction_contribution_batch(
 static int ship_contribute_trusted_module_supply(
     world_t *w, station_t *st, int station_idx, int module_idx,
     station_module_t *module, ship_t *ship, commodity_t material,
-    float cost, int max_units,
+    float cost, int max_units, server_player_t *payee,
+    const uint8_t payout_identity[32], float unit_price,
     cargo_unit_t out_units[CHAIN_LOG_BATCH_MAX_EVENTS]) {
     if (!w || !st || !module || !ship || !out_units ||
         cost <= 0.0f || max_units <= 0) {
         return 0;
     }
+    if (payee && (!isfinite(unit_price) || unit_price < 0.0f))
+        return 0;
     if (max_units > CHAIN_LOG_BATCH_MAX_EVENTS)
         max_units = CHAIN_LOG_BATCH_MAX_EVENTS;
     cargo_unit_t selected[CHAIN_LOG_BATCH_MAX_EVENTS] = {{0}};
@@ -2138,10 +2189,23 @@ static int ship_contribute_trusted_module_supply(
         (float)selected_count / cost;
     if (progress_after > 1.0f - 0.0001f)
         progress_after = 1.0f;
+    station_payout_credit_batch_stage_t payout_stage = {0};
+    bool payout_required = payee && unit_price > FLOAT_EPSILON;
+    if (payout_required && !production_prepare_build_payout(
+            w, station_idx, out_units, selected_count,
+            unit_price, payout_identity, &payout_stage)) {
+        cargo_store_cleanup(&staged);
+        return 0;
+    }
     if (!emit_construction_contribution_batch(
             w, st, station_idx, module_idx, module,
             material, out_units, (size_t)selected_count,
             progress_before, cost)) {
+        cargo_store_cleanup(&staged);
+        return 0;
+    }
+    if (payout_required && !station_payout_credit_batch_commit(
+            w, st, payee->ship, &payout_stage)) {
         cargo_store_cleanup(&staged);
         return 0;
     }
@@ -2222,12 +2286,16 @@ static int pod_contribute_trusted_module_supply(
     world_t *w, station_t *st, int station_idx, int module_idx,
     station_module_t *module, ship_t *ship,
     commodity_t material, float cost, int max_units,
+    server_player_t *payee, const uint8_t payout_identity[32],
+    float unit_price,
     cargo_unit_t out_units[CHAIN_LOG_BATCH_MAX_EVENTS]) {
     if (!w || !st || !module || !ship || !out_units ||
         material >= COMMODITY_COUNT || cost <= 0.0f ||
         max_units <= 0) {
         return 0;
     }
+    if (payee && (!isfinite(unit_price) || unit_price < 0.0f))
+        return 0;
     if (max_units > CHAIN_LOG_BATCH_MAX_EVENTS)
         max_units = CHAIN_LOG_BATCH_MAX_EVENTS;
     int pod_idx = -1;
@@ -2283,11 +2351,22 @@ static int pod_contribute_trusted_module_supply(
         (float)selected_count / cost;
     if (progress_after > 1.0f - 0.0001f)
         progress_after = 1.0f;
+    station_payout_credit_batch_stage_t payout_stage = {0};
+    bool payout_required = payee && unit_price > FLOAT_EPSILON;
+    if (payout_required && !production_prepare_build_payout(
+            w, station_idx, out_units, selected_count,
+            unit_price, payout_identity, &payout_stage)) {
+        return 0;
+    }
     if (!emit_construction_contribution_batch(
             w, st, station_idx, module_idx,
             module, material, out_units,
             (size_t)selected_count,
             progress_before, cost)) {
+        return 0;
+    }
+    if (payout_required && !station_payout_credit_batch_commit(
+            w, st, payee->ship, &payout_stage)) {
         return 0;
     }
 
@@ -2317,6 +2396,9 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
      * runs AFTER this function and would have paid, but module
      * construction had already consumed the cargo. */
     float payout = 0.0f;
+    uint8_t payout_identity[32] = {0};
+    server_player_t *payee =
+        production_player_for_ship(w, ship, payout_identity);
     for (int i = 0; i < st->module_count; i++) {
         station_module_t *m = &st->modules[i];
         if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
@@ -2349,7 +2431,8 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
                     pod_contribute_trusted_module_supply(
                         w, st, station_idx, i, m,
                         ship, mat, cost,
-                        whole - removed, units);
+                        whole - removed, payee,
+                        payout_identity, price, units);
                 if (count <= 0) {
                     break;
                 }
@@ -2378,7 +2461,8 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
                 int count =
                     ship_contribute_trusted_module_supply(
                         w, st, station_idx, i, m, ship,
-                        mat, cost, whole - removed, units);
+                        mat, cost, whole - removed, payee,
+                        payout_identity, price, units);
                 if (count <= 0) {
                     break;
                 }
