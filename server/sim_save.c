@@ -3851,9 +3851,7 @@ static bool world_load_payload(
     if (version >= 84) {
         uint32_t count = 0;
         READ_FIELD(f, count);
-        if (count > STATION_PAYOUT_JOURNAL_MAX_ENTRIES ||
-            (size_t)count > SIZE_MAX /
-                sizeof(*w->payout_journal.entries)) {
+        if (count > STATION_PAYOUT_JOURNAL_MAX_ENTRIES) {
             return false;
         }
         if (count > 0) {
@@ -4521,9 +4519,9 @@ static world_t *world_load_candidate_create(const world_t *source) {
     }
     if (source->payout_journal.count > 0) {
         if (source->payout_journal.count > source->payout_journal.capacity ||
-            !source->payout_journal.entries ||
-            (size_t)source->payout_journal.count >
-                SIZE_MAX / sizeof(*source->payout_journal.entries)) {
+            source->payout_journal.count >
+                STATION_PAYOUT_JOURNAL_MAX_ENTRIES ||
+            !source->payout_journal.entries) {
             world_cleanup(candidate);
             free(candidate);
             return NULL;

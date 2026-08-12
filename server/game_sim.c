@@ -480,8 +480,9 @@ static bool station_payout_journal_reserve(world_t *w, uint32_t needed) {
         }
         capacity *= 2u;
     }
-    if (capacity < needed ||
-        (size_t)capacity > SIZE_MAX / sizeof(*w->payout_journal.entries)) {
+    /* The hard journal cap keeps the allocation below SIZE_MAX even on
+     * 32-bit targets, so no second multiplication-overflow guard is needed. */
+    if (capacity < needed) {
         return false;
     }
     station_payout_receipt_t *entries = realloc(
@@ -570,7 +571,7 @@ bool station_payout_commit(world_t *w,
 
 bool station_payout_credit_batch_prepare(
     world_t *w, int station_idx, station_payout_action_t action,
-    const uint8_t (*source_identities)[32], const float *amounts,
+    uint8_t (*source_identities)[32], const float *amounts,
     uint16_t count, const uint8_t recipient_pubkey[32],
     station_payout_credit_batch_stage_t *out) {
     if (out) memset(out, 0, sizeof(*out));

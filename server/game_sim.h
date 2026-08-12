@@ -612,6 +612,11 @@ enum {
     STATION_PAYOUT_JOURNAL_MAX_ENTRIES = 65536,
 };
 
+_Static_assert(
+    STATION_PAYOUT_JOURNAL_MAX_ENTRIES <=
+        SIZE_MAX / sizeof(station_payout_receipt_t),
+    "station payout journal cap must fit in size_t");
+
 typedef struct {
     bool ready;
     int ledger_index;
@@ -1021,7 +1026,7 @@ const station_payout_receipt_t *station_payout_find(
     const world_t *w, const uint8_t payout_id[32]);
 bool station_payout_credit_batch_prepare(
     world_t *w, int station_idx, station_payout_action_t action,
-    const uint8_t (*source_identities)[32], const float *amounts,
+    uint8_t (*source_identities)[32], const float *amounts,
     uint16_t count, const uint8_t recipient_pubkey[32],
     station_payout_credit_batch_stage_t *out);
 bool station_payout_credit_batch_commit(
