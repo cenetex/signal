@@ -3,7 +3,7 @@
  *
  * This is deliberately not a contract/quest generator. It owns the
  * bottom-right guide/SIGNAL text surface: first one honest physical economy
- * loop (launch, scan, fracture, tractor, smelt, dock, market), then the next
+ * loop (launch, scan, fracture, tractor, physical smelt handoff), then the next
  * concrete step
  * for tracked station work, ready ship upgrades, or the highest-priority
  * real station contract available as the economy spine.
@@ -41,9 +41,7 @@ void onboarding_load(void) {
                             g.onboarding.hailed &&
                             g.onboarding.fractured &&
                             g.onboarding.tractored &&
-                            g.onboarding.earned &&
-                            g.onboarding.docked_after_earning &&
-                            g.onboarding.viewed_trade;
+                            g.onboarding.earned;
 }
 
 static void onboarding_save(void) {
@@ -74,9 +72,7 @@ static bool onboarding_core_complete(void) {
            g.onboarding.hailed &&
            g.onboarding.fractured &&
            g.onboarding.tractored &&
-           g.onboarding.earned &&
-           g.onboarding.docked_after_earning &&
-           g.onboarding.viewed_trade;
+           g.onboarding.earned;
 }
 
 static void onboarding_refresh_complete(void) {
@@ -245,43 +241,6 @@ static bool guide_deliver(char *message, size_t message_size) {
     return true;
 }
 
-static bool guide_return_to_dock(char *message, size_t message_size) {
-    if (!g.onboarding.earned || g.onboarding.docked_after_earning) return false;
-    if (LOCAL_PLAYER.docked) return false;
-    int best = -1;
-    float best_dist_sq = 1e30f;
-    int station_count = g.world.station_count;
-    if (station_count > MAX_STATIONS) station_count = MAX_STATIONS;
-    for (int s = 0; s < station_count; s++) {
-        if (!station_exists(&g.world.stations[s])) continue;
-        float dist_sq = v2_dist_sq(
-            LOCAL_PLAYER.ship->pos, g.world.stations[s].pos);
-        if (dist_sq < best_dist_sq) {
-            best_dist_sq = dist_sq;
-            best = s;
-        }
-    }
-    if (best >= 0) {
-        snprintf(message, message_size,
-                 "SIGNAL // GUIDE // PAYMENT RECEIVED ::::: RETURN TO %s // [E] DOCK",
-                 g.world.stations[best].name);
-    } else {
-        snprintf(message, message_size,
-                 "SIGNAL // GUIDE // PAYMENT RECEIVED ::::: RETURN TO A STATION // [E] DOCK");
-    }
-    return true;
-}
-
-static bool guide_open_market(char *message, size_t message_size) {
-    if (!g.onboarding.docked_after_earning || g.onboarding.viewed_trade ||
-        !LOCAL_PLAYER.docked) {
-        return false;
-    }
-    snprintf(message, message_size,
-             "SIGNAL // GUIDE // OPEN LOCAL MARKET ::::: [TAB] TO TRADE // CREDITS STAY HERE");
-    return true;
-}
-
 static const guide_objective_t GUIDE_OBJECTIVES[] = {
     { guide_launch },
     { guide_flight },
@@ -289,8 +248,6 @@ static const guide_objective_t GUIDE_OBJECTIVES[] = {
     { guide_fracture },
     { guide_tractor },
     { guide_deliver },
-    { guide_return_to_dock },
-    { guide_open_market },
 };
 
 bool contract_step_hint(char *message, size_t message_size) {

@@ -114,13 +114,26 @@
               Number.isInteger(smokeState) && smokeState > 0 &&
               typeof Module.ccall === 'function') {
             var applySmokeState = function() {
-              Module.ccall('set_smoke_loop_state', 'number', ['number'], [smokeState]);
+              return Module.ccall(
+                'set_smoke_loop_state', 'number', ['number'], [smokeState]);
             };
-            applySmokeState();
-            /* The loopback server keeps publishing authoritative state. A
-             * fixture selected in the URL must be re-applied after those
-             * packets so visual QA sees a stable scene rather than one frame. */
-            window.setInterval(applySmokeState, 16);
+            var beginSmokeState = function() {
+              /* onRuntimeInitialized runs before main() has finished seeding
+               * the single-player world. Wait for the fixture to accept the
+               * state before pinning it; applying into the zeroed pre-main
+               * world produces a blank visual-QA frame. */
+              if (applySmokeState() !== 1) {
+                window.setTimeout(beginSmokeState, 16);
+                return;
+              }
+              /* The loopback server keeps publishing authoritative state. A
+               * fixture selected in the URL must be re-applied after those
+               * packets so visual QA sees a stable scene rather than one frame. */
+              window.setInterval(applySmokeState, 16);
+            };
+            /* Let main() and the first loopback snapshot finish before a
+             * fixture is allowed to freeze local publication. */
+            window.setTimeout(beginSmokeState, 250);
           }
           signalFocusCanvas();
         }

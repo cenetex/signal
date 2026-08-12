@@ -46,6 +46,9 @@ void draw_npc_ship(const npc_ship_t* npc);
 void draw_npc_mining_beam(const npc_ship_t* npc);
 void draw_npc_ships(void);
 void draw_hopper_tractors(void);
+/* Strong, cargo-colored intake marker shown only while the local ship is
+ * towing a whole cargo pod. */
+void draw_towed_cargo_hopper_guides(void);
 void draw_beam(void);
 void draw_collision_sparks(void);
 void draw_spark_burst(vec2 pos, float intensity, bool red, float seed);
@@ -79,7 +82,7 @@ void draw_remote_players(void);
 void draw_callsigns(void);
 void draw_npc_chatter(void);
 
-/* --- Sell FX: floating "+$N" popups on SIM_EVENT_SELL --- */
+/* --- Sell FX: floating "+N" popups on SIM_EVENT_SELL --- */
 void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by_contract);
 void update_sell_fx(float dt);
 void draw_sell_fx(void);

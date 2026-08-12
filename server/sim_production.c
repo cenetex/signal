@@ -1766,7 +1766,11 @@ void step_furnace_smelting(world_t *w, float dt) {
                         .type = SIM_EVENT_SELL, .player_id = tower,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
                                   .base_cr = base_cr, .bonus_cr = bonus_cr,
-                                  .by_contract = bc }});
+                                  .by_contract = bc,
+                                  .commodity = (uint8_t)output,
+                                  .origin_station = (uint8_t)smelt_station,
+                                  .quantity = (uint16_t)pushed,
+                                  .module = (uint8_t)smelt_module }});
                     if (fracturer >= 0 && fracturer != tower) {
                         float finders = graded_value * 0.25f;
                         float fcredited = 0.0f;
@@ -1782,7 +1786,11 @@ void step_furnace_smelting(world_t *w, float dt) {
                             .sell = { .station = smelt_station, .grade = (uint8_t)grade,
                                       .base_cr = (int)lroundf(finders / bonus_mult),
                                       .bonus_cr = (int)lroundf(finders - finders / bonus_mult),
-                                      .by_contract = bc }});
+                                      .by_contract = bc,
+                                      .commodity = (uint8_t)output,
+                                      .origin_station = (uint8_t)smelt_station,
+                                      .quantity = (uint16_t)pushed,
+                                      .module = (uint8_t)smelt_module }});
                     }
                 } else if (fracturer >= 0) {
                     float half = graded_value * 0.5f;
@@ -1799,7 +1807,11 @@ void step_furnace_smelting(world_t *w, float dt) {
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
                                   .base_cr = (int)lroundf(half / bonus_mult),
                                   .bonus_cr = (int)lroundf(half - half / bonus_mult),
-                                  .by_contract = bc }});
+                                  .by_contract = bc,
+                                  .commodity = (uint8_t)output,
+                                  .origin_station = (uint8_t)smelt_station,
+                                  .quantity = (uint16_t)pushed,
+                                  .module = (uint8_t)smelt_module }});
                 }
             }
 

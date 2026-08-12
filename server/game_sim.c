@@ -4651,10 +4651,33 @@ static float station_intake_pod_quote(world_t *w,
         contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->station_index != station_idx) continue;
         if (!cargo_pod_fits_contract_exact(pod, ct)) continue;
-        if (starter_refit_work_order_matches(ct)) continue;
         contract_t staged_claim = *ct;
-        if (!contract_ownership_try_claim_player(
-                &staged_claim, w, sp->id)) {
+        if (starter_refit_work_order_matches(ct)) {
+            int needed = (int)ceilf(
+                ct->quantity_needed - FLOAT_EPSILON);
+            if (!contract_ownership_is_open(ct) ||
+                needed <= 0 ||
+                needed > CARGO_POD_MANIFEST_CAP ||
+                pod->quantity != (uint16_t)needed) {
+                continue;
+            }
+            bool trusted_batch = true;
+            for (uint16_t unit = 0;
+                 unit < pod->manifest_count; unit++) {
+                cargo_receipt_station_evaluation_t evaluated =
+                    cargo_receipt_evaluate_physical_origin_at_station(
+                        w, station_idx,
+                        &pod->manifest_units[unit]);
+                if (!evaluated.accepted ||
+                    evaluated.origin_station !=
+                        (int)pod->manifest_units[unit].origin_station) {
+                    trusted_batch = false;
+                    break;
+                }
+            }
+            if (!trusted_batch) continue;
+        } else if (!contract_ownership_try_claim_player(
+                       &staged_claim, w, sp->id)) {
             continue;
         }
         matched_contract = k;
@@ -4774,7 +4797,7 @@ static bool station_intake_stage_pod_sale(
 
 static void station_intake_commit_pod_sale(
     world_t *w, server_player_t *sp, station_t *st,
-    int station_idx, cargo_pod_t *pod,
+    int station_idx, int module_idx, cargo_pod_t *pod,
     const station_intake_sale_t *sale) {
     if (!w || !sp || !st || !pod || !sale || !sale->ready)
         return;
@@ -4810,13 +4833,31 @@ static void station_intake_commit_pod_sale(
     SIM_LOG("[intake] player %d sold %s crate (%u units) for %.0f cr at %s\n",
             sp->id, commodity_short_name(pod->commodity),
             (unsigned)sale->units, sale->value, st->name);
+    uint8_t origin_station = UINT8_MAX;
+    if (pod->manifest_count > 0) {
+        origin_station = pod->manifest_units[0].origin_station;
+        uint16_t count = pod->manifest_count;
+        if (count > CARGO_POD_MANIFEST_CAP) count = CARGO_POD_MANIFEST_CAP;
+        for (uint16_t i = 1; i < count; i++) {
+            if (pod->manifest_units[i].origin_station != origin_station) {
+                origin_station = UINT8_MAX;
+                break;
+            }
+        }
+    }
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_SELL, .player_id = sp->id,
         .sell = { .station = station_idx,
                   .grade = MINING_GRADE_COMMON,
                   .base_cr = (int)lroundf(sale->value),
                   .bonus_cr = 0,
-                  .by_contract = sale->by_contract ? 1u : 0u }});
+                  .by_contract = sale->by_contract ? 1u : 0u,
+                  .commodity = (uint8_t)pod->commodity,
+                  .origin_station = origin_station,
+                  .quantity = sale->units,
+                  .module = (module_idx >= 0 &&
+                             module_idx < MAX_MODULES_PER_STATION)
+                      ? (uint8_t)module_idx : UINT8_MAX }});
 }
 
 static bool cargo_pod_matches_buy_grade(const cargo_pod_t *pod,
@@ -9366,7 +9407,7 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
         return false;
     }
     station_intake_commit_pod_sale(
-        w, sp, st, best_station, pod, &sale);
+        w, sp, st, best_station, best_module, pod, &sale);
     if (best_station >= 0 && best_station < MAX_STATIONS &&
         best_module >= 0 && best_module < MAX_MODULES_PER_STATION) {
         w->stations[best_station].modules[best_module].active_pulse = 1.0f;
