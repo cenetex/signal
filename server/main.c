@@ -6520,10 +6520,16 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                                       "{\"ok\":false,\"error\":\"audio_url too long\"}");
                     } else {
                         uint64_t id = signal_channel_post(&world, sid, text, audio ? audio : "");
-                        uint32_t ts = (uint32_t)(world.time * 1000.0f);
-                        /* Push snapshot to every connected ship so the
-                         * Network tab updates in-game without polling. */
-                        {
+                        if (id == 0) {
+                            mg_http_reply(
+                                c, 503, api_headers,
+                                "{\"ok\":false,\"error\":\"signal post was not persisted\"}");
+                        } else {
+                            const signal_channel_msg_t *posted =
+                                signal_channel_at(
+                                    &world, world.signal_channel.count - 1);
+                            uint32_t ts = posted ? posted->timestamp_ms : 0;
+                            /* Push only the durably published snapshot. */
                             size_t cap = (size_t)(3 + world.signal_channel.count * SIGNAL_CHANNEL_RECORD_SIZE);
                             uint8_t *msg = (uint8_t *)malloc(cap);
                             if (msg) {
@@ -6531,10 +6537,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                                 broadcast(msg, (size_t)len);
                                 free(msg);
                             }
+                            mg_http_reply(c, 200, api_headers,
+                                          "{\"ok\":true,\"id\":%llu,\"timestamp\":%u}",
+                                          (unsigned long long)id, ts);
                         }
-                        mg_http_reply(c, 200, api_headers,
-                                      "{\"ok\":true,\"id\":%llu,\"timestamp\":%u}",
-                                      (unsigned long long)id, ts);
                     }
                     free(text);
                     free(audio);
