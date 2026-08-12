@@ -4309,7 +4309,8 @@ static bool nearest_trade_hopper_for_pod(const cargo_pod_t *pod,
         g.tracked_contract < MAX_CONTRACTS) {
         const contract_t *tracked = &g.world.contracts[g.tracked_contract];
         if (tracked->active && tracked->action == CONTRACT_TRACTOR &&
-            tracked->commodity == pod->commodity) {
+            tracked->commodity == pod->commodity &&
+            tracked->station_index < MAX_STATIONS) {
             contract_idx = g.tracked_contract;
         }
     }
@@ -4320,7 +4321,6 @@ static bool nearest_trade_hopper_for_pod(const cargo_pod_t *pod,
             if (!candidate->active ||
                 candidate->action != CONTRACT_TRACTOR ||
                 candidate->commodity != pod->commodity ||
-                candidate->station_index < 0 ||
                 candidate->station_index >= MAX_STATIONS) continue;
             float price = contract_price(candidate);
             if (price > best_price) {

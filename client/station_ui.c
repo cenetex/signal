@@ -511,9 +511,8 @@ static bool ui_first_mining_refit_stock_source_label(
         if (haul_units > 0) {
             snprintf(
                 out, cap,
-                "%s has %d; %d local cr; WORK: haul all %d FE Ingots "
-                "from Prospect together; tow to Kepler's FE Ingot hopper, "
-                "then [M]",
+                "%s: %d stock, %d cr; tow %d Prospect FE Ingots "
+                "to Kepler hopper; [M]",
                 station_name, best_stock, price, haul_units);
             return true;
         }
