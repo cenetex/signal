@@ -4976,13 +4976,18 @@ static player_save_create_result_t player_save_internal(
         return PLAYER_SAVE_CREATE_IO_FAILURE;
     }
     encode_v4_ship(&ship_disk, sp->ship);
-    player_save_data_t data = {
-        .magic = PLAYER_MAGIC,
-        .ship = ship_disk,
-        .last_station = sp->current_station,
-        .last_pos = sp->ship->pos,
-        .last_angle = sp->ship->angle,
-    };
+    /* This fixed blob is written and checksummed byte-for-byte.  A
+     * designated initializer initializes every member, but C leaves struct
+     * padding indeterminate; Valgrind therefore correctly rejects passing
+     * the blob to fwrite.  Clear the complete object first so the save is
+     * deterministic and never persists bytes from the stack. */
+    player_save_data_t data;
+    memset(&data, 0, sizeof(data));
+    data.magic = PLAYER_MAGIC;
+    data.ship = ship_disk;
+    data.last_station = sp->current_station;
+    data.last_pos = sp->ship->pos;
+    data.last_angle = sp->ship->angle;
     bool ok = fwrite(&data, sizeof(data), 1, f) == 1;
     uint32_t crc = ok ? crc32_update(0, &data, sizeof(data)) : 0;
     /* Manifest tail (PLY5). Count + entries; CRC accumulates both. */

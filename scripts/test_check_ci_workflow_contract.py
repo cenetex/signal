@@ -282,7 +282,29 @@ class WorkflowContractTests(unittest.TestCase):
             after="",
         )
         self.assertTrue(any(
-            "memcheck pipeline must enable pipefail" in failure
+            "memcheck diagnostics must enable pipefail" in failure
+            for failure in failures
+        ), failures)
+
+    def test_valgrind_cannot_drop_diagnostic_log(self) -> None:
+        failures = self.failures(
+            workflow="valgrind.yml",
+            before="            --log-file=valgrind-${{ matrix.shard }}.log \\\n",
+            after="",
+        )
+        self.assertTrue(any(
+            "dedicated memcheck diagnostic log" in failure
+            for failure in failures
+        ), failures)
+
+    def test_valgrind_cannot_drop_failure_artifact_upload(self) -> None:
+        failures = self.failures(
+            workflow="valgrind.yml",
+            before="        uses: actions/upload-artifact@v4\n",
+            after="        uses: actions/checkout@v4\n",
+        )
+        self.assertTrue(any(
+            "uploaded Valgrind failure diagnostics" in failure
             for failure in failures
         ), failures)
 

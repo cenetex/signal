@@ -470,10 +470,24 @@ def contract_failures(
                 f"({marker!r})"
             )
 
-    if "set -o pipefail" not in sources.get("valgrind.yml", ""):
+    valgrind = sources.get("valgrind.yml", "")
+    if "set -o pipefail" not in valgrind:
         failures.append(
-            "valgrind.yml: truncated memcheck pipeline must enable pipefail"
+            "valgrind.yml: memcheck diagnostics must enable pipefail"
         )
+    valgrind_requirements = {
+        "--log-file=valgrind-${{ matrix.shard }}.log":
+            "a dedicated memcheck diagnostic log",
+        "if: failure()": "failure-only diagnostic retention",
+        "uses: actions/upload-artifact@v4":
+            "uploaded Valgrind failure diagnostics",
+        "test-${{ matrix.shard }}.log": "a retained test-output log",
+    }
+    for marker, description in valgrind_requirements.items():
+        if marker not in valgrind:
+            failures.append(
+                f"valgrind.yml: workflow lacks {description} ({marker!r})"
+            )
 
     programs = job_block(ci, "programs")
     for manifest in (
