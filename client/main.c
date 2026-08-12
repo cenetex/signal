@@ -527,6 +527,10 @@ static void init_starfield(void) {
 
 static void reset_world(void) {
     g.local_player_slot = 0;
+    g.camera_initialized = false;
+    g.boost_zoom = 1.0f;
+    g.cargo_focus_zoom = 1.0f;
+    g.boost_center_blend = 0.0f;
 
     /* Server-managed world: the client predicts until authoritative snapshots
      * arrive over either remote WebSocket or local loopback.  world_reset()
@@ -771,10 +775,29 @@ static void sim_on_launch(const sim_event_t *ev) {
 }
 
 /* Roll the per-frame sale-fx + hint-bar batch state for one SELL event. */
+static vec2 sell_event_world_pos(const sim_event_t *ev) {
+    const station_t *st = &g.world.stations[ev->sell.station];
+    int module_idx = -1;
+    if (ev->sell.quantity > 0 &&
+        ev->sell.module < st->module_count) {
+        module_idx = (int)ev->sell.module;
+    } else if (ev->sell.quantity > 0 &&
+               ev->sell.commodity < COMMODITY_COUNT) {
+        module_idx = station_find_hopper_for(
+            st, (commodity_t)ev->sell.commodity);
+    }
+    if (module_idx >= 0 && module_idx < st->module_count) {
+        const station_module_t *m = &st->modules[module_idx];
+        return module_world_pos_ring(st, m->ring, m->slot);
+    }
+    return st->pos;
+}
+
 static void sell_batch_accumulate(const sim_event_t *ev, int total) {
     if (ev->sell.station < 0 || ev->sell.station >= MAX_STATIONS) return;
     if (!station_exists(&g.world.stations[ev->sell.station])) return;
-    spawn_sell_fx(&g.world.stations[ev->sell.station].pos, total,
+    vec2 payout_pos = sell_event_world_pos(ev);
+    spawn_sell_fx(&payout_pos, total,
                   (mining_grade_t)ev->sell.grade, ev->sell.by_contract != 0);
     /* If a previous summary is still on-screen (display timer > 0) and
      * we're not already accumulating, this event starts a fresh run —
@@ -839,11 +862,41 @@ static void sim_on_sell(const sim_event_t *ev) {
     if (total > 0) {
         onboarding_mark_earned();
         /* The furnace milestone supersedes the launch intro and waits until
-         * the player has docked, opened the market, and read the payout. */
+         * the player has a quiet docked moment to read it. */
         g.deferred_episode_mask &=
             (uint16_t)(UINT16_MAX ^ (uint16_t)(1u << 0));
         defer_episode_until_docked(2);
         sell_batch_accumulate(ev, total);
+
+        if (ev->sell.quantity > 0 &&
+            ev->sell.commodity < COMMODITY_COUNT &&
+            ev->sell.station >= 0 &&
+            ev->sell.station < MAX_STATIONS) {
+            const station_t *dest = &g.world.stations[ev->sell.station];
+            const char *currency = dest->currency_name[0]
+                ? dest->currency_name : "credits";
+            bool known_origin =
+                ev->sell.origin_station < MAX_STATIONS &&
+                station_exists(&g.world.stations[ev->sell.origin_station]);
+            if (known_origin &&
+                ev->sell.origin_station == (uint8_t)ev->sell.station) {
+                set_notice("%s smelted %u %s // +%d %s",
+                           dest->name, (unsigned)ev->sell.quantity,
+                           commodity_name((commodity_t)ev->sell.commodity),
+                           total, currency);
+            } else if (known_origin) {
+                set_notice("%s intake accepted %u %s from %s // +%d %s",
+                           dest->name, (unsigned)ev->sell.quantity,
+                           commodity_name((commodity_t)ev->sell.commodity),
+                           g.world.stations[ev->sell.origin_station].name,
+                           total, currency);
+            } else {
+                set_notice("%s intake accepted %u %s // +%d %s",
+                           dest->name, (unsigned)ev->sell.quantity,
+                           commodity_name((commodity_t)ev->sell.commodity),
+                           total, currency);
+            }
+        }
     }
     if (ev->sell.grade >= (uint8_t)MINING_GRADE_RATI &&
         ev->sell.station >= 0 && ev->sell.station < MAX_STATIONS &&
@@ -1992,6 +2045,7 @@ static void render_world(void) {
         g.camera_pos = LOCAL_PLAYER.ship->pos;
         g.camera_initialized = true;
         g.boost_zoom = 1.0f;
+        g.cargo_focus_zoom = 1.0f;
         g.boost_center_blend = 0.0f;
     }
 
@@ -2006,11 +2060,16 @@ static void render_world(void) {
                        && !LOCAL_PLAYER.docked && !g.death_cinematic.active;
         float target_zoom  = boosting ? 0.82f : 1.0f;
         float target_blend = boosting ? 1.0f  : 0.0f;
+        bool cargo_handoff = !LOCAL_PLAYER.docked &&
+            ship_towed_pod_count(LOCAL_PLAYER.ship) > 0 &&
+            LOCAL_PLAYER.nearby_station >= 0;
+        float target_cargo_zoom = cargo_handoff ? 0.84f : 1.0f;
         /* Slower ease-in than ease-out so the zoom feels like it locks
          * on gradually while active, and release is equally gentle. */
         float kz = 1.0f - expf(-cdt / 0.9f);
         float kb = 1.0f - expf(-cdt / 0.7f);
         g.boost_zoom         += (target_zoom  - g.boost_zoom)         * kz;
+        g.cargo_focus_zoom   += (target_cargo_zoom - g.cargo_focus_zoom) * kz;
         g.boost_center_blend += (target_blend - g.boost_center_blend) * kb;
     }
 
@@ -2180,12 +2239,13 @@ static void render_world(void) {
         g.screen_shake = 0.0f;
     }
 
-    /* Composed camera zoom:
-     *   ping_zoom   — widens on H-hail, slow drift back.
-     *   boost_zoom  — tightens while SHIFT boost is held, smooth release.
-     * They multiply cleanly: hail while boosting gives a ~1.0x "net" view. */
+    /* Composed camera zoom. Hail widens; boost or a physical cargo handoff
+     * tightens. The two close-focus modes use the tighter value rather than
+     * multiplying, which avoids an over-zoom when boosting a crate into an
+     * intake. */
     float ping_zoom = hail_ping_camera_zoom();
-    float total_zoom = ping_zoom * g.boost_zoom;
+    float focus_zoom = fminf(g.boost_zoom, g.cargo_focus_zoom);
+    float total_zoom = ping_zoom * focus_zoom;
     set_camera_bounds(camera, half_w * total_zoom, half_h * total_zoom);
     world_draw_begin_frame();
 
@@ -2257,6 +2317,7 @@ static void render_world(void) {
     }
     draw_hopper_tractors();
     draw_cargo_pods();
+    draw_towed_cargo_hopper_guides();
 
     /* Module target highlight + info panel */
     if (g.target_station >= 0 && g.target_module >= 0) {

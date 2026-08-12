@@ -1468,6 +1468,167 @@ TEST(test_towed_cargo_pod_sells_at_matching_intake) {
     ASSERT(sp->ship->stat_credits_earned >= 70.0f);
 }
 
+TEST(test_kepler_ingot_hopper_auto_trades_and_feeds_frame_press) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    station_t *kepler = &w.stations[1];
+    server_player_t *sp = &w.players[0];
+    int dock_idx = test_first_dock_module_idx(kepler);
+    int press_idx = -1;
+    for (int m = 0; m < kepler->module_count; m++) {
+        if (!kepler->modules[m].scaffold &&
+            kepler->modules[m].type == MODULE_FRAME_PRESS) {
+            press_idx = m;
+            break;
+        }
+    }
+    int hopper_idx = station_find_hopper_for(
+        kepler, COMMODITY_FERRITE_INGOT);
+    int work_index = -1;
+    for (int contract = 0; contract < MAX_CONTRACTS; contract++) {
+        if (w.contracts[contract].active &&
+            starter_refit_work_order_matches(
+                &w.contracts[contract])) {
+            work_index = contract;
+            break;
+        }
+    }
+    ASSERT(dock_idx >= 0);
+    ASSERT(press_idx >= 0);
+    ASSERT(hopper_idx >= 0);
+    ASSERT(work_index >= 0);
+
+    /* Put Kepler's ingot intake on the far side from its dock. A normal dock
+     * must not consume this cargo: the player has to tow it to the matching
+     * hopper, where the physical handoff is the sale. */
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        kepler->arm_speed[arm] = 0.0f;
+        kepler->arm_omega[arm] = 0.0f;
+    }
+    kepler->arm_rotation[0] = 0.0f;
+    kepler->arm_rotation[1] = PI_F;
+    kepler->arm_rotation[2] = PI_F;
+    vec2 dock_pos = module_world_pos_ring(
+        kepler, kepler->modules[dock_idx].ring,
+        kepler->modules[dock_idx].slot);
+    vec2 press_pos = module_world_pos_ring(
+        kepler, kepler->modules[press_idx].ring,
+        kepler->modules[press_idx].slot);
+    vec2 hopper_pos = module_world_pos_ring(
+        kepler, kepler->modules[hopper_idx].ring,
+        kepler->modules[hopper_idx].slot);
+    ASSERT(v2_dist_sq(dock_pos, press_pos) >
+           HOPPER_PULL_RANGE * HOPPER_PULL_RANGE);
+    ASSERT(v2_dist_sq(dock_pos, hopper_pos) >
+           HOPPER_PULL_RANGE * HOPPER_PULL_RANGE);
+
+    manifest_clear(&kepler->manifest);
+    memset(kepler->_inventory_cache, 0,
+           sizeof(kepler->_inventory_cache));
+    memset(kepler->_finished_residue, 0,
+           sizeof(kepler->_finished_residue));
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        kepler->modules[m].input_buffer = 0.0f;
+        kepler->modules[m].output_buffer = 0.0f;
+        kepler->modules[m].craft_progress = 0.0f;
+    }
+
+    enum { INGOT_BATCH = 8 };
+    cargo_unit_t ingots[INGOT_BATCH] = {0};
+    for (int unit = 0; unit < INGOT_BATCH; unit++) {
+        uint8_t fragment_pub[32] = {0};
+        fragment_pub[30] = 0x5d;
+        fragment_pub[31] = (uint8_t)unit;
+        ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT,
+                          MINING_GRADE_FINE,
+                          fragment_pub, 0, &ingots[unit]));
+        ASSERT(test_anchor_smelt_unit(
+            &w, 0, &ingots[unit]));
+    }
+    int pod_idx = spawn_cargo_pod_with_manifest(
+        &w, dock_pos, v2(0.0f, 0.0f),
+        COMMODITY_FERRITE_INGOT, ingots, INGOT_BATCH,
+        CARGO_POD_CARGO);
+    ASSERT(pod_idx >= 0);
+
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x5d,
+           sizeof(sp->session_token));
+    ASSERT(world_cargo_pod_set_player_tractor(
+        &w, pod_idx, 0));
+    float balance_before = ledger_balance(
+        kepler, sp->session_token);
+
+    step_station_cargo_pod_tractors(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(
+                      &w.cargo_pods[pod_idx]), 0);
+    ASSERT_EQ_FLOAT(ledger_balance(kepler, sp->session_token),
+                    balance_before, 0.001f);
+
+    w.cargo_pods[pod_idx].pos = hopper_pos;
+    w.cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
+    step_station_cargo_pod_tractors(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(
+                      &w.cargo_pods[pod_idx]), -1);
+    ASSERT(cargo_pod_is_tractored_by_module(
+        &w.cargo_pods[pod_idx], 1, hopper_idx));
+    ASSERT_EQ_INT(cargo_pod_custody_station(
+                      &w.cargo_pods[pod_idx]), 1);
+    ASSERT(ledger_balance(kepler, sp->session_token) >
+           balance_before);
+    ASSERT(!w.contracts[work_index].active);
+    ASSERT(w.contracts[work_index].quantity_needed <=
+           FLOAT_EPSILON);
+
+    bool described_handoff = false;
+    for (int event = 0; event < w.events.count; event++) {
+        const sim_event_t *ev = &w.events.events[event];
+        if (ev->type != SIM_EVENT_SELL ||
+            ev->player_id != sp->id ||
+            ev->sell.station != 1) continue;
+        ASSERT_EQ_INT(ev->sell.commodity,
+                      COMMODITY_FERRITE_INGOT);
+        ASSERT_EQ_INT(ev->sell.origin_station, 0);
+        ASSERT_EQ_INT(ev->sell.quantity, INGOT_BATCH);
+        ASSERT_EQ_INT(ev->sell.module, hopper_idx);
+        described_handoff = true;
+    }
+    ASSERT(described_handoff);
+
+    /* The hopper is the press input even when the rotating rings place the
+     * two modules far apart; production consumes station-custody cargo from
+     * that relevant hopper. */
+    vec2 hopper_hold = v2(0.0f, 0.0f);
+    ASSERT(cargo_pod_module_tractor_anchor(
+        &w, &w.cargo_pods[pod_idx], 1,
+        hopper_idx, &hopper_hold));
+    w.cargo_pods[pod_idx].pos = hopper_hold;
+    w.cargo_pods[pod_idx].vel = station_ring_point_velocity(
+        kepler, kepler->modules[hopper_idx].ring,
+        hopper_hold);
+    for (int unit = 0; unit < INGOT_BATCH; unit++)
+        sim_step_station_production(&w, 1.0f);
+    world_refresh_station_physical_inventories(&w);
+
+    ASSERT_EQ_INT(test_count_exact_pod_units(
+                      &w, COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_FLOAT(station_inventory_amount(
+                        kepler, COMMODITY_FRAME),
+                    (float)(INGOT_BATCH * CELL_STRUTS_PER_INGOT),
+                    0.001f);
+}
+
 TEST(test_towed_shell_pod_keeps_shell_after_intake_custody_sale) {
     WORLD_DECL;
     world_reset(&w);
@@ -1624,6 +1785,68 @@ TEST(test_buy_selected_station_held_pod_transfers_that_pod) {
     ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[first],
                                             0, dock_idx));
     ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[first]), -1);
+}
+
+TEST(test_tractor_pull_auto_buys_station_market_pod_on_exit) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        w.npc_ships[i].active = false;
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    server_player_t *sp = &w.players[0];
+    station_t *st = &w.stations[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x72,
+           sizeof(sp->session_token));
+    sp->docked = false;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->in_dock_range = true;
+    sp->input.tractor_hold = true;
+    ledger_earn(st, sp->session_token, 1000.0f);
+
+    int dock_idx = test_first_dock_module_idx(st);
+    ASSERT(dock_idx >= 0);
+    vec2 dock_pos = module_world_pos_ring(
+        st, st->modules[dock_idx].ring,
+        st->modules[dock_idx].slot);
+    int pod_idx = test_spawn_exact_pod(
+        &w, dock_pos, COMMODITY_REPAIR_KIT, 2);
+    ASSERT(pod_idx >= 0);
+    cargo_pod_set_station_custody(
+        &w.cargo_pods[pod_idx], 0);
+    ASSERT(world_cargo_pod_set_module_tractor(
+        &w, pod_idx, 0, dock_idx));
+    sp->ship->pos = dock_pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
+    float balance_before = ledger_balance(
+        st, sp->session_token);
+
+    /* No buy intent or station panel action: the physical tractor pull is
+     * the purchase request. Custody stays with the station until the crate
+     * actually clears its boundary, so an accidental touch is reversible. */
+    ASSERT(!sp->input.buy_product);
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship->towed_pods[0], pod_idx);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(
+                      &w.cargo_pods[pod_idx]), 0);
+    ASSERT_EQ_INT(cargo_pod_custody_station(
+                      &w.cargo_pods[pod_idx]), 0);
+    ASSERT_EQ_FLOAT(ledger_balance(st, sp->session_token),
+                    balance_before, 0.001f);
+
+    test_move_pod_past_station_charge_boundary(
+        &w, 0, pod_idx);
+    world_sim_step(&w, SIM_DT);
+    ASSERT(ledger_balance(st, sp->session_token) <
+           balance_before);
+    ASSERT_EQ_INT(cargo_pod_custody_station(
+                      &w.cargo_pods[pod_idx]), -1);
 }
 
 TEST(test_docked_towed_cargo_pod_stays_parked_at_ship) {
@@ -10813,9 +11036,30 @@ TEST(test_fresh_world_kepler_starter_laser_refit_bootstrap) {
                       sp->ship,
                       COMMODITY_FERRITE_INGOT),
                   0);
+    ASSERT_EQ_INT(station_finished_count(
+                      kepler,
+                      COMMODITY_FERRITE_INGOT),
+                  need);
     ASSERT(!w.contracts[work_index].active);
     ASSERT(w.contracts[work_index].quantity_needed <=
            FLOAT_EPSILON);
+
+    /* The paid work-order handoff is also a real production delivery. The
+     * transferred, receipt-backed Prospect ingots must become ordinary
+     * Kepler Frame Press input rather than stopping at the station ledger. */
+    for (int batch = 0; batch < need; batch++)
+        sim_step_station_production(&w, 1.0f);
+    world_refresh_station_physical_inventories(&w);
+    ASSERT_EQ_INT(station_finished_count(
+                      kepler,
+                      COMMODITY_FERRITE_INGOT),
+                  0);
+    ASSERT_EQ_FLOAT(station_inventory_amount(
+                        kepler,
+                        COMMODITY_FRAME),
+                    (float)(need * CELL_STRUTS_PER_INGOT),
+                    0.001f);
+
     float live_refit_price =
         upgrade_station_credit_cost(
             kepler, sp->ship,
@@ -12207,9 +12451,11 @@ void register_world_sim_basic_tests(void) {
     RUN(test_neural_worker_posts_home_refit_import_contract);
     RUN(test_ship_death_drops_cargo_pods);
     RUN(test_towed_cargo_pod_sells_at_matching_intake);
+    RUN(test_kepler_ingot_hopper_auto_trades_and_feeds_frame_press);
     RUN(test_towed_shell_pod_keeps_shell_after_intake_custody_sale);
     RUN(test_buy_station_held_pod_transfers_custody_to_ship);
     RUN(test_buy_selected_station_held_pod_transfers_that_pod);
+    RUN(test_tractor_pull_auto_buys_station_market_pod_on_exit);
     RUN(test_docked_towed_cargo_pod_stays_parked_at_ship);
     RUN(test_cargo_pods_collide_and_separate);
     RUN(test_station_dock_tractor_spreads_market_pods);

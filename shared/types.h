@@ -1856,14 +1856,16 @@ typedef struct {
          * Both zero = unknown source (legacy callers, environmental
          * hits) — client renders a center-screen pulse instead. */
         struct { float amount; float source_x; float source_y; } damage;
-        /* SIM_EVENT_SELL: populated when a fragment is smelted. grade
-         * is mining_grade_t; base_cr is ore * station_buy_price;
-         * bonus_cr is the extra credits the multiplier added on top.
-         * by_contract = true when an active CONTRACT_TRACTOR at this
-         * station raised the price — client uses this to color the
-         * floating "+$N" popup yellow instead of grade-tinted. */
+        /* SIM_EVENT_SELL: a physical handoff or smelt payout. grade is
+         * mining_grade_t; base_cr is the ordinary value and bonus_cr is the
+         * extra multiplier value. by_contract colors contract payouts.
+         * quantity == 0 means the legacy amount-only context. Otherwise the
+         * commodity/origin/module fields let the client attach the payout to
+         * the actual intake and describe the goods in player language. */
         struct { int station; uint8_t grade; int base_cr; int bonus_cr;
-                 uint8_t by_contract; } sell;
+                 uint8_t by_contract; uint8_t commodity;
+                 uint8_t origin_station; uint16_t quantity;
+                 uint8_t module; } sell;
         struct { int station; uint8_t commodity; uint8_t grade; int cost;
                  uint16_t quantity; } buy;
         struct { int slot; } outpost_placed;

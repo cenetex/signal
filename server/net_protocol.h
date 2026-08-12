@@ -7666,6 +7666,18 @@ static inline void serialize_event_record(uint8_t *p,
         write_u32_le(&p[4], (uint32_t)ev->sell.base_cr);
         write_u32_le(&p[8], (uint32_t)ev->sell.bonus_cr);
         p[12] = ev->sell.by_contract;
+        /* Keep the fixed 18-byte record. Zero means context unavailable, so
+         * enum/index values are biased by one on the wire. quantity gates the
+         * whole extension and preserves old amount-only event semantics. */
+        if (ev->sell.quantity > 0) {
+            if (ev->sell.commodity < COMMODITY_COUNT)
+                p[13] = (uint8_t)(ev->sell.commodity + 1u);
+            if (ev->sell.origin_station < MAX_STATIONS)
+                p[14] = (uint8_t)(ev->sell.origin_station + 1u);
+            write_u16_le(&p[15], ev->sell.quantity);
+            if (ev->sell.module < MAX_MODULES_PER_STATION)
+                p[17] = (uint8_t)(ev->sell.module + 1u);
+        }
         break;
     case SIM_EVENT_BUY:
         p[2] = (uint8_t)ev->buy.station;

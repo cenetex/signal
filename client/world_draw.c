@@ -46,6 +46,17 @@
 #define THROW_LOCK_MAX_RANGE 900.0f
 #define THROW_LOCK_MIN_HOTNESS 0.08f
 
+/* Interaction bodies keep their authoritative simulation dimensions, but
+ * their presentation must survive the normal flight camera. These caps are
+ * deliberately modest: they make cargo and module roles readable without
+ * implying a radically larger collision target. */
+#define CARGO_POD_BASE_VISUAL_SCALE 1.18f
+#define CARGO_POD_TOWED_VISUAL_SCALE 1.30f
+#define CARGO_POD_MAX_VISUAL_SCALE 1.48f
+#define CARGO_POD_TOWED_MAX_VISUAL_SCALE 2.60f
+#define CARGO_POD_MIN_SCREEN_RADIUS_PX 22.0f
+#define CARGO_POD_TOWED_MIN_SCREEN_RADIUS_PX 25.0f
+
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
 static float g_cam_half_w; /* cached for LOD calculations */
@@ -301,11 +312,37 @@ typedef struct {
 
 static tractor_draw_telemetry_t
     g_tractor_draw_telemetry[SIM_INTERACTION_VISUAL_STATION_FRAGMENT_TRACTOR + 1];
+static struct {
+    int count;
+    int station;
+    int module;
+    int commodity;
+} g_hopper_guide_telemetry;
+static struct {
+    int cargo_count;
+    float cargo_min_screen_radius;
+    float cargo_max_scale;
+    float locally_towed_screen_radius;
+    int module_glyph_count;
+    int hopper_glyph_count;
+    int producer_glyph_count;
+} g_readability_telemetry;
 
 void world_draw_begin_frame(void) {
     g_asteroid_render_lists_valid = false;
     g_asteroid_draw_frame.valid = false;
     memset(g_tractor_draw_telemetry, 0, sizeof(g_tractor_draw_telemetry));
+    g_hopper_guide_telemetry.count = 0;
+    g_hopper_guide_telemetry.station = -1;
+    g_hopper_guide_telemetry.module = -1;
+    g_hopper_guide_telemetry.commodity = COMMODITY_COUNT;
+    g_readability_telemetry.cargo_count = 0;
+    g_readability_telemetry.cargo_min_screen_radius = 0.0f;
+    g_readability_telemetry.cargo_max_scale = 0.0f;
+    g_readability_telemetry.locally_towed_screen_radius = 0.0f;
+    g_readability_telemetry.module_glyph_count = 0;
+    g_readability_telemetry.hopper_glyph_count = 0;
+    g_readability_telemetry.producer_glyph_count = 0;
 }
 
 static void world_draw_record_tractor(uint8_t source_type,
@@ -416,6 +453,61 @@ float signal_tractor_draw_intensity(int visual) {
     const tractor_draw_telemetry_t *t =
         tractor_draw_telemetry_for_visual(visual);
     return t ? t->intensity : 0.0f;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hopper_guide_draw_count(void) {
+    return g_hopper_guide_telemetry.count;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hopper_guide_station(void) {
+    return g_hopper_guide_telemetry.station;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hopper_guide_module(void) {
+    return g_hopper_guide_telemetry.module;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_hopper_guide_commodity(void) {
+    return g_hopper_guide_telemetry.commodity;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_cargo_readability_draw_count(void) {
+    return g_readability_telemetry.cargo_count;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_cargo_readability_min_screen_radius(void) {
+    return g_readability_telemetry.cargo_min_screen_radius;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_cargo_readability_max_scale(void) {
+    return g_readability_telemetry.cargo_max_scale;
+}
+
+EMSCRIPTEN_KEEPALIVE
+float signal_cargo_readability_towed_screen_radius(void) {
+    return g_readability_telemetry.locally_towed_screen_radius;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_station_module_glyph_count(void) {
+    return g_readability_telemetry.module_glyph_count;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_station_hopper_glyph_count(void) {
+    return g_readability_telemetry.hopper_glyph_count;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_station_producer_glyph_count(void) {
+    return g_readability_telemetry.producer_glyph_count;
 }
 #endif
 
@@ -1415,15 +1507,26 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         fill_ngon(5, 28, mr*0.30f, mg*0.30f, mb*0.30f, alpha);
         /* Inner pentagon (product chamber) */
         fill_ngon(5, 14, mr*0.15f, mg*0.15f, mb*0.15f, alpha*0.8f);
-        /* Product accent dot */
-        fill_circle_local(0, 2, 4, 6, mr*0.8f, mg*0.8f, mb*0.8f, alpha*0.4f);
-        /* Crosshair for press type */
+        /* The Frame Press is the first factory most players deliberately
+         * feed. Give it opposing jaws and a framed workpiece so its silhouette
+         * reads as a machine even before the player can parse its color. */
         if (type == MODULE_FRAME_PRESS) {
-            sgl_c4f(mr*0.8f, mg*0.8f, mb*0.8f, alpha*0.5f);
+            sgl_c4f(mr*0.68f, mg*0.68f, mb*0.68f, alpha*0.88f);
+            fill_quad(-19, -13, -7, -13, -7, 15, -19, 15);
+            fill_quad(  7, -13, 19, -13, 19, 15,   7, 15);
+            sgl_c4f(mr*0.95f, mg*0.95f, mb*0.95f, alpha*0.92f);
+            fill_quad(-7, -5, 7, -5, 7, 7, -7, 7);
+            sgl_c4f(0.08f, 0.11f, 0.13f, alpha*0.96f);
+            fill_quad(-3, -2, 3, -2, 3, 4, -3, 4);
+            sgl_c4f(mr*0.92f, mg*0.92f, mb*0.92f, alpha*0.78f);
             sgl_begin_lines();
-            sgl_v2f(-8, 2); sgl_v2f(8, 2);
-            sgl_v2f(0, -6); sgl_v2f(0, 10);
+            sgl_v2f(-23, -17); sgl_v2f(-23, 18);
+            sgl_v2f( 23, -17); sgl_v2f( 23, 18);
             sgl_end();
+        } else {
+            /* Product accent dot for the other fabricators. */
+            fill_circle_local(0, 2, 4, 6, mr*0.8f, mg*0.8f, mb*0.8f,
+                              alpha*0.4f);
         }
         /* Bold outline */
         outline_ngon(5, 28, mr*0.7f, mg*0.7f, mb*0.7f, alpha);
@@ -1531,8 +1634,18 @@ static void draw_hopper_shape(float br, float bg, float bb,
     sgl_v2f(-22, -14); sgl_v2f(22, -14); sgl_v2f(0, 18);
     sgl_end();
 
+    /* Wide capture wings are intentionally outside the storage cell. They
+     * make an intake unmistakable from normal flight distance and point at
+     * the physical mouth the player should tow through. */
+    sgl_c4f(0.055f, 0.075f, 0.085f, alpha * 0.98f);
+    fill_quad(-44, -28, -28, -23, -28, -15, -40, -18);
+    fill_quad( 28, -23,  44, -28,  40, -18,  28, -15);
+    sgl_c4f(ar * 0.92f, ag * 0.92f, ab * 0.92f, alpha * 0.90f);
+    fill_quad(-43, -29, -28, -24, -28, -20, -42, -24);
+    fill_quad( 28, -24,  43, -29,  42, -24,  28, -20);
+
     sgl_c4f(ar * 0.95f, ag * 0.95f, ab * 0.95f, alpha);
-    fill_quad(-32, -22, 32, -22, 32, -18, -32, -18);
+    fill_quad(-34, -23, 34, -23, 34, -17, -34, -17);
 
     fill_circle_local(0, 0, 8, 8, ar * 0.7f, ag * 0.7f, ab * 0.7f, alpha * 0.26f);
     fill_circle_local(0, 0, 4, 6, ar * 1.0f, ag * 1.0f, ab * 1.0f, alpha * 0.42f);
@@ -1546,6 +1659,13 @@ static void draw_hopper_shape(float br, float bg, float bb,
     sgl_v2f(32, -20); sgl_v2f(0, 28);
     sgl_v2f(0, 28); sgl_v2f(-32, -20);
     sgl_end();
+
+    /* Three bright intake teeth remain visible when the body is only a few
+     * pixels tall and reinforce the direction of travel into the throat. */
+    sgl_c4f(ar, ag, ab, alpha * 0.95f);
+    fill_quad(-20, -26, -14, -26, -14, -20, -20, -20);
+    fill_quad( -3, -26,   3, -26,   3, -20,  -3, -20);
+    fill_quad( 14, -26,  20, -26,  20, -20,  14, -20);
 }
 
 static void draw_layout_warning_outline(module_type_t type,
@@ -1944,10 +2064,23 @@ static void draw_station_triangle_cell_at(const cell_node_t *node,
     }
 }
 
+static float station_module_icon_scale(station_structure_lod_t lod) {
+    float base = lod == STATION_STRUCTURE_LOD_CLOSE ? 0.43f
+               : (lod == STATION_STRUCTURE_LOD_NORMAL ? 0.50f : 0.46f);
+    float screen_w = ui_screen_width();
+    if (screen_w <= 1.0f || g_cam_half_w <= 1.0f) return base;
+
+    float pixels_per_world = screen_w / (2.0f * g_cam_half_w);
+    float target_radius_px = lod == STATION_STRUCTURE_LOD_FAR ? 8.0f : 11.0f;
+    float minimum = target_radius_px / (32.0f * pixels_per_world);
+    float cap = lod == STATION_STRUCTURE_LOD_FAR ? 0.72f : 0.64f;
+    return clampf(fmaxf(base, minimum), base, cap);
+}
+
 static void draw_station_cell_icon(const station_t *station,
                                    const station_module_t *module,
                                    vec2 center, float angle,
-                                   float alpha) {
+                                   float visual_scale, float alpha) {
     if (!station || !module || module->scaffold) return;
     float mr, mg, mb;
     float hr = 0.0f, hg = 0.0f, hb = 0.0f;
@@ -1965,13 +2098,19 @@ static void draw_station_cell_icon(const station_t *station,
     sgl_push_matrix();
     sgl_translate(center.x, center.y, 0.0f);
     sgl_rotate(angle + PI_F * 0.5f, 0.0f, 0.0f, 1.0f);
-    sgl_scale(0.34f, 0.34f, 1.0f);
+    sgl_scale(visual_scale, visual_scale, 1.0f);
     if (hopper) {
         draw_hopper_shape(mr, mg, mb, hr, hg, hb, alpha);
     } else {
         draw_module_shape(module->type, mr, mg, mb, alpha);
     }
     sgl_pop_matrix();
+
+    g_readability_telemetry.module_glyph_count++;
+    if (module->type == MODULE_HOPPER)
+        g_readability_telemetry.hopper_glyph_count++;
+    if (module_is_producer(module->type))
+        g_readability_telemetry.producer_glyph_count++;
 }
 
 static void draw_station_corridor_silhouette(vec2 center, float ring_radius,
@@ -2080,14 +2219,19 @@ static void draw_station_cell_graph(const station_t *station,
                               scaffold, progress, r, g0, b,
                               base_alpha * (far ? 0.90f : 1.0f));
         }
-        if (detailed && module_index >= 0 &&
-            module_index < station->module_count &&
-            node->shape != CELL_SHAPE_TRIANGLE) {
+        if (module_index >= 0 && module_index < station->module_count &&
+            !station->modules[module_index].scaffold) {
             float angle = module_angle_ring(
                 station, station->modules[module_index].ring,
                 station->modules[module_index].slot);
-            draw_station_cell_icon(station, &station->modules[module_index],
-                                   center, angle, base_alpha * 0.90f);
+            float icon_scale = station_module_icon_scale(lod);
+            if (on_screen(center.x, center.y, 46.0f * icon_scale)) {
+                float icon_alpha = detailed ? 0.96f
+                    : (far ? 0.82f : 0.92f);
+                draw_station_cell_icon(
+                    station, &station->modules[module_index], center, angle,
+                    icon_scale, base_alpha * icon_alpha);
+            }
         }
     }
 }
@@ -2220,6 +2364,45 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         sgl_v2f(spoke->b.x, spoke->b.y);
     }
     sgl_end();
+
+    /* The line says a connection exists; traveling cargo-colored packets say
+     * which way the economy is moving. Input spokes travel hopper -> machine,
+     * output spokes travel machine -> output hopper. This remains tied to the
+     * authoritative module pulse, so idle station diagrams stay quiet. */
+    for (int i = 0; i < field_geom.spoke_count; i++) {
+        const geom_spoke_t *spoke = &field_geom.spokes[i];
+        if (spoke->pulse <= 0.01f ||
+            spoke->commodity >= COMMODITY_COUNT) continue;
+
+        const station_module_t *producer = NULL;
+        for (int m = 0; m < station->module_count; m++) {
+            const station_module_t *candidate = &station->modules[m];
+            vec2 p = module_world_pos_ring(
+                station, candidate->ring, candidate->slot);
+            if (v2_dist_sq(p, spoke->a) < 1.0f) {
+                producer = candidate;
+                break;
+            }
+        }
+        bool output_flow = producer &&
+            module_instance_output(producer) ==
+                (commodity_t)spoke->commodity;
+        vec2 from = output_flow ? spoke->a : spoke->b;
+        vec2 to = output_flow ? spoke->b : spoke->a;
+        float r, g0, b;
+        commodity_color((commodity_t)spoke->commodity, &r, &g0, &b);
+        float alpha = field_alpha * (0.35f + 0.55f * spoke->pulse);
+        for (int packet = 0; packet < 4; packet++) {
+            float phase = fmodf(g.world.time * 0.62f +
+                                (float)packet * 0.25f, 1.0f);
+            vec2 p = v2_add(from, v2_scale(v2_sub(to, from), phase));
+            draw_circle_filled(p, 3.4f, 8, r, g0, b, alpha);
+        }
+        draw_circle_outline(from, 12.0f + 3.0f * spoke->pulse, 12,
+                            r, g0, b, alpha * 0.55f);
+        draw_circle_outline(to, 15.0f + 5.0f * spoke->pulse, 12,
+                            r, g0, b, alpha * 0.72f);
+    }
     return;
 
     float role_r = 0.45f, role_g = 0.85f, role_b = 1.0f;
@@ -4101,6 +4284,169 @@ static void sdtx_world_pos(float world_x, float world_y, float cell) {
              (cam_bottom() - world_y) / cell);
 }
 
+static uint8_t cargo_pod_common_origin(const cargo_pod_t *pod) {
+    if (!pod || pod->manifest_count == 0) return UINT8_MAX;
+    uint16_t count = pod->manifest_count;
+    if (count > CARGO_POD_MANIFEST_CAP) count = CARGO_POD_MANIFEST_CAP;
+    uint8_t origin = pod->manifest_units[0].origin_station;
+    for (uint16_t i = 1; i < count; i++) {
+        if (pod->manifest_units[i].origin_station != origin)
+            return UINT8_MAX;
+    }
+    return origin;
+}
+
+static bool nearest_trade_hopper_for_pod(const cargo_pod_t *pod,
+                                         int *out_station,
+                                         int *out_module) {
+    if (!pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
+        pod->commodity >= COMMODITY_COUNT) return false;
+
+    /* A tracked/visible work order is more relevant than geographic
+     * proximity. Prefer its exact station first so a Kepler refit crate never
+     * points at a nearer generic buyer. */
+    int contract_idx = -1;
+    if (g.tracked_contract >= 0 &&
+        g.tracked_contract < MAX_CONTRACTS) {
+        const contract_t *tracked = &g.world.contracts[g.tracked_contract];
+        if (tracked->active && tracked->action == CONTRACT_TRACTOR &&
+            tracked->commodity == pod->commodity &&
+            tracked->station_index < MAX_STATIONS) {
+            contract_idx = g.tracked_contract;
+        }
+    }
+    if (contract_idx < 0) {
+        float best_price = -1.0f;
+        for (int i = 0; i < MAX_CONTRACTS; i++) {
+            const contract_t *candidate = &g.world.contracts[i];
+            if (!candidate->active ||
+                candidate->action != CONTRACT_TRACTOR ||
+                candidate->commodity != pod->commodity ||
+                candidate->station_index >= MAX_STATIONS) continue;
+            float price = contract_price(candidate);
+            if (price > best_price) {
+                best_price = price;
+                contract_idx = i;
+            }
+        }
+    }
+    if (contract_idx >= 0) {
+        int station_idx = g.world.contracts[contract_idx].station_index;
+        const station_t *st = &g.world.stations[station_idx];
+        int module_idx = station_find_hopper_for(st, pod->commodity);
+        if (station_exists(st) && module_idx >= 0) {
+            if (out_station) *out_station = station_idx;
+            if (out_module) *out_module = module_idx;
+            return true;
+        }
+    }
+
+    uint8_t origin = cargo_pod_common_origin(pod);
+    int best_station = -1;
+    int best_module = -1;
+    float best_dist_sq = 1e30f;
+    int fallback_station = -1;
+    int fallback_module = -1;
+    float fallback_dist_sq = 1e30f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!station_exists(st)) continue;
+        int module = station_find_hopper_for(st, pod->commodity);
+        if (module < 0 || module >= st->module_count) continue;
+        float dist_sq = v2_dist_sq(LOCAL_PLAYER.ship->pos, st->pos);
+        if (dist_sq < fallback_dist_sq) {
+            fallback_dist_sq = dist_sq;
+            fallback_station = s;
+            fallback_module = module;
+        }
+        /* A producer's own output hopper recaptures its cargo; it is not a
+         * trade destination. Prefer the nearest other station when origin is
+         * known, which makes Prospect cargo point cleanly toward Kepler. */
+        if (origin < MAX_STATIONS && s == (int)origin) continue;
+        if (dist_sq < best_dist_sq) {
+            best_dist_sq = dist_sq;
+            best_station = s;
+            best_module = module;
+        }
+    }
+    if (best_station < 0) {
+        best_station = fallback_station;
+        best_module = fallback_module;
+    }
+    if (best_station < 0 || best_module < 0) return false;
+    if (out_station) *out_station = best_station;
+    if (out_module) *out_module = best_module;
+    return true;
+}
+
+void draw_towed_cargo_hopper_guides(void) {
+    if (LOCAL_PLAYER.docked || !LOCAL_PLAYER.ship) return;
+    bool drawn[MAX_STATIONS][MAX_MODULES_PER_STATION] = {{false}};
+    int tow_count = ship_towed_pod_count(LOCAL_PLAYER.ship);
+    for (int t = 0; t < tow_count; t++) {
+        int pod_idx = LOCAL_PLAYER.ship->towed_pods[t];
+        if (pod_idx < 0 || pod_idx >= MAX_CARGO_PODS) continue;
+        const cargo_pod_t *pod = &g.world.cargo_pods[pod_idx];
+        int station_idx = -1;
+        int module_idx = -1;
+        if (!nearest_trade_hopper_for_pod(
+                pod, &station_idx, &module_idx)) continue;
+        if (drawn[station_idx][module_idx]) continue;
+        drawn[station_idx][module_idx] = true;
+
+        const station_t *st = &g.world.stations[station_idx];
+        const station_module_t *module = &st->modules[module_idx];
+        vec2 target = module_world_pos_ring(
+            st, module->ring, module->slot);
+        if (!on_screen(target.x, target.y, 110.0f)) continue;
+        g_hopper_guide_telemetry.count++;
+        g_hopper_guide_telemetry.station = station_idx;
+        g_hopper_guide_telemetry.module = module_idx;
+        g_hopper_guide_telemetry.commodity = (int)pod->commodity;
+
+        float r, g0, b;
+        commodity_color(pod->commodity, &r, &g0, &b);
+        float pulse = 0.5f + 0.5f * sinf(g.world.time * 4.5f);
+        float radius = 48.0f + 9.0f * pulse;
+        draw_circle_filled(target, radius * 0.62f, 18,
+                           r, g0, b, 0.07f + pulse * 0.04f);
+        draw_circle_outline(target, radius, 24,
+                            r, g0, b, 0.58f + pulse * 0.30f);
+        draw_circle_outline(target, radius + 11.0f, 24,
+                            r, g0, b, 0.18f + pulse * 0.20f);
+
+        float distance = v2_len(v2_sub(target, pod->pos));
+        if (distance < 1800.0f) {
+            draw_segment(pod->pos, target, r, g0, b, 0.16f);
+            for (int packet = 0; packet < 6; packet++) {
+                float phase = fmodf(g.world.time * 0.38f +
+                                    (float)packet / 6.0f, 1.0f);
+                vec2 p = v2_add(pod->pos,
+                    v2_scale(v2_sub(target, pod->pos), phase));
+                draw_circle_filled(p, 2.8f, 7, r, g0, b,
+                                   0.42f + pulse * 0.20f);
+            }
+        }
+
+        char label[80];
+        snprintf(label, sizeof(label), "%s // TOW %u %s HERE",
+                 st->name, (unsigned)(pod->quantity ? pod->quantity : 1),
+                 commodity_short_name(pod->commodity));
+        const float cell = 8.0f;
+        float view_w = cam_right() - cam_left();
+        float view_h = cam_bottom() - cam_top();
+        sdtx_canvas(view_w, view_h);
+        sdtx_origin(0, 0);
+        sdtx_color4b((uint8_t)(clampf(r, 0.0f, 1.0f) * 255.0f),
+                     (uint8_t)(clampf(g0, 0.0f, 1.0f) * 255.0f),
+                     (uint8_t)(clampf(b, 0.0f, 1.0f) * 255.0f), 245);
+        int len = (int)strlen(label);
+        sdtx_world_pos(target.x - (float)len * cell * 0.5f,
+                       target.y + radius + 25.0f, cell);
+        sdtx_puts(label);
+    }
+}
+
 void draw_callsigns(void) {
     /* World-aligned sdtx: canvas dimensions match the sgl world view, so
      * 1 canvas pixel = 1 world unit. Origin stays at (0,0); the
@@ -4555,6 +4901,45 @@ static int cargo_pod_filled_load_rails(const cargo_pod_t *pod) {
     return rails;
 }
 
+static float cargo_pod_visual_scale(const cargo_pod_t *pod) {
+    bool locally_towed = pod &&
+        cargo_pod_player_tractor(pod) == LOCAL_PLAYER.id;
+    float base = locally_towed ? CARGO_POD_TOWED_VISUAL_SCALE
+                               : CARGO_POD_BASE_VISUAL_SCALE;
+    /* Cargo is world geometry, so convert with the unscaled window width.
+     * ui_screen_width() is divided by the HUD layout scale and would make
+     * world objects appear artificially smaller in compact UI modes. */
+    float screen_w = ui_window_width();
+    if (!pod || pod->radius <= 0.0f || screen_w <= 1.0f ||
+        g_cam_half_w <= 1.0f) return base;
+
+    float pixels_per_world = screen_w / (2.0f * g_cam_half_w);
+    float target_px = locally_towed ? CARGO_POD_TOWED_MIN_SCREEN_RADIUS_PX
+                                    : CARGO_POD_MIN_SCREEN_RADIUS_PX;
+    float minimum = target_px / (pod->radius * pixels_per_world);
+    float cap = locally_towed ? CARGO_POD_TOWED_MAX_VISUAL_SCALE
+                              : CARGO_POD_MAX_VISUAL_SCALE;
+    return clampf(fmaxf(base, minimum), base, cap);
+}
+
+static void cargo_pod_record_readability(const cargo_pod_t *pod,
+                                         float visual_scale) {
+    if (!pod || pod->radius <= 0.0f) return;
+    float screen_w = ui_window_width();
+    float pixels_per_world = (screen_w > 1.0f && g_cam_half_w > 1.0f)
+        ? screen_w / (2.0f * g_cam_half_w) : 1.0f;
+    float screen_radius = pod->radius * visual_scale * pixels_per_world;
+    g_readability_telemetry.cargo_count++;
+    if (g_readability_telemetry.cargo_min_screen_radius <= 0.0f ||
+        screen_radius < g_readability_telemetry.cargo_min_screen_radius) {
+        g_readability_telemetry.cargo_min_screen_radius = screen_radius;
+    }
+    if (visual_scale > g_readability_telemetry.cargo_max_scale)
+        g_readability_telemetry.cargo_max_scale = visual_scale;
+    if (cargo_pod_player_tractor(pod) == LOCAL_PLAYER.id)
+        g_readability_telemetry.locally_towed_screen_radius = screen_radius;
+}
+
 static void cargo_pod_draw_hex_fill(const vec2 vertices[CARGO_POD_HEX_EDGES],
                                     float r, float g0, float b, float a) {
     sgl_begin_triangles();
@@ -4752,9 +5137,16 @@ static void cargo_pod_draw_mixed_payload(float radius,
 
 static void cargo_pod_draw_active_hardpoint(const cargo_pod_t *pod,
                                             vec2 source,
+                                            float visual_scale,
                                             float r, float g0, float b) {
     vec2 hp = cargo_pod_tow_hardpoint_local(pod, source);
-    float size = fmaxf(1.5f, pod->radius * 0.10f);
+    /* The carrier body has perception scale; its actual tow joint does not.
+     * Counter-scale the local point so the visible hardpoint still terminates
+     * the authoritative tether exactly. */
+    if (visual_scale > 0.001f)
+        hp = v2_scale(hp, 1.0f / visual_scale);
+    float size = fmaxf(1.5f, pod->radius * 0.10f) /
+                 fmaxf(visual_scale, 0.001f);
     sgl_begin_quads();
     sgl_c4f(fminf(1.0f, r * 1.45f),
             fminf(1.0f, g0 * 1.45f),
@@ -4770,7 +5162,10 @@ void draw_cargo_pods(void) {
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         const cargo_pod_t *pod = &g.world.cargo_pods[i];
         if (!pod->active) continue;
-        if (!on_screen(pod->pos.x, pod->pos.y, pod->radius + 24.0f)) continue;
+        float visual_scale = cargo_pod_visual_scale(pod);
+        float visual_radius = pod->radius * visual_scale;
+        if (!on_screen(pod->pos.x, pod->pos.y, visual_radius + 24.0f)) continue;
+        cargo_pod_record_readability(pod, visual_scale);
 
         float r, g0, b;
         cargo_pod_content_color(pod, &r, &g0, &b);
@@ -4781,13 +5176,24 @@ void draw_cargo_pods(void) {
         int filled_rails = cargo_pod_filled_load_rails(pod);
 
         if (content == CARGO_POD_CONTENT_GAS) {
-            draw_circle_filled(pod->pos, pod->radius * 1.8f * pulse, 18,
+            draw_circle_filled(pod->pos,
+                               pod->radius * visual_scale * 1.8f * pulse, 18,
                                0.12f, 0.72f, 0.68f, 0.16f);
         }
 
         sgl_push_matrix();
         sgl_translate(pod->pos.x, pod->pos.y, 0.0f);
         sgl_rotate(pod->rotation, 0.0f, 0.0f, 1.0f);
+        sgl_scale(visual_scale, visual_scale, 1.0f);
+
+        /* A dark commodity-edged sleeve gives the carrier a stable mass at
+         * speed. The inner hex remains the actual physical shell grammar. */
+        vec2 sleeve[CARGO_POD_HEX_EDGES];
+        cargo_pod_hex_vertices(pod->radius * 1.10f, sleeve);
+        cargo_pod_draw_hex_fill(sleeve, 0.035f, 0.055f, 0.065f, 0.94f);
+        cargo_pod_draw_hex_outline(
+            sleeve, 0.20f + r * 0.58f, 0.24f + g0 * 0.58f,
+            0.27f + b * 0.58f, 0.76f);
 
         vec2 shell[CARGO_POD_HEX_EDGES];
         cargo_pod_hex_vertices(pod->radius, shell);
@@ -4835,7 +5241,8 @@ void draw_cargo_pods(void) {
 
         vec2 tractor_source;
         if (cargo_pod_tractor_source_pos(pod, &tractor_source))
-            cargo_pod_draw_active_hardpoint(pod, tractor_source, r, g0, b);
+            cargo_pod_draw_active_hardpoint(
+                pod, tractor_source, visual_scale, r, g0, b);
 
         sgl_pop_matrix();
 
@@ -4847,9 +5254,10 @@ void draw_cargo_pods(void) {
         if (scan_reveal && grade > (uint8_t)MINING_GRADE_COMMON) {
             float gr, gg, gb;
             grade_tint(grade, &gr, &gg, &gb);
-            draw_circle_outline(pod->pos, pod->radius * 1.18f * pulse, 18,
+            draw_circle_outline(pod->pos,
+                                visual_radius * 1.18f * pulse, 18,
                                 gr, gg, gb, 0.58f);
-            draw_circle_filled(pod->pos, pod->radius * 0.16f, 10,
+            draw_circle_filled(pod->pos, visual_radius * 0.16f, 10,
                                gr, gg, gb, 0.82f);
         }
 

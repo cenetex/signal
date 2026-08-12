@@ -26,10 +26,12 @@ as the economy: rocks, tractors, dock approaches, hopper levels, signal lines.
 1. Launch from Prospect Refinery and work the asteroid belt.
 2. Fracture large rocks with the mining beam and tractor ferrite, cuprite, and
    crystal fragments into station smelter beams.
-3. Smelt fragments or deliver named contract cargo at docked stations. Credits
-   are per-station — what you earn at Prospect can't be spent at Helios.
-4. Let stations smelt fragments into ingots and fabricate ship parts, then buy
-   what you need with `F`.
+3. Tow whole cargo pods to matching commodity hoppers. The physical custody
+   handoff sells the load and credits that station's local ledger — what you
+   earn at Prospect can't be spent at Helios.
+4. Watch stations move hopper input through their production modules, then
+   tractor station-owned output pods away. The purchase settles when the pod
+   clears the station boundary.
 5. Press `B` in flight to create a planned outpost or reserve module slots on
    an existing outpost, then dock at a station with a shipyard and order a
    matching scaffold.
@@ -134,10 +136,13 @@ for the `swarm.rati.chat` avatar sync workflow.
   mining beam, and `E` docks or launches.
 - Tractor: hold `Space` to tractor fragments or scaffolds. Tap `Space` to
   release a tow.
-- Docked station controls: `Tab` cycles panels. In SHIP, `R` repairs,
+- Physical trade: tractor whole cargo pods to the station's matching hopper to
+  sell them; tractor a station-owned market pod beyond the station boundary to
+  buy it. Docking is not required for either handoff.
+- Docked station controls: `Tab` cycles information and work panels. In SHIP, `R` repairs,
   `M` upgrades the mining laser, `C` expands cargo hold, and `T` upgrades the
-  tractor. In TRADE, `1`-`5` buy/sell visible rows, `F` pages, and `S` sells
-  accepted cargo. In CONTRACTS, number keys select or track visible contracts;
+  tractor. In TRADE, `F` pages the local inventory and ledger view. In
+  CONTRACTS, number keys select or track visible contracts;
   when the selected contract is ready, `S` loads pickup cargo or unloads
   delivery cargo. In YARD, `1`-`9` order scaffold kits where a shipyard is
   installed.

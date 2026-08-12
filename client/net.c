@@ -1251,6 +1251,13 @@ static void decode_event_payload(sim_event_t *ev,
         ev->sell.base_cr = (int)read_u32_le(&payload[2]);
         ev->sell.bonus_cr = (int)read_u32_le(&payload[6]);
         ev->sell.by_contract = payload[10];
+        ev->sell.quantity = read_u16_le(&payload[13]);
+        ev->sell.commodity = payload[11] > 0
+            ? (uint8_t)(payload[11] - 1u) : (uint8_t)COMMODITY_COUNT;
+        ev->sell.origin_station = payload[12] > 0
+            ? (uint8_t)(payload[12] - 1u) : UINT8_MAX;
+        ev->sell.module = payload[15] > 0
+            ? (uint8_t)(payload[15] - 1u) : UINT8_MAX;
         break;
     case SIM_EVENT_BUY:
         ev->buy.station = (int)payload[0];

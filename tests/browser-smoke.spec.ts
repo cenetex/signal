@@ -1133,6 +1133,7 @@ const smokeLoopState = {
   refitSupplyActive: 38,
   refitSupplyInactive: 39,
   refitWorkAged: 40,
+  cargoHopperGuide: 41,
 } as const;
 
 const mobileFlag = {
@@ -2643,21 +2644,22 @@ test.describe('Browser smoke tests', () => {
     const refitSummary = await laserRefitSummary(page);
     expect(refitSummary).toContain('Laser Modules: Crystal Ingots + Frames');
     expect(refitSummary).toContain('Crystal source requires L3 laser');
-    expect(refitSummary).toContain('Kepler has 8');
-    expect(refitSummary).toContain('local cr');
+    expect(refitSummary).toContain('Kepler: 8 stock');
+    expect(refitSummary).toContain('cr');
     expect(refitSummary).toContain(
-      'WORK: haul all 8 FE Ingots from Prospect together',
+      'tow 8 Prospect FE Ingots to Kepler hopper',
     );
-    expect(refitSummary).toContain('dock + [M]');
-    expect(refitSummary).not.toContain('0 cr');
+    expect(refitSummary).toContain('[M]');
+    expect(refitSummary).not.toContain('dock + [M]');
+    expect(refitSummary).toMatch(/\b[1-9]\d* cr\b/);
 
     await setSmokeLoopState(page, smokeLoopState.refitWorkAged);
     const agedRefitSummary = await laserRefitSummary(page);
     expect(agedRefitSummary).toContain(
-      'WORK: haul all 8 FE Ingots from Prospect together',
+      'tow 8 Prospect FE Ingots to Kepler hopper',
     );
     expect(agedRefitSummary).not.toContain(
-      'WORK: haul all 7 FE Ingots',
+      'tow 7 Prospect FE Ingots',
     );
 
     await setSmokeLoopState(page, smokeLoopState.refitSupplyActive);
@@ -2720,6 +2722,33 @@ test.describe('Browser smoke tests', () => {
      * against drifting out of the WebAssembly build. */
     await setSmokeLoopState(page, smokeLoopState.cargoTowing);
     await page.waitForTimeout(100);
+
+    await setSmokeLoopState(page, smokeLoopState.cargoHopperGuide);
+    await expect.poll(
+      () => wasmNumber(page, 'signal_hopper_guide_draw_count'),
+      {
+        timeout: 3_000,
+        message: 'towed Prospect cargo should mark one visible Kepler intake',
+      },
+    ).toBe(1);
+    expect(await wasmNumber(page, 'signal_hopper_guide_station')).toBe(1);
+    expect(await wasmNumber(page, 'signal_hopper_guide_commodity')).toBe(3);
+    expect(
+      await wasmNumber(page, 'signal_cargo_readability_draw_count'),
+      'handoff view should contain a rendered physical cargo carrier',
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      await wasmNumber(page, 'signal_cargo_readability_towed_screen_radius'),
+      'the towed carrier should retain a readable radius at the flight camera',
+    ).toBeGreaterThanOrEqual(24.5);
+    expect(
+      await wasmNumber(page, 'signal_station_hopper_glyph_count'),
+      'visible station storage cells should retain their hopper silhouettes',
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      await wasmNumber(page, 'signal_station_producer_glyph_count'),
+      'visible station factory cells should retain their machine silhouettes',
+    ).toBeGreaterThanOrEqual(1);
 
     /* Guard the deployed fixture used to inspect module-surface origins. */
     await setSmokeLoopState(page, smokeLoopState.moduleCargoTractor);
@@ -2785,14 +2814,18 @@ test.describe('Browser smoke tests', () => {
     );
 
     await setSmokeLoopState(page, smokeLoopState.onboardingReturn);
-    expect(await hudHintText(page)).toContain(
-      'PAYMENT RECEIVED ::::: RETURN TO Prospect Refinery // [E] DOCK',
+    const paidInSpaceHint = await hudHintText(page);
+    expect(paidInSpaceHint).toContain(
+      'ECONOMY LOOP COMPLETE ::::: MONEY STAYS LOCAL // GOODS TRAVEL',
     );
+    expect(paidInSpaceHint).not.toContain('RETURN TO');
 
     await setSmokeLoopState(page, smokeLoopState.onboardingMarket);
-    expect(await hudHintText(page)).toContain(
-      'OPEN LOCAL MARKET ::::: [TAB] TO TRADE // CREDITS STAY HERE',
+    const noMarketGateHint = await hudHintText(page);
+    expect(noMarketGateHint).toContain(
+      'ECONOMY LOOP COMPLETE ::::: MONEY STAYS LOCAL // GOODS TRAVEL',
     );
+    expect(noMarketGateHint).not.toContain('OPEN LOCAL MARKET');
 
     await setSmokeLoopState(page, smokeLoopState.onboardingComplete);
     expect(await hudHintText(page)).toContain(

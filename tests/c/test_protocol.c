@@ -9612,6 +9612,39 @@ TEST(test_buy_event_serializes_cost_and_quantity) {
     ASSERT_EQ_INT((int)read_u16_le(&p[9]), 4);
 }
 
+TEST(test_sell_event_serializes_physical_handoff_context) {
+    sim_events_t events;
+    memset(&events, 0, sizeof(events));
+    events.count = 1;
+    events.events[0] = (sim_event_t){
+        .type = SIM_EVENT_SELL,
+        .player_id = 3,
+        .sell = {
+            .station = 1,
+            .commodity = COMMODITY_FERRITE_INGOT,
+            .origin_station = 0,
+            .quantity = 8,
+            .module = 5,
+            .grade = MINING_GRADE_RARE,
+            .base_cr = 127,
+            .bonus_cr = 23,
+            .by_contract = 1,
+        },
+    };
+
+    uint8_t buf[2 + NET_EVENT_RECORD_SIZE];
+    int len = serialize_events(buf, &events);
+
+    ASSERT_EQ_INT(len, 2 + NET_EVENT_RECORD_SIZE);
+    const uint8_t *p = &buf[2];
+    ASSERT_EQ_INT(p[0], SIM_EVENT_SELL);
+    ASSERT_EQ_INT(p[2], 1);
+    ASSERT_EQ_INT(p[13], COMMODITY_FERRITE_INGOT + 1);
+    ASSERT_EQ_INT(p[14], 1);
+    ASSERT_EQ_INT((int)read_u16_le(&p[15]), 8);
+    ASSERT_EQ_INT(p[17], 6);
+}
+
 TEST(test_events_for_recipient_filters_local_only_damage) {
     sim_events_t events;
     memset(&events, 0, sizeof(events));
@@ -10070,6 +10103,7 @@ void register_protocol_main_tests(void) {
     RUN(test_atomic_tow_link_snapshot_roundtrip);
     RUN(test_protocol_info_serializes_stream_map);
     RUN(test_buy_event_serializes_cost_and_quantity);
+    RUN(test_sell_event_serializes_physical_handoff_context);
     RUN(test_events_for_recipient_filters_local_only_damage);
     RUN(test_public_event_records_exclude_session_bearers);
     RUN(test_public_event_v2_uses_actor_ids_not_bearers_or_callsigns);
