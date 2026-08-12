@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-ai-eval-repeatability replay-ai-eval-repeatability-long replay-ai-eval-native-wasm replay-ai-outcome-repeatability replay-ai-outcome-native-wasm replay-ai-outcome-modes signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -132,6 +132,23 @@ replay-ai-eval-repeatability-long: build-signal-replay
 	python3 scripts/check_replay_repeatability.py \
 		./build/signal_replay --scenario-set ai-eval-long
 
+replay-ai-outcome-repeatability: build-signal-replay
+	python3 scripts/test_ai_episode_outcomes.py
+	python3 scripts/check_replay_repeatability.py \
+		./build/signal_replay --scenario-set ai-outcomes-fast
+
+replay-ai-outcome-modes: build-signal-replay
+	@out=$$(mktemp -d /tmp/signal-ai-outcomes.XXXXXX); \
+	for mode in teacher shadow mixed active; do \
+		python3 scripts/build_replay_bundle.py \
+			./build/signal_replay "$$out/$$mode" \
+			--scenario-set ai-outcomes-fast \
+			--decision-mode "$$mode" || exit 1; \
+	done; \
+	python3 scripts/analyze_ai_episode_outcomes.py \
+		teacher="$$out/teacher" shadow="$$out/shadow" \
+		mixed="$$out/mixed" active="$$out/active"
+
 signal-no-omniscience-soak: build-signal-replay
 	python3 scripts/check_no_omniscience_soak.py ./build/signal_replay
 
@@ -179,6 +196,12 @@ replay-ai-eval-native-wasm: build-signal-replay build-signal-replay-wasm
 		./build/signal_replay \
 		./$(SIGNAL_REPLAY_WASM_BUILD)/signal_replay.js \
 		--scenario-set ai-eval-fast
+
+replay-ai-outcome-native-wasm: build-signal-replay build-signal-replay-wasm
+	python3 scripts/check_replay_cross_build.py \
+		./build/signal_replay \
+		./$(SIGNAL_REPLAY_WASM_BUILD)/signal_replay.js \
+		--scenario-set ai-outcomes-fast
 
 # --- Chain asset inventory export ---
 CHAIN_ASSETS_FORMAT ?= json
