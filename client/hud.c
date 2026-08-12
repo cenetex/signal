@@ -4327,7 +4327,9 @@ void smoke_apply_loop_state_for_frame(void) {
      * setup. Interaction fixtures must overwrite streamed state at the
      * render boundary to keep their visual telemetry stable. */
     if (smoke_loop_state_override ==
-        SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR) {
+            SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR ||
+        smoke_loop_state_override ==
+            SMOKE_LOOP_STATE_CARGO_HOPPER_GUIDE) {
         (void)smoke_apply_loop_state(smoke_loop_state_override);
     } else if (smoke_loop_state_override ==
                SMOKE_LOOP_STATE_STATION_FRAGMENT_TRACTOR) {

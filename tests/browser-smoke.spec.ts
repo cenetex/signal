@@ -2644,21 +2644,22 @@ test.describe('Browser smoke tests', () => {
     const refitSummary = await laserRefitSummary(page);
     expect(refitSummary).toContain('Laser Modules: Crystal Ingots + Frames');
     expect(refitSummary).toContain('Crystal source requires L3 laser');
-    expect(refitSummary).toContain('Kepler has 8');
-    expect(refitSummary).toContain('local cr');
+    expect(refitSummary).toContain('Kepler: 8 stock');
+    expect(refitSummary).toContain('cr');
     expect(refitSummary).toContain(
-      'WORK: haul all 8 FE Ingots from Prospect together',
+      'tow 8 Prospect FE Ingots to Kepler hopper',
     );
-    expect(refitSummary).toContain('dock + [M]');
-    expect(refitSummary).not.toContain('0 cr');
+    expect(refitSummary).toContain('[M]');
+    expect(refitSummary).not.toContain('dock + [M]');
+    expect(refitSummary).toMatch(/\b[1-9]\d* cr\b/);
 
     await setSmokeLoopState(page, smokeLoopState.refitWorkAged);
     const agedRefitSummary = await laserRefitSummary(page);
     expect(agedRefitSummary).toContain(
-      'WORK: haul all 8 FE Ingots from Prospect together',
+      'tow 8 Prospect FE Ingots to Kepler hopper',
     );
     expect(agedRefitSummary).not.toContain(
-      'WORK: haul all 7 FE Ingots',
+      'tow 7 Prospect FE Ingots',
     );
 
     await setSmokeLoopState(page, smokeLoopState.refitSupplyActive);

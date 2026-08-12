@@ -53,6 +53,7 @@
 #define CARGO_POD_BASE_VISUAL_SCALE 1.18f
 #define CARGO_POD_TOWED_VISUAL_SCALE 1.30f
 #define CARGO_POD_MAX_VISUAL_SCALE 1.48f
+#define CARGO_POD_TOWED_MAX_VISUAL_SCALE 2.60f
 #define CARGO_POD_MIN_SCREEN_RADIUS_PX 22.0f
 #define CARGO_POD_TOWED_MIN_SCREEN_RADIUS_PX 25.0f
 
@@ -4905,7 +4906,10 @@ static float cargo_pod_visual_scale(const cargo_pod_t *pod) {
         cargo_pod_player_tractor(pod) == LOCAL_PLAYER.id;
     float base = locally_towed ? CARGO_POD_TOWED_VISUAL_SCALE
                                : CARGO_POD_BASE_VISUAL_SCALE;
-    float screen_w = ui_screen_width();
+    /* Cargo is world geometry, so convert with the unscaled window width.
+     * ui_screen_width() is divided by the HUD layout scale and would make
+     * world objects appear artificially smaller in compact UI modes. */
+    float screen_w = ui_window_width();
     if (!pod || pod->radius <= 0.0f || screen_w <= 1.0f ||
         g_cam_half_w <= 1.0f) return base;
 
@@ -4913,14 +4917,15 @@ static float cargo_pod_visual_scale(const cargo_pod_t *pod) {
     float target_px = locally_towed ? CARGO_POD_TOWED_MIN_SCREEN_RADIUS_PX
                                     : CARGO_POD_MIN_SCREEN_RADIUS_PX;
     float minimum = target_px / (pod->radius * pixels_per_world);
-    return clampf(fmaxf(base, minimum), base,
-                  CARGO_POD_MAX_VISUAL_SCALE);
+    float cap = locally_towed ? CARGO_POD_TOWED_MAX_VISUAL_SCALE
+                              : CARGO_POD_MAX_VISUAL_SCALE;
+    return clampf(fmaxf(base, minimum), base, cap);
 }
 
 static void cargo_pod_record_readability(const cargo_pod_t *pod,
                                          float visual_scale) {
     if (!pod || pod->radius <= 0.0f) return;
-    float screen_w = ui_screen_width();
+    float screen_w = ui_window_width();
     float pixels_per_world = (screen_w > 1.0f && g_cam_half_w > 1.0f)
         ? screen_w / (2.0f * g_cam_half_w) : 1.0f;
     float screen_radius = pod->radius * visual_scale * pixels_per_world;
