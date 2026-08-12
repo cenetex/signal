@@ -9,6 +9,15 @@ import json
 import sys
 from pathlib import Path
 
+from ai_eval_corpus import (
+    CORPUS_NAME,
+    CORPUS_VERSION,
+    GENERATOR_VERSION,
+    evaluation_world,
+    scenario_manifest,
+    validate_evaluation_output,
+    validate_permutation_pair,
+)
 from check_replay_cross_build import run_once
 from check_replay_repeatability import (
     scenarios_for_name,
@@ -16,7 +25,7 @@ from check_replay_repeatability import (
 )
 
 
-BUNDLE_SCHEMA = "signal.replay_bundle.v1"
+BUNDLE_SCHEMA = "signal.replay_bundle.v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scenario-set",
         default="fast",
-        choices=("fast", "long", "all"),
+        choices=("fast", "long", "all", "ai-eval-fast", "ai-eval-long"),
     )
     return parser.parse_args()
 
@@ -54,6 +63,7 @@ def main() -> int:
         return 1
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_scenarios: list[dict[str, object]] = []
+    evaluation_outputs: dict[str, Path] = {}
 
     for index, scenario_args in enumerate(scenarios):
         filename = f"scenario-{index:03d}.jsonl"
@@ -88,9 +98,22 @@ def main() -> int:
                 )
                 return 1
 
+        evaluation_failure = validate_evaluation_output(output, scenario_args)
+        if evaluation_failure is not None:
+            print(
+                f"signal_replay scenario {index} failed evaluation coverage: "
+                f"{evaluation_failure}",
+                file=sys.stderr,
+            )
+            return 1
+        world = evaluation_world(scenario_args)
+        if world != "none":
+            evaluation_outputs[world] = output
+
         manifest_scenarios.append(
             {
                 "args": list(scenario_args),
+                "evaluation": scenario_manifest(scenario_args, index),
                 "file": filename,
                 "index": index,
                 "sha256": hashlib.sha256(output_bytes).hexdigest(),
@@ -98,7 +121,23 @@ def main() -> int:
             }
         )
 
+    permutation_failure = validate_permutation_pair(evaluation_outputs)
+    if permutation_failure is not None:
+        print(
+            f"signal replay station-permutation gate failed: "
+            f"{permutation_failure}",
+            file=sys.stderr,
+        )
+        return 1
+
     manifest = {
+        "corpus": (
+            CORPUS_NAME
+            if args.scenario_set.startswith("ai-eval-")
+            else "signal-replay-default"
+        ),
+        "corpus_version": CORPUS_VERSION,
+        "generator_version": GENERATOR_VERSION,
         "scenario_set": args.scenario_set,
         "scenarios": manifest_scenarios,
         "schema": BUNDLE_SCHEMA,

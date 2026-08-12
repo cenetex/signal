@@ -41,12 +41,17 @@
 #include "sha256.h"
 #include "sim_ai.h"
 #include "sim_asteroid.h"
+#include "sim_construction.h"
 #include "sim_nav.h"
 #include "sim_physics.h"
+#include "station_authority.h"
 #include "station_util.h"
 #include "state_digest.h"
 
 #define SR_SCHEMA "signal.replay_counterfactual.v1"
+#define SR_AI_EVAL_SCHEMA "signal.ai_eval_world.v1"
+#define SR_AI_EVAL_CORPUS_VERSION 1u
+#define SR_AI_EVAL_GENERATOR_VERSION 1u
 #define SR_PUBLIC_STATE_HASH_SCHEMA "signal.replay.public_state_hash"
 #define SR_PUBLIC_STATE_HASH_VERSION 7u
 #define SR_PUBLIC_STATE_HASH_DOMAIN "signal-replay-state-v7-public"
@@ -57,6 +62,7 @@
 #define SR_ACTION_COUNT 9
 #define SR_MAX_PREFIX 4096
 #define SR_MAX_HORIZON_TICKS 120000
+#define SR_EVAL_MAX_OUTPOSTS 8
 
 typedef enum {
     SR_PROVENANCE_SCRIPT_NONE = 0,
@@ -76,6 +82,20 @@ typedef enum {
     SR_PROVENANCE_SCRIPT_WORKER_GOSSIP_COURIER,
     SR_PROVENANCE_SCRIPT_DENSE_ASTEROIDS,
 } sr_provenance_script_t;
+
+typedef enum {
+    SR_EVAL_WORLD_NONE = 0,
+    SR_EVAL_WORLD_SEEDED_ONLY,
+    SR_EVAL_WORLD_SEEDED_SPARSE,
+    SR_EVAL_WORLD_OUTPOST_LOW,
+    SR_EVAL_WORLD_OUTPOST_MID,
+    SR_EVAL_WORLD_OUTPOST_HIGH,
+    SR_EVAL_WORLD_SCARCITY,
+    SR_EVAL_WORLD_WEAK_SIGNAL,
+    SR_EVAL_WORLD_ROUTE_DISRUPTED,
+    SR_EVAL_WORLD_PERMUTATION_LOW,
+    SR_EVAL_WORLD_PERMUTATION_HIGH,
+} sr_eval_world_t;
 
 typedef struct {
     int turn;
@@ -102,6 +122,7 @@ typedef struct {
     bool active_workers;
     int hnn_cleanup_steps;
     sr_provenance_script_t provenance_script;
+    sr_eval_world_t eval_world;
     const char *out_path;
 } sr_config_t;
 
@@ -234,6 +255,21 @@ typedef struct {
 } sr_hnn_eval_t;
 
 typedef struct {
+    int existing_stations;
+    int active_stations;
+    int generated_outposts;
+    int weak_signal_stations;
+    int disconnected_stations;
+    int scarce_finished_goods;
+    int production_edges;
+    int consumption_edges;
+    int outpost_slots[SR_EVAL_MAX_OUTPOSTS];
+    int outpost_slot_count;
+    uint8_t topology_hash[32];
+    uint8_t semantic_topology_hash[32];
+} sr_eval_summary_t;
+
+typedef struct {
     cargo_receipt_trust_status_t trusted_smelt;
     cargo_receipt_trust_status_t trusted_craft;
     cargo_receipt_trust_status_t trusted_rotated;
@@ -279,6 +315,7 @@ typedef struct {
     sr_event_counts_t events;
     sr_ai_summary_t ai;
     sr_hnn_eval_t hnn;
+    sr_eval_summary_t evaluation;
     sr_receipt_trust_eval_t receipt_trust;
     uint8_t prefix_state_hash[32];
     uint8_t state_hash[32];
@@ -458,6 +495,10 @@ static void sr_usage(FILE *fp)
             "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
             "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn,worker-delivery-proof-hnn,worker-gossip-courier,dense-asteroids\n"
+            "  --evaluation-world NAME  deterministic AI topology fixture; names:\n"
+            "                       none,seeded-only,seeded-sparse,outpost-low,outpost-mid,\n"
+            "                       outpost-high,scarcity,weak-signal,route-disrupted,\n"
+            "                       permutation-low,permutation-high\n"
             "  --out PATH           write JSONL to PATH instead of stdout\n"
             "  --self-test-public-hash  verify public hashes exclude bearer-only state\n"
             "  --help               show this help\n"
@@ -689,6 +730,53 @@ static const char *sr_provenance_script_name(sr_provenance_script_t script)
     }
 }
 
+static bool sr_parse_eval_world(const char *text, sr_eval_world_t *out)
+{
+    static const struct {
+        const char *name;
+        sr_eval_world_t world;
+    } definitions[] = {
+        {"none", SR_EVAL_WORLD_NONE},
+        {"seeded-only", SR_EVAL_WORLD_SEEDED_ONLY},
+        {"seeded-sparse", SR_EVAL_WORLD_SEEDED_SPARSE},
+        {"outpost-low", SR_EVAL_WORLD_OUTPOST_LOW},
+        {"outpost-mid", SR_EVAL_WORLD_OUTPOST_MID},
+        {"outpost-high", SR_EVAL_WORLD_OUTPOST_HIGH},
+        {"scarcity", SR_EVAL_WORLD_SCARCITY},
+        {"weak-signal", SR_EVAL_WORLD_WEAK_SIGNAL},
+        {"route-disrupted", SR_EVAL_WORLD_ROUTE_DISRUPTED},
+        {"permutation-low", SR_EVAL_WORLD_PERMUTATION_LOW},
+        {"permutation-high", SR_EVAL_WORLD_PERMUTATION_HIGH},
+    };
+    if (!text || !out) return false;
+    for (size_t i = 0; i < sizeof(definitions) / sizeof(definitions[0]); i++) {
+        if (strcmp(text, definitions[i].name) == 0) {
+            *out = definitions[i].world;
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *sr_eval_world_name(sr_eval_world_t world)
+{
+    switch (world) {
+    case SR_EVAL_WORLD_SEEDED_ONLY: return "seeded-only";
+    case SR_EVAL_WORLD_SEEDED_SPARSE: return "seeded-sparse";
+    case SR_EVAL_WORLD_OUTPOST_LOW: return "outpost-low";
+    case SR_EVAL_WORLD_OUTPOST_MID: return "outpost-mid";
+    case SR_EVAL_WORLD_OUTPOST_HIGH: return "outpost-high";
+    case SR_EVAL_WORLD_SCARCITY: return "scarcity";
+    case SR_EVAL_WORLD_WEAK_SIGNAL: return "weak-signal";
+    case SR_EVAL_WORLD_ROUTE_DISRUPTED: return "route-disrupted";
+    case SR_EVAL_WORLD_PERMUTATION_LOW: return "permutation-low";
+    case SR_EVAL_WORLD_PERMUTATION_HIGH: return "permutation-high";
+    case SR_EVAL_WORLD_NONE:
+    default:
+        return "none";
+    }
+}
+
 static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
 {
     if (!config) return false;
@@ -753,6 +841,9 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
                 return false;
             }
             i++;
+        } else if (strcmp(arg, "--evaluation-world") == 0 && value) {
+            if (!sr_parse_eval_world(value, &config->eval_world)) return false;
+            i++;
         } else if (strcmp(arg, "--out") == 0 && value) {
             config->out_path = value;
             i++;
@@ -815,6 +906,270 @@ static void sr_hash_float_bits(sha256_ctx_t *ctx, float v)
     uint32_t bits;
     memcpy(&bits, &v, sizeof(bits));
     sr_hash_u32(ctx, bits);
+}
+
+static int sr_eval_outpost_slot(sr_eval_world_t world)
+{
+    switch (world) {
+    case SR_EVAL_WORLD_OUTPOST_LOW:
+    case SR_EVAL_WORLD_SCARCITY:
+    case SR_EVAL_WORLD_WEAK_SIGNAL:
+    case SR_EVAL_WORLD_ROUTE_DISRUPTED:
+    case SR_EVAL_WORLD_PERMUTATION_LOW:
+        return SIGNAL_FIRST_OUTPOST_INDEX;
+    case SR_EVAL_WORLD_OUTPOST_MID:
+        return MAX_STATIONS / 2;
+    case SR_EVAL_WORLD_OUTPOST_HIGH:
+    case SR_EVAL_WORLD_PERMUTATION_HIGH:
+        return MAX_STATIONS - 1;
+    case SR_EVAL_WORLD_NONE:
+    case SR_EVAL_WORLD_SEEDED_ONLY:
+    case SR_EVAL_WORLD_SEEDED_SPARSE:
+    default:
+        return -1;
+    }
+}
+
+static bool sr_build_eval_outpost(world_t *w,
+                                  int station_idx,
+                                  vec2 pos,
+                                  float signal_range)
+{
+    static const uint8_t founder[32] = {
+        0x65, 0x76, 0x61, 0x6c, 0x2d, 0x6f, 0x75, 0x74,
+        0x70, 0x6f, 0x73, 0x74, 0x2d, 0x76, 0x31, 0x00,
+    };
+    static const uint8_t stock_origin[8] = {
+        'A', 'I', 'E', 'V', 'A', 'L', '0', '1',
+    };
+    if (!w || station_idx < SIGNAL_FIRST_OUTPOST_INDEX ||
+        station_idx >= MAX_STATIONS) {
+        return false;
+    }
+
+    station_t *st = &w->stations[station_idx];
+    station_cleanup(st);
+    memset(st, 0, sizeof(*st));
+    if (!station_manifest_bootstrap(st)) return false;
+
+    st->id = w->next_station_id++;
+    snprintf(st->name, sizeof(st->name), "%s", "Eval Relay");
+    snprintf(st->station_slug, sizeof(st->station_slug), "%s", "eval-relay");
+    snprintf(st->currency_name, sizeof(st->currency_name), "%s", "eval marks");
+    st->pos = pos;
+    st->radius = 34.0f;
+    st->dock_radius = 220.0f;
+    st->signal_range = signal_range;
+    st->base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    st->base_price[COMMODITY_FERRITE_INGOT] = 10.0f;
+    st->base_price[COMMODITY_FRAME] = 2.0f;
+    st->base_price[COMMODITY_LASER_MODULE] = 16.0f;
+    st->base_price[COMMODITY_TRACTOR_MODULE] = 18.0f;
+    st->base_price[COMMODITY_REPAIR_KIT] = 1.0f;
+    st->_inventory_cache[COMMODITY_FERRITE_ORE] = 4.0f;
+
+    add_module_at(st, MODULE_DOCK, 1, 0);
+    add_module_at(st, MODULE_SIGNAL_RELAY, 1, 1);
+    add_furnace_for(st, 1, 2, COMMODITY_FERRITE_INGOT);
+    add_module_at(st, MODULE_FRAME_PRESS, 2, 0);
+    add_hopper_for(st, 2, 4, COMMODITY_FERRITE_ORE);
+    add_hopper_for(st, 3, 0, COMMODITY_FERRITE_INGOT);
+    st->arm_count = 3;
+    st->arm_speed[1] = STATION_RING_SPEED;
+    st->arm_omega[1] = STATION_RING_SPEED;
+    rebuild_station_services(st);
+
+    station_authority_init_outpost(st, founder, UINT64_C(649001));
+    chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
+                         "AI evaluation outpost; no chain events");
+    if (station_finished_mint(
+            st, COMMODITY_FERRITE_INGOT, 4, stock_origin) != 4 ||
+        station_finished_mint(st, COMMODITY_FRAME, 2, stock_origin) != 2 ||
+        station_finished_mint(
+            st, COMMODITY_REPAIR_KIT, 1, stock_origin) != 1) {
+        return false;
+    }
+
+    if (station_idx >= w->station_count) w->station_count = station_idx + 1;
+    return true;
+}
+
+static void sr_make_eval_world_scarce(world_t *w)
+{
+    if (!w) return;
+    for (int station_idx = 0; station_idx < MAX_STATIONS; station_idx++) {
+        station_t *st = &w->stations[station_idx];
+        if (!station_exists(st)) continue;
+        for (int commodity = 0; commodity < COMMODITY_RAW_ORE_COUNT;
+             commodity++) {
+            st->_inventory_cache[commodity] = 0.0f;
+        }
+        for (int commodity = COMMODITY_RAW_ORE_COUNT;
+             commodity < COMMODITY_COUNT; commodity++) {
+            int count =
+                station_finished_count(st, (commodity_t)commodity);
+            if (count > 0) {
+                (void)station_finished_drain(
+                    st, (commodity_t)commodity, count);
+            }
+        }
+    }
+}
+
+static bool sr_apply_eval_world(const sr_config_t *config, world_t *w)
+{
+    if (!config || !w) return false;
+    if (config->eval_world == SR_EVAL_WORLD_NONE ||
+        config->eval_world == SR_EVAL_WORLD_SEEDED_ONLY) {
+        return true;
+    }
+
+    if (config->eval_world == SR_EVAL_WORLD_SEEDED_SPARSE) {
+        w->stations[2].signal_range = 0.0f;
+        w->stations[2].signal_connected = false;
+        rebuild_signal_chain(w);
+        station_rebuild_all_nav(w);
+        gossip_bootstrap_world_stations(w);
+        return true;
+    }
+
+    int station_idx = sr_eval_outpost_slot(config->eval_world);
+    vec2 pos = v2_add(w->stations[0].pos, v2(6000.0f, 0.0f));
+    float signal_range = 2600.0f;
+    if (config->eval_world == SR_EVAL_WORLD_WEAK_SIGNAL) {
+        pos = v2_add(w->stations[0].pos, v2(8700.0f, 0.0f));
+        signal_range = 600.0f;
+    } else if (config->eval_world == SR_EVAL_WORLD_ROUTE_DISRUPTED) {
+        pos = v2_add(w->stations[0].pos, v2(18000.0f, 0.0f));
+        signal_range = 700.0f;
+    }
+    if (!sr_build_eval_outpost(w, station_idx, pos, signal_range)) {
+        return false;
+    }
+    if (config->eval_world == SR_EVAL_WORLD_SCARCITY) {
+        sr_make_eval_world_scarce(w);
+    }
+    rebuild_signal_chain(w);
+    station_rebuild_all_nav(w);
+    gossip_bootstrap_world_stations(w);
+    return true;
+}
+
+static void sr_hash_eval_station(const station_t *st, uint8_t out[32])
+{
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, "signal-ai-eval-station-v1",
+                  sizeof("signal-ai-eval-station-v1") - 1u);
+    sr_hash_u32(&ctx, st->id);
+    sha256_update(&ctx, st->station_pubkey, sizeof(st->station_pubkey));
+    sr_hash_float_bits(&ctx, st->pos.x);
+    sr_hash_float_bits(&ctx, st->pos.y);
+    sr_hash_float_bits(&ctx, st->radius);
+    sr_hash_float_bits(&ctx, st->dock_radius);
+    sr_hash_float_bits(&ctx, st->signal_range);
+    sr_hash_u8(&ctx, st->signal_connected ? 1u : 0u);
+    sr_hash_u8(&ctx, st->scaffold ? 1u : 0u);
+    sr_hash_u8(&ctx, st->planned ? 1u : 0u);
+    sr_hash_i32(&ctx, st->module_count);
+    for (int module_idx = 0;
+         module_idx < st->module_count &&
+         module_idx < MAX_MODULES_PER_STATION;
+         module_idx++) {
+        const station_module_t *module = &st->modules[module_idx];
+        sr_hash_i32(&ctx, (int32_t)module->type);
+        sr_hash_u8(&ctx, module->ring);
+        sr_hash_u8(&ctx, module->slot);
+        sr_hash_u8(&ctx, module->commodity);
+        sr_hash_u8(&ctx, module->scaffold ? 1u : 0u);
+    }
+    for (int commodity = 0; commodity < COMMODITY_COUNT; commodity++) {
+        sr_hash_float_bits(
+            &ctx,
+            station_inventory_amount(st, (commodity_t)commodity));
+    }
+    sha256_final(&ctx, out);
+}
+
+static int sr_compare_hashes(const void *left, const void *right)
+{
+    return memcmp(left, right, 32);
+}
+
+static void sr_collect_eval_summary(const world_t *w,
+                                    sr_eval_summary_t *summary)
+{
+    static const commodity_t scarcity_goods[] = {
+        COMMODITY_FRAME,
+        COMMODITY_LASER_MODULE,
+        COMMODITY_TRACTOR_MODULE,
+        COMMODITY_REPAIR_KIT,
+    };
+    uint8_t station_hashes[MAX_STATIONS][32];
+    int station_hash_count = 0;
+    sha256_ctx_t topology;
+    sha256_ctx_t semantic;
+
+    memset(summary, 0, sizeof(*summary));
+    sha256_init(&topology);
+    sha256_update(&topology, "signal-ai-eval-topology-v1",
+                  sizeof("signal-ai-eval-topology-v1") - 1u);
+    for (int station_idx = 0; station_idx < MAX_STATIONS; station_idx++) {
+        const station_t *st = &w->stations[station_idx];
+        if (!station_exists(st)) continue;
+
+        uint8_t station_hash[32];
+        sr_hash_eval_station(st, station_hash);
+        sr_hash_i32(&topology, station_idx);
+        sha256_update(&topology, station_hash, sizeof(station_hash));
+        memcpy(station_hashes[station_hash_count++],
+               station_hash, sizeof(station_hash));
+
+        summary->existing_stations++;
+        if (station_is_active(st)) {
+            summary->active_stations++;
+            if (st->signal_range < 1000.0f)
+                summary->weak_signal_stations++;
+            if (!st->signal_connected)
+                summary->disconnected_stations++;
+        }
+        if (station_idx >= SIGNAL_FIRST_OUTPOST_INDEX &&
+            station_is_active(st)) {
+            summary->generated_outposts++;
+            if (summary->outpost_slot_count < SR_EVAL_MAX_OUTPOSTS) {
+                summary->outpost_slots[summary->outpost_slot_count++] =
+                    station_idx;
+            }
+        }
+        for (int commodity = 0; commodity < COMMODITY_COUNT; commodity++) {
+            if (station_produces(st, (commodity_t)commodity))
+                summary->production_edges++;
+            if (station_consumes(st, (commodity_t)commodity))
+                summary->consumption_edges++;
+        }
+    }
+    sha256_final(&topology, summary->topology_hash);
+
+    qsort(station_hashes, (size_t)station_hash_count,
+          sizeof(station_hashes[0]), sr_compare_hashes);
+    sha256_init(&semantic);
+    sha256_update(&semantic, "signal-ai-eval-semantic-v1",
+                  sizeof("signal-ai-eval-semantic-v1") - 1u);
+    sr_hash_i32(&semantic, station_hash_count);
+    for (int i = 0; i < station_hash_count; i++)
+        sha256_update(&semantic, station_hashes[i], sizeof(station_hashes[i]));
+    sha256_final(&semantic, summary->semantic_topology_hash);
+
+    for (size_t i = 0;
+         i < sizeof(scarcity_goods) / sizeof(scarcity_goods[0]); i++) {
+        int total = 0;
+        for (int station_idx = 0; station_idx < MAX_STATIONS; station_idx++) {
+            const station_t *st = &w->stations[station_idx];
+            if (station_exists(st))
+                total += station_finished_count(st, scarcity_goods[i]);
+        }
+        if (total <= 1) summary->scarce_finished_goods++;
+    }
 }
 
 static bool sr_reverse_allowed(const server_player_t *sp)
@@ -938,6 +1293,7 @@ static bool sr_setup_world(const sr_config_t *config,
     memset(w, 0, sizeof(*w));
     w->rng = config->seed;
     world_reset(w);
+    if (!sr_apply_eval_world(config, w)) return false;
     if (!config->active_workers) {
         for (int i = 0; i < MAX_NPC_SHIPS; i++) {
             w->npc_ships[i].active = false;
@@ -3957,6 +4313,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     if (!sr_setup_provenance_script(config, w, sp)) {
         goto cleanup;
     }
+    sr_collect_eval_summary(w, &out->evaluation);
     (void)spawn;
 
     if (config->hnn_trace) {
@@ -4306,6 +4663,55 @@ static void sr_write_hnn_eval(FILE *out, const sr_hnn_eval_t *hnn)
     fprintf(out, "]}");
 }
 
+static void sr_write_eval_summary(FILE *out,
+                                  const sr_config_t *config,
+                                  const sr_eval_summary_t *evaluation)
+{
+    const char *permutation_group =
+        config->eval_world == SR_EVAL_WORLD_PERMUTATION_LOW ||
+        config->eval_world == SR_EVAL_WORLD_PERMUTATION_HIGH
+            ? "relay-slot-permutation-v1"
+            : "";
+    fprintf(out,
+            ",\"evaluation\":{\"schema\":\"%s\","
+            "\"corpus_version\":%u,"
+            "\"generator_version\":%u,"
+            "\"scenario\":\"%s\","
+            "\"permutation_group\":\"%s\","
+            "\"existing_stations\":%d,"
+            "\"active_stations\":%d,"
+            "\"generated_outposts\":%d,"
+            "\"weak_signal_stations\":%d,"
+            "\"disconnected_stations\":%d,"
+            "\"scarce_finished_goods\":%d,"
+            "\"production_edges\":%d,"
+            "\"consumption_edges\":%d,"
+            "\"outpost_slots\":[",
+            SR_AI_EVAL_SCHEMA,
+            SR_AI_EVAL_CORPUS_VERSION,
+            SR_AI_EVAL_GENERATOR_VERSION,
+            sr_eval_world_name(config->eval_world),
+            permutation_group,
+            evaluation->existing_stations,
+            evaluation->active_stations,
+            evaluation->generated_outposts,
+            evaluation->weak_signal_stations,
+            evaluation->disconnected_stations,
+            evaluation->scarce_finished_goods,
+            evaluation->production_edges,
+            evaluation->consumption_edges);
+    for (int i = 0; i < evaluation->outpost_slot_count; i++) {
+        fprintf(out, "%s%d", i > 0 ? "," : "",
+                evaluation->outpost_slots[i]);
+    }
+    fprintf(out, "],");
+    sr_json_hash(out, "topology_hash", evaluation->topology_hash);
+    fprintf(out, ",");
+    sr_json_hash(out, "semantic_topology_hash",
+                 evaluation->semantic_topology_hash);
+    fprintf(out, "}");
+}
+
 static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t *r)
 {
     fprintf(out,
@@ -4431,6 +4837,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
     if (config->hnn_trace && r->hnn.enabled) {
         sr_write_hnn_eval(out, &r->hnn);
     }
+    sr_write_eval_summary(out, config, &r->evaluation);
     fprintf(out,
             ",\"receipt_trust\":{\"schema\":\"signal.receipt_trust.v1\","
             "\"trusted_smelt\":%d,"
