@@ -720,6 +720,126 @@ static void accept_authoritative_local_launch_state(const NetPlayerState *state,
     frame_camera_on_authoritative_baseline(sp);
 }
 
+typedef struct {
+    int index;
+    vec2 pos;
+    vec2 vel;
+    float rotation;
+    float spin;
+    float age;
+    uint8_t tow_hardpoint_tag;
+} net_local_tow_replay_pose_t;
+
+typedef struct {
+    int asteroid_count;
+    net_local_tow_replay_pose_t asteroids[10];
+    int pod_count;
+    net_local_tow_replay_pose_t pods[10];
+    bool scaffold_active;
+    net_local_tow_replay_pose_t scaffold;
+} net_local_tow_replay_guard_t;
+
+static net_local_tow_replay_pose_t net_local_tow_replay_pose(
+    int index, vec2 pos, vec2 vel,
+    float rotation, float spin, float age)
+{
+    return (net_local_tow_replay_pose_t){
+        .index = index,
+        .pos = pos,
+        .vel = vel,
+        .rotation = rotation,
+        .spin = spin,
+        .age = age,
+    };
+}
+
+static void net_local_tow_replay_guard_capture(
+    net_local_tow_replay_guard_t *guard,
+    const server_player_t *sp)
+{
+    if (!guard) return;
+    memset(guard, 0, sizeof(*guard));
+    guard->scaffold.index = -1;
+    if (!sp || !sp->ship) return;
+
+    int asteroid_count = ship_towed_fragment_count(sp->ship);
+    for (int t = 0; t < asteroid_count; t++) {
+        int idx = sp->ship->towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS ||
+            !g.world.asteroids[idx].active) {
+            continue;
+        }
+        int save = guard->asteroid_count++;
+        const asteroid_t *asteroid = &g.world.asteroids[idx];
+        guard->asteroids[save] = net_local_tow_replay_pose(
+            idx, asteroid->pos, asteroid->vel,
+            asteroid->rotation, asteroid->spin, asteroid->age);
+    }
+
+    int pod_count = ship_towed_pod_count(sp->ship);
+    for (int t = 0; t < pod_count; t++) {
+        int idx = sp->ship->towed_pods[t];
+        if (idx < 0 || idx >= MAX_CARGO_PODS ||
+            !g.world.cargo_pods[idx].active) {
+            continue;
+        }
+        int save = guard->pod_count++;
+        const cargo_pod_t *pod = &g.world.cargo_pods[idx];
+        guard->pods[save] = net_local_tow_replay_pose(
+            idx, pod->pos, pod->vel,
+            pod->rotation, pod->spin, pod->age);
+        guard->pods[save].tow_hardpoint_tag = pod->tow_hardpoint_tag;
+    }
+
+    int scaffold_idx = sp->ship->towed_scaffold;
+    if (scaffold_idx >= 0 && scaffold_idx < MAX_SCAFFOLDS &&
+        g.world.scaffolds[scaffold_idx].active) {
+        const scaffold_t *scaffold = &g.world.scaffolds[scaffold_idx];
+        guard->scaffold_active = true;
+        guard->scaffold = net_local_tow_replay_pose(
+            scaffold_idx, scaffold->pos, scaffold->vel,
+            scaffold->rotation, scaffold->spin, scaffold->age);
+    }
+}
+
+static void net_local_tow_replay_guard_restore(
+    const net_local_tow_replay_guard_t *guard)
+{
+    if (!guard) return;
+    for (int i = 0; i < guard->asteroid_count; i++) {
+        const net_local_tow_replay_pose_t *saved = &guard->asteroids[i];
+        if (saved->index < 0 || saved->index >= MAX_ASTEROIDS) continue;
+        asteroid_t *asteroid = &g.world.asteroids[saved->index];
+        asteroid->pos = saved->pos;
+        asteroid->vel = saved->vel;
+        asteroid->rotation = saved->rotation;
+        asteroid->spin = saved->spin;
+        asteroid->age = saved->age;
+    }
+    for (int i = 0; i < guard->pod_count; i++) {
+        const net_local_tow_replay_pose_t *saved = &guard->pods[i];
+        if (saved->index < 0 || saved->index >= MAX_CARGO_PODS) continue;
+        cargo_pod_t *pod = &g.world.cargo_pods[saved->index];
+        pod->pos = saved->pos;
+        pod->vel = saved->vel;
+        pod->rotation = saved->rotation;
+        pod->spin = saved->spin;
+        pod->age = saved->age;
+        pod->tow_hardpoint_tag = saved->tow_hardpoint_tag;
+    }
+    if (guard->scaffold_active &&
+        guard->scaffold.index >= 0 &&
+        guard->scaffold.index < MAX_SCAFFOLDS) {
+        const net_local_tow_replay_pose_t *saved = &guard->scaffold;
+        scaffold_t *scaffold = &g.world.scaffolds[saved->index];
+        scaffold->pos = saved->pos;
+        scaffold->vel = saved->vel;
+        scaffold->rotation = saved->rotation;
+        scaffold->spin = saved->spin;
+        scaffold->age = saved->age;
+    }
+}
+
 static bool net_replay_reconcile_local_player(const NetPlayerState *state,
                                               server_player_t *sp,
                                               int *out_replayed) {
@@ -744,6 +864,8 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
     if (net_replay_missing_prefix(server_tick, first_after)) return false;
 
     sim_events_t saved_events = g.world.events;
+    net_local_tow_replay_guard_t tow_guard;
+    net_local_tow_replay_guard_capture(&tow_guard, sp);
     apply_authoritative_local_motion(state, sp);
     uint32_t last_tick = server_tick;
     int replay_count = (int)g.net_replay_count;
@@ -754,6 +876,11 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
         last_tick = frame->tick;
         (*out_replayed)++;
     }
+    /* Player snapshots and towable motion use independent streams. The
+     * towable is already predicted to the local present when an older player
+     * baseline arrives, so replay may use a temporary copy for its reaction
+     * on the ship but must not advance that live towable a second time. */
+    net_local_tow_replay_guard_restore(&tow_guard);
     net_adopt_local_tow_prediction(0.0f);
     g.world.events = saved_events;
 
@@ -761,6 +888,107 @@ static bool net_replay_reconcile_local_player(const NetPlayerState *state,
     g.net_prediction_tick_valid = true;
     net_replay_prune_through(server_tick);
     return true;
+}
+
+int net_smoke_local_tow_replay_stability_check(void) {
+    const int player_idx = 0;
+    const int pod_idx = MAX_CARGO_PODS - 1;
+    server_player_t *sp = &g.world.players[player_idx];
+    if (!sp->ship) return 0;
+
+    bool saved_net_authority_enabled = g.net_authority_enabled;
+    bool saved_net_input_tick_protocol = g.net_input_tick_protocol;
+    int saved_local_player_slot = g.local_player_slot;
+    uint32_t saved_prediction_tick = g.net_prediction_tick;
+    bool saved_prediction_tick_valid = g.net_prediction_tick_valid;
+    uint16_t saved_replay_start = g.net_replay_start;
+    uint16_t saved_replay_count = g.net_replay_count;
+    input_replay_frame_t saved_replay[NET_REPLAY_FRAME_CAP];
+    memcpy(saved_replay, g.net_replay, sizeof(saved_replay));
+    server_player_t saved_player = *sp;
+    ship_t saved_ship = *sp->ship;
+    cargo_pod_t saved_world_pod = g.world.cargo_pods[pod_idx];
+    cargo_pod_t saved_prev_pod = g.cargo_pod_interp.prev[pod_idx];
+    cargo_pod_t saved_curr_pod = g.cargo_pod_interp.curr[pod_idx];
+    float saved_pod_elapsed = g.cargo_pod_interp.elapsed[pod_idx];
+    sim_events_t saved_events = g.world.events;
+    bool saved_player_only_mode = g.world.player_only_mode;
+
+    g.net_authority_enabled = true;
+    g.net_input_tick_protocol = true;
+    g.local_player_slot = player_idx;
+    sp->connected = true;
+    sp->docked = false;
+    sp->ship->pos = saved_ship.pos;
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->ship->towed_count = 0;
+    memset(sp->ship->towed_fragments, -1,
+           sizeof(sp->ship->towed_fragments));
+    sp->ship->towed_pod_count = 1;
+    memset(sp->ship->towed_pods, -1, sizeof(sp->ship->towed_pods));
+    sp->ship->towed_pods[0] = (int16_t)pod_idx;
+    sp->ship->towed_scaffold = -1;
+
+    cargo_pod_t replay_pod = {0};
+    replay_pod.active = true;
+    replay_pod.kind = CARGO_POD_CARGO;
+    replay_pod.commodity = COMMODITY_FERRITE_INGOT;
+    replay_pod.radius = 18.0f;
+    replay_pod.quantity = 12;
+    replay_pod.pos = v2_add(sp->ship->pos, v2(260.0f, 35.0f));
+    replay_pod.vel = v2(30.0f, -4.0f);
+    cargo_pod_set_player_tractor(&replay_pod, player_idx);
+    g.world.cargo_pods[pod_idx] = replay_pod;
+    g.cargo_pod_interp.prev[pod_idx] = replay_pod;
+    g.cargo_pod_interp.curr[pod_idx] = replay_pod;
+    g.cargo_pod_interp.elapsed[pod_idx] = 0.0f;
+
+    g.net_prediction_tick = 102;
+    g.net_prediction_tick_valid = true;
+    g.net_replay_start = 0;
+    g.net_replay_count = 2;
+    memset(g.net_replay, 0, sizeof(g.net_replay));
+    for (int i = 0; i < 2; i++) {
+        g.net_replay[i].tick = (uint32_t)(101 + i);
+        g.net_replay[i].dt = SIM_DT;
+        g.net_replay[i].intent.mining_target_hint = -1;
+    }
+
+    NetPlayerState authority = {0};
+    authority.player_id = (uint8_t)player_idx;
+    authority.active = true;
+    authority.x = sp->ship->pos.x;
+    authority.y = sp->ship->pos.y;
+    authority.angle = sp->ship->angle;
+    authority.server_tick = 100;
+
+    int replayed = 0;
+    bool reconciled = net_replay_reconcile_local_player(
+        &authority, sp, &replayed);
+    const cargo_pod_t *after = &g.world.cargo_pods[pod_idx];
+    bool pod_preserved =
+        memcmp(after, &replay_pod, sizeof(replay_pod)) == 0;
+    int ok = reconciled && replayed == 2 && pod_preserved &&
+        isfinite(sp->ship->pos.x) && isfinite(sp->ship->pos.y) &&
+        isfinite(sp->ship->vel.x) && isfinite(sp->ship->vel.y);
+
+    g.net_authority_enabled = saved_net_authority_enabled;
+    g.net_input_tick_protocol = saved_net_input_tick_protocol;
+    g.local_player_slot = saved_local_player_slot;
+    g.net_prediction_tick = saved_prediction_tick;
+    g.net_prediction_tick_valid = saved_prediction_tick_valid;
+    g.net_replay_start = saved_replay_start;
+    g.net_replay_count = saved_replay_count;
+    memcpy(g.net_replay, saved_replay, sizeof(saved_replay));
+    *sp = saved_player;
+    if (sp->ship) *sp->ship = saved_ship;
+    g.world.cargo_pods[pod_idx] = saved_world_pod;
+    g.cargo_pod_interp.prev[pod_idx] = saved_prev_pod;
+    g.cargo_pod_interp.curr[pod_idx] = saved_curr_pod;
+    g.cargo_pod_interp.elapsed[pod_idx] = saved_pod_elapsed;
+    g.world.events = saved_events;
+    g.world.player_only_mode = saved_player_only_mode;
+    return ok ? 1 : 0;
 }
 
 static void client_reset_player_slot(int player_slot) {
