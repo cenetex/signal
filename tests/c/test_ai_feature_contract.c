@@ -270,9 +270,9 @@ static bool write_checkpoint(const char *path,
 }
 
 TEST(test_legacy_ai_checkpoints_fail_closed_with_actionable_errors) {
-    const char *worker_v1_path = "signal-test-worker-v1.nnckpt";
-    const char *worker_old_v2_path = "signal-test-worker-old-v2.nnckpt";
-    const char *contract_v1_path = "signal-test-contract-v1.nnckpt";
+    const char *worker_v1_path = TMP("signal-test-worker-v1.nnckpt");
+    const char *worker_old_v2_path = TMP("signal-test-worker-old-v2.nnckpt");
+    const char *contract_v1_path = TMP("signal-test-contract-v1.nnckpt");
     char err[256];
 
     ASSERT(write_checkpoint(worker_v1_path, 56, 1,
@@ -301,8 +301,8 @@ TEST(test_legacy_ai_checkpoints_fail_closed_with_actionable_errors) {
 }
 
 TEST(test_v2_checkpoints_score_every_declared_option) {
-    const char *worker_path = "signal-test-worker-v2.nnckpt";
-    const char *contract_path = "signal-test-contract-v2.nnckpt";
+    const char *worker_path = TMP("signal-test-worker-v2.nnckpt");
+    const char *contract_path = TMP("signal-test-contract-v2.nnckpt");
     char err[256];
 
     ASSERT(write_checkpoint(worker_path, SIGNAL_NPC_WORKER_FEATURE_COUNT,

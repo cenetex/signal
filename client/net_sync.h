@@ -51,6 +51,7 @@ void net_observe_transport_latency_sample(float rtt_ms,
                                           uint32_t server_tick,
                                           bool from_input_ack);
 void net_adopt_local_tow_prediction(float dt);
+int net_smoke_local_tow_replay_stability_check(void);
 void net_advance_asteroid_interpolation(float dt);
 void net_advance_npc_interpolation(float dt);
 void net_advance_scaffold_interpolation(float dt);

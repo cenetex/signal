@@ -4482,6 +4482,11 @@ int signal_smoke_remote_towable_interp_check(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+int signal_smoke_local_tow_replay_stability_check(void) {
+    return net_smoke_local_tow_replay_stability_check();
+}
+
+EMSCRIPTEN_KEEPALIVE
 int signal_smoke_prepare_npc_scaffold_tether(void) {
     const int npc_idx = 0;
     const int scaffold_idx = MAX_SCAFFOLDS - 1;

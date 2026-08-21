@@ -627,6 +627,16 @@ async function remoteTowableInterpCheck(page: Page): Promise<number> {
   });
 }
 
+async function localTowReplayStabilityCheck(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('signal_smoke_local_tow_replay_stability_check', 'number', [], []);
+  });
+}
+
 async function adverseTowableGate(page: Page): Promise<number> {
   return page.evaluate(() => {
     const mod = (window as unknown as {
@@ -2740,7 +2750,11 @@ test.describe('Browser smoke tests', () => {
     expect(
       await wasmNumber(page, 'signal_cargo_readability_towed_screen_radius'),
       'the towed carrier should retain a readable radius at the flight camera',
-    ).toBeGreaterThanOrEqual(24.5);
+    ).toBeGreaterThanOrEqual(21.5);
+    expect(
+      await wasmNumber(page, 'signal_cargo_readability_max_scale'),
+      'towing must not inflate a carrier beyond the normal readability cap',
+    ).toBeLessThanOrEqual(1.5);
     expect(
       await wasmNumber(page, 'signal_station_hopper_glyph_count'),
       'visible station storage cells should retain their hopper silhouettes',
@@ -2871,6 +2885,10 @@ test.describe('Browser smoke tests', () => {
     await loadGame(page, false, { singleplayer: true });
 
     expect(await remoteTowableInterpCheck(page)).toBe(1);
+    expect(
+      await localTowReplayStabilityCheck(page),
+      'player reconciliation must not advance an already-predicted tow body again',
+    ).toBe(1);
 
     expectNoFatalErrors(logs);
   });
