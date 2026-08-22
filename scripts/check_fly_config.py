@@ -172,6 +172,21 @@ def fly_config_failures(
             "[[services]] must expose RTC_GATEWAY_ICE_PORT over UDP"
         )
 
+    machines = config.get("vm")
+    if not isinstance(machines, list) or len(machines) != 1:
+        failures.append("fly.toml must declare exactly one [[vm]] table")
+    else:
+        machine = machines[0]
+        if not isinstance(machine, dict):
+            failures.append("[[vm]] must be a table")
+        else:
+            if machine.get("cpu_kind") != "performance":
+                failures.append("[[vm]].cpu_kind must be 'performance'")
+            if machine.get("cpus") != 1:
+                failures.append("[[vm]].cpus must be 1")
+            if machine.get("memory") != "2gb":
+                failures.append("[[vm]].memory must be '2gb'")
+
     return failures
 
 
