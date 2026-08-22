@@ -30,9 +30,15 @@ set(SIGNAL_CRYPTO_OWNED_SOURCES
 set(SIGNAL_CRYPTO_SOURCES
     ${SIGNAL_CRYPTO_UPSTREAM_SOURCES}
     ${SIGNAL_CRYPTO_OWNED_SOURCES}
+    vendor/raticross/raticross.c
 )
 set(SIGNAL_CRYPTO_INCLUDE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/tweetnacl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/raticross"
+)
+
+set(RATICROSS_SOURCES
+    vendor/raticross/raticross.c
 )
 # Vendored TweetNaCl is public-domain and not written with -Wpedantic
 # in mind (uses unsigned long for u32, etc.). Compile with /W0 (MSVC)
@@ -193,6 +199,7 @@ set(SIGNAL_SIM_HELPERS
     shared/station_util.c
     shared/cargo_receipt.c
     shared/pubkey_proof.c
+    shared/rx_envelope.c
     shared/handoff_ticket.c
     shared/tractor.c
     shared/laser.c
@@ -358,6 +365,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_save_keyed_by_pubkey.c
         tests/c/test_anchor.c
         tests/c/test_station_authority.c
+        tests/c/test_rx_envelope.c
         tests/c/test_chain_log.c
         tests/c/test_highscore_replay.c
         server/highscore.c

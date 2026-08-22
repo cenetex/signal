@@ -82,6 +82,7 @@ void register_registry_tests(void);
 void register_signed_action_tests(void);
 void register_save_keyed_by_pubkey_tests(void);
 void register_station_authority_tests(void);
+void register_rx_envelope_tests(void);
 void register_chain_log_tests(void);
 void register_highscore_replay_tests(void);
 void register_signal_verify_tests(void);
@@ -235,6 +236,7 @@ int main(int argc, char **argv) {
     register_signed_action_tests();
     register_save_keyed_by_pubkey_tests();
     register_station_authority_tests();
+    register_rx_envelope_tests();
     register_chain_log_tests();
     register_highscore_replay_tests();
     register_signal_verify_tests();
