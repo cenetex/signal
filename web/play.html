@@ -264,12 +264,11 @@
     </script>
     <script>
 
-      /* ?singleplayer=1 forces the in-process server.
+      /* The default connects to the same-origin WebSocket multiplayer relay.
+       * ?singleplayer=1 forces the in-process server.
        * ?server=ws://... or ?server=rtcs://... connects to an explicit relay.
-       * ?online=1 connects to the same-origin WebSocket relay. Add
-       * ?transport=rtc to opt into the WebRTC gateway.
-       * Default is local-first singleplayer; ?lobby=wss://... lets a lobby
-       * promote the page into a network session when a second player arrives. */
+       * ?transport=rtc opts into the WebRTC gateway.
+       * ?lobby=wss://... keeps the old local-first lobby promotion flow. */
       var signalParams = new URLSearchParams(window.location.search);
       if (!window.SIGNAL_LOBBY_URL && window.location.hostname === 'signal.ratimics.com') {
         window.SIGNAL_LOBBY_URL = 'wss://jldrsi17o0.execute-api.us-west-2.amazonaws.com/prod';
@@ -277,7 +276,8 @@
 
       if (signalParams.has('singleplayer')) window.SIGNAL_SERVER = '';
       else if (signalParams.has('server')) window.SIGNAL_SERVER = signalParams.get('server');
-      else if (signalParams.has('online') || signalParams.has('multiplayer') || signalParams.has('network')) {
+      else if (signalParams.has('lobby')) window.SIGNAL_SERVER = '';
+      else {
         var signalTransport = (signalParams.get('transport') || 'ws').toLowerCase();
         if (signalTransport === 'rtc' || signalTransport === 'webrtc') {
           var signalRtcProto = window.location.protocol === 'https:' ? 'rtcs:' : 'rtc:';
@@ -286,9 +286,6 @@
           var signalWsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
           window.SIGNAL_SERVER = signalWsProto + '//' + window.location.host + '/ws';
         }
-      }
-      else {
-        window.SIGNAL_SERVER = '';
       }
 
       function setLoading(message) {
@@ -351,7 +348,8 @@
         /* Explicit authority selections are already connected by the game
          * client. Starting lobby matchmaking as well can receive serverReady
          * and replace the page while WASM is still initializing. */
-        if (signalParams.has('server') || signalParams.has('singleplayer') ||
+        if (window.SIGNAL_SERVER ||
+            signalParams.has('server') || signalParams.has('singleplayer') ||
             signalParams.has('online') || signalParams.has('multiplayer') ||
             signalParams.has('network')) return;
         var lobby = signalLobbyEndpoint(signalParams.get('lobby') || window.SIGNAL_LOBBY_URL || '');
