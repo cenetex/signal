@@ -1462,14 +1462,18 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
-  test('online mode prefers WebSocket while preserving an RTC opt-in', async ({ page }) => {
+  test('multiplayer is the default while singleplayer and RTC remain explicit options', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'transport selection is covered against the local bundle');
 
-    await page.goto('/play.html?online=1', { waitUntil: 'domcontentloaded' });
+    await page.goto('/play.html', { waitUntil: 'domcontentloaded' });
     expect(await page.evaluate(() => (window as unknown as { SIGNAL_SERVER?: string }).SIGNAL_SERVER))
       .toBe(`ws://${new URL(page.url()).host}/ws`);
 
-    await page.goto('/play.html?online=1&transport=rtc', { waitUntil: 'domcontentloaded' });
+    await page.goto('/play.html?singleplayer=1', { waitUntil: 'domcontentloaded' });
+    expect(await page.evaluate(() => (window as unknown as { SIGNAL_SERVER?: string }).SIGNAL_SERVER))
+      .toBe('');
+
+    await page.goto('/play.html?transport=rtc', { waitUntil: 'domcontentloaded' });
     expect(await page.evaluate(() => (window as unknown as { SIGNAL_SERVER?: string }).SIGNAL_SERVER))
       .toBe(`rtc://${new URL(page.url()).host}/rtc/signal-main`);
   });
