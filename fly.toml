@@ -51,6 +51,6 @@ primary_region = "lax"
     port = 50000
 
 [[vm]]
-  cpu_kind = "shared"
+  cpu_kind = "performance"
   cpus = 1
-  memory = "512mb"
+  memory = "2gb"

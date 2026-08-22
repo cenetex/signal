@@ -141,8 +141,10 @@ SMOKE_LIVE_RELAY_ASSERT=1 \
 
 ## Cost Controls
 
-- `shared-cpu-1x` with `512mb` RAM is the starting point. Move to `1gb` only
-  if `/health`, logs, or Fly metrics show memory pressure.
+- `performance-1x` with `2gb` RAM keeps the 120 Hz authority off Fly's
+  shared-CPU baseline throttle. A shared CPU exhausted its burst balance under
+  the live simulation and produced long initial syncs plus roughly 500 ms
+  input acknowledgements.
 - `auto_stop_machines = "suspend"` means CPU and RAM billing stop while idle;
   the persistent cost is the root filesystem, the `signal_data` volume, and
   any public egress.

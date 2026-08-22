@@ -128,6 +128,23 @@ class FlyConfigContractTests(unittest.TestCase):
         )
         self.assertTrue(any("GET /health" in failure for failure in failures))
 
+    def test_performance_cpu_cannot_drift(self) -> None:
+        mutations = {
+            "cpu_kind": "shared",
+            "cpus": 2,
+            "memory": "512mb",
+        }
+        for key, value in mutations.items():
+            with self.subTest(key=key):
+                failures = self.failures_after(
+                    lambda config, key=key, value=value:
+                        config["vm"][0].update({key: value})
+                )
+                self.assertTrue(
+                    any(f"[[vm]].{key}" in failure for failure in failures),
+                    failures,
+                )
+
     def test_udp_ice_mux_must_remain_exposed(self) -> None:
         failures = self.failures_after(
             lambda config: config["services"][0].update(protocol="tcp")
