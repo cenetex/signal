@@ -8441,6 +8441,20 @@ static void apply_persistence_writer_result(
     uint64_t now,
     uint64_t *last_save
 ) {
+    persistence_writer_metrics_t save_metrics = {0};
+    if (persistence_writer &&
+        persistence_writer_get_metrics(
+            persistence_writer, &save_metrics) &&
+        save_metrics.write_complete) {
+        fprintf(stdout,
+                "[save-observability] snapshot_tick=%u collect_tick=%u "
+                "clone_ms=%.3f write_ms=%.3f result=%s\n",
+                save_metrics.snapshot_tick, world.tick,
+                save_metrics.snapshot_clone_ms,
+                save_metrics.background_write_ms,
+                state == PERSISTENCE_WRITER_SUCCEEDED
+                    ? "succeeded" : "failed");
+    }
     if (state == PERSISTENCE_WRITER_SUCCEEDED) {
         if (adopt_published_generation(published)) {
             persistence_retry_not_before_ms = 0;

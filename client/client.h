@@ -764,6 +764,15 @@ typedef struct {
         /* Sparse asteroid packet classes arrive independently. Keep a clock
          * per slot so a packet for one rock cannot rebase every other rock. */
         float elapsed[MAX_ASTEROIDS];
+        /* Consecutive authoritative velocity samples provide a render-only
+         * acceleration estimate for tow and station-pull motion. Keep this
+         * separate from curr because local player prediction may temporarily
+         * adopt a newer visual pose between packets. */
+        vec2 snapshot_vel[MAX_ASTEROIDS];
+        vec2 acceleration[MAX_ASTEROIDS];
+        float snapshot_elapsed[MAX_ASTEROIDS];
+        bool snapshot_valid[MAX_ASTEROIDS];
+        bool acceleration_valid[MAX_ASTEROIDS];
     } asteroid_interp;
     struct {
         client_npc_render_state_t prev[MAX_NPC_SHIPS];

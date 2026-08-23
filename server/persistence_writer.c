@@ -11,6 +11,7 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <time.h>
 #endif
 
 struct persistence_writer {
@@ -28,7 +29,24 @@ struct persistence_writer {
     char legacy_player_dir[PERSISTENCE_GENERATION_PATH_MAX];
     bool save_player_slot[MAX_PLAYERS];
     persistence_generation_paths_t published;
+    persistence_writer_metrics_t metrics;
 };
+
+static double persistence_writer_now(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER frequency;
+    LARGE_INTEGER counter;
+    if (frequency.QuadPart == 0)
+        (void)QueryPerformanceFrequency(&frequency);
+    (void)QueryPerformanceCounter(&counter);
+    return frequency.QuadPart > 0
+        ? (double)counter.QuadPart / (double)frequency.QuadPart : 0.0;
+#else
+    struct timespec ts = {0};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0.0;
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+#endif
+}
 
 static void writer_lock(persistence_writer_t *writer) {
 #ifdef _WIN32
@@ -47,6 +65,7 @@ static void writer_unlock(persistence_writer_t *writer) {
 }
 
 static void persistence_writer_run(persistence_writer_t *writer) {
+    double write_started = persistence_writer_now();
     persistence_generation_paths_t published = {0};
     bool ok = persistence_generation_commit(
         writer->root_dir,
@@ -59,6 +78,9 @@ static void persistence_writer_run(persistence_writer_t *writer) {
     writer->snapshot = NULL;
 
     writer_lock(writer);
+    writer->metrics.background_write_ms =
+        (persistence_writer_now() - write_started) * 1000.0;
+    writer->metrics.write_complete = true;
     if (ok) writer->published = published;
     writer->state = ok
         ? PERSISTENCE_WRITER_SUCCEEDED
@@ -137,11 +159,16 @@ bool persistence_writer_start(
         (size_t)legacy_len >= sizeof(writer->legacy_player_dir)) {
         return false;
     }
+    double clone_started = persistence_writer_now();
     writer->snapshot = world_snapshot_clone_create(world);
     if (!writer->snapshot) return false;
     memcpy(writer->save_player_slot, save_player_slot,
            sizeof(writer->save_player_slot));
     memset(&writer->published, 0, sizeof(writer->published));
+    memset(&writer->metrics, 0, sizeof(writer->metrics));
+    writer->metrics.snapshot_tick = world->tick;
+    writer->metrics.snapshot_clone_ms =
+        (persistence_writer_now() - clone_started) * 1000.0;
     writer->state = PERSISTENCE_WRITER_RUNNING;
 
 #ifdef _WIN32
@@ -166,6 +193,17 @@ bool persistence_writer_active(persistence_writer_t *writer) {
     /* A completed OS thread is still busy until poll/wait joins it and
      * consumes its result; start() enforces the same single-writer rule. */
     return writer && writer->thread_joinable;
+}
+
+bool persistence_writer_get_metrics(
+    persistence_writer_t *writer,
+    persistence_writer_metrics_t *out_metrics)
+{
+    if (!writer || !out_metrics) return false;
+    writer_lock(writer);
+    *out_metrics = writer->metrics;
+    writer_unlock(writer);
+    return true;
 }
 
 static persistence_writer_state_t persistence_writer_collect(

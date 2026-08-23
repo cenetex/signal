@@ -43,6 +43,22 @@ void asteroid_presentation_predict_motion(
     const asteroid_t *base, float elapsed, bool tow_driven,
     vec2 *out_pos, vec2 *out_vel);
 
+/* Packet-driven tow motion is accelerated. Use a short, bounded acceleration
+ * estimate from consecutive authoritative velocity samples, then coast if a
+ * packet is delayed. This changes presentation only; it never mutates sim. */
+#define ASTEROID_PRESENTATION_ACCEL_HORIZON_SEC 0.25f
+#define ASTEROID_PRESENTATION_MAX_ACCEL 2000.0f
+void asteroid_presentation_predict_motion_accelerated(
+    const asteroid_t *base, float elapsed, bool tow_driven,
+    vec2 acceleration, bool acceleration_valid,
+    vec2 *out_pos, vec2 *out_vel);
+
+/* Deterministic 60 Hz presentation against a 10 Hz accelerating packet
+ * source. Shared by native unit tests and the browser smoke gate. */
+bool asteroid_presentation_acceleration_gate(
+    float *out_max_position_error,
+    float *out_max_velocity_error);
+
 asteroid_presentation_action_t asteroid_presentation_resolve(
     const world_t *authority, const asteroid_t *client_asteroid,
     int asteroid_index, float render_ahead,

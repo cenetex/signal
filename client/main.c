@@ -27,6 +27,8 @@
 #include "client_log.h"
 #include "hud_attention.h"
 #include "legacy_recovery_ui.h"
+#include "gameplay_observability.h"
+#include "asteroid_presentation.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -1910,6 +1912,17 @@ static void init(void) {
      */
     g.world.rng = 0xC0FFEE12u;
 
+    bool jank_profile_enabled = false;
+#ifdef __EMSCRIPTEN__
+    jank_profile_enabled = emscripten_run_script_int(
+        "new URLSearchParams(location.search).get('jankprofile')==='1'") != 0;
+#else
+    const char *jank_profile = getenv("SIGNAL_JANK_PROFILE");
+    jank_profile_enabled = jank_profile && jank_profile[0] != '\0' &&
+        strcmp(jank_profile, "0") != 0;
+#endif
+    gameplay_observability_configure(jank_profile_enabled, 60.0);
+
     sg_setup(&(sg_desc){
         .environment = sglue_environment(),
         .logger.func = slog_func,
@@ -2697,9 +2710,30 @@ EMSCRIPTEN_KEEPALIVE
 float signal_render_frame_duration_ms(void) {
     return g_render_frame_duration_ms;
 }
+
+EMSCRIPTEN_KEEPALIVE
+int signal_jank_profile_enabled(void) {
+    return gameplay_observability_enabled() ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void signal_jank_profile_reset(void) {
+    gameplay_observability_reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_jank_profile_report_json(void) {
+    return gameplay_observability_report_json();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_accelerated_asteroid_prediction_gate(void) {
+    return asteroid_presentation_acceleration_gate(NULL, NULL) ? 1 : 0;
+}
 #endif
 
 static void render_frame(void) {
+    double interpolation_started = gameplay_observability_phase_begin();
     float frame_dt = (float)sapp_frame_duration();
     if (frame_dt <= 0.0f) frame_dt = 1.0f / 60.0f;
     if (frame_dt > 0.1f) frame_dt = 0.1f;
@@ -2751,6 +2785,10 @@ static void render_frame(void) {
         saved_scaffold_active = apply_local_towed_scaffold_render_pose(
             &saved_scaffold, g.local_player_render_offset, render_ahead);
     }
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_INTERPOLATION, interpolation_started);
+
+    double world_render_started = gameplay_observability_phase_begin();
     render_world();
     if (apply_visual_pose) {
         restore_local_towed_asteroid_render_pose(saved_asteroids,
@@ -2762,7 +2800,13 @@ static void render_frame(void) {
         LOCAL_PLAYER.ship->pos = saved_ship_pos;
         LOCAL_PLAYER.ship->angle = saved_ship_angle;
     }
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_WORLD_RENDER, world_render_started);
+
+    double ui_render_started = gameplay_observability_phase_begin();
     render_ui();
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_UI_RENDER, ui_render_started);
 
     g_render_queued_vertices = sgl_num_vertices();
     g_render_queued_commands = sgl_num_commands();
@@ -2775,6 +2819,7 @@ static void render_frame(void) {
         (render_error.stack_underflow ? 1u << 4 : 0u) |
         (render_error.no_context ? 1u << 5 : 0u);
 
+    double submission_started = gameplay_observability_phase_begin();
     sg_begin_pass(&(sg_pass){
         .action = g.pass_action,
         .swapchain = sglue_swapchain(),
@@ -2783,10 +2828,16 @@ static void render_frame(void) {
     sdtx_draw();
     sg_end_pass();
     sg_commit();
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_SUBMISSION, submission_started);
 }
 
 static void advance_simulation_frame(float frame_dt) {
     g.runtime.accumulator += frame_dt;
+
+    double due_f = floor((double)g.runtime.accumulator / (double)SIM_DT);
+    uint32_t due = due_f > (double)UINT32_MAX
+        ? UINT32_MAX : (uint32_t)due_f;
 
     int sim_steps = 0;
     while ((g.runtime.accumulator >= SIM_DT) && (sim_steps < MAX_SIM_STEPS_PER_FRAME)) {
@@ -2794,6 +2845,20 @@ static void advance_simulation_frame(float frame_dt) {
         g.runtime.accumulator -= SIM_DT;
         sim_steps++;
     }
+
+    uint32_t missed = due > (uint32_t)sim_steps
+        ? due - (uint32_t)sim_steps : 0u;
+    uint32_t dropped = 0;
+    if (g.runtime.accumulator >= SIM_DT) {
+        double drop_f = floor(
+            (double)g.runtime.accumulator / (double)SIM_DT);
+        dropped = drop_f > (double)UINT32_MAX
+            ? UINT32_MAX : (uint32_t)drop_f;
+        g.runtime.accumulator -= (float)dropped * SIM_DT;
+        if (g.runtime.accumulator < 0.0f) g.runtime.accumulator = 0.0f;
+    }
+    gameplay_observability_record_sim_steps(
+        (uint32_t)sim_steps, missed, dropped);
 }
 
 /* Exported for the JS music player — returns 0.0-1.0 */
@@ -3701,6 +3766,11 @@ int signal_smoke_remote_towable_interp_check(void) {
     asteroid_t saved_asteroid_prev[MAX_ASTEROIDS];
     asteroid_t saved_asteroid_curr[MAX_ASTEROIDS];
     float saved_asteroid_elapsed[MAX_ASTEROIDS];
+    vec2 saved_asteroid_snapshot_vel[MAX_ASTEROIDS];
+    vec2 saved_asteroid_acceleration[MAX_ASTEROIDS];
+    float saved_asteroid_snapshot_elapsed[MAX_ASTEROIDS];
+    bool saved_asteroid_snapshot_valid[MAX_ASTEROIDS];
+    bool saved_asteroid_acceleration_valid[MAX_ASTEROIDS];
     client_npc_render_state_t saved_npc_prev[MAX_NPC_SHIPS];
     client_npc_render_state_t saved_npc_curr[MAX_NPC_SHIPS];
     float saved_npc_elapsed[MAX_NPC_SHIPS];
@@ -3729,6 +3799,19 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(saved_asteroid_curr, g.asteroid_interp.curr, sizeof(saved_asteroid_curr));
     memcpy(saved_asteroid_elapsed, g.asteroid_interp.elapsed,
            sizeof(saved_asteroid_elapsed));
+    memcpy(saved_asteroid_snapshot_vel, g.asteroid_interp.snapshot_vel,
+           sizeof(saved_asteroid_snapshot_vel));
+    memcpy(saved_asteroid_acceleration, g.asteroid_interp.acceleration,
+           sizeof(saved_asteroid_acceleration));
+    memcpy(saved_asteroid_snapshot_elapsed,
+           g.asteroid_interp.snapshot_elapsed,
+           sizeof(saved_asteroid_snapshot_elapsed));
+    memcpy(saved_asteroid_snapshot_valid,
+           g.asteroid_interp.snapshot_valid,
+           sizeof(saved_asteroid_snapshot_valid));
+    memcpy(saved_asteroid_acceleration_valid,
+           g.asteroid_interp.acceleration_valid,
+           sizeof(saved_asteroid_acceleration_valid));
     memcpy(saved_npc_prev, g.npc_interp.prev, sizeof(saved_npc_prev));
     memcpy(saved_npc_curr, g.npc_interp.curr, sizeof(saved_npc_curr));
     memcpy(saved_npc_elapsed, g.npc_interp.elapsed,
@@ -4447,6 +4530,19 @@ int signal_smoke_remote_towable_interp_check(void) {
     memcpy(g.asteroid_interp.curr, saved_asteroid_curr, sizeof(saved_asteroid_curr));
     memcpy(g.asteroid_interp.elapsed, saved_asteroid_elapsed,
            sizeof(saved_asteroid_elapsed));
+    memcpy(g.asteroid_interp.snapshot_vel, saved_asteroid_snapshot_vel,
+           sizeof(saved_asteroid_snapshot_vel));
+    memcpy(g.asteroid_interp.acceleration, saved_asteroid_acceleration,
+           sizeof(saved_asteroid_acceleration));
+    memcpy(g.asteroid_interp.snapshot_elapsed,
+           saved_asteroid_snapshot_elapsed,
+           sizeof(saved_asteroid_snapshot_elapsed));
+    memcpy(g.asteroid_interp.snapshot_valid,
+           saved_asteroid_snapshot_valid,
+           sizeof(saved_asteroid_snapshot_valid));
+    memcpy(g.asteroid_interp.acceleration_valid,
+           saved_asteroid_acceleration_valid,
+           sizeof(saved_asteroid_acceleration_valid));
     memcpy(g.npc_interp.prev, saved_npc_prev, sizeof(saved_npc_prev));
     memcpy(g.npc_interp.curr, saved_npc_curr, sizeof(saved_npc_curr));
     memcpy(g.npc_interp.elapsed, saved_npc_elapsed,
@@ -5044,6 +5140,8 @@ static void legacy_recovery_ui_update_adapter(void) {
 }
 
 static void frame(void) {
+    gameplay_observability_frame_begin();
+    double input_started = gameplay_observability_phase_begin();
     float frame_dt = (float)sapp_frame_duration();
     if (!isfinite(frame_dt) || frame_dt < 0.0f)
         frame_dt = 0.0f;
@@ -5236,21 +5334,31 @@ static void frame(void) {
         }
     }
 
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_INPUT_NETWORK, input_started);
+
+    double simulation_started = gameplay_observability_phase_begin();
     advance_simulation_frame(frame_dt);
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_SIMULATION, simulation_started);
 
     /* Offline fallback: keep the client-side manifest summary fresh. The
      * network path fills the summary directly from server packets. */
     if (!g.net_authority_enabled) refresh_station_manifest_summaries();
 
 
+    double audio_started = gameplay_observability_phase_begin();
     audio_generate_stream(&g.audio);
 
     /* Upload the latest decoded episode frame once per render frame. Decoding
      * happens inside sim_step (possibly multiple steps per frame); uploading
      * here ensures at most one sg_update_image per image per frame. */
     episode_upload_frame(&g.episode);
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_AUDIO_MEDIA, audio_started);
 
     render_frame();
+    gameplay_observability_frame_end();
 }
 
 static void cleanup(void) {

@@ -219,6 +219,7 @@ set(SIGNAL_CLIENT_SOURCES
     client/legacy_recovery_view.c
     client/client_log.c
     client/reconciliation_diagnostics.c
+    client/gameplay_observability.c
     client/asteroid_presentation.c
     client/tow_presentation_diagnostics.c
     client/tow_adverse_gate.c
@@ -390,6 +391,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_signal_field.c
         tests/c/test_state_digest.c
         tests/c/test_reconciliation_diagnostics.c
+        tests/c/test_gameplay_observability.c
         tests/c/test_asteroid_presentation.c
         tests/c/test_tow_presentation_diagnostics.c
         tests/c/test_gossip.c
@@ -400,6 +402,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         client/public_actor_presentation.c
         client/client_log.c
         client/reconciliation_diagnostics.c
+        client/gameplay_observability.c
         client/asteroid_presentation.c
         client/tow_presentation_diagnostics.c
         client/episode_lifecycle.c

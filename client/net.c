@@ -12,6 +12,7 @@
 #include "signal_crypto.h"
 #include "signal_memzero.h"
 #include "net_clock.h"
+#include "gameplay_observability.h"
 #include "net_message_gate.h"
 #include "wire_codec.h"
 
@@ -1310,6 +1311,8 @@ static void handle_message(const uint8_t* data, int len) {
             return;
         }
     }
+
+    gameplay_observability_record_packet(data[0], (size_t)len);
 
     switch (data[0]) {
     case NET_MSG_LEGACY_RECOVERY_OFFER:
