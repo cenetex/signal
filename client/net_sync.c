@@ -2867,13 +2867,26 @@ static bool net_tow_ship_source_is_live(entity_ref_t source) {
         return false;
     }
     /*
-     * Ship generations are replicated by the atomic relation and are also
-     * present on the client's live component slot. Require an exact match so
-     * a delayed relation from a departed/recycled actor cannot paint a beam
-     * from the new occupant of the same numeric slot.
+     * The atomic relation carries the server's ship generation. Client ship
+     * slots are created independently, so their local generation can differ
+     * after a server restart or reconnect even though both sides name the
+     * same live player/NPC. Requiring equality here accepted the relation but
+     * then discarded its render projection, hiding every online tether.
+     *
+     * Snapshot revisions reject delayed relation sets. At projection time we
+     * only need to prove that the named source slot still has a live actor;
+     * the server generation remains attached to the target binding.
      */
-    return entity_ref_equal(
-        world_ship_ref_for_slot(&g.world, source.index), source);
+    if (source.index < WORLD_NPC_SHIP_BASE) {
+        int player = source.index - WORLD_PLAYER_SHIP_BASE;
+        return player >= 0 && player < MAX_PLAYERS &&
+               g.world.players[player].connected &&
+               g.world.players[player].ship != NULL;
+    }
+
+    int npc = source.index - WORLD_NPC_SHIP_BASE;
+    return npc >= 0 && npc < MAX_NPC_SHIPS &&
+           g.npc_interp.curr[npc].active;
 }
 
 static bool net_tow_source_is_relevant(entity_ref_t source) {
