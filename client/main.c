@@ -422,7 +422,7 @@ static bool start_local_loopback_authority(const NetCallbacks *cbs) {
     return true;
 }
 
-static bool start_fresh_local_fallback_authority(const NetCallbacks *cbs) {
+static bool start_fresh_local_authority(const NetCallbacks *cbs) {
     net_shutdown();
     g.net_authority_enabled = false;
     g.local_player_slot = 0;
@@ -1988,20 +1988,25 @@ static void init(void) {
                 g.identity_ready ? g.identity.pubkey : NULL);
             net_set_identity_secret(
                 g.identity_ready ? g.identity.secret : NULL);
-            if (server_url && server_url[0] != '\0') {
-                g.net_authority_enabled = net_init(server_url, &cbs);
-                if (g.net_authority_enabled) {
-                    /* Remote mode never constructs a local authority world.
-                     * Clear the replicated dynamic view before sparse remote
-                     * snapshots begin arriving. */
-                    reset_remote_dynamic_sync();
-                } else {
-                    set_notice("Remote unavailable; using local server.");
+            bool remote_requested = server_url && server_url[0] != '\0';
+            if (remote_requested) {
+                bool remote_started = net_init(server_url, &cbs);
+                /* Keep the requested authority mode even when transport
+                 * setup fails. Falling through to local authority here
+                 * creates a different world while presenting it as a
+                * continuation of multiplayer. The offline frame path can
+                 * now offer an honest reconnect/reload instead. */
+                g.net_authority_enabled = true;
+                /* A failed first connection must not leave the seeded client
+                 * bootstrap world visible as if it were multiplayer. */
+                reset_remote_dynamic_sync();
+                if (!remote_started) {
+                    set_notice("Remote unavailable. Press [P] to reconnect.");
                 }
             }
-            if (!g.net_authority_enabled) {
+            if (!remote_requested) {
                 g.net_authority_enabled =
-                    start_fresh_local_fallback_authority(&cbs);
+                    start_fresh_local_authority(&cbs);
                 if (!g.net_authority_enabled) {
                     set_notice(
                         "Local authority unavailable (out of memory).");
@@ -4367,8 +4372,8 @@ int signal_smoke_remote_towable_interp_check(void) {
 
         interpolate_world_for_render();
         loopback_packet_path_ok =
-            fabsf(g.world.asteroids[7].pos.x - 100.0f) < 0.001f &&
-            fabsf(g.world.asteroids[7].pos.y - 25.0f) < 0.001f &&
+            fabsf(g.world.asteroids[7].pos.x) < 0.001f &&
+            fabsf(g.world.asteroids[7].pos.y) < 0.001f &&
             fabsf(g.asteroid_interp.curr[7].pos.x) < 0.001f &&
             g.asteroid_interp.elapsed[7] > 0.0f;
     }
@@ -5105,27 +5110,17 @@ static void frame(void) {
                 recovery_notice, sizeof(recovery_notice), "%s",
                 legacy_recovery_disconnect_notice);
             bool recovery_interrupted = recovery_notice[0] != '\0';
-            NetCallbacks fallback_cbs;
-            configure_net_callbacks(&fallback_cbs);
-            if (start_fresh_local_fallback_authority(&fallback_cbs)) {
-                set_notice(
-                    "%s",
-                    recovery_interrupted
-                        ? recovery_notice
-                        : "Network lost; continuing locally.");
-            } else {
-                set_notice(
-                    "%s",
-                    recovery_interrupted
-                        ? recovery_notice
-                        : "Connection lost. Reload to reconnect.");
-                g.local_server.active = false;
-            }
+            set_notice(
+                "%s",
+                recovery_interrupted
+                    ? recovery_notice
+                    : "Connection lost. Press [P] to reconnect.");
+            g.local_server.active = false;
             /*
              * Cancellation, expiry, and rejected migrations deliberately
              * close the remote session. Keep their bounded result console
-             * alive across local fallback; otherwise the same frame that
-             * receives the semantic result would erase it before rendering.
+             * alive after disconnect; otherwise the same frame that receives
+             * the semantic result would erase it before rendering.
              * A success stays tied to its authoritative remote session.
              */
             if (!preserve_recovery_result)
@@ -5888,6 +5883,49 @@ int signal_debug_auth_available(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+int signal_debug_net_connected(void) {
+    return net_is_connected() ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_market_memory_packet_parity(void) {
+    if (!LOCAL_PLAYER.ship) return 0;
+    knowledge_view_t saved = LOCAL_PLAYER.ship->knowledge;
+    NetMarketMemoryEntry entry = {0};
+    entry.memory.active = true;
+    entry.memory.memory_kind = (uint8_t)MARKET_MEMORY_SUPPLY;
+    entry.memory.station_a = 1;
+    entry.memory.station_b = 2;
+    entry.memory.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    entry.memory.action = 0xFFu;
+    entry.memory.confidence = 201;
+    entry.memory.salience = 177;
+    entry.memory.quantity_hint = 12;
+    entry.memory.value_hint = 345;
+    entry.memory.observed_tick = 6789;
+    entry.memory.subject_nonce = 0x12345678u;
+    entry.hops = 3;
+
+    apply_remote_player_market_memories(&entry, 1);
+    const knowledge_view_t *view = &LOCAL_PLAYER.ship->knowledge;
+    market_memory_t decoded = {0};
+    if (view->count == 1)
+        memcpy(&decoded, view->items[0].payload, sizeof(decoded));
+    bool ok = view->count == 1 &&
+              view->items[0].kind == (uint8_t)KNOW_MARKET &&
+              view->items[0].payload_kind ==
+                  (uint8_t)KNOW_PAYLOAD_MARKET_MEMORY &&
+              view->items[0].hops == 3 &&
+              decoded.active &&
+              decoded.memory_kind == (uint8_t)MARKET_MEMORY_SUPPLY &&
+              decoded.station_a == 1 && decoded.station_b == 2 &&
+              decoded.quantity_hint == 12 && decoded.value_hint == 345 &&
+              decoded.observed_tick == 6789;
+    LOCAL_PLAYER.ship->knowledge = saved;
+    return ok ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
 int signal_debug_local_authority_state(void) {
     int state = 0;
     if (local_server_has_world(&g.local_server)) state |= 1 << 0;
@@ -5906,7 +5944,7 @@ EMSCRIPTEN_KEEPALIVE
 int signal_debug_restart_local_authority(void) {
     NetCallbacks cbs;
     configure_net_callbacks(&cbs);
-    return start_fresh_local_fallback_authority(&cbs) ? 1 : 0;
+    return start_fresh_local_authority(&cbs) ? 1 : 0;
 }
 #endif
 

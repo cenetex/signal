@@ -14,6 +14,7 @@ typedef struct {
     local_authority_t authority;
     bool active;
     bool station_snapshot_dirty;
+    bool station_econ_snapshot_dirty;
     bool private_snapshot_dirty;
     bool global_snapshot_dirty;
     /* true (default): mirror the dedicated server's bounded broadcast

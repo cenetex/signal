@@ -2319,9 +2319,10 @@ void apply_remote_player_known_contracts(uint32_t mask) {
 
 void apply_remote_player_market_memories(
     const NetMarketMemoryEntry *entries, int count) {
-    /* Loopback already shares the authoritative ship component; rebuilding it
-     * from a presentation packet would discard carried contract summaries. */
-    if (net_is_loopback()) return;
+    /* Both transports own a separate presentation world. Rebuild the same
+     * recipient-scoped market view from the wire packet in loopback and
+     * remote play; the in-process authority has not shared this ship object
+     * since local authority became a separate allocation. */
     if (count < 0) count = 0;
     if (count > PLAYER_MARKET_MEMORY_MAX_RECORDS)
         count = PLAYER_MARKET_MEMORY_MAX_RECORDS;
@@ -3671,56 +3672,8 @@ void sync_local_player_slot_from_network(void) {
     if (LOCAL_PLAYER.connection) LOCAL_PLAYER.connection->conn = NULL;
 }
 
-static void apply_local_authority_asteroid_presentation(float frame_dt)
-{
-    local_asteroid_presentation_feed_active = false;
-    const world_t *authority =
-        local_server_world_const(&g.local_server);
-    if (!g.net_authority_enabled || !net_is_loopback() ||
-        !g.local_server.active || !authority) {
-        return;
-    }
-
-    local_asteroid_presentation_feed_active = true;
-    asteroid_presentation_diagnostics_begin_frame(
-        &local_asteroid_presentation_diagnostics);
-    float render_ahead = g.runtime.accumulator;
-    if (!isfinite(render_ahead) || render_ahead < 0.0f)
-        render_ahead = 0.0f;
-    if (render_ahead > SIM_DT) render_ahead = SIM_DT;
-    float zoom = g.boost_zoom;
-    if (!isfinite(zoom) || zoom <= 0.01f) zoom = 1.0f;
-    float pixels_per_world = 1.0f / zoom;
-
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        asteroid_t *dst = &g.world.asteroids[i];
-        asteroid_t legacy = *dst;
-        asteroid_t presented;
-        asteroid_motion_class_t motion_class = ASTEROID_MOTION_LOOSE;
-        asteroid_presentation_action_t action =
-            asteroid_presentation_resolve(
-                authority, &legacy, i, render_ahead,
-                &presented, &motion_class);
-        if (action == ASTEROID_PRESENTATION_PRESENT) {
-            *dst = presented;
-            asteroid_presentation_diagnostics_present(
-                &local_asteroid_presentation_diagnostics,
-                i, motion_class, &legacy, dst, &presented,
-                frame_dt, pixels_per_world);
-        } else if (action == ASTEROID_PRESENTATION_RETIRE) {
-            dst->active = false;
-            asteroid_presentation_diagnostics_retire(
-                &local_asteroid_presentation_diagnostics, i);
-        } else if (authority->asteroids[i].active && legacy.active) {
-            asteroid_presentation_diagnostics_skip(
-                &local_asteroid_presentation_diagnostics,
-                i, motion_class, &legacy,
-                frame_dt, pixels_per_world);
-        }
-    }
-}
-
 void interpolate_world_for_render_frame(float frame_dt) {
+    (void)frame_dt;
     bool asteroid_towed[MAX_ASTEROIDS];
     net_collect_towed_asteroids(asteroid_towed);
 
@@ -3737,11 +3690,10 @@ void interpolate_world_for_render_frame(float frame_dt) {
             i, g.asteroid_interp.elapsed[i], asteroid_towed[i]);
     }
 
-    /* Local singleplayer still decodes the exact 10 Hz multiplayer stream,
-     * then replaces only render pose with the in-process 120 Hz authority.
-     * Server state is separate and const here, so presentation can never
-     * feed smoothed values back into gameplay. */
-    apply_local_authority_asteroid_presentation(frame_dt);
+    /* Loopback and remote play both render the decoded packet stream. Do not
+     * replace loopback poses from the in-process authority: that shortcut
+     * hid stale/missing multiplayer motion packets and tow corrections. */
+    local_asteroid_presentation_feed_active = false;
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const client_npc_render_state_t *curr = &g.npc_interp.curr[i];

@@ -1619,14 +1619,6 @@ static void invalidate_player_post_initial_sync_caches(
     sp->replication->world_player_dock_cache.valid = false;
 }
 
-static void send_action_ack(struct mg_connection *c, uint16_t action_id,
-                            uint16_t input_seq, uint8_t status,
-                            uint8_t action) {
-    uint8_t buf[NET_ACTION_ACK_SIZE];
-    int len = serialize_action_ack(buf, action_id, input_seq, status, action);
-    ws_send(c, buf, (size_t)len);
-}
-
 static void send_action_result(struct mg_connection *c, uint16_t action_id,
                                uint16_t input_seq, uint8_t status,
                                uint8_t action, uint32_t server_tick) {
@@ -4182,6 +4174,68 @@ static bool complete_ws_session_bootstrap_if_ready(
     return true;
 }
 
+static void ws_gameplay_packet_sink(void *user,
+                                    const uint8_t *data,
+                                    int len) {
+    struct mg_connection *c = (struct mg_connection *)user;
+    if (!c || !data || len <= 0) return;
+    ws_send(c, data, (size_t)len);
+}
+
+static void ws_gameplay_force_resync(void *user,
+                                     int player_idx,
+                                     server_player_t *sp) {
+    (void)user;
+    (void)player_idx;
+    force_player_authoritative_resync(sp);
+}
+
+static void ws_gameplay_mark_station_dirty(void *user, int station_idx) {
+    (void)user;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    station_identity_dirty[station_idx] = true;
+}
+
+static void ws_gameplay_observe_input(
+    void *user,
+    int player_idx,
+    const server_input_dispatch_result_t *result) {
+    (void)user;
+    if (!result || !result->force_authoritative_resync) return;
+    printf("[server] action-result player=%d id=%u input_seq=%u "
+           "action=%u status=rejected tick=%u resync=unsigned-reject\n",
+           player_idx, (unsigned)result->action_id,
+           (unsigned)result->input_seq, (unsigned)result->action,
+           (unsigned)world.tick);
+}
+
+static void ws_gameplay_observe_unsigned_rejection(
+    void *user, int player_idx, uint8_t message_type) {
+    (void)user;
+    unsigned_action_count++;
+    const char *name = NULL;
+    if (message_type == NET_MSG_PLAN) name = "PLAN";
+    else if (message_type == NET_MSG_BUY_INGOT) name = "BUY_INGOT";
+    else if (message_type == NET_MSG_DELIVER_INGOT) name = "DELIVER_INGOT";
+    if (name) {
+        printf("[server] legacy unsigned %s rejected for pubkey player %d; "
+               "signed action required\n", name, player_idx);
+    }
+}
+
+static void ws_gameplay_observe_receipt_presentation(
+    void *user,
+    int player_idx,
+    const server_receipt_presentation_dispatch_result_t *result) {
+    (void)user;
+    if (!result || !result->evaluated ||
+        result->result == CARGO_RECEIPT_PRESENT_OK) {
+        return;
+    }
+    printf("[server] receipt_present rejected player=%d reason=%s\n",
+           player_idx, cargo_receipt_present_result_name(result->result));
+}
+
 static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm) {
     int pid = -1;
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -4230,6 +4284,26 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         return;
     }
 
+    server_gameplay_packet_policy_t gameplay_policy = {
+        .user = c,
+        .send_packet = ws_gameplay_packet_sink,
+        .force_resync = ws_gameplay_force_resync,
+        .mark_station_identity_dirty = ws_gameplay_mark_station_dirty,
+        .observe_input = ws_gameplay_observe_input,
+        .observe_unsigned_rejection =
+            ws_gameplay_observe_unsigned_rejection,
+        .observe_receipt_presentation =
+            ws_gameplay_observe_receipt_presentation,
+        .receipt_chain_sink = ws_cargo_receipt_chain_sink,
+        .handoff_ticket_sink = ws_handoff_ticket_sink,
+        .handoff_result_sink = ws_handoff_result_sink,
+    };
+    if (server_dispatch_gameplay_packet(
+            &world, pid, data, len, (uint32_t)now,
+            &gameplay_policy)) {
+        return;
+    }
+
     switch (type) {
     case NET_MSG_LATENCY_PING:
         if (len >= NET_LATENCY_PING_SIZE && c) {
@@ -4241,130 +4315,6 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     case NET_MSG_CLIENT_METRICS:
         analytics_handle_client_metrics(pid, &world.players[pid], data, len, now);
         break;
-    case NET_MSG_INPUT:
-    {
-        server_player_t *sp = &world.players[pid];
-        server_input_dispatch_result_t input_result;
-        if (!server_dispatch_input_message(&world, pid, data, len,
-                                           (uint32_t)now,
-                                           &input_result)) {
-            break;
-        }
-        if (input_result.rejected_unsigned_action) {
-            unsigned_action_count++;
-        }
-        if (input_result.ack_status == NET_ACTION_ACK_RECEIVED &&
-            input_result.action_id != 0) {
-            server_begin_pending_action_result(&world, sp,
-                                               input_result.action_id,
-                                               input_result.input_seq,
-                                               input_result.action);
-        }
-        server_merge_one_shot_input(&sp->input, &input_result.intent);
-        /* Movement-only input acks ride private INPUT_APPLIED/STATE receipts.
-         * ACTION_ACK is only for one-shot actions or rejections. */
-        if (c) {
-            if (input_result.ack_status != 0) {
-                send_action_ack(c, input_result.action_id,
-                                input_result.input_seq,
-                                input_result.ack_status,
-                                input_result.action);
-                if (input_result.force_authoritative_resync) {
-                    force_player_authoritative_resync(sp);
-                    printf("[server] action-result player=%d id=%u input_seq=%u action=%u status=rejected tick=%u resync=unsigned-reject\n",
-                           sp->id, (unsigned)input_result.action_id,
-                           (unsigned)input_result.input_seq,
-                           (unsigned)input_result.action,
-                           (unsigned)world.tick);
-                    send_action_result(c, input_result.action_id,
-                                       input_result.input_seq,
-                                       NET_ACTION_RESULT_REJECTED,
-                                       input_result.action, world.tick);
-                }
-            }
-        }
-        /* If the player just queued a shipyard order, refresh that station's
-         * identity on the next world tick so the SHIPYARD tab sees the new
-         * pending count immediately instead of waiting for the 2s fallback. */
-        if (input_result.station_identity_dirty >= 0 &&
-            input_result.station_identity_dirty < MAX_STATIONS)
-            station_identity_dirty[input_result.station_identity_dirty] = true;
-        break;
-    }
-    case NET_MSG_PLAN:
-    {
-        server_unsigned_dispatch_result_t result;
-        if (server_dispatch_legacy_plan_message(&world, pid, data, len,
-                                                &result) &&
-            result.rejected_unsigned_action) {
-            unsigned_action_count++;
-            printf("[server] legacy unsigned PLAN rejected for pubkey player %d; signed action required\n",
-                   pid);
-        }
-        break;
-    }
-    case NET_MSG_STATE:
-        /* Ignored -- server is authoritative. */
-        break;
-    case NET_MSG_MINING_ACTION:
-        /* Legacy -- mining handled via INPUT flags now. */
-        break;
-    case NET_MSG_BUY_INGOT:
-    {
-        server_legacy_cargo_dispatch_result_t result;
-        if (server_dispatch_legacy_buy_ingot_message(
-                &world, pid, data, len, ws_cargo_receipt_chain_sink,
-                c, &result) &&
-            result.rejected_unsigned_action) {
-            unsigned_action_count++;
-            printf("[server] legacy unsigned BUY_INGOT rejected for pubkey player %d; signed action required\n",
-                   pid);
-        }
-        break;
-    }
-    case NET_MSG_DELIVER_INGOT:
-    {
-        server_legacy_cargo_dispatch_result_t result;
-        if (server_dispatch_legacy_deliver_ingot_message(
-                &world, pid, data, len, ws_cargo_receipt_chain_sink,
-                c, &result) &&
-            result.rejected_unsigned_action) {
-            unsigned_action_count++;
-            printf("[server] legacy unsigned DELIVER_INGOT rejected for pubkey player %d; signed action required\n",
-                   pid);
-        }
-        break;
-    }
-    case NET_MSG_PRESENT_RECEIPT_CHAIN:
-    {
-        server_receipt_presentation_dispatch_result_t result;
-        if (server_dispatch_receipt_presentation_message(
-                &world, pid, data, len, &result) &&
-            result.evaluated &&
-            result.result != CARGO_RECEIPT_PRESENT_OK) {
-                printf("[server] receipt_present rejected player=%d reason=%s\n",
-                       pid, cargo_receipt_present_result_name(result.result));
-        }
-        break;
-    }
-    case NET_MSG_HANDOFF_REQUEST:
-        (void)server_dispatch_handoff_request(&world, pid, data, len,
-                                              ws_handoff_ticket_sink, c);
-        break;
-    case NET_MSG_HANDOFF_PRESENT:
-        (void)server_dispatch_handoff_present(&world, pid, data, len,
-                                              ws_handoff_result_sink, c);
-        break;
-    case NET_MSG_FRACTURE_CLAIM:
-    {
-        server_unsigned_dispatch_result_t result;
-        if (server_dispatch_fracture_claim_message(&world, pid, data, len,
-                                                   &result) &&
-            result.rejected_unsigned_action) {
-            unsigned_action_count++;
-        }
-        break;
-    }
     case NET_MSG_SIGNED_ACTION: {
         /* Layer A.3 of #479 — Ed25519-signed state-changing action. */
         uint8_t action_type = 0;
@@ -7254,6 +7204,7 @@ static void srv_on_death(const sim_event_t *ev) {
            pid, cs[0] ? cs : "?", ev->death.credits_earned,
            qualified ? "qualified" : "skipped", highscores.count);
     if (qualified) highscores_dirty = true;
+    station_econ_dirty = true;
 
     if (!sp->connection->conn) return;
 
@@ -7286,6 +7237,7 @@ static void srv_on_hail_response(const sim_event_t *ev) {
     if (msg_len > 0) ws_send(sp->connection->conn, msg, (size_t)msg_len);
 
     contracts_dirty = true;
+    station_econ_dirty = true;
     /* Push fresh ship state so the credit bump is visible immediately. */
     uint8_t buf[PLAYER_SHIP_SIZE + 4];
     int len = send_player_ship(buf, (uint8_t)pid, sp);

@@ -964,6 +964,8 @@ if(EMSCRIPTEN)
         "'_signal_debug_held_control_mask'"
         "'_signal_debug_identity_available'"
         "'_signal_debug_auth_available'"
+        "'_signal_debug_net_connected'"
+        "'_signal_smoke_market_memory_packet_parity'"
         "'_signal_debug_local_authority_state'"
         "'_signal_debug_local_authority_generation'"
         "'_signal_debug_restart_local_authority'"

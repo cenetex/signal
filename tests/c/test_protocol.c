@@ -6315,6 +6315,120 @@ TEST(test_pending_action_result_status_shared) {
                   NET_ACTION_RESULT_REJECTED);
 }
 
+typedef struct {
+    packet_capture_t packets;
+    int input_observed;
+    int unsigned_rejections;
+    int station_dirty;
+    bool force_resync;
+} gameplay_dispatch_capture_t;
+
+static void gameplay_dispatch_packet_sink(void *user,
+                                          const uint8_t *data,
+                                          int len) {
+    gameplay_dispatch_capture_t *cap =
+        (gameplay_dispatch_capture_t *)user;
+    packet_capture_sink(&cap->packets, data, len);
+}
+
+static void gameplay_dispatch_force_resync(void *user, int player_idx,
+                                           server_player_t *player) {
+    (void)player_idx;
+    (void)player;
+    ((gameplay_dispatch_capture_t *)user)->force_resync = true;
+}
+
+static void gameplay_dispatch_station_dirty(void *user, int station_idx) {
+    gameplay_dispatch_capture_t *cap =
+        (gameplay_dispatch_capture_t *)user;
+    cap->station_dirty = station_idx;
+}
+
+static void gameplay_dispatch_observe_input(
+    void *user, int player_idx,
+    const server_input_dispatch_result_t *result) {
+    (void)player_idx;
+    (void)result;
+    ((gameplay_dispatch_capture_t *)user)->input_observed++;
+}
+
+static void gameplay_dispatch_observe_unsigned(void *user, int player_idx,
+                                                uint8_t message_type) {
+    (void)player_idx;
+    (void)message_type;
+    ((gameplay_dispatch_capture_t *)user)->unsigned_rejections++;
+}
+
+TEST(test_gameplay_packet_dispatch_is_shared_by_local_and_remote_shells) {
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    sp->current_station = 0;
+    player_init_ship(sp, &w);
+
+    gameplay_dispatch_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+    cap.station_dirty = -1;
+    const server_gameplay_packet_policy_t policy = {
+        .user = &cap,
+        .send_packet = gameplay_dispatch_packet_sink,
+        .force_resync = gameplay_dispatch_force_resync,
+        .mark_station_identity_dirty = gameplay_dispatch_station_dirty,
+        .observe_input = gameplay_dispatch_observe_input,
+        .observe_unsigned_rejection = gameplay_dispatch_observe_unsigned,
+    };
+
+    uint8_t input[NET_INPUT_MSG_SIZE] = {
+        NET_MSG_INPUT,
+        NET_INPUT_THRUST,
+        NET_ACTION_BUY_SCAFFOLD,
+        0xFF,
+        MINING_GRADE_COUNT,
+        0xFF, 0xFF, 0xFF,
+        0x78, 0x56,
+        0xFF, 0xFF,
+        0x34, 0x12,
+    };
+    ASSERT(server_dispatch_gameplay_packet(
+        &w, 0, input, sizeof(input), 1234u, &policy));
+    ASSERT_EQ_INT(cap.input_observed, 1);
+    ASSERT_EQ_INT(cap.station_dirty, 0);
+    ASSERT_EQ_INT(cap.packets.count, 1);
+    ASSERT_EQ_INT(cap.packets.type[0], NET_MSG_ACTION_ACK);
+    ASSERT_EQ_INT(sp->movement_queue_count, 1);
+    ASSERT(sp->input.buy_scaffold_kit);
+    ASSERT(sp->pending_action_result_valid);
+    ASSERT_EQ_INT(sp->pending_action_result_id, 0x1234);
+    ASSERT_EQ_INT(sp->pending_action_result_input_seq, 0x5678);
+
+    sp->pending_action_result_valid = false;
+    sp->pubkey_set = true;
+    input[2] = NET_ACTION_LAUNCH;
+    input[12] = 0x35;
+    ASSERT(server_dispatch_gameplay_packet(
+        &w, 0, input, sizeof(input), 1235u, &policy));
+    ASSERT_EQ_INT(cap.input_observed, 2);
+    ASSERT_EQ_INT(cap.unsigned_rejections, 1);
+    ASSERT(cap.force_resync);
+    ASSERT_EQ_INT(cap.packets.count, 3);
+    ASSERT_EQ_INT(cap.packets.type[1], NET_MSG_ACTION_ACK);
+    ASSERT_EQ_INT(cap.packets.type[2], NET_MSG_ACTION_RESULT);
+    ASSERT(!sp->pending_action_result_valid);
+
+    uint8_t malformed[] = { NET_MSG_INPUT };
+    ASSERT(server_dispatch_gameplay_packet(
+        &w, 0, malformed, sizeof(malformed), 0, &policy));
+    uint8_t latency[] = { NET_MSG_LATENCY_PING };
+    ASSERT(!server_dispatch_gameplay_packet(
+        &w, 0, latency, sizeof(latency), 0, &policy));
+
+    world_cleanup(&w);
+}
+
 TEST(test_hail_response_serializes_reason_tail) {
     WORLD_DECL;
     world_reset(&w);
@@ -10048,6 +10162,7 @@ void register_protocol_main_tests(void) {
     RUN(test_pending_input_ack_adaptive_promotes_heartbeat_state);
     RUN(test_sim_event_transport_hooks_cover_freshness_buckets);
     RUN(test_pending_action_result_status_shared);
+    RUN(test_gameplay_packet_dispatch_is_shared_by_local_and_remote_shells);
     RUN(test_hail_response_serializes_reason_tail);
     RUN(test_npc_role_default_hull_mapping_covers_tow);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);

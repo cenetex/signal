@@ -70,6 +70,38 @@ static inline bool net_message_allowed_before_session(uint8_t type) {
     }
 }
 
+/* Transport policy for client gameplay packets shared by loopback and the
+ * dedicated server. Authentication, latency probes, telemetry, and durable
+ * legacy recovery stay in their transport shells; authoritative gameplay
+ * mutation and its immediate ACK/result shape live here. */
+typedef void (*server_gameplay_packet_sink_fn)(
+    void *user, const uint8_t *data, int len);
+typedef void (*server_gameplay_force_resync_fn)(
+    void *user, int player_idx, server_player_t *player);
+typedef void (*server_gameplay_station_dirty_fn)(
+    void *user, int station_idx);
+typedef void (*server_gameplay_input_observer_fn)(
+    void *user, int player_idx,
+    const server_input_dispatch_result_t *result);
+typedef void (*server_gameplay_unsigned_observer_fn)(
+    void *user, int player_idx, uint8_t message_type);
+typedef void (*server_gameplay_receipt_observer_fn)(
+    void *user, int player_idx,
+    const server_receipt_presentation_dispatch_result_t *result);
+
+typedef struct {
+    void *user;
+    server_gameplay_packet_sink_fn send_packet;
+    server_gameplay_force_resync_fn force_resync;
+    server_gameplay_station_dirty_fn mark_station_identity_dirty;
+    server_gameplay_input_observer_fn observe_input;
+    server_gameplay_unsigned_observer_fn observe_unsigned_rejection;
+    server_gameplay_receipt_observer_fn observe_receipt_presentation;
+    server_receipt_chain_sink_fn receipt_chain_sink;
+    server_handoff_ticket_sink_fn handoff_ticket_sink;
+    server_handoff_result_sink_fn handoff_result_sink;
+} server_gameplay_packet_policy_t;
+
 static inline bool net_payload_cache_should_send(net_payload_cache_t *cache,
                                                  void *conn,
                                                  const uint8_t *data,
@@ -7478,6 +7510,145 @@ static inline void parse_plan(const uint8_t *data, int len, input_intent_t *inte
         break;
     default:
         break;
+    }
+}
+
+/* Dispatch the authenticated gameplay subset of client traffic. Returns true
+ * whenever the message type belongs to this shared subset, including malformed
+ * packets that were safely rejected by a reducer. Returning false means the
+ * transport shell must handle latency, metrics, identity, session, signed
+ * action, or unknown traffic. */
+static inline bool server_dispatch_gameplay_packet(
+    world_t *w,
+    int player_idx,
+    const uint8_t *data,
+    int len,
+    uint32_t server_recv_ms,
+    const server_gameplay_packet_policy_t *policy) {
+    if (!w || !data || len < 1 || player_idx < 0 ||
+        player_idx >= MAX_PLAYERS) {
+        return false;
+    }
+
+    server_player_t *sp = &w->players[player_idx];
+    void *user = policy ? policy->user : NULL;
+    switch (data[0]) {
+    case NET_MSG_INPUT: {
+        server_input_dispatch_result_t result;
+        if (!server_dispatch_input_message(
+                w, player_idx, data, len, server_recv_ms, &result)) {
+            return true;
+        }
+        if (result.rejected_unsigned_action && policy &&
+            policy->observe_unsigned_rejection) {
+            policy->observe_unsigned_rejection(
+                user, player_idx, data[0]);
+        }
+        if (result.ack_status == NET_ACTION_ACK_RECEIVED &&
+            result.action_id != 0) {
+            server_begin_pending_action_result(
+                w, sp, result.action_id, result.input_seq, result.action);
+        }
+        server_merge_one_shot_input(&sp->input, &result.intent);
+        if (result.ack_status != 0) {
+            if (policy && policy->send_packet) {
+                uint8_t ack[NET_ACTION_ACK_SIZE];
+                int ack_len = serialize_action_ack(
+                    ack, result.action_id, result.input_seq,
+                    result.ack_status, result.action);
+                policy->send_packet(user, ack, ack_len);
+            }
+            if (result.force_authoritative_resync) {
+                if (policy && policy->force_resync) {
+                    policy->force_resync(user, player_idx, sp);
+                } else if (sp->replication) {
+                    sp->replication->force_authoritative_resync = true;
+                }
+                if (policy && policy->send_packet) {
+                    uint8_t action_result[NET_ACTION_RESULT_SIZE];
+                    int result_len = serialize_action_result(
+                        action_result, result.action_id, result.input_seq,
+                        NET_ACTION_RESULT_REJECTED, result.action, w->tick);
+                    policy->send_packet(user, action_result, result_len);
+                }
+            }
+        }
+        if (result.station_identity_dirty >= 0 &&
+            result.station_identity_dirty < MAX_STATIONS && policy &&
+            policy->mark_station_identity_dirty) {
+            policy->mark_station_identity_dirty(
+                user, result.station_identity_dirty);
+        }
+        if (policy && policy->observe_input)
+            policy->observe_input(user, player_idx, &result);
+        return true;
+    }
+    case NET_MSG_PLAN: {
+        server_unsigned_dispatch_result_t result;
+        if (server_dispatch_legacy_plan_message(
+                w, player_idx, data, len, &result) &&
+            result.rejected_unsigned_action && policy &&
+            policy->observe_unsigned_rejection) {
+            policy->observe_unsigned_rejection(
+                user, player_idx, data[0]);
+        }
+        return true;
+    }
+    case NET_MSG_STATE:
+    case NET_MSG_MINING_ACTION:
+        return true;
+    case NET_MSG_BUY_INGOT:
+    case NET_MSG_DELIVER_INGOT: {
+        server_legacy_cargo_dispatch_result_t result;
+        bool dispatched = data[0] == NET_MSG_BUY_INGOT
+            ? server_dispatch_legacy_buy_ingot_message(
+                  w, player_idx, data, len,
+                  policy ? policy->receipt_chain_sink : NULL,
+                  user, &result)
+            : server_dispatch_legacy_deliver_ingot_message(
+                  w, player_idx, data, len,
+                  policy ? policy->receipt_chain_sink : NULL,
+                  user, &result);
+        if (dispatched && result.rejected_unsigned_action && policy &&
+            policy->observe_unsigned_rejection) {
+            policy->observe_unsigned_rejection(
+                user, player_idx, data[0]);
+        }
+        return true;
+    }
+    case NET_MSG_PRESENT_RECEIPT_CHAIN: {
+        server_receipt_presentation_dispatch_result_t result;
+        if (server_dispatch_receipt_presentation_message(
+                w, player_idx, data, len, &result) && policy &&
+            policy->observe_receipt_presentation) {
+            policy->observe_receipt_presentation(
+                user, player_idx, &result);
+        }
+        return true;
+    }
+    case NET_MSG_HANDOFF_REQUEST:
+        (void)server_dispatch_handoff_request(
+            w, player_idx, data, len,
+            policy ? policy->handoff_ticket_sink : NULL, user);
+        return true;
+    case NET_MSG_HANDOFF_PRESENT:
+        (void)server_dispatch_handoff_present(
+            w, player_idx, data, len,
+            policy ? policy->handoff_result_sink : NULL, user);
+        return true;
+    case NET_MSG_FRACTURE_CLAIM: {
+        server_unsigned_dispatch_result_t result;
+        if (server_dispatch_fracture_claim_message(
+                w, player_idx, data, len, &result) &&
+            result.rejected_unsigned_action && policy &&
+            policy->observe_unsigned_rejection) {
+            policy->observe_unsigned_rejection(
+                user, player_idx, data[0]);
+        }
+        return true;
+    }
+    default:
+        return false;
     }
 }
 
