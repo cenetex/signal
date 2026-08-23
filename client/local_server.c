@@ -271,7 +271,6 @@ static bool local_server_loopback_send(const uint8_t *data, int len, void *user)
             uint8_t pong[NET_LATENCY_PONG_SIZE];
             uint32_t seq = read_u32_le(&data[1]);
             uint32_t client_sent = read_u32_le(&data[5]);
-            uint32_t now_ms = (uint32_t)(LS_WORLD(ls).time * 1000.0f);
             int plen = serialize_latency_pong(pong, seq, client_sent, now_ms,
                                               now_ms, LS_WORLD(ls).tick);
             local_server_send_to_client(pong, plen);
