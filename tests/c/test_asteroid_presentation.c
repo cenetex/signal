@@ -85,6 +85,54 @@ TEST(test_asteroid_presentation_tracks_tow_classes_and_station_force)
         ASTEROID_MOTION_STATION_TOW);
 }
 
+TEST(test_asteroid_presentation_tracks_accelerated_tow_between_10hz_packets)
+{
+    asteroid_t base = presentation_asteroid(
+        v2(10.0f, 20.0f), v2(30.0f, -5.0f));
+    vec2 position = {0};
+    vec2 velocity = {0};
+
+    asteroid_presentation_predict_motion_accelerated(
+        &base, 0.1f, true, v2(380.0f, 40.0f), true,
+        &position, &velocity);
+
+    ASSERT_EQ_FLOAT(position.x, 14.9f, 0.0002f);
+    ASSERT_EQ_FLOAT(position.y, 19.7f, 0.0002f);
+    ASSERT_EQ_FLOAT(velocity.x, 68.0f, 0.0002f);
+    ASSERT_EQ_FLOAT(velocity.y, -1.0f, 0.0002f);
+
+    /* A delayed packet may not let an old acceleration run away forever. */
+    asteroid_presentation_predict_motion_accelerated(
+        &base, 1.0f, true, v2(380.0f, 0.0f), true,
+        &position, &velocity);
+    ASSERT_EQ_FLOAT(velocity.x, 125.0f, 0.0002f);
+    ASSERT_EQ_FLOAT(position.x, 123.125f, 0.001f);
+}
+
+TEST(test_asteroid_presentation_rejects_bad_acceleration_sample)
+{
+    asteroid_t base = presentation_asteroid(
+        v2(0.0f, 0.0f), v2(20.0f, 0.0f));
+    vec2 position = {0};
+    vec2 velocity = {0};
+    asteroid_presentation_predict_motion_accelerated(
+        &base, 0.1f, true,
+        v2(ASTEROID_PRESENTATION_MAX_ACCEL * 2.0f, 0.0f), true,
+        &position, &velocity);
+    ASSERT_EQ_FLOAT(position.x, 2.0f, 0.0001f);
+    ASSERT_EQ_FLOAT(velocity.x, 20.0f, 0.0001f);
+}
+
+TEST(test_asteroid_presentation_10hz_acceleration_gate)
+{
+    float position_error = INFINITY;
+    float velocity_error = INFINITY;
+    ASSERT(asteroid_presentation_acceleration_gate(
+        &position_error, &velocity_error));
+    ASSERT(position_error <= 0.01f);
+    ASSERT(velocity_error <= 0.01f);
+}
+
 TEST(test_asteroid_presentation_waits_for_identity_and_retires_atomically)
 {
     WORLD_DECL;
@@ -280,6 +328,9 @@ void register_asteroid_presentation_tests(void)
     TEST_SECTION("\nLocal asteroid presentation (#685):\n");
     RUN(test_asteroid_presentation_uses_authority_pose_without_mutation);
     RUN(test_asteroid_presentation_tracks_tow_classes_and_station_force);
+    RUN(test_asteroid_presentation_tracks_accelerated_tow_between_10hz_packets);
+    RUN(test_asteroid_presentation_rejects_bad_acceleration_sample);
+    RUN(test_asteroid_presentation_10hz_acceleration_gate);
     RUN(test_asteroid_presentation_waits_for_identity_and_retires_atomically);
     RUN(test_asteroid_presentation_covers_npc_throw_release_and_reentry);
     RUN(test_asteroid_presentation_applies_collision_impulse_without_smoothing);

@@ -58,13 +58,42 @@ void asteroid_presentation_predict_motion(
     const asteroid_t *base, float elapsed, bool tow_driven,
     vec2 *out_pos, vec2 *out_vel)
 {
+    asteroid_presentation_predict_motion_accelerated(
+        base, elapsed, tow_driven, v2(0.0f, 0.0f), false,
+        out_pos, out_vel);
+}
+
+void asteroid_presentation_predict_motion_accelerated(
+    const asteroid_t *base, float elapsed, bool tow_driven,
+    vec2 acceleration, bool acceleration_valid,
+    vec2 *out_pos, vec2 *out_vel)
+{
     if (!out_pos || !out_vel) return;
     *out_pos = base ? base->pos : v2(0.0f, 0.0f);
     *out_vel = base ? base->vel : v2(0.0f, 0.0f);
     if (!base || !isfinite(elapsed) || elapsed <= 0.0f) return;
 
     if (tow_driven) {
-        *out_pos = v2_add(base->pos, v2_scale(base->vel, elapsed));
+        float accel_time = acceleration_valid && finite_vec(acceleration)
+            ? fminf(elapsed, ASTEROID_PRESENTATION_ACCEL_HORIZON_SEC)
+            : 0.0f;
+        float accel_len = vec_length(acceleration);
+        if (!isfinite(accel_len) ||
+            accel_len > ASTEROID_PRESENTATION_MAX_ACCEL) {
+            accel_time = 0.0f;
+        }
+        vec2 accelerated_vel = v2_add(
+            base->vel, v2_scale(acceleration, accel_time));
+        vec2 accelerated_pos = v2_add(
+            base->pos,
+            v2_add(v2_scale(base->vel, accel_time),
+                   v2_scale(acceleration,
+                            0.5f * accel_time * accel_time)));
+        float coast_time = elapsed - accel_time;
+        *out_pos = v2_add(
+            accelerated_pos,
+            v2_scale(accelerated_vel, coast_time));
+        *out_vel = accelerated_vel;
         return;
     }
 
@@ -85,6 +114,70 @@ void asteroid_presentation_predict_motion(
     *out_pos = v2_add(base->pos,
                       v2_scale(base->vel, displacement_scale));
     *out_vel = v2_scale(base->vel, retained);
+}
+
+bool asteroid_presentation_acceleration_gate(
+    float *out_max_position_error,
+    float *out_max_velocity_error)
+{
+    const float render_dt = 1.0f / 60.0f;
+    const float acceleration_value = 380.0f;
+    asteroid_t packet = {0};
+    packet.active = true;
+    vec2 estimated_acceleration = v2(0.0f, 0.0f);
+    vec2 last_packet_velocity = v2(0.0f, 0.0f);
+    bool have_packet_velocity = false;
+    bool acceleration_valid = false;
+    float packet_elapsed = 0.0f;
+    float max_position_error = 0.0f;
+    float max_velocity_error = 0.0f;
+
+    for (int frame = 0; frame <= 180; frame++) {
+        float time = (float)frame * render_dt;
+        vec2 authority_pos = v2(
+            0.5f * acceleration_value * time * time, 0.0f);
+        vec2 authority_vel = v2(acceleration_value * time, 0.0f);
+        if ((frame % 6) == 0) {
+            if (have_packet_velocity) {
+                estimated_acceleration = v2_scale(
+                    v2_sub(authority_vel, last_packet_velocity),
+                    1.0f / 0.1f);
+                acceleration_valid = true;
+            }
+            packet.pos = authority_pos;
+            packet.vel = authority_vel;
+            last_packet_velocity = authority_vel;
+            have_packet_velocity = true;
+            packet_elapsed = 0.0f;
+        }
+
+        vec2 presented_pos = {0};
+        vec2 presented_vel = {0};
+        asteroid_presentation_predict_motion_accelerated(
+            &packet, packet_elapsed, true,
+            estimated_acceleration, acceleration_valid,
+            &presented_pos, &presented_vel);
+        if (frame >= 12) {
+            float position_error = vec_length(v2_sub(
+                authority_pos, presented_pos));
+            float velocity_error = vec_length(v2_sub(
+                authority_vel, presented_vel));
+            if (max_position_error < position_error)
+                max_position_error = position_error;
+            if (max_velocity_error < velocity_error)
+                max_velocity_error = velocity_error;
+        }
+        packet_elapsed += render_dt;
+    }
+
+    if (out_max_position_error)
+        *out_max_position_error = max_position_error;
+    if (out_max_velocity_error)
+        *out_max_velocity_error = max_velocity_error;
+    return isfinite(max_position_error) &&
+        isfinite(max_velocity_error) &&
+        max_position_error <= 0.01f &&
+        max_velocity_error <= 0.01f;
 }
 
 static bool asteroid_presentation_identity_compatible(

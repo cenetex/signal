@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-ai-eval-repeatability replay-ai-eval-repeatability-long replay-ai-eval-native-wasm replay-ai-outcome-repeatability replay-ai-outcome-native-wasm replay-ai-outcome-modes signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-ai-eval-repeatability replay-ai-eval-repeatability-long replay-ai-eval-native-wasm replay-ai-outcome-repeatability replay-ai-outcome-native-wasm replay-ai-outcome-modes signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite jank-profile-native jank-profile-browser relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -755,6 +755,13 @@ smoke-ack-lag:
 
 smoke-latency-suite: build-web build-server
 	node scripts/smoke-latency-suite.mjs
+
+# Opt-in gameplay profiling. Normal release play keeps this off.
+jank-profile-native: build
+	SIGNAL_JANK_PROFILE=1 SIGNAL_LOG_PERSIST=0 ./build/signal
+
+jank-profile-browser: build-web
+	SIGNAL_JANK_PROFILE_SECONDS=60 npx playwright test tests/browser-smoke.spec.ts --project=chromium --grep "fresh and mature play produce attributed jank reports"
 
 RELAY_PROBE_URL ?= ws://127.0.0.1:9091/ws
 RELAY_PROBE_CLIENTS ?= 2

@@ -102,6 +102,7 @@ void register_settlement_engine_tests(void);
 void register_signal_field_tests(void);
 void register_state_digest_tests(void);
 void register_reconciliation_diagnostics_tests(void);
+void register_gameplay_observability_tests(void);
 void register_asteroid_presentation_tests(void);
 void register_tow_presentation_diagnostics_tests(void);
 void register_gossip_tests(void);
@@ -256,6 +257,7 @@ int main(int argc, char **argv) {
     register_signal_field_tests();
     register_state_digest_tests();
     register_reconciliation_diagnostics_tests();
+    register_gameplay_observability_tests();
     register_asteroid_presentation_tests();
     register_tow_presentation_diagnostics_tests();
     register_gossip_tests();

@@ -8,6 +8,7 @@
  * path; direct copies into g.world are legacy architecture.
  */
 #include "local_server.h"
+#include "gameplay_observability.h"
 #include "client.h"
 #include "manifest.h"
 #include "mining_client.h"
@@ -734,7 +735,12 @@ void local_server_step_loopback(local_server_t *ls, int player_slot, float dt) {
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     uint16_t input_ack_before =
         LS_WORLD(ls).players[player_slot].last_input_seq;
+    double authority_started = gameplay_observability_phase_begin();
     world_sim_step(&LS_WORLD(ls), dt);
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_AUTHORITY_SIM, authority_started);
+
+    double loopback_started = gameplay_observability_phase_begin();
     server_pending_input_ack_t pending;
     server_pending_input_ack_reset(&pending);
     if (server_pending_input_ack_note(
@@ -747,4 +753,6 @@ void local_server_step_loopback(local_server_t *ls, int player_slot, float dt) {
             local_server_send_packet, NULL);
     }
     local_server_emit_frame(ls, player_slot);
+    gameplay_observability_phase_end(
+        GAMEPLAY_PHASE_LOOPBACK_CODEC, loopback_started);
 }

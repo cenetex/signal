@@ -99,6 +99,38 @@ type PlayerStateSnapshot = {
   docked: number;
 };
 
+type JankProfileReport = {
+  schema: string;
+  enabled: boolean;
+  window_sec: number;
+  frames: number;
+  frame_ms: { p50: number; p95: number; p99: number; max: number };
+  simulation_ms: { p50: number; p95: number; p99: number; max: number };
+  slow_frames: { over_16_6: number; over_33_3: number; unexplained: number };
+  fixed_step: { completed: number; missed: number; accumulator_dropped: number };
+  snapshots: { packets: number; bytes: number; max_packet_bytes: number; max_gap_ms: number };
+  phases: Record<string, { avg_ms: number; max_ms: number; slow_cause: number }>;
+  entities: Record<string, {
+    samples: number;
+    max_correction_world: number;
+    max_velocity_discontinuity: number;
+    max_correction_jerk: number;
+  }>;
+};
+
+async function jankProfileReport(page: Page): Promise<JankProfileReport> {
+  const raw = await page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: {
+        ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string;
+      };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('signal_jank_profile_report_json', 'string', [], []) || '';
+  });
+  return JSON.parse(raw) as JankProfileReport;
+}
+
 function addQueryParam(rawUrl: string, key: string, value: string): string {
   const hashAt = rawUrl.indexOf('#');
   const beforeHash = hashAt >= 0 ? rawUrl.slice(0, hashAt) : rawUrl;
@@ -2284,6 +2316,57 @@ test.describe('Browser smoke tests', () => {
     expect(await wasmNumber(page, 'get_local_asteroid_motion_presented_samples'))
       .toBe(0);
 
+    expectNoFatalErrors(logs);
+  });
+
+  test('fresh and mature play produce attributed jank reports and smooth accelerated rocks', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires the local singleplayer authority');
+    const seconds = Number(process.env.SIGNAL_JANK_PROFILE_SECONDS || '2');
+    test.setTimeout(Math.max(45_000, seconds * 2_000 + 30_000));
+
+    const logs = installFatalCollectors(page);
+    await page.goto(addQueryParam(
+      smokeUrl({ singleplayer: true }), 'jankprofile', '1',
+    ));
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    expect(await wasmNumber(page, 'signal_jank_profile_enabled')).toBe(1);
+    expect(
+      await wasmNumber(page, 'signal_smoke_accelerated_asteroid_prediction_gate'),
+    ).toBe(1);
+
+    await page.waitForTimeout(seconds * 1_000);
+    const fresh = await jankProfileReport(page);
+    expect(fresh.schema).toBe('signal.gameplay-jank.v1');
+    expect(fresh.enabled).toBe(true);
+    expect(fresh.frames).toBeGreaterThan(30);
+    expect(fresh.frame_ms.p50).toBeGreaterThan(0);
+    expect(fresh.frame_ms.p95).toBeGreaterThanOrEqual(fresh.frame_ms.p50);
+    expect(fresh.frame_ms.p99).toBeGreaterThanOrEqual(fresh.frame_ms.p95);
+    expect(fresh.simulation_ms.p99).toBeGreaterThanOrEqual(0);
+    expect(fresh.snapshots.packets).toBeGreaterThan(0);
+    expect(fresh.snapshots.bytes).toBeGreaterThan(0);
+    expect(fresh.fixed_step.completed).toBeGreaterThan(0);
+    expect(fresh.slow_frames.unexplained)
+      .toBeLessThanOrEqual(fresh.slow_frames.over_16_6);
+
+    await page.evaluate(() => {
+      const mod = (window as unknown as {
+        Module?: { ccall?: (name: string, returnType: null, argTypes: unknown[], args: unknown[]) => void };
+      }).Module;
+      mod?.ccall?.('signal_jank_profile_reset', null, [], []);
+    });
+    await setSmokeLoopState(page, smokeLoopState.fractureTableau);
+    await page.waitForTimeout(seconds * 1_000);
+    const mature = await jankProfileReport(page);
+    expect(mature.frames).toBeGreaterThan(30);
+    expect(mature.frame_ms.p99).toBeGreaterThan(0);
+    expect(mature.snapshots.packets).toBeGreaterThan(0);
+    for (const entity of [
+      'asteroid', 'cargo_pod', 'scaffold', 'npc', 'remote_player',
+    ]) {
+      expect(mature.entities[entity]).toBeTruthy();
+      expect(mature.entities[entity].samples).toBeGreaterThanOrEqual(0);
+    }
     expectNoFatalErrors(logs);
   });
 

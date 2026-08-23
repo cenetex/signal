@@ -621,6 +621,7 @@ TEST(test_persistence_writer_commits_immutable_snapshot) {
     ASSERT(world != NULL);
     ASSERT(test_prepare_generation_world(
         world, token, 12.0f, 44.0f, 75.0f));
+    world->tick = 123u;
     bool save_slots[MAX_PLAYERS] = {0};
     save_slots[0] = true;
 
@@ -640,6 +641,12 @@ TEST(test_persistence_writer_commits_immutable_snapshot) {
         persistence_writer_wait(writer, &published),
         PERSISTENCE_WRITER_SUCCEEDED);
     ASSERT(!persistence_writer_active(writer));
+    persistence_writer_metrics_t metrics = {0};
+    ASSERT(persistence_writer_get_metrics(writer, &metrics));
+    ASSERT_EQ_INT(metrics.snapshot_tick, 123);
+    ASSERT(metrics.snapshot_clone_ms >= 0.0);
+    ASSERT(metrics.background_write_ms >= 0.0);
+    ASSERT(metrics.write_complete);
     persistence_writer_destroy(writer);
 
     WORLD_HEAP loaded = calloc(1, sizeof(*loaded));

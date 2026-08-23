@@ -13,6 +13,7 @@
 #include "remote_receipt_cache.h"
 #include "state_digest.h"
 #include "asteroid_presentation.h"
+#include "gameplay_observability.h"
 
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
@@ -59,6 +60,7 @@ static bool local_asteroid_presentation_feed_active;
 static void net_replay_clear_frames(void);
 static void net_clear_tow_projections(void);
 static void net_reproject_tow_snapshot(void);
+static bool net_local_player_towing_asteroid(int idx);
 
 bool net_local_prediction_enabled(void) {
     if (!g.net_authority_enabled) return true;
@@ -1103,8 +1105,13 @@ static asteroid_t asteroid_render_state_at(int slot, float elapsed,
     if (!curr->active) return out;
 
     elapsed = clampf(elapsed, 0.0f, ASTEROID_RENDER_PREDICT_MAX_SEC);
-    asteroid_presentation_predict_motion(
-        curr, elapsed, towed, &out.pos, &out.vel);
+    bool acceleration_valid = towed &&
+        !net_local_player_towing_asteroid(slot) &&
+        g.asteroid_interp.acceleration_valid[slot];
+    asteroid_presentation_predict_motion_accelerated(
+        curr, elapsed, towed,
+        g.asteroid_interp.acceleration[slot], acceleration_valid,
+        &out.pos, &out.vel);
     out.age += elapsed;
     out.rotation = wrap_angle(curr->rotation + curr->spin * elapsed);
 
@@ -1133,6 +1140,40 @@ static asteroid_t asteroid_render_state_at(int slot, float elapsed,
         out.spin += (spin_error - omega * rotation_c * elapsed) * decay;
     }
     return out;
+}
+
+static void asteroid_note_authoritative_motion(
+    int slot, vec2 next_velocity, bool tow_driven, bool same_identity)
+{
+    if (slot < 0 || slot >= MAX_ASTEROIDS ||
+        !isfinite(next_velocity.x) || !isfinite(next_velocity.y)) return;
+
+    float gap = g.asteroid_interp.snapshot_elapsed[slot];
+    bool usable_gap = isfinite(gap) && gap >= SIM_DT && gap <= 1.0f;
+    if (same_identity && tow_driven &&
+        g.asteroid_interp.snapshot_valid[slot] && usable_gap) {
+        vec2 dv = v2_sub(next_velocity,
+                         g.asteroid_interp.snapshot_vel[slot]);
+        vec2 acceleration = v2_scale(dv, 1.0f / gap);
+        float length = v2_len(acceleration);
+        if (isfinite(length) &&
+            length <= ASTEROID_PRESENTATION_MAX_ACCEL * 4.0f) {
+            if (length > ASTEROID_PRESENTATION_MAX_ACCEL) {
+                acceleration = v2_scale(
+                    acceleration,
+                    ASTEROID_PRESENTATION_MAX_ACCEL / length);
+            }
+            g.asteroid_interp.acceleration[slot] = acceleration;
+            g.asteroid_interp.acceleration_valid[slot] = true;
+        } else {
+            g.asteroid_interp.acceleration_valid[slot] = false;
+        }
+    } else {
+        g.asteroid_interp.acceleration_valid[slot] = false;
+    }
+    g.asteroid_interp.snapshot_vel[slot] = next_velocity;
+    g.asteroid_interp.snapshot_elapsed[slot] = 0.0f;
+    g.asteroid_interp.snapshot_valid[slot] = same_identity || tow_driven;
 }
 
 static client_npc_render_state_t npc_render_state_at(int slot, float elapsed) {
@@ -1468,8 +1509,14 @@ void net_advance_asteroid_interpolation(float dt) {
             if (prev->active) prev->active = false;
             if (g.asteroid_interp.elapsed[i] != 0.0f)
                 g.asteroid_interp.elapsed[i] = 0.0f;
+            g.asteroid_interp.snapshot_elapsed[i] = 0.0f;
+            g.asteroid_interp.snapshot_valid[i] = false;
+            g.asteroid_interp.acceleration_valid[i] = false;
             continue;
         }
+        g.asteroid_interp.snapshot_elapsed[i] = fminf(
+            g.asteroid_interp.snapshot_elapsed[i] + dt,
+            ASTEROID_RENDER_PREDICT_MAX_SEC);
         float elapsed = g.asteroid_interp.elapsed[i];
         if (elapsed < ASTEROID_RENDER_PREDICT_MAX_SEC) {
             elapsed = fminf(elapsed + dt,
@@ -1724,6 +1771,19 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
             was_child == a->fracture_child &&
             was_tier == a->tier &&
             was_commodity == a->commodity;
+        if (a->active) {
+            gameplay_observability_record_entity_correction(
+                GAMEPLAY_ENTITY_ASTEROID,
+                v2_len(v2_sub(visual.pos, a->pos)),
+                v2_len(v2_sub(visual.vel, a->vel)),
+                g.asteroid_interp.snapshot_elapsed[idx]);
+            asteroid_note_authoritative_motion(
+                (int)idx, a->vel, asteroid_towed[idx], same_identity);
+        } else {
+            g.asteroid_interp.snapshot_valid[idx] = false;
+            g.asteroid_interp.acceleration_valid[idx] = false;
+            g.asteroid_interp.snapshot_elapsed[idx] = 0.0f;
+        }
         if (!a->active) {
             if (was_active) tow_relevance_changed = true;
             a->age = 0.0f;
@@ -1760,6 +1820,9 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
                 g.asteroid_interp.curr[i].active = false;
                 g.asteroid_interp.prev[i].active = false;
                 g.asteroid_interp.elapsed[i] = 0.0f;
+                g.asteroid_interp.snapshot_elapsed[i] = 0.0f;
+                g.asteroid_interp.snapshot_valid[i] = false;
+                g.asteroid_interp.acceleration_valid[i] = false;
                 tow_relevance_changed = true;
             }
         }
@@ -1800,6 +1863,14 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
                 next_vx, next_vy, 0.0f)) {
             g.net_reconcile.asteroid_motion_samples++;
         }
+        gameplay_observability_record_entity_correction(
+            GAMEPLAY_ENTITY_ASTEROID,
+            v2_len(v2_sub(visual.pos,
+                          v2(asteroids[i].x, asteroids[i].y))),
+            v2_len(v2_sub(visual.vel, v2(next_vx, next_vy))),
+            g.asteroid_interp.snapshot_elapsed[idx]);
+        asteroid_note_authoritative_motion(
+            (int)idx, v2(next_vx, next_vy), asteroid_towed[idx], true);
         a->pos.x = asteroids[i].x;
         a->pos.y = asteroids[i].y;
         a->vel.x = next_vx;
@@ -3673,7 +3744,7 @@ void sync_local_player_slot_from_network(void) {
 }
 
 void interpolate_world_for_render_frame(float frame_dt) {
-    (void)frame_dt;
+    bool observe_corrections = gameplay_observability_enabled();
     bool asteroid_towed[MAX_ASTEROIDS];
     net_collect_towed_asteroids(asteroid_towed);
 
@@ -3708,6 +3779,13 @@ void interpolate_world_for_render_frame(float frame_dt) {
         }
         client_npc_render_state_t render = npc_render_state_at(
             i, g.npc_interp.elapsed[i]);
+        if (observe_corrections && curr->active && prev->active) {
+            gameplay_observability_record_entity_correction(
+                GAMEPLAY_ENTITY_NPC,
+                v2_len(v2_sub(prev->pos, curr->pos)),
+                v2_len(v2_sub(prev->vel, curr->vel)),
+                fmaxf(g.npc_interp.elapsed[i], frame_dt));
+        }
         if (!g.world.npc_ships[i].ship &&
             !world_npc_ship_slot_activate(&g.world, i)) {
             continue;
@@ -3740,6 +3818,13 @@ void interpolate_world_for_render_frame(float frame_dt) {
             continue;
         }
         scaffold_t *dst = &g.world.scaffolds[i];
+        if (observe_corrections && curr->active && prev->active) {
+            gameplay_observability_record_entity_correction(
+                GAMEPLAY_ENTITY_SCAFFOLD,
+                v2_len(v2_sub(prev->pos, curr->pos)),
+                v2_len(v2_sub(prev->vel, curr->vel)),
+                fmaxf(g.scaffold_interp.elapsed[i], frame_dt));
+        }
         *dst = scaffold_render_state_at(
             i, g.scaffold_interp.elapsed[i]);
     }
@@ -3752,6 +3837,13 @@ void interpolate_world_for_render_frame(float frame_dt) {
             continue;
         }
         cargo_pod_t *dst = &g.world.cargo_pods[i];
+        if (observe_corrections && curr->active && prev->active) {
+            gameplay_observability_record_entity_correction(
+                GAMEPLAY_ENTITY_CARGO_POD,
+                v2_len(v2_sub(prev->pos, curr->pos)),
+                v2_len(v2_sub(prev->vel, curr->vel)),
+                fmaxf(g.cargo_pod_interp.elapsed[i], frame_dt));
+        }
         *dst = cargo_pod_render_state_at(
             i, clampf(g.cargo_pod_interp.elapsed[i], 0.0f,
                       CARGO_POD_RENDER_EXTRAPOLATE_MAX_SEC));
@@ -3832,8 +3924,27 @@ const NetPlayerState* net_get_interpolated_players(void) {
 
     float elapsed = clampf(g.player_interp.t * g.player_interp.interval,
                            0.0f, REMOTE_PLAYER_RENDER_EXTRAPOLATE_MAX_SEC);
-    for (int i = 0; i < NET_MAX_PLAYERS; i++)
+    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+        if (gameplay_observability_enabled() &&
+            i != g.local_player_slot &&
+            g.player_interp.curr[i].active &&
+            g.player_interp.prev[i].active) {
+            float dx = g.player_interp.prev[i].x -
+                       g.player_interp.curr[i].x;
+            float dy = g.player_interp.prev[i].y -
+                       g.player_interp.curr[i].y;
+            float dvx = g.player_interp.prev[i].vx -
+                        g.player_interp.curr[i].vx;
+            float dvy = g.player_interp.prev[i].vy -
+                        g.player_interp.curr[i].vy;
+            gameplay_observability_record_entity_correction(
+                GAMEPLAY_ENTITY_REMOTE_PLAYER,
+                sqrtf(dx * dx + dy * dy),
+                sqrtf(dvx * dvx + dvy * dvy),
+                fmaxf(elapsed, g.player_interp.interval));
+        }
         result[i] = remote_player_render_state_at(i, elapsed);
+    }
     return result;
 }
 
