@@ -22,6 +22,8 @@
 #include <string.h>
 
 static void local_server_emit_frame(local_server_t *ls, int player_slot);
+static void local_server_mark_station_identity_dirty(void *user,
+                                                     int station_idx);
 
 #define LS_WORLD(ls) (*local_server_world((ls)))
 
@@ -53,6 +55,7 @@ void local_server_shutdown(local_server_t *ls) {
     ls->active = false;
     net_set_loopback_send(NULL, NULL);
     ls->station_snapshot_dirty = false;
+    ls->station_econ_snapshot_dirty = false;
     ls->private_snapshot_dirty = false;
     ls->global_snapshot_dirty = false;
     local_authority_release(&ls->authority);
@@ -84,6 +87,7 @@ bool local_server_init(local_server_t *ls, uint32_t seed) {
     player_init_ship(&LS_WORLD(ls).players[0], &LS_WORLD(ls));
     ls->active = true;
     ls->station_snapshot_dirty = true;
+    ls->station_econ_snapshot_dirty = true;
     ls->private_snapshot_dirty = true;
     ls->global_snapshot_dirty = true;
     ls->generation = generation == UINT32_MAX ? 1u : generation + 1u;
@@ -217,43 +221,24 @@ static void local_server_handle_signed_action(local_server_t *ls, int pid,
     if (server_dispatch_signed_action_payload(
         &LS_WORLD(ls), pid, action_type, payload, payload_len,
         local_server_receipt_chain_sink, NULL, &dispatch_result)) {
+        if (dispatch_result.station_identity_dirty >= 0 &&
+            dispatch_result.station_identity_dirty < MAX_STATIONS) {
+            local_server_mark_station_identity_dirty(
+                ls, dispatch_result.station_identity_dirty);
+        }
         local_server_send_immediate_pod_present_result(
             ls, pid, &dispatch_result);
     }
 }
 
-static void local_server_handle_input(local_server_t *ls, int pid,
-                                      const uint8_t *data, int len) {
-    server_input_dispatch_result_t result;
-    if (!ls || !local_server_has_world(ls)) return;
-    uint32_t now_ms = (uint32_t)(LS_WORLD(ls).time * 1000.0f);
-    if (!server_dispatch_input_message(&LS_WORLD(ls), pid, data, len,
-                                       now_ms, &result)) {
-        return;
-    }
-    server_player_t *sp = &LS_WORLD(ls).players[pid];
-    if (result.ack_status == NET_ACTION_ACK_RECEIVED &&
-        result.action_id != 0) {
-        server_begin_pending_action_result(&LS_WORLD(ls), sp, result.action_id,
-                                           result.input_seq, result.action);
-    }
-    server_merge_one_shot_input(&sp->input, &result.intent);
-    if (result.ack_status != 0) {
-        uint8_t ack[NET_ACTION_ACK_SIZE];
-        int alen = serialize_action_ack(ack, result.action_id,
-                                        result.input_seq,
-                                        result.ack_status,
-                                        result.action);
-        local_server_send_to_client(ack, alen);
-        if (result.force_authoritative_resync) {
-            sp->replication->force_authoritative_resync = true;
-            local_server_send_action_result(result.action_id,
-                                            result.input_seq,
-                                            NET_ACTION_RESULT_REJECTED,
-                                            result.action,
-                                            LS_WORLD(ls).tick);
-        }
-    }
+static void local_server_mark_station_identity_dirty(void *user,
+                                                     int station_idx) {
+    (void)station_idx;
+    local_server_t *ls = (local_server_t *)user;
+    if (!ls) return;
+    ls->station_snapshot_dirty = true;
+    ls->station_econ_snapshot_dirty = true;
+    ls->global_snapshot_dirty = true;
 }
 
 static bool local_server_loopback_send(const uint8_t *data, int len, void *user) {
@@ -264,6 +249,21 @@ static bool local_server_loopback_send(const uint8_t *data, int len, void *user)
     }
     int pid = 0;
     server_player_t *sp = &LS_WORLD(ls).players[pid];
+
+    server_gameplay_packet_policy_t gameplay_policy = {
+        .user = ls,
+        .send_packet = local_server_send_packet,
+        .mark_station_identity_dirty =
+            local_server_mark_station_identity_dirty,
+        .receipt_chain_sink = local_server_receipt_chain_sink,
+        .handoff_ticket_sink = local_server_handoff_ticket_sink,
+        .handoff_result_sink = local_server_handoff_result_sink,
+    };
+    uint32_t now_ms = (uint32_t)(LS_WORLD(ls).time * 1000.0f);
+    if (server_dispatch_gameplay_packet(
+            &LS_WORLD(ls), pid, data, len, now_ms, &gameplay_policy)) {
+        return true;
+    }
 
     switch (data[0]) {
     case NET_MSG_LATENCY_PING:
@@ -326,44 +326,6 @@ static bool local_server_loopback_send(const uint8_t *data, int len, void *user)
         }
         break;
     }
-    case NET_MSG_INPUT:
-        local_server_handle_input(ls, pid, data, len);
-        break;
-    case NET_MSG_PLAN:
-        (void)server_dispatch_legacy_plan_message(&LS_WORLD(ls), pid, data,
-                                                  len, NULL);
-        break;
-    case NET_MSG_STATE:
-    case NET_MSG_MINING_ACTION:
-        break;
-    case NET_MSG_BUY_INGOT:
-        (void)server_dispatch_legacy_buy_ingot_message(
-            &LS_WORLD(ls), pid, data, len, local_server_receipt_chain_sink,
-            NULL, NULL);
-        break;
-    case NET_MSG_DELIVER_INGOT:
-        (void)server_dispatch_legacy_deliver_ingot_message(
-            &LS_WORLD(ls), pid, data, len, local_server_receipt_chain_sink,
-            NULL, NULL);
-        break;
-    case NET_MSG_PRESENT_RECEIPT_CHAIN:
-        (void)server_dispatch_receipt_presentation_message(
-            &LS_WORLD(ls), pid, data, len, NULL);
-        break;
-    case NET_MSG_HANDOFF_REQUEST:
-        (void)server_dispatch_handoff_request(&LS_WORLD(ls), pid, data, len,
-                                              local_server_handoff_ticket_sink,
-                                              NULL);
-        break;
-    case NET_MSG_HANDOFF_PRESENT:
-        (void)server_dispatch_handoff_present(&LS_WORLD(ls), pid, data, len,
-                                              local_server_handoff_result_sink,
-                                              NULL);
-        break;
-    case NET_MSG_FRACTURE_CLAIM:
-        (void)server_dispatch_fracture_claim_message(&LS_WORLD(ls), pid,
-                                                     data, len, NULL);
-        break;
     case NET_MSG_SIGNED_ACTION:
         local_server_handle_signed_action(ls, pid, data, len);
         break;
@@ -417,6 +379,9 @@ static void local_server_event_hail_response(void *user,
         (local_server_event_context_t *)user;
     if (!ctx || !ctx->ls) return;
     local_server_emit_hail_response(ctx->ls, ev);
+    ctx->ls->private_snapshot_dirty = true;
+    ctx->ls->station_econ_snapshot_dirty = true;
+    ctx->ls->global_snapshot_dirty = true;
 }
 
 static void local_server_event_death(void *user, const sim_event_t *ev) {
@@ -427,6 +392,9 @@ static void local_server_event_death(void *user, const sim_event_t *ev) {
     uint8_t msg[NET_DEATH_MSG_SIZE];
     int len = serialize_death(msg, (uint8_t)ctx->player_slot, ev);
     local_server_send_to_client(msg, len);
+    ctx->ls->private_snapshot_dirty = true;
+    ctx->ls->station_econ_snapshot_dirty = true;
+    ctx->ls->global_snapshot_dirty = true;
 }
 
 static void local_server_event_player_state_change(void *user,
@@ -436,6 +404,28 @@ static void local_server_event_player_state_change(void *user,
         (local_server_event_context_t *)user;
     if (!ctx || !ctx->ls) return;
     ctx->ls->private_snapshot_dirty = true;
+    ctx->ls->station_econ_snapshot_dirty = true;
+    ctx->ls->global_snapshot_dirty = true;
+}
+
+static void local_server_event_outpost_placed(void *user,
+                                              const sim_event_t *ev) {
+    (void)ev;
+    local_server_event_context_t *ctx =
+        (local_server_event_context_t *)user;
+    if (!ctx || !ctx->ls) return;
+    ctx->ls->station_snapshot_dirty = true;
+    ctx->ls->station_econ_snapshot_dirty = true;
+    ctx->ls->global_snapshot_dirty = true;
+}
+
+static void local_server_event_contract_complete(void *user,
+                                                 const sim_event_t *ev) {
+    (void)ev;
+    local_server_event_context_t *ctx =
+        (local_server_event_context_t *)user;
+    if (!ctx || !ctx->ls) return;
+    ctx->ls->station_econ_snapshot_dirty = true;
     ctx->ls->global_snapshot_dirty = true;
 }
 
@@ -446,13 +436,16 @@ static void local_server_event_structure_dirty(void *user,
         (local_server_event_context_t *)user;
     if (!ctx || !ctx->ls) return;
     ctx->ls->station_snapshot_dirty = true;
+    ctx->ls->station_econ_snapshot_dirty = true;
     ctx->ls->global_snapshot_dirty = true;
 }
 
 static const server_sim_event_hooks_t local_server_event_hooks = {
+    .outpost_placed = local_server_event_outpost_placed,
     .player_state_change = local_server_event_player_state_change,
     .hail_response = local_server_event_hail_response,
     .death = local_server_event_death,
+    .contract_complete = local_server_event_contract_complete,
     .structure_dirty = local_server_event_structure_dirty,
 };
 
@@ -510,6 +503,7 @@ static void local_server_emit_station_snapshots(local_server_t *ls) {
     for (int s = 0; s < MAX_STATIONS; s++)
         LS_WORLD(ls).stations[s].manifest_dirty = false;
     ls->station_snapshot_dirty = false;
+    ls->station_econ_snapshot_dirty = false;
 }
 
 static void local_server_emit_station_identity_snapshots(local_server_t *ls) {
@@ -560,6 +554,7 @@ static void local_server_emit_station_econ_snapshots(local_server_t *ls) {
     local_server_send_to_client(
         local_server_station_snapshot_scratch.world_stations,
         station_len);
+    ls->station_econ_snapshot_dirty = false;
 }
 
 static void local_server_emit_world_snapshots(local_server_t *ls,
@@ -650,7 +645,8 @@ static void local_server_emit_frame(local_server_t *ls, int player_slot) {
         local_server_emit_global_snapshots(ls);
         if ((tick % LOCAL_SERVER_STATION_DIAG_TICKS) == 0u)
             local_server_emit_station_diag_snapshots(ls);
-        if ((tick % LOCAL_SERVER_STATION_ECON_TICKS) == 0u)
+        if (ls->station_econ_snapshot_dirty ||
+            (tick % LOCAL_SERVER_STATION_ECON_TICKS) == 0u)
             local_server_emit_station_econ_snapshots(ls);
         return;
     }
@@ -674,7 +670,8 @@ static void local_server_emit_frame(local_server_t *ls, int player_slot) {
     }
     if ((tick % LOCAL_SERVER_STATION_DIAG_TICKS) == 0u)
         local_server_emit_station_diag_snapshots(ls);
-    if ((tick % LOCAL_SERVER_STATION_ECON_TICKS) == 0u)
+    if (ls->station_econ_snapshot_dirty ||
+        (tick % LOCAL_SERVER_STATION_ECON_TICKS) == 0u)
         local_server_emit_station_econ_snapshots(ls);
     if (ls->global_snapshot_dirty ||
         (tick % LOCAL_SERVER_GLOBAL_TICKS) == 0u) {

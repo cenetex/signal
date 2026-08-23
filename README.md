@@ -153,8 +153,8 @@ for the `swarm.rati.chat` avatar sync workflow.
   it on a ring slot or found/materialize an outpost.
 - Utility: `H` hail/scan the local area. After one manual paid ore delivery,
   `O` toggles mining autopilot. `[` and
-  `]` switch music tracks, `/` toggle music pause, `X` self-destruct/reset in
-  singleplayer, `Esc` quits.
+  `]` switch music tracks, `/` toggle music pause, `X` self-destruct/reset,
+  `Esc` quits.
 
 ## Build
 

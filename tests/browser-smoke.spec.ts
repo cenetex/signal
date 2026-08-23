@@ -1462,6 +1462,43 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  test('a multiplayer disconnect never starts a fresh local universe', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'mock transport requires the local browser bundle');
+
+    const remoteUrl = 'ws://signal-disconnect-parity.invalid/ws';
+    let closeRemote: (() => Promise<void>) | undefined;
+    await page.routeWebSocket(remoteUrl, ws => {
+      closeRemote = () => ws.close({ code: 1012, reason: 'smoke disconnect' });
+      ws.onMessage(() => {});
+    });
+
+    const logs = installFatalCollectors(page);
+    await page.goto(
+      `/play.html?smoke=1&server=${encodeURIComponent(remoteUrl)}`,
+    );
+    await waitForRuntime(page);
+    await expect.poll(
+      () => wasmNumber(page, 'signal_debug_net_connected'),
+      { timeout: 5_000 },
+    ).toBe(1);
+    expect(await wasmNumber(page, 'signal_debug_local_authority_state'))
+      .toBe(1 << 3);
+    expect(await wasmNumber(page, 'signal_debug_local_authority_generation'))
+      .toBe(0);
+
+    expect(closeRemote).toBeDefined();
+    await closeRemote!();
+    await expect.poll(
+      () => wasmNumber(page, 'signal_debug_net_connected'),
+      { timeout: 5_000 },
+    ).toBe(0);
+    expect(await wasmNumber(page, 'signal_debug_local_authority_state'))
+      .toBe(1 << 3);
+    expect(await wasmNumber(page, 'signal_debug_local_authority_generation'))
+      .toBe(0);
+    expectNoFatalErrors(logs);
+  });
+
   test('multiplayer is the default while singleplayer and RTC remain explicit options', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'transport selection is covered against the local bundle');
 
@@ -2217,7 +2254,7 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
-  test('local asteroid presentation removes the 10 Hz correction rhythm', async ({ page }) => {
+  test('singleplayer renders the same packet-driven asteroid stream as multiplayer', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'requires local singleplayer authority');
     test.setTimeout(45_000);
 
@@ -2240,34 +2277,25 @@ test.describe('Browser smoke tests', () => {
       () => wasmNumber(page, 'get_local_asteroid_motion_feed_active'),
       {
         timeout: 10_000,
-        message: 'local authority asteroid pose feed should become active',
+        message: 'singleplayer must not bypass packets with local authority poses',
       },
-    ).toBe(1);
+    ).toBe(0);
 
-    await wasmNumber(page, 'reset_local_asteroid_motion_telemetry');
-    await expect.poll(
-      () => wasmNumber(page, 'get_local_asteroid_motion_presented_samples'),
-      { timeout: 8_000 },
-    ).toBeGreaterThan(30);
-
-    expect(await wasmNumber(page, 'get_local_asteroid_motion_frame_samples'))
-      .toBeGreaterThan(0);
-    expect(await wasmNumberArg(page, 'get_local_asteroid_motion_class_samples', 0))
-      .toBeGreaterThan(0); // loose drift
-    expect(await wasmNumber(page, 'get_local_asteroid_motion_starvation_events'))
+    expect(await wasmNumber(page, 'get_local_asteroid_motion_presented_samples'))
       .toBe(0);
-    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_correction'))
-      .toBeLessThanOrEqual(0.01);
-    expect(await wasmNumber(
-      page, 'get_local_asteroid_motion_max_velocity_discontinuity',
-    )).toBeLessThanOrEqual(0.01);
-    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_screen_jerk'))
-      .toBeLessThanOrEqual(500_000);
-    expect(await wasmNumber(page, 'get_local_asteroid_motion_max_avoided_correction'))
-      .toBeGreaterThan(0);
-    expect(await wasmNumber(page, 'local_asteroid_motion_within_thresholds'))
-      .toBe(1);
 
+    expectNoFatalErrors(logs);
+  });
+
+  test('singleplayer rebuilds market memories from the private packet', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'requires local singleplayer authority');
+
+    const logs = installFatalCollectors(page);
+    await loadGame(page, false, { singleplayer: true });
+
+    expect(
+      await wasmNumber(page, 'signal_smoke_market_memory_packet_parity'),
+    ).toBe(1);
     expectNoFatalErrors(logs);
   });
 
