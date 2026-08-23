@@ -2994,7 +2994,7 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
-  rootBundleSmokeTest('smooths remote towable scaffold, cargo pod, and fragment snapshots', async ({ page }) => {
+  rootBundleSmokeTest('smooths remote towables and draws a local online tether across generation mismatch', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     await loadGame(page, false, { singleplayer: true });
@@ -3004,6 +3004,23 @@ test.describe('Browser smoke tests', () => {
       await localTowReplayStabilityCheck(page),
       'player reconciliation must not advance an already-predicted tow body again',
     ).toBe(1);
+    expect(
+      await wasmNumber(
+        page, 'signal_smoke_prepare_local_generation_mismatch_tether',
+      ),
+      'an authenticated server tow generation must project onto the live local player slot',
+    ).toBe(1);
+    await expect
+      .poll(async () => (await tractorDrawTelemetry(page, 0)).count, {
+        timeout: 3_000,
+        message: 'the local player-to-cargo tractor line should render',
+      })
+      .toBeGreaterThanOrEqual(1);
+    const localTether = await tractorDrawTelemetry(page, 0);
+    expect(localTether.sourceType).toBe(3); // ship
+    expect(localTether.targetType).toBe(2); // cargo pod
+    expect(localTether.span).toBeGreaterThan(40);
+    expect(localTether.intensity).toBeGreaterThan(0);
 
     expectNoFatalErrors(logs);
   });

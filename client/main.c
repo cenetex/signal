@@ -4052,6 +4052,13 @@ int signal_smoke_remote_towable_interp_check(void) {
         .attached_tick = 400,
         .revision = 40,
     };
+    /* Online clients allocate component generations independently from the
+     * server. The authenticated relation generation must still project onto
+     * the live player slot, or local tractor lines disappear after restart or
+     * reconnect. */
+    atomic_link.source.generation += 7;
+    if (atomic_link.source.generation == 0)
+        atomic_link.source.generation = 1;
     apply_remote_tow_links(&atomic_link, 1, 40, 400);
     bool atomic_attach_ok =
         g.tow_snapshot_received &&
@@ -4146,18 +4153,23 @@ int signal_smoke_remote_towable_interp_check(void) {
         cargo_pod_is_tractored_by_module(
             &g.cargo_pod_interp.curr[13], 0, 0);
 
-    /* A stale relation from a recycled ship slot remains stored for possible
-     * relevance recovery, but must not project onto the live replacement. */
-    tow_link_t stale_ship_source = atomic_link;
-    stale_ship_source.revision = 43;
-    stale_ship_source.source.generation++;
-    if (stale_ship_source.source.generation == 0)
-        stale_ship_source.source.generation = 1;
-    apply_remote_tow_links(&stale_ship_source, 1, 43, 406);
-    bool stale_ship_generation_not_projected =
+    /* A current relation stays stored while its source is absent, then an
+     * equal-revision delivery may re-project it when that roster slot is live
+     * again. This keeps the stale-actor guard without comparing unrelated
+     * client/server component generations. */
+    tow_link_t roster_ship_source = atomic_link;
+    roster_ship_source.revision = 43;
+    g.world.players[0].connected = false;
+    apply_remote_tow_links(&roster_ship_source, 1, 43, 406);
+    bool absent_ship_source_not_projected =
         g.tow_snapshot_revision == 43 &&
         !cargo_pod_has_player_tractor(
-            &g.cargo_pod_interp.curr[stale_ship_source.target.index]);
+            &g.cargo_pod_interp.curr[roster_ship_source.target.index]);
+    g.world.players[0].connected = true;
+    apply_remote_tow_links(&roster_ship_source, 1, 43, 407);
+    bool live_ship_source_reprojected =
+        cargo_pod_player_tractor(
+            &g.cargo_pod_interp.curr[roster_ship_source.target.index]) == 0;
 
     tow_link_t relevance_link = atomic_link;
     relevance_link.target.index = 12;
@@ -4187,7 +4199,8 @@ int signal_smoke_remote_towable_interp_check(void) {
         conflicting_duplicate_idempotent &&
         malformed_replacement_rejected && newer_release_applied &&
         multi_pod_module_snapshot_ok &&
-        stale_ship_generation_not_projected &&
+        absent_ship_source_not_projected &&
+        live_ship_source_reprojected &&
         relevant_target_projected &&
         irrelevant_target_not_projected &&
         relevance_reentry_reprojected &&
@@ -4585,6 +4598,62 @@ int signal_smoke_remote_towable_interp_check(void) {
 EMSCRIPTEN_KEEPALIVE
 int signal_smoke_local_tow_replay_stability_check(void) {
     return net_smoke_local_tow_replay_stability_check();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_prepare_local_generation_mismatch_tether(void) {
+    const int pod_idx = MAX_CARGO_PODS - 2;
+    int player_idx = g.local_player_slot;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS) return 0;
+    server_player_t *player = &g.world.players[player_idx];
+    if (!player->ship) return 0;
+
+    /* Freeze the loopback authority so the render frame observes exactly the
+     * online-style snapshot assembled below. */
+    g.local_server.active = false;
+    player->connected = true;
+    player->docked = false;
+
+    cargo_pod_t pod = {
+        .active = true,
+        .kind = CARGO_POD_CARGO,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .pos = {player->ship->pos.x + 100.0f, player->ship->pos.y},
+        .vel = {0.0f, 0.0f},
+        .radius = 18.0f,
+        .quantity = 8,
+    };
+    g.world.cargo_pods[pod_idx] = pod;
+    g.cargo_pod_interp.prev[pod_idx] = pod;
+    g.cargo_pod_interp.curr[pod_idx] = pod;
+    g.cargo_pod_interp.elapsed[pod_idx] = 0.0f;
+
+    uint32_t revision = g.tow_snapshot_received
+        ? g.tow_snapshot_revision + 1u : 1u;
+    if (revision == 0) revision = 1;
+    tow_link_t link = {
+        .active = true,
+        .source = player->ship_ref,
+        .target = {
+            .kind = ENTITY_KIND_CARGO_POD,
+            .index = pod_idx,
+            .part = -1,
+            .generation = 1,
+        },
+        .profile = TOW_PROFILE_SHIP_POD,
+        .slot = 0,
+        .state = TOW_LINK_HELD,
+        .attached_tick = g.world.tick,
+        .revision = revision,
+    };
+    link.source.generation += 7;
+    if (link.source.generation == 0) link.source.generation = 1;
+    apply_remote_tow_links(&link, 1, revision, g.world.tick);
+
+    return player->ship->towed_pod_count == 1 &&
+           player->ship->towed_pods[0] == pod_idx &&
+           cargo_pod_player_tractor(&g.cargo_pod_interp.curr[pod_idx]) ==
+               player_idx;
 }
 
 EMSCRIPTEN_KEEPALIVE
