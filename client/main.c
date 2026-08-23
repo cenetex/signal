@@ -133,11 +133,8 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 #define NET_INPUT_HEARTBEAT_SEC ((float)NET_INPUT_IDLE_HEARTBEAT_MS / 1000.0f)
 #define NET_ACTIVE_INPUT_HEARTBEAT_SEC ((float)NET_INPUT_ACTIVE_HEARTBEAT_MS / 1000.0f)
 #define NET_ACTIVE_INPUT_ACK_HEARTBEAT_SEC ((float)NET_INPUT_ACTIVE_ACK_HEARTBEAT_MS / 1000.0f)
-#define NET_ACTIVE_INPUT_ACK_QUIET_SEC 1.5f
-#define NET_ACTIVE_INPUT_ACK_RECOVERY_SEC 0.5f
 #define NET_ACTIVE_INPUT_ACK_RECOVERY_GAP_SEC 0.250f
 #define NET_ACTIVE_INPUT_ACK_RECOVERY_UNACKED 4u
-#define NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_SEC 0.25f
 #define NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_GAP_SEC 0.500f
 #define NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_UNACKED 8u
 #define NET_ACTIVE_INPUT_ACK_AGE_RECOVERY_MIN_SEC 0.250f
@@ -154,8 +151,8 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 #define NET_PING_MAX_WINDOW_SEC 5.0f
 #define NET_CONTROL_LANE_STABLE_GAP_SEC 0.125f
 #define NET_CONTROL_LANE_QUIET_MAX_UNACKED 1u
-#define LOCAL_PLAYER_RENDER_CORRECTION_SEC 0.18f
-#define LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC 0.34f
+#define LOCAL_PLAYER_RENDER_CORRECTION_SEC 0.06f
+#define LOCAL_PLAYER_RENDER_CORRECTION_LATENCY_SEC 0.10f
 
 static const char *net_action_ack_status_name(uint8_t status) {
     switch (status) {
@@ -3191,24 +3188,9 @@ static uint8_t net_active_input_ack_recovery_tier(void) {
         NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_GAP_SEC);
 }
 
-static float net_active_input_ack_interval_for_tier(uint8_t tier) {
-    switch (tier) {
-    case NET_LATENCY_ACK_RECOVERY_HOT:
-        return NET_ACTIVE_INPUT_ACK_HOT_RECOVERY_SEC;
-    case NET_LATENCY_ACK_RECOVERY_MILD:
-        return NET_ACTIVE_INPUT_ACK_RECOVERY_SEC;
-    default:
-        return NET_ACTIVE_INPUT_ACK_HEARTBEAT_SEC;
-    }
-}
-
 static float net_active_input_ack_interval_sec(void) {
     g.net_ack_recovery_tier = net_active_input_ack_recovery_tier();
-    if (g.net_ack_recovery_tier == NET_LATENCY_ACK_RECOVERY_STEADY &&
-        net_control_lane_quiet_stable()) {
-        return NET_ACTIVE_INPUT_ACK_QUIET_SEC;
-    }
-    return net_active_input_ack_interval_for_tier(g.net_ack_recovery_tier);
+    return NET_ACTIVE_INPUT_ACK_HEARTBEAT_SEC;
 }
 
 static uint8_t net_client_recovery_flags(void) {

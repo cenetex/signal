@@ -3839,11 +3839,11 @@ test.describe('Browser smoke tests', () => {
     expect(motion.actionQueueDepth).toBeLessThanOrEqual(1);
     expect(motion.replayDepth).toBeLessThanOrEqual(512);
     expect(motion.unackedInputs).toBeLessThan(64);
-    expect(motion.snapSamples).toBeLessThan(5);
-    expect(motion.maxRenderOffset).toBeLessThanOrEqual(260);
-    expect(motion.currentRenderOffset).toBeLessThanOrEqual(260);
-    expect(motion.maxAppliedCorrection).toBeLessThan(360);
-    expect(motion.maxCorrection).toBeLessThan(900);
+    expect(motion.snapSamples).toBe(0);
+    expect(motion.maxRenderOffset).toBeLessThanOrEqual(48);
+    expect(motion.currentRenderOffset).toBeLessThanOrEqual(2);
+    expect(motion.maxAppliedCorrection).toBeLessThan(80);
+    expect(motion.maxCorrection).toBeLessThan(160);
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 
@@ -3895,11 +3895,11 @@ test.describe('Browser smoke tests', () => {
     expect(motion.actionQueueDepth).toBeLessThanOrEqual(1);
     expect(motion.replayDepth).toBeLessThanOrEqual(512);
     expect(motion.unackedInputs).toBeLessThan(96);
-    expect(motion.snapSamples).toBeLessThan(8);
-    expect(motion.maxRenderOffset).toBeLessThanOrEqual(260);
-    expect(motion.currentRenderOffset).toBeLessThanOrEqual(260);
-    expect(motion.maxAppliedCorrection).toBeLessThan(420);
-    expect(motion.maxCorrection).toBeLessThan(1100);
+    expect(motion.snapSamples).toBe(0);
+    expect(motion.maxRenderOffset).toBeLessThanOrEqual(48);
+    expect(motion.currentRenderOffset).toBeLessThanOrEqual(2);
+    expect(motion.maxAppliedCorrection).toBeLessThan(80);
+    expect(motion.maxCorrection).toBeLessThan(160);
     expectNoFatalErrors(logs, { allowExpectedLiveClose: true });
   });
 });

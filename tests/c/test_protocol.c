@@ -417,7 +417,7 @@ TEST(test_player_motion_delta_q_stream_uses_baseline) {
     ASSERT_EQ_INT(recipient.replication->player_motion_delta_angle[1], 64);
     ASSERT_EQ_INT((int)recipient.replication->player_motion_delta_tick[1], 100);
 
-    players[1].ship->pos = v2(116.0f, -184.0f);
+    players[1].ship->pos = v2(116.0f, -180.0f);
     players[1].ship->vel = v2(66.0f, -34.0f);
     records = serialize_player_motion_split_q_for_recipient(
         abs_buf, &abs_len, delta_buf, &delta_len,
@@ -438,7 +438,7 @@ TEST(test_player_motion_delta_q_stream_uses_baseline) {
     const uint8_t *p = &delta_buf[PLAYER_MOTIOND_Q_MSG_HEADER];
     ASSERT_EQ_INT(p[0], 1);
     ASSERT_EQ_INT((int)(int8_t)p[1], 2);
-    ASSERT_EQ_INT((int)(int8_t)p[2], 2);
+    ASSERT_EQ_INT((int)(int8_t)p[2], 3);
     ASSERT_EQ_INT((int)(int8_t)p[3], 17);
     ASSERT_EQ_INT((int)(int8_t)p[4], -9);
     ASSERT_EQ_INT(p[5], 64);
@@ -447,7 +447,7 @@ TEST(test_player_motion_delta_q_stream_uses_baseline) {
         &recipient, delta_buf, (size_t)delta_len,
         100u + PLAYER_MOTION_NET_MIN_REPEAT_TICKS);
     ASSERT_EQ_INT(recipient.replication->player_motion_delta_qx[1], 29);
-    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qy[1], -46);
+    ASSERT_EQ_INT(recipient.replication->player_motion_delta_qy[1], -45);
     ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].x, 68.0f, 0.01f);
     ASSERT_EQ_FLOAT(recipient.replication->player_motion_delta_vel[1].y, -36.0f, 0.01f);
     ASSERT_EQ_INT((int)recipient.replication->player_motion_delta_tick[1],
@@ -9540,8 +9540,8 @@ TEST(test_protocol_info_serializes_stream_map) {
 
     const uint8_t *input = find_protocol_stream(buf, NET_MSG_INPUT);
     ASSERT(input != NULL);
-    ASSERT_EQ_INT((int)NET_INPUT_ACTIVE_HEARTBEAT_MS, 250);
-    ASSERT_EQ_INT((int)NET_INPUT_ACTIVE_ACK_HEARTBEAT_MS, 1000);
+    ASSERT_EQ_INT((int)NET_INPUT_ACTIVE_HEARTBEAT_MS, 100);
+    ASSERT_EQ_INT((int)NET_INPUT_ACTIVE_ACK_HEARTBEAT_MS, 100);
     ASSERT_EQ_INT((int)NET_INPUT_IDLE_HEARTBEAT_MS, 1000);
     ASSERT_EQ_INT(read_u16_le(&input[4]), NET_INPUT_MSG_SIZE);
     ASSERT_EQ_INT(read_u16_le(&input[10]), NET_INPUT_ACTIVE_HEARTBEAT_MS);

@@ -955,7 +955,7 @@ static uint64_t last_player_state_emit = 0;
 /* Timing intervals in milliseconds */
 #define SIM_TICK_MS   8     /* ~120 Hz poll gate; sim uses SIM_DT accumulator */
 #define STATE_TICK_MS 50    /* 20 Hz player state broadcast */
-#define PLAYER_MOTION_SEND_INTERVAL_MS (STATE_TICK_MS * 4u)
+#define PLAYER_MOTION_SEND_INTERVAL_MS (STATE_TICK_MS * 2u)
 #define WORLD_TICK_MS 100   /* 10 Hz world state broadcast */
 #define WORLD_NPC_MOTION_REPEAT_TICKS NPC_MOTION_NET_REPEAT_TICKS
 #define WORLD_NPC_STATUS_REPEAT_TICKS NPC_STATUS_NET_REPEAT_TICKS
