@@ -1003,7 +1003,7 @@ static inline bool player_motiond_q_encode_i8(float value,
     return true;
 }
 
-#define PLAYER_MOTION_NET_MIN_REPEAT_TICKS 24u /* 5 Hz while changing */
+#define PLAYER_MOTION_NET_MIN_REPEAT_TICKS 12u /* 10 Hz while changing */
 #define PLAYER_MOTION_NET_HEARTBEAT_TICKS 240u /* 0.5 Hz predicted safety refresh */
 #define PLAYER_MOTION_NET_PREDICT_ERROR_SQ (12.0f * 12.0f)
 #define PLAYER_MOTION_NET_ANGLE_STEP_THRESHOLD 4u
