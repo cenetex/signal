@@ -1097,6 +1097,28 @@ static void net_collect_towed_asteroids(bool towed[MAX_ASTEROIDS]) {
     }
 }
 
+static void presentation_apply_critical_motion_correction(
+    vec2 previous_pos, vec2 previous_vel,
+    vec2 current_pos, vec2 current_vel,
+    float elapsed, float correction_sec,
+    vec2 *presented_pos, vec2 *presented_vel)
+{
+    if (!presented_pos || !presented_vel || correction_sec <= 0.0f)
+        return;
+
+    float omega = 4.0f / correction_sec;
+    float decay = expf(-omega * elapsed);
+    vec2 pos_error = v2_sub(previous_pos, current_pos);
+    vec2 vel_error = v2_sub(previous_vel, current_vel);
+    vec2 c = v2_add(vel_error, v2_scale(pos_error, omega));
+    vec2 offset = v2_scale(
+        v2_add(pos_error, v2_scale(c, elapsed)), decay);
+    vec2 offset_vel = v2_scale(
+        v2_sub(vel_error, v2_scale(c, omega * elapsed)), decay);
+    *presented_pos = v2_add(*presented_pos, offset);
+    *presented_vel = v2_add(*presented_vel, offset_vel);
+}
+
 static asteroid_t asteroid_render_state_at(int slot, float elapsed,
                                            bool towed) {
     const asteroid_t *prev = &g.asteroid_interp.prev[slot];
@@ -1121,14 +1143,10 @@ static asteroid_t asteroid_render_state_at(int slot, float elapsed,
          * velocity when a correction arrives. */
         float omega = 4.0f / ASTEROID_RENDER_CORRECTION_SEC;
         float decay = expf(-omega * elapsed);
-        vec2 pos_error = v2_sub(prev->pos, curr->pos);
-        vec2 vel_error = v2_sub(prev->vel, curr->vel);
-        vec2 c = v2_add(vel_error, v2_scale(pos_error, omega));
-        vec2 offset = v2_scale(v2_add(pos_error, v2_scale(c, elapsed)), decay);
-        vec2 offset_vel = v2_scale(
-            v2_sub(vel_error, v2_scale(c, omega * elapsed)), decay);
-        out.pos = v2_add(out.pos, offset);
-        out.vel = v2_add(out.vel, offset_vel);
+        presentation_apply_critical_motion_correction(
+            prev->pos, prev->vel, curr->pos, curr->vel,
+            elapsed, ASTEROID_RENDER_CORRECTION_SEC,
+            &out.pos, &out.vel);
 
         float rotation_error = nearest_angle_delta(curr->rotation,
                                                    prev->rotation);
@@ -1189,17 +1207,10 @@ static client_npc_render_state_t npc_render_state_at(int slot, float elapsed) {
         /* Preserve both position and velocity across a late sparse update,
          * then critically damp the visual offset. A position-only lerp
          * visibly kicks tractor emitters after a long extrapolation gap. */
-        float omega = 4.0f / NPC_RENDER_CORRECTION_SEC;
-        float decay = expf(-omega * elapsed);
-        vec2 pos_error = v2_sub(prev->pos, curr->pos);
-        vec2 vel_error = v2_sub(prev->vel, curr->vel);
-        vec2 c = v2_add(vel_error, v2_scale(pos_error, omega));
-        vec2 offset = v2_scale(
-            v2_add(pos_error, v2_scale(c, elapsed)), decay);
-        vec2 offset_vel = v2_scale(
-            v2_sub(vel_error, v2_scale(c, omega * elapsed)), decay);
-        out.pos = v2_add(out.pos, offset);
-        out.vel = v2_add(out.vel, offset_vel);
+        presentation_apply_critical_motion_correction(
+            prev->pos, prev->vel, curr->pos, curr->vel,
+            elapsed, NPC_RENDER_CORRECTION_SEC,
+            &out.pos, &out.vel);
         float blend = clampf(elapsed / NPC_RENDER_CORRECTION_SEC, 0.0f, 1.0f);
         out.angle = lerp_angle(prev->angle, out.angle, blend);
     }
@@ -1300,9 +1311,15 @@ static cargo_pod_t cargo_pod_render_state_at(int slot, float elapsed) {
     if (prev->active &&
         prev->kind == curr->kind &&
         prev->commodity == curr->commodity) {
+        /* Keep the rendered derivative continuous as well as the position.
+         * The old position-only blend exposed curr->vel immediately, so a
+         * tow packet could reverse the pod's velocity for one frame while
+         * its visible position was still moving the other way. */
+        presentation_apply_critical_motion_correction(
+            prev->pos, prev->vel, curr->pos, curr->vel,
+            elapsed, CARGO_POD_RENDER_CORRECTION_SEC,
+            &out.pos, &out.vel);
         float blend = clampf(elapsed / CARGO_POD_RENDER_CORRECTION_SEC, 0.0f, 1.0f);
-        out.pos.x = lerpf(prev->pos.x, out.pos.x, blend);
-        out.pos.y = lerpf(prev->pos.y, out.pos.y, blend);
         out.rotation = lerp_angle(prev->rotation, curr->rotation, blend);
     }
     return out;

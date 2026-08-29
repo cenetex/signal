@@ -130,6 +130,8 @@ void step_asteroid_gravity(
 void resolve_asteroid_collisions(
     world_t *w, const asteroid_pair_plan_t *plan);
 void resolve_asteroid_station_collisions(world_t *w);
+void resolve_asteroid_station_collisions_frequent(world_t *w);
+void resolve_asteroid_station_collision(world_t *w, int asteroid_idx);
 
 void asteroid_mark_thrown(asteroid_t *a, const uint8_t token[8], float seconds);
 void asteroid_clear_thrown(asteroid_t *a);

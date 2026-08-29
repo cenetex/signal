@@ -3946,6 +3946,8 @@ int signal_smoke_remote_towable_interp_check(void) {
     pod.pos_x = 100.0f;
     pod.vel_x = 0.0f;
     apply_remote_cargo_pods(&pod, 1);
+    interpolate_world_for_render();
+    float pod_correction_start_vx = g.world.cargo_pods[5].vel.x;
     g.cargo_pod_interp.elapsed[5] = 0.05f;
     interpolate_world_for_render();
     float pod_blended_x = g.world.cargo_pods[5].pos.x;
@@ -4476,6 +4478,8 @@ int signal_smoke_remote_towable_interp_check(void) {
              scaffold_after_unrelated_x > 14.0f &&
              scaffold_after_unrelated_x < 16.0f &&
              pod_first_x > 9.0f && pod_first_x < 11.5f &&
+             pod_correction_start_vx > 99.9f &&
+             pod_correction_start_vx < 100.1f &&
              pod_blended_x > pod_first_x &&
              pod_blended_x < 95.0f &&
              pod_before_unrelated_x > 9.0f &&

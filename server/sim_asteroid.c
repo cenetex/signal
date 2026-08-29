@@ -782,9 +782,11 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
             }
         }
 
-        /* Station vortex: asteroids near stations get caught in orbit.
-         * Large asteroids orbit outside the perimeter.
-         * S fragments spiral inward toward hoppers. */
+        /* Station vortex: loose asteroids near stations get caught in orbit.
+         * An explicit ship/NPC tractor owns a fragment's motion, so do not
+         * add a second invisible spring that client tow prediction cannot
+         * reproduce. */
+        if (asteroid_has_tractor(a)) continue;
         for (int s = 0; s < active_station_count; s++) {
             const sim_active_station_t *st = &active_stations[s];
             if (!st->exists) continue;
@@ -805,6 +807,9 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
                 if (d < st->dock_radius)
                     a->vel = v2_add(a->vel, v2_scale(radial, 15.0f * dt));
             }
+            /* The client otherwise predicts ordinary ambient drag and only
+             * learns about this curved path at the sparse loose-rock rate. */
+            a->net_dirty = true;
             break;
         }
     }
