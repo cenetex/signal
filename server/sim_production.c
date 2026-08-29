@@ -1263,6 +1263,7 @@ void step_furnace_smelting(world_t *w, float dt) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier != ASTEROID_TIER_S) continue;
         if (world_ship_birth_fragment_reserved(w, i)) continue;
+        bool ship_tow_owns_motion = asteroid_has_tractor(a);
 
         int smelt_station = -1;
         int smelt_module = -1;
@@ -1360,7 +1361,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                         },
                         .beam = tractor_tow_beam(HOPPER_PULL_RANGE, 0.0f),
                     };
-                    (void)tractor_link_apply(&link, dt);
+                    if (!ship_tow_owns_motion)
+                        (void)tractor_link_apply(&link, dt);
                     /* Station tractors continuously bend this fragment away
                      * from the ordinary drag-only dead-reckoning model.
                      * Keep the motion stream hot while the force is active
@@ -1432,7 +1434,8 @@ void step_furnace_smelting(world_t *w, float dt) {
         laser_apply_effect(&a->smelt_progress, +SMELT_RATE, 1.0f, dt);
 
         /* Hold fragment in place while smelting — dampen velocity */
-        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 10.0f * dt));
+        if (!ship_tow_owns_motion)
+            a->vel = v2_scale(a->vel, 1.0f / (1.0f + 10.0f * dt));
 
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];

@@ -1792,6 +1792,182 @@ TEST(test_player_only_predicts_towed_fragment_drift) {
                     authority.asteroids[0].age, 0.001f);
 }
 
+static void setup_towed_station_contact_world(world_t *w) {
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w->asteroids[i].active = false;
+    memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        w->npc_ships[i].active = false;
+
+    station_t *st = &w->stations[0];
+    st->pos = v2(0.0f, 0.0f);
+    st->radius = 40.0f;
+    st->module_count = 0;
+    st->arm_count = 0;
+    w->station_count = 1;
+    for (int s = 1; s < MAX_STATIONS; s++)
+        w->stations[s].scaffold = true;
+
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->docked = false;
+    sp->ship->pos = v2(200.0f, 0.0f);
+    sp->ship->vel = v2(0.0f, 0.0f);
+    sp->input.tractor_hold = true;
+}
+
+TEST(test_player_only_predicts_towed_fragment_station_contact) {
+    WORLD_DECL_NAME(authority);
+    WORLD_DECL_NAME(predicted);
+    setup_towed_station_contact_world(&authority);
+    setup_towed_station_contact_world(&predicted);
+
+    world_t *worlds[2] = {&authority, &predicted};
+    for (int i = 0; i < 2; i++) {
+        asteroid_t *a = &worlds[i]->asteroids[0];
+        a->active = true;
+        a->fracture_child = true;
+        a->tier = ASTEROID_TIER_S;
+        a->commodity = COMMODITY_FERRITE_ORE;
+        a->radius = 12.0f;
+        a->ore = 1.0f;
+        a->max_ore = 1.0f;
+        a->hp = 8.0f;
+        a->max_hp = 8.0f;
+        a->pos = v2(45.0f, 0.0f);
+        a->vel = v2(-20.0f, 0.0f);
+        ASSERT(world_asteroid_set_player_tractor(worlds[i], 0, 0));
+        world_tow_links_reconcile(worlds[i]);
+    }
+
+    world_sim_step(&authority, SIM_DT);
+    world_sim_step_player_only(&predicted, 0, SIM_DT);
+
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].pos.x,
+                    authority.asteroids[0].pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].pos.y,
+                    authority.asteroids[0].pos.y, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].vel.x,
+                    authority.asteroids[0].vel.x, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.asteroids[0].vel.y,
+                    authority.asteroids[0].vel.y, 0.001f);
+}
+
+TEST(test_player_only_predicts_towed_pod_station_contact) {
+    WORLD_DECL_NAME(authority);
+    WORLD_DECL_NAME(predicted);
+    setup_towed_station_contact_world(&authority);
+    setup_towed_station_contact_world(&predicted);
+
+    world_t *worlds[2] = {&authority, &predicted};
+    for (int i = 0; i < 2; i++) {
+        cargo_pod_t *pod = &worlds[i]->cargo_pods[0];
+        pod->active = true;
+        pod->kind = CARGO_POD_CARGO;
+        pod->commodity = COMMODITY_FERRITE_INGOT;
+        pod->quantity = 1;
+        pod->radius = 12.0f;
+        pod->pos = v2(45.0f, 0.0f);
+        pod->vel = v2(-20.0f, 0.0f);
+        ASSERT(world_cargo_pod_set_player_tractor(worlds[i], 0, 0));
+        world_tow_links_reconcile(worlds[i]);
+    }
+
+    world_sim_step(&authority, SIM_DT);
+    world_sim_step_player_only(&predicted, 0, SIM_DT);
+
+    ASSERT(authority.cargo_pods[0].active);
+    ASSERT(predicted.cargo_pods[0].active);
+    ASSERT_EQ_FLOAT(predicted.cargo_pods[0].pos.x,
+                    authority.cargo_pods[0].pos.x, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.cargo_pods[0].pos.y,
+                    authority.cargo_pods[0].pos.y, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.cargo_pods[0].vel.x,
+                    authority.cargo_pods[0].vel.x, 0.001f);
+    ASSERT_EQ_FLOAT(predicted.cargo_pods[0].vel.y,
+                    authority.cargo_pods[0].vel.y, 0.001f);
+}
+
+TEST(test_station_vortex_marks_asteroid_motion_for_fast_replication) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w.asteroids[i].active = false;
+
+    asteroid_t *a = &w.asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->radius = 24.0f;
+    a->hp = 40.0f;
+    a->max_hp = 40.0f;
+    a->pos = v2_add(w.stations[0].pos,
+                    v2(w.stations[0].dock_radius * 1.5f, 0.0f));
+    a->vel = v2(0.0f, 0.0f);
+    a->net_dirty = false;
+
+    sim_step_asteroid_dynamics(&w, SIM_DT);
+
+    ASSERT(a->net_dirty);
+    ASSERT(v2_len_sq(a->vel) > 0.0f);
+}
+
+TEST(test_ship_tow_excludes_hidden_station_fragment_forces) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w.asteroids[i].active = false;
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->id = 0;
+    sp->connected = true;
+    sp->docked = false;
+
+    int furnace_idx = -1;
+    for (int i = 0; i < w.stations[0].module_count; i++) {
+        station_module_t *module = &w.stations[0].modules[i];
+        if (module->type == MODULE_FURNACE &&
+            module_instance_input_ore(module) == COMMODITY_FERRITE_ORE) {
+            furnace_idx = i;
+            break;
+        }
+    }
+    ASSERT(furnace_idx >= 0);
+
+    asteroid_t *a = &w.asteroids[0];
+    a->active = true;
+    a->fracture_child = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->radius = 8.0f;
+    a->ore = 1.0f;
+    a->max_ore = 1.0f;
+    a->hp = 8.0f;
+    a->max_hp = 8.0f;
+    a->pos = module_world_pos_ring(
+        &w.stations[0], w.stations[0].modules[furnace_idx].ring,
+        w.stations[0].modules[furnace_idx].slot);
+    a->vel = v2(17.0f, -4.0f);
+    ASSERT(world_asteroid_set_player_tractor(&w, 0, 0));
+    world_tow_links_reconcile(&w);
+
+    vec2 before = a->vel;
+    a->net_dirty = false;
+    sim_step_asteroid_dynamics(&w, 0.0f);
+    spatial_grid_build(&w);
+    asteroid_pair_plan_t plan;
+    ASSERT(asteroid_pair_plan_build(&w, &plan));
+    step_asteroid_gravity(&w, SIM_DT, &plan);
+    step_furnace_smelting(&w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(a->vel.x, before.x, 0.001f);
+    ASSERT_EQ_FLOAT(a->vel.y, before.y, 0.001f);
+}
+
 static void setup_two_towed_fragment_prediction_world(world_t *w) {
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -2593,6 +2769,10 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_player_only_predicts_station_collision_geometry);
     RUN(test_player_only_predicts_tow_band_reaction);
     RUN(test_player_only_predicts_towed_fragment_drift);
+    RUN(test_player_only_predicts_towed_fragment_station_contact);
+    RUN(test_player_only_predicts_towed_pod_station_contact);
+    RUN(test_station_vortex_marks_asteroid_motion_for_fast_replication);
+    RUN(test_ship_tow_excludes_hidden_station_fragment_forces);
     RUN(test_player_only_predicts_towed_fragment_separation);
     RUN(test_player_only_predicts_towed_scaffold_motion);
     RUN(test_player_only_ship_asset_references_live_component);

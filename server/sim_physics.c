@@ -878,6 +878,10 @@ void step_asteroid_gravity(
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
+        /* Explicit tow ownership replaces the station's ambient pull. The
+         * tow force is shared with client prediction; stacking both made the
+         * server and the towing client continuously disagree. */
+        if (asteroid_has_tractor(a)) continue;
         for (int s = 0; s < pull_station_count; s++) {
             const asteroid_pull_station_t *st = &pull_stations[s];
             int intake_modules = st->intake_modules;
@@ -897,6 +901,7 @@ void step_asteroid_gravity(
             if (a->tier == ASTEROID_TIER_S) force *= 3.0f;
             float accel = force / mass_a;
             a->vel = v2_add(a->vel, v2_scale(normal, accel * dt));
+            a->net_dirty = true;
         }
     }
 
@@ -1091,6 +1096,79 @@ static bool asteroid_near_station_collision_envelope(const asteroid_t *a,
     return v2_dist_sq(a->pos, st->pos) <= reach * reach;
 }
 
+static void resolve_asteroid_station_geometry_collision(
+    asteroid_t *a, const station_geom_t *geom)
+{
+    if (!a || !geom) return;
+    if (geom->has_core)
+        resolve_asteroid_module_collision(
+            a, geom->core.center, geom->core.radius);
+    for (int ci = 0; ci < geom->circle_count; ci++) {
+        resolve_asteroid_module_collision(
+            a, geom->circles[ci].center, geom->circles[ci].radius);
+    }
+    for (int ci = 0; ci < geom->corridor_count; ci++) {
+        const geom_corridor_t *cor = &geom->corridors[ci];
+        if (asteroid_near_corridor_module(a, geom, cor)) continue;
+        resolve_asteroid_corridor_collision(
+            a, geom->center, cor->ring_radius,
+            cor->angle_a, cor->arc_delta);
+    }
+}
+
+void resolve_asteroid_station_collision(world_t *w, int asteroid_idx) {
+    if (!w || asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS) return;
+    asteroid_t *a = &w->asteroids[asteroid_idx];
+    if (!a->active) return;
+
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_collides(st) ||
+            !asteroid_near_station_collision_envelope(a, st)) {
+            continue;
+        }
+        station_geom_t geom;
+        station_build_geom(st, &geom);
+        resolve_asteroid_station_geometry_collision(a, &geom);
+    }
+}
+
+void resolve_asteroid_station_collisions_frequent(world_t *w) {
+    if (!w) return;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+
+        bool any_near = false;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            asteroid_t *a = &w->asteroids[i];
+            if (!a->active ||
+                (a->tier == ASTEROID_TIER_S &&
+                 !asteroid_has_tractor(a))) {
+                continue;
+            }
+            if (asteroid_near_station_collision_envelope(a, st)) {
+                any_near = true;
+                break;
+            }
+        }
+        if (!any_near) continue;
+
+        station_geom_t geom;
+        station_build_geom(st, &geom);
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            asteroid_t *a = &w->asteroids[i];
+            if (!a->active ||
+                (a->tier == ASTEROID_TIER_S &&
+                 !asteroid_has_tractor(a)) ||
+                !asteroid_near_station_collision_envelope(a, st)) {
+                continue;
+            }
+            resolve_asteroid_station_geometry_collision(a, &geom);
+        }
+    }
+}
+
 void resolve_asteroid_station_collisions(world_t *w) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
@@ -1117,19 +1195,7 @@ void resolve_asteroid_station_collisions(world_t *w) {
             asteroid_t *a = &w->asteroids[i];
             if (!a->active) continue;
             if (!asteroid_near_station_collision_envelope(a, st)) continue;
-            /* Core collision */
-            if (geom.has_core)
-                resolve_asteroid_module_collision(a, geom.core.center, geom.core.radius);
-            /* Module and dock collision circles. */
-            for (int ci = 0; ci < geom.circle_count; ci++)
-                resolve_asteroid_module_collision(a, geom.circles[ci].center, geom.circles[ci].radius);
-            /* Corridor arcs form the visible station wall bands between modules. */
-            for (int ci = 0; ci < geom.corridor_count; ci++) {
-                const geom_corridor_t *cor = &geom.corridors[ci];
-                if (asteroid_near_corridor_module(a, &geom, cor)) continue;
-                resolve_asteroid_corridor_collision(a, geom.center,
-                    cor->ring_radius, cor->angle_a, cor->arc_delta);
-            }
+            resolve_asteroid_station_geometry_collision(a, &geom);
         }
     }
 }

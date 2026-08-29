@@ -10120,7 +10120,8 @@ static bool resolve_cargo_pod_circle_collision(world_t *w,
             .pos = &pod->pos, .vel = &pod->vel, .radius = hull_radius,
         }, center, radius, obstacle_vel, CARGO_POD_BOUNCE_SCALE, 1.0f);
     if (!contact.collided) return false;
-    if (contact.closing_speed > CARGO_POD_BREAK_SPEED) {
+    if (contact.closing_speed > CARGO_POD_BREAK_SPEED &&
+        !w->player_only_mode) {
         clear_cargo_pod_and_tow_refs(w, pod_idx);
         return true;
     }
@@ -10199,7 +10200,7 @@ static bool resolve_cargo_pod_corridor_collision(world_t *w,
     }
 
     float closing = -v2_dot(v2_sub(pod->vel, obstacle_vel), push_normal);
-    if (closing > CARGO_POD_BREAK_SPEED) {
+    if (closing > CARGO_POD_BREAK_SPEED && !w->player_only_mode) {
         clear_cargo_pod_and_tow_refs(w, pod_idx);
         return true;
     }
@@ -17196,8 +17197,10 @@ void world_sim_step(world_t *w, float dt) {
     SIM_PROFILE_END(SIM_PROF_CARGO, prof_cargo);
 
     SIM_PROFILE_BEGIN(prof_gravity);
-    /* Gravity + asteroid collisions at 30 Hz. Both paths consume one bounded,
-     * immutable pair-ownership plan built from this tick's spatial snapshot. */
+    /* Gravity + asteroid-pair collisions stay at 30 Hz. Player-visible
+     * station contact for large and explicitly towed rocks runs every
+     * physics tick below; coupling it to this block caused visible 30 Hz
+     * position jumps near station walls. */
     w->gravity_accumulator += dt;
     if (w->gravity_accumulator >= 1.0f / 30.0f) {
         float gdt = w->gravity_accumulator;
@@ -17208,8 +17211,15 @@ void world_sim_step(world_t *w, float dt) {
             step_asteroid_gravity(w, gdt, &pair_plan);
             resolve_asteroid_collisions(w, &pair_plan);
         }
+        /* Loose S fragments are station production inputs. Keep their
+         * established 30 Hz contact cadence so furnace/birth capture paths
+         * can cross the visible shell without fighting a hard projection on
+         * every substep. */
         resolve_asteroid_station_collisions(w);
     }
+    /* Large rocks and explicitly towed fragments need immediate contact.
+     * These are the bodies whose 30 Hz push-outs were visible to players. */
+    resolve_asteroid_station_collisions_frequent(w);
     SIM_PROFILE_END(SIM_PROF_GRAVITY, prof_gravity);
 
     SIM_PROFILE_BEGIN(prof_production);
@@ -17338,9 +17348,22 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     server_player_t *sp = &w->players[player_idx];
     if (!server_player_is_gameplay_ready(sp)) return;
     input_intent_t saved_input = sp->input;
+    w->player_only_mode = true;  /* suppress damage and world mutation */
     step_player_only_towed_body_drift(w, sp, dt);
+    /* Predict the same station contacts as authority before applying tow
+     * forces. Without this, locally predicted cargo passes through a wall,
+     * then jumps back to each authoritative contact pose. */
+    for (int t = 0; t < sp->ship->towed_count; t++) {
+        int idx = sp->ship->towed_fragments[t];
+        if (idx >= 0 && idx < MAX_ASTEROIDS)
+            resolve_asteroid_station_collision(w, idx);
+    }
+    for (int t = 0; t < sp->ship->towed_pod_count; t++) {
+        int idx = sp->ship->towed_pods[t];
+        if (idx >= 0 && idx < MAX_CARGO_PODS)
+            (void)resolve_cargo_pod_station_collisions(w, idx);
+    }
     sp->input = player_only_movement_intent(saved_input);
-    w->player_only_mode = true;  /* suppress mining HP and world RNG mutation */
     step_player(w, sp, dt);
     w->player_only_mode = false;
     sp->input = saved_input;
