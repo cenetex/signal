@@ -672,6 +672,17 @@ size_t hnn_backend_thread_allocation_count(hnn_backend_kind_t kind) {
 #endif
 }
 
+size_t hnn_backend_scratch_bytes(hnn_backend_kind_t kind) {
+    if (kind == HNN_BACKEND_LECORE_DIRECT) {
+        return (size_t)HNN_DIM * sizeof(float);
+    }
+    if (kind == HNN_BACKEND_BUILTIN_RADIX2 ||
+        kind == HNN_BACKEND_LECORE_RADIX2) {
+        return (size_t)HNN_DIM * 4u * sizeof(float);
+    }
+    return 0u;
+}
+
 size_t hnn_backend_thread_memory_bytes(hnn_backend_kind_t kind) {
 #ifdef SIGNAL_HNN_LECORE_AVAILABLE
     hnn_backend_lecore_runtime_t *runtime =
@@ -736,9 +747,7 @@ hnn_backend_metadata_t hnn_backend_metadata(void) {
         .active_source_revision = is_liblecore
             ? LECORE_PIN_SOURCE_REVISION
             : SIGNAL_SOURCE_REVISION,
-        .scratch_bytes = kind == HNN_BACKEND_LECORE_DIRECT
-            ? (size_t)HNN_DIM * sizeof(float)
-            : (size_t)HNN_DIM * 4u * sizeof(float),
+        .scratch_bytes = hnn_backend_scratch_bytes(kind),
 #ifdef SIGNAL_HNN_LECORE_AVAILABLE
         .liblecore_compiled = true,
 #else

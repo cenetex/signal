@@ -103,6 +103,7 @@ jobs:
           python3 scripts/test_check_doc_freshness.py
           bash scripts/check_vendor_drift.sh
           bash scripts/test_vendor_drift_detection.sh
+          python3 scripts/test_compare_liblecore_replay.py
 
   native:
     name: Linux native, sanitizer, and static gates
@@ -313,7 +314,8 @@ jobs:
             -DGIT_HASH="${GITHUB_SHA::7}"
           cmake --build build-tools --parallel --target \
             signal_verify signal_chain_assets signal_rati_receipt \
-            flight_trace signal_replay
+            flight_trace signal_replay signal_hnn_pilot_benchmark
+          ./build-tools/signal_hnn_pilot_benchmark --samples 64
       - name: Build and run packnft tests
         run: |
           cmake -G Ninja -S tools/packnft -B build-packnft \

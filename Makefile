@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-ai-eval-repeatability replay-ai-eval-repeatability-long replay-ai-eval-native-wasm replay-ai-outcome-repeatability replay-ai-outcome-native-wasm replay-ai-outcome-modes signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite jank-profile-native jank-profile-browser relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-hnn-pilot-benchmark hnn-pilot-benchmark build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-ai-eval-repeatability replay-ai-eval-repeatability-long replay-ai-eval-native-wasm replay-ai-outcome-repeatability replay-ai-outcome-native-wasm replay-ai-outcome-modes signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite jank-profile-native jank-profile-browser relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -87,6 +87,21 @@ flight-trace: build-flight-trace
 		--shard $(FLIGHT_TRACE_SHARD) \
 		--format $(FLIGHT_TRACE_FORMAT) \
 		--out $(FLIGHT_TRACE_OUT)
+
+# --- Signal x liblecore primitive evidence ---
+HNN_PILOT_BUILD ?= build-hnn-pilot
+HNN_PILOT_SAMPLES ?= 256
+
+build-hnn-pilot-benchmark:
+	cmake $(GENERATOR) -S . -B $(HNN_PILOT_BUILD) \
+		-DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS_ONLY=ON \
+		-DBUILD_TOOLS=ON -DGIT_HASH=$(GIT_HASH)
+	cmake --build $(HNN_PILOT_BUILD) \
+		--target signal_hnn_pilot_benchmark --parallel
+
+hnn-pilot-benchmark: build-hnn-pilot-benchmark
+	./$(HNN_PILOT_BUILD)/signal_hnn_pilot_benchmark \
+		--samples $(HNN_PILOT_SAMPLES)
 
 # --- Deterministic seed+prefix counterfactual replay harness ---
 SIGNAL_REPLAY_SEED ?= 2037
