@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "chain_log.h"
 #include "gossip.h"
+#include "holographic_nn_backend.h"
 #include "sim_ai.h"
 #include "signal_intelligence.h"
 
@@ -684,6 +685,30 @@ TEST(test_hnn_memory_contract_reports_trace_diagnostics) {
     ASSERT(filled.capacity_load > 0.0f);
     ASSERT(filled.fidelity_estimate > 0.0f);
     ASSERT_EQ_FLOAT(filled.last_margin, margin, 0.0001f);
+}
+
+TEST(test_hnn_backend_metadata_records_builtin_and_liblecore_pin) {
+    hnn_backend_metadata_t metadata = hnn_backend_metadata();
+
+    ASSERT_EQ_INT(metadata.dimension, HNN_DIM);
+    ASSERT_EQ_INT((int)metadata.active_abi_version,
+                  (int)HNN_CONTRACT_VERSION);
+    ASSERT(strcmp(metadata.active_library, "signal") == 0);
+    ASSERT(strcmp(metadata.active_backend, "builtin-radix2") == 0);
+    ASSERT(metadata.active_source_revision[0] != '\0');
+    ASSERT(metadata.scratch_bytes ==
+           (size_t)HNN_DIM * 4u * sizeof(float));
+    ASSERT(strcmp(metadata.liblecore_version, "0.1.0") == 0);
+    ASSERT_EQ_INT((int)metadata.liblecore_abi_version, 0);
+    ASSERT(strncmp(metadata.liblecore_source_revision,
+                   "sha256:", 7) == 0);
+    ASSERT(strncmp(metadata.liblecore_source_checksum,
+                   "sha256:", 7) == 0);
+#ifdef SIGNAL_HNN_LECORE_AVAILABLE
+    ASSERT(metadata.liblecore_compiled);
+#else
+    ASSERT(!metadata.liblecore_compiled);
+#endif
 }
 
 TEST(test_hnn_holonet_single_cell_matches_flat_trace) {
@@ -2000,6 +2025,7 @@ void register_gossip_tests(void) {
     RUN(test_hnn_magnitude_sensitive_action_retrieval);
     RUN(test_hnn_capacity_preserves_action_signal_through_limit);
     RUN(test_hnn_memory_contract_reports_trace_diagnostics);
+    RUN(test_hnn_backend_metadata_records_builtin_and_liblecore_pin);
     RUN(test_hnn_holonet_single_cell_matches_flat_trace);
     RUN(test_hnn_holonet_routes_novel_states_to_distinct_cells);
     RUN(test_hnn_state_encoding_sanitizes_nonfinite_features);

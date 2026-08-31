@@ -37,6 +37,7 @@
 #include "game_sim.h"
 #include "gossip.h"
 #include "holographic_nn.h"
+#include "holographic_nn_backend.h"
 #include "manifest.h"
 #include "protocol.h"
 #include "sha256.h"
@@ -4783,6 +4784,39 @@ static void sr_write_hnn_contract(FILE *out,
     fprintf(out, "}");
 }
 
+static void sr_write_hnn_backend(FILE *out)
+{
+    hnn_backend_metadata_t metadata = hnn_backend_metadata();
+    fprintf(out,
+            ",\"hnn_backend\":{"
+            "\"schema\":\"signal.hnn_backend.v1\","
+            "\"active_library\":\"%s\","
+            "\"active_library_version\":\"%s\","
+            "\"active_abi_version\":%u,"
+            "\"active_backend\":\"%s\","
+            "\"dimension\":%d,"
+            "\"active_source_revision\":\"%s\","
+            "\"scratch_bytes\":%zu,"
+            "\"liblecore_pin\":{"
+            "\"compiled\":%s,"
+            "\"version\":\"%s\","
+            "\"abi_version\":%u,"
+            "\"source_revision\":\"%s\","
+            "\"source_checksum\":\"%s\"}}",
+            metadata.active_library,
+            metadata.active_library_version,
+            metadata.active_abi_version,
+            metadata.active_backend,
+            metadata.dimension,
+            metadata.active_source_revision,
+            metadata.scratch_bytes,
+            metadata.liblecore_compiled ? "true" : "false",
+            metadata.liblecore_version,
+            metadata.liblecore_abi_version,
+            metadata.liblecore_source_revision,
+            metadata.liblecore_source_checksum);
+}
+
 static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
 {
     fprintf(out,
@@ -5338,6 +5372,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
     if (config->hnn_trace && r->hnn.enabled) {
         sr_write_hnn_eval(out, &r->hnn);
     }
+    sr_write_hnn_backend(out);
     sr_write_eval_summary(out, config, &r->evaluation);
     fprintf(out,
             ",\"receipt_trust\":{\"schema\":\"signal.receipt_trust.v1\","

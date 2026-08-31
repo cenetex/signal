@@ -25,6 +25,7 @@
 
 /* Must be a power of 2 for efficient radix-2 FFT. */
 #define HNN_DIM 1024
+#define HNN_CONTRACT_VERSION 1u
 #define HNN_KEYGEN_VERSION 1u
 #define HNN_PILOT_ENCODER_VERSION 2u
 #define HNN_TRACE_FORMAT_VERSION 1u

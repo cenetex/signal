@@ -74,6 +74,29 @@ option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_replay)" ON)
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 option(SIGNAL_SIM_PROFILE "Compile world_sim_step phase profiling timers" OFF)
+option(SIGNAL_HNN_ENABLE_LECORE
+    "Compile the pinned liblecore pilot dependency (backend remains disabled)"
+    OFF)
+
+set(SIGNAL_LECORE_C_SHA256
+    "f3283ebb033e295e5dbdc46d95add91ab154253169d6a2a1ab696464b051ed07")
+set(SIGNAL_LECORE_H_SHA256
+    "0ce1fb68095323450087b18b4f8fcbf76ec74fbb68e936f5649f2494b2634302")
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/vendor/liblecore/lecore.c"
+    SIGNAL_LECORE_C_ACTUAL_SHA256)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/vendor/liblecore/lecore.h"
+    SIGNAL_LECORE_H_ACTUAL_SHA256)
+if(NOT SIGNAL_LECORE_C_ACTUAL_SHA256 STREQUAL SIGNAL_LECORE_C_SHA256 OR
+   NOT SIGNAL_LECORE_H_ACTUAL_SHA256 STREQUAL SIGNAL_LECORE_H_SHA256)
+    message(FATAL_ERROR
+        "Pinned liblecore amalgamation checksum mismatch; see vendor/liblecore/PIN.md")
+endif()
+
+if(SIGNAL_HNN_ENABLE_LECORE)
+    add_compile_definitions(
+        SIGNAL_HNN_LECORE_AVAILABLE=1
+        LECORE_ENABLE_FORMAT=0)
+endif()
 
 if(NOT EMSCRIPTEN)
     find_package(Threads REQUIRED)
@@ -100,6 +123,7 @@ endif()
 if(NOT GIT_HASH)
     set(GIT_HASH "dev")
 endif()
+add_compile_definitions(SIGNAL_SOURCE_REVISION="${GIT_HASH}")
 
 # ------------------------------------------------------------------
 # Canonical source lists — every target picks from these. Adding a
@@ -206,9 +230,13 @@ set(SIGNAL_SIM_HELPERS
     shared/trade_paging.c
     shared/settlement_engine.c
     shared/holographic_nn.c
+    shared/holographic_nn_backend.c
     shared/signal_field.c
     shared/npc_radio.c
 )
+if(SIGNAL_HNN_ENABLE_LECORE)
+    list(APPEND SIGNAL_SIM_HELPERS vendor/liblecore/lecore.c)
+endif()
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
 # compiled into signal_server or signal_test.
@@ -256,6 +284,10 @@ set(SIGNAL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/shared"
     "${CMAKE_CURRENT_SOURCE_DIR}/server"
 )
+if(SIGNAL_HNN_ENABLE_LECORE)
+    list(APPEND SIGNAL_INCLUDE_DIRS
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/liblecore")
+endif()
 if(SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES)
     list(APPEND SIGNAL_INCLUDE_DIRS "${SIGNAL_STATIC_FLIGHT_BRAIN_DIR}")
 endif()
