@@ -254,6 +254,7 @@ set(SIGNAL_SIM_HELPERS
     shared/settlement_engine.c
     shared/holographic_nn.c
     shared/holographic_nn_backend.c
+    shared/holographic_nn_confidence.c
     shared/signal_field.c
     shared/npc_radio.c
 )
@@ -454,6 +455,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_asteroid_presentation.c
         tests/c/test_tow_presentation_diagnostics.c
         tests/c/test_hnn_backend.c
+        tests/c/test_hnn_confidence.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
         tests/c/test_ai_feature_contract.c

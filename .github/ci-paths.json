@@ -186,7 +186,11 @@
         "scripts/check_deterministic_build_flags.py",
         "scripts/check_replay_bundles.py",
         "scripts/check_replay_cross_build.py",
-        "scripts/check_replay_repeatability.py"
+        "scripts/check_replay_repeatability.py",
+        "scripts/hnn_null_corpus.py",
+        "scripts/calibrate_hnn_confidence.py",
+        "scripts/test_hnn_calibration.py",
+        "docs/liblecore-pilot/hnn-calibration.json"
       ],
       "lanes": [
         "replay"
