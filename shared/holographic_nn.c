@@ -10,12 +10,12 @@
  *   - No heap allocation in bind/unbind/keygen hot paths
  */
 #include "holographic_nn.h"
+#include "holographic_nn_backend.h"
 #include "fixpoint.h"
 
 #include <math.h>
 #include <string.h>
 
-#define HNN_COMPLEX_COUNT ((size_t)HNN_DIM * 2u)
 #define HNN_KEY_CACHE_SIZE 64u
 #define HNN_HOLONET_NEW_CELL_SIMILARITY 0.70f
 
@@ -177,20 +177,7 @@ static void hnn_ifft(float *data, int n) {
 /* --- Core VSA operations --- */
 
 float hnn_normalize(float v[HNN_DIM]) {
-    float sum_sq = 0.0f;
-    for (int i = 0; i < HNN_DIM; i++) sum_sq += v[i] * v[i];
-    if (!isfinite(sum_sq) || sum_sq < 1e-30f) {
-        memset(v, 0, HNN_DIM * sizeof(float));
-        return 0.0f;
-    }
-    float norm = fixp_sqrtf(sum_sq);
-    if (!isfinite(norm) || norm < 1e-15f) {
-        memset(v, 0, HNN_DIM * sizeof(float));
-        return 0.0f;
-    }
-    float inv_norm = 1.0f / norm;
-    for (int i = 0; i < HNN_DIM; i++) v[i] *= inv_norm;
-    return norm;
+    return hnn_backend_normalize(v);
 }
 
 void hnn_key_vector(uint64_t seed, float out[HNN_DIM]) {
@@ -249,89 +236,20 @@ void hnn_key_vector(uint64_t seed, float out[HNN_DIM]) {
 
 void hnn_bind(const float a[HNN_DIM], const float b[HNN_DIM],
               float c[HNN_DIM]) {
-    float work[HNN_DIM * 2];
-    float Fa[HNN_DIM * 2];
-    if (!a || !b || !c) return;
-
-    /* Pack a into complex array and FFT */
-    for (int i = 0; i < HNN_DIM; i++) {
-        work[2 * i]     = a[i];
-        work[2 * i + 1] = 0.0f;
-    }
-    hnn_fft(work, HNN_DIM);
-
-    /* Store FFT(a) */
-    memcpy(Fa, work, HNN_COMPLEX_COUNT * sizeof(float));
-
-    /* Pack b into work and FFT */
-    for (int i = 0; i < HNN_DIM; i++) {
-        work[2 * i]     = b[i];
-        work[2 * i + 1] = 0.0f;
-    }
-    hnn_fft(work, HNN_DIM);
-
-    /* Multiply: Fa * work (element-wise complex multiply) */
-    for (int i = 0; i < HNN_DIM; i++) {
-        float a_re = Fa[2 * i], a_im = Fa[2 * i + 1];
-        float b_re = work[2 * i], b_im = work[2 * i + 1];
-        work[2 * i]     = a_re * b_re - a_im * b_im;
-        work[2 * i + 1] = a_re * b_im + a_im * b_re;
-    }
-    /* IFFT */
-    hnn_ifft(work, HNN_DIM);
-
-    /* Copy real parts to output */
-    for (int i = 0; i < HNN_DIM; i++) c[i] = work[2 * i];
-
-    hnn_normalize(c);
+    (void)hnn_backend_bind(a, b, c);
 }
 
 void hnn_unbind(const float a[HNN_DIM], const float b[HNN_DIM],
                 float c[HNN_DIM]) {
-    float work[HNN_DIM * 2];
-    float Fa[HNN_DIM * 2];
-    if (!a || !b || !c) return;
-
-    /* FFT a */
-    for (int i = 0; i < HNN_DIM; i++) {
-        work[2 * i]     = a[i];
-        work[2 * i + 1] = 0.0f;
-    }
-    hnn_fft(work, HNN_DIM);
-
-    /* Store FFT(a) */
-    memcpy(Fa, work, HNN_COMPLEX_COUNT * sizeof(float));
-
-    /* FFT b into work */
-    for (int i = 0; i < HNN_DIM; i++) {
-        work[2 * i]     = b[i];
-        work[2 * i + 1] = 0.0f;
-    }
-    hnn_fft(work, HNN_DIM);
-
-    /* Multiply Fa * conj(work) — correlation via conjugate in freq domain */
-    for (int i = 0; i < HNN_DIM; i++) {
-        float a_re = Fa[2 * i], a_im = Fa[2 * i + 1];
-        float b_re = work[2 * i], b_im = -work[2 * i + 1];
-        work[2 * i]     = a_re * b_re - a_im * b_im;
-        work[2 * i + 1] = a_re * b_im + a_im * b_re;
-    }
-    hnn_ifft(work, HNN_DIM);
-
-    for (int i = 0; i < HNN_DIM; i++) c[i] = work[2 * i];
-
-    hnn_normalize(c);
+    (void)hnn_backend_unbind(a, b, c);
 }
 
 void hnn_bundle(float a[HNN_DIM], const float b[HNN_DIM]) {
-    for (int i = 0; i < HNN_DIM; i++) a[i] += b[i];
-    hnn_normalize(a);
+    (void)hnn_backend_bundle(a, b);
 }
 
 float hnn_similarity(const float a[HNN_DIM], const float b[HNN_DIM]) {
-    float dot = 0.0f;
-    for (int i = 0; i < HNN_DIM; i++) dot += a[i] * b[i];
-    return isfinite(dot) ? dot : 0.0f;
+    return hnn_backend_similarity(a, b);
 }
 
 static void hnn_feature_value_keys_init(void) {
@@ -708,6 +626,25 @@ int hnn_score_actions(const hnn_memory_t *mem,
             best_idx = i;
         } else if (sim > second_sim) {
             second_sim = sim;
+        }
+    }
+
+    size_t cleanup_index = 0;
+    float cleanup_score = 0.0f;
+    if (hnn_backend_cleanup(retrieved,
+                            &actions->vecs[0][0],
+                            HNN_ACTION_COUNT,
+                            &cleanup_index,
+                            &cleanup_score)) {
+        best_idx = (int)cleanup_index;
+        best_sim = cleanup_score;
+        second_sim = -2.0f;
+        for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+            if (i == best_idx) continue;
+            float sim = scores_out
+                ? scores_out[i]
+                : hnn_similarity(retrieved, actions->vecs[i]);
+            if (sim > second_sim) second_sim = sim;
         }
     }
 
