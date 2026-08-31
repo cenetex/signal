@@ -54,7 +54,7 @@ bool hnn_backend_bundle(float a[HNN_DIM], const float b[HNN_DIM]);
 float hnn_backend_similarity(const float a[HNN_DIM],
                              const float b[HNN_DIM]);
 bool hnn_backend_cleanup(const float query[HNN_DIM],
-                         const float candidates[][HNN_DIM],
+                         const float *candidates,
                          size_t candidate_count,
                          size_t *out_index,
                          float *out_score);
@@ -78,7 +78,7 @@ float hnn_backend_similarity_for(hnn_backend_kind_t kind,
                                  const float b[HNN_DIM]);
 bool hnn_backend_cleanup_for(hnn_backend_kind_t kind,
                              const float query[HNN_DIM],
-                             const float candidates[][HNN_DIM],
+                             const float *candidates,
                              size_t candidate_count,
                              size_t *out_index,
                              float *out_score);

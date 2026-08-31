@@ -179,7 +179,7 @@ TEST(test_hnn_backend_bundle_similarity_and_cleanup_agreement) {
         float score = -FLT_MAX;
         ASSERT(hnn_backend_cleanup_for(HNN_TEST_BACKENDS[backend],
                                        a,
-                                       candidates,
+                                       &candidates[0][0],
                                        3u,
                                        &index,
                                        &score));
@@ -219,7 +219,7 @@ static int hnn_test_memory_select(
     float score = 0.0f;
     if (!hnn_backend_cleanup_for(kind,
                                  retrieved,
-                                 actions->vecs,
+                                 &actions->vecs[0][0],
                                  HNN_ACTION_COUNT,
                                  &index,
                                  &score)) {

@@ -632,7 +632,7 @@ int hnn_score_actions(const hnn_memory_t *mem,
     size_t cleanup_index = 0;
     float cleanup_score = 0.0f;
     if (hnn_backend_cleanup(retrieved,
-                            actions->vecs,
+                            &actions->vecs[0][0],
                             HNN_ACTION_COUNT,
                             &cleanup_index,
                             &cleanup_score)) {

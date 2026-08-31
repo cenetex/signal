@@ -208,7 +208,7 @@ static float hnn_builtin_similarity(const float a[HNN_DIM],
 
 static bool hnn_builtin_cleanup(
     const float query[HNN_DIM],
-    const float candidates[][HNN_DIM],
+    const float *candidates,
     size_t candidate_count,
     size_t *out_index,
     float *out_score) {
@@ -218,9 +218,10 @@ static bool hnn_builtin_cleanup(
         return false;
     }
     size_t best = 0;
-    float best_score = hnn_builtin_similarity(query, candidates[0]);
+    float best_score = hnn_builtin_similarity(query, candidates);
     for (size_t i = 1; i < candidate_count; i++) {
-        float score = hnn_builtin_similarity(query, candidates[i]);
+        float score = hnn_builtin_similarity(
+            query, candidates + i * HNN_DIM);
         if (score > best_score) {
             best = i;
             best_score = score;
@@ -441,7 +442,7 @@ static float hnn_lecore_similarity(hnn_backend_kind_t kind,
 static bool hnn_lecore_cleanup(
     hnn_backend_kind_t kind,
     const float query[HNN_DIM],
-    const float candidates[][HNN_DIM],
+    const float *candidates,
     size_t candidate_count,
     size_t *out_index,
     float *out_score) {
@@ -455,7 +456,7 @@ static bool hnn_lecore_cleanup(
     lecore_status status = lecore_cleanup_f32(
         context,
         query,
-        &candidates[0][0],
+        candidates,
         candidate_count,
         HNN_DIM,
         out_index,
@@ -601,7 +602,7 @@ float hnn_backend_similarity_for(hnn_backend_kind_t kind,
 
 bool hnn_backend_cleanup_for(hnn_backend_kind_t kind,
                              const float query[HNN_DIM],
-                             const float candidates[][HNN_DIM],
+                             const float *candidates,
                              size_t candidate_count,
                              size_t *out_index,
                              float *out_score) {
@@ -647,7 +648,7 @@ float hnn_backend_similarity(const float a[HNN_DIM],
 }
 
 bool hnn_backend_cleanup(const float query[HNN_DIM],
-                         const float candidates[][HNN_DIM],
+                         const float *candidates,
                          size_t candidate_count,
                          size_t *out_index,
                          float *out_score) {
