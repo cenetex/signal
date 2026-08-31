@@ -54,9 +54,13 @@ set(RATICROSS_SOURCES
 if(MSVC)
     set_source_files_properties(${SIGNAL_CRYPTO_UPSTREAM_SOURCES}
         PROPERTIES COMPILE_OPTIONS "/W0")
+    set_source_files_properties(vendor/liblecore/lecore.c
+        PROPERTIES COMPILE_OPTIONS "/W0")
 else()
     set_source_files_properties(${SIGNAL_CRYPTO_UPSTREAM_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-w;-fno-sanitize=shift;-fno-sanitize=signed-integer-overflow")
+    set_source_files_properties(vendor/liblecore/lecore.c
+        PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
 # Always emit compile_commands.json so clangd / editor LSPs can resolve
