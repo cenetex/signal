@@ -1,0 +1,107 @@
+{
+  "schema": "signal.liblecore_pilot_summary.v1",
+  "captured_on": "2026-08-31",
+  "signal_revision": "fdd638cb6725b56eb5eafe8d0bc2f0e8dda204e0",
+  "environment": {
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "compiler": "AppleClang 17.0.0.17000604",
+    "build_type": "Release",
+    "dimension": 1024
+  },
+  "primitive_benchmark": {
+    "schema": "signal.hnn_backend_benchmark.v1",
+    "samples": 256,
+    "batch_size": 8,
+    "tolerance": 0.00001,
+    "backends": {
+      "builtin-radix2": {
+        "scratch_bytes": 16384,
+        "context_bytes": 0,
+        "bind_us": {"median": 28.0, "p95": 30.375},
+        "unbind_us": {"median": 28.0, "p95": 29.875},
+        "action_scoring_us": {"median": 4.25, "p95": 4.625}
+      },
+      "lecore-direct": {
+        "scratch_bytes": 4096,
+        "context_bytes": 4224,
+        "max_bind_delta": 0.000000342726707,
+        "max_unbind_delta": 0.00000037997961,
+        "max_action_score_delta": 0.0000000298023224,
+        "bind_us": {"median": 703.5, "p95": 718.75},
+        "unbind_us": {"median": 708.125, "p95": 726.875},
+        "action_scoring_us": {"median": 12.375, "p95": 13.75}
+      },
+      "lecore-radix2": {
+        "scratch_bytes": 16384,
+        "context_bytes": 24704,
+        "max_bind_delta": 0.000000322237611,
+        "max_unbind_delta": 0.000000365078449,
+        "max_action_score_delta": 0.0000000298023224,
+        "bind_us": {"median": 16.125, "p95": 17.875},
+        "unbind_us": {"median": 15.875, "p95": 17.5},
+        "action_scoring_us": {"median": 12.25, "p95": 13.5}
+      }
+    }
+  },
+  "replay": {
+    "fast": {
+      "scenarios": 21,
+      "rows": 44,
+      "runs_per_backend": 5,
+      "repeatable": true,
+      "builtin_p95_seconds": 2.404981209,
+      "direct_p95_seconds": 2.704852458,
+      "direct_p95_ratio": 1.124687564,
+      "radix2_p95_seconds": 2.402593166,
+      "radix2_p95_ratio": 0.999007043,
+      "authority_agreement": "44/44",
+      "episode_outcomes_identical": true,
+      "direct_legal_action_agreement": "4/4",
+      "radix2_legal_action_agreement": "4/4",
+      "direct_max_score_delta": 0.0000006549999999,
+      "radix2_max_score_delta": 0.0000005960000000,
+      "direct_max_margin_delta": 0.0000009830000000,
+      "radix2_max_margin_delta": 0.0000007750000000
+    },
+    "long": {
+      "scenarios": 4,
+      "rows": 4,
+      "runs_per_backend": 3,
+      "repeatable": true,
+      "builtin_p95_seconds": 24.727272,
+      "direct_p95_seconds": 24.748800209,
+      "direct_p95_ratio": 1.000870626,
+      "radix2_p95_seconds": 24.766739583,
+      "radix2_p95_ratio": 1.001596116,
+      "authority_agreement": "4/4",
+      "episode_outcomes_identical": true
+    },
+    "native_wasm_fast": {
+      "direct": {
+        "result": "byte-identical across 21 scenarios",
+        "manifest_sha256": "6981202807b7d490b15b0cd50fa529579bb9a1163add71b12cb6c594353a6829"
+      },
+      "radix2": {
+        "result": "byte-identical across 21 scenarios",
+        "manifest_sha256": "a5ffde3e342dd313dfdd2d765d889b9b5d494f9a3d14e68021fb7fa2a2a82165"
+      }
+    }
+  },
+  "gates": {
+    "correctness": true,
+    "repeatability": true,
+    "native_wasm": true,
+    "radix2_replay_p95_within_10_percent": true,
+    "safety_cargo_receipt_authority_unchanged": true
+  },
+  "recommendation": {
+    "decision": "hold",
+    "preferred_pilot_backend": "lecore-radix2",
+    "default_backend": "builtin-radix2",
+    "reasons": [
+      "liblecore remains an ABI-0 preview",
+      "calibrated abstention and teacher fallback are not yet landed",
+      "lecore-direct is a correctness oracle and is not a runtime candidate"
+    ]
+  }
+}

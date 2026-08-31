@@ -84,6 +84,7 @@ bool hnn_backend_cleanup_for(hnn_backend_kind_t kind,
                              float *out_score);
 
 bool hnn_backend_thread_init(hnn_backend_kind_t kind);
+size_t hnn_backend_scratch_bytes(hnn_backend_kind_t kind);
 size_t hnn_backend_thread_allocation_count(hnn_backend_kind_t kind);
 size_t hnn_backend_thread_memory_bytes(hnn_backend_kind_t kind);
 void hnn_backend_thread_reset_for_tests(void);

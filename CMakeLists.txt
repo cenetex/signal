@@ -597,6 +597,29 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_definitions(signal_rati_receipt PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
+    add_executable(signal_hnn_pilot_benchmark
+        tools/signal_hnn_pilot_benchmark.c
+        shared/holographic_nn_backend.c
+        shared/fixpoint.c
+        vendor/liblecore/lecore.c
+    )
+    target_include_directories(signal_hnn_pilot_benchmark PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/shared"
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/liblecore")
+    target_compile_definitions(signal_hnn_pilot_benchmark PRIVATE
+        SIGNAL_HNN_LECORE_AVAILABLE=1
+        LECORE_ENABLE_FORMAT=0)
+    if(NOT MSVC)
+        target_link_libraries(signal_hnn_pilot_benchmark PRIVATE m)
+        target_compile_options(signal_hnn_pilot_benchmark PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(signal_hnn_pilot_benchmark PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_hnn_pilot_benchmark PRIVATE
+            _CRT_SECURE_NO_WARNINGS)
+    endif()
+
     add_executable(flight_trace
         tools/flight_trace.c
         ${SIGNAL_SIM_SOURCES}
