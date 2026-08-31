@@ -76,6 +76,7 @@
       "name": "build-system",
       "scope": "gate",
       "paths": [
+        ".gitattributes",
         "CMakeLists.txt",
         "Makefile"
       ],
