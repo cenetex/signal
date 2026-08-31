@@ -75,8 +75,22 @@ option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chai
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 option(SIGNAL_SIM_PROFILE "Compile world_sim_step phase profiling timers" OFF)
 option(SIGNAL_HNN_ENABLE_LECORE
-    "Compile the pinned liblecore pilot dependency (backend remains disabled)"
+    "Compile the pinned liblecore pilot dependency"
     OFF)
+set(SIGNAL_HNN_BACKEND "builtin" CACHE STRING
+    "HNN numeric backend: builtin, lecore-direct, or lecore-radix2")
+set_property(CACHE SIGNAL_HNN_BACKEND PROPERTY STRINGS
+    builtin lecore-direct lecore-radix2)
+string(TOLOWER "${SIGNAL_HNN_BACKEND}" SIGNAL_HNN_BACKEND_NORMALIZED)
+if(NOT SIGNAL_HNN_BACKEND_NORMALIZED STREQUAL "builtin" AND
+   NOT SIGNAL_HNN_BACKEND_NORMALIZED STREQUAL "lecore-direct" AND
+   NOT SIGNAL_HNN_BACKEND_NORMALIZED STREQUAL "lecore-radix2")
+    message(FATAL_ERROR
+        "SIGNAL_HNN_BACKEND must be builtin, lecore-direct, or lecore-radix2")
+endif()
+if(NOT SIGNAL_HNN_BACKEND_NORMALIZED STREQUAL "builtin")
+    set(SIGNAL_HNN_ENABLE_LECORE ON)
+endif()
 
 set(SIGNAL_LECORE_C_SHA256
     "f3283ebb033e295e5dbdc46d95add91ab154253169d6a2a1ab696464b051ed07")
@@ -96,6 +110,11 @@ if(SIGNAL_HNN_ENABLE_LECORE)
     add_compile_definitions(
         SIGNAL_HNN_LECORE_AVAILABLE=1
         LECORE_ENABLE_FORMAT=0)
+endif()
+if(SIGNAL_HNN_BACKEND_NORMALIZED STREQUAL "lecore-direct")
+    add_compile_definitions(SIGNAL_HNN_BACKEND_LECORE_DIRECT=1)
+elseif(SIGNAL_HNN_BACKEND_NORMALIZED STREQUAL "lecore-radix2")
+    add_compile_definitions(SIGNAL_HNN_BACKEND_LECORE_RADIX2=1)
 endif()
 
 if(NOT EMSCRIPTEN)
@@ -236,6 +255,10 @@ set(SIGNAL_SIM_HELPERS
 )
 if(SIGNAL_HNN_ENABLE_LECORE)
     list(APPEND SIGNAL_SIM_HELPERS vendor/liblecore/lecore.c)
+endif()
+set(SIGNAL_TEST_LECORE_SOURCES)
+if(NOT SIGNAL_HNN_ENABLE_LECORE)
+    list(APPEND SIGNAL_TEST_LECORE_SOURCES vendor/liblecore/lecore.c)
 endif()
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
@@ -426,6 +449,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_gameplay_observability.c
         tests/c/test_asteroid_presentation.c
         tests/c/test_tow_presentation_diagnostics.c
+        tests/c/test_hnn_backend.c
         tests/c/test_gossip.c
         tests/c/test_npc_radio.c
         tests/c/test_ai_feature_contract.c
@@ -444,17 +468,21 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_TEST_LECORE_SOURCES}
         ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
         ${SIGNAL_CRYPTO_SOURCES}
     )
     target_include_directories(signal_test PRIVATE
         ${SIGNAL_INCLUDE_DIRS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/liblecore"
         ${SIGNAL_CRYPTO_INCLUDE_DIR})
     target_compile_definitions(signal_test PRIVATE
         MG_ENABLE_LOG=0
         SIGNAL_CRYPTO_TESTING=1
         SIGNAL_CARGO_RECEIPT_TESTING=1
         SIGNAL_CHAIN_LOG_TESTING=1
+        SIGNAL_HNN_LECORE_AVAILABLE=1
+        LECORE_ENABLE_FORMAT=0
         SIGNAL_SAVE_TESTING=1
         SIGNAL_SERVER_PERSISTENCE=1
         SIGNAL_LOCAL_AUTHORITY_TESTING=1

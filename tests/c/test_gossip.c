@@ -689,26 +689,35 @@ TEST(test_hnn_memory_contract_reports_trace_diagnostics) {
 
 TEST(test_hnn_backend_metadata_records_builtin_and_liblecore_pin) {
     hnn_backend_metadata_t metadata = hnn_backend_metadata();
+    hnn_backend_kind_t kind = hnn_backend_active_kind();
 
     ASSERT_EQ_INT(metadata.dimension, HNN_DIM);
-    ASSERT_EQ_INT((int)metadata.active_abi_version,
-                  (int)HNN_CONTRACT_VERSION);
-    ASSERT(strcmp(metadata.active_library, "signal") == 0);
-    ASSERT(strcmp(metadata.active_backend, "builtin-radix2") == 0);
+    ASSERT(strcmp(metadata.active_backend,
+                  hnn_backend_kind_name(kind)) == 0);
     ASSERT(metadata.active_source_revision[0] != '\0');
-    ASSERT(metadata.scratch_bytes ==
-           (size_t)HNN_DIM * 4u * sizeof(float));
+    if (kind == HNN_BACKEND_BUILTIN_RADIX2) {
+        ASSERT_EQ_INT((int)metadata.active_abi_version,
+                      (int)HNN_CONTRACT_VERSION);
+        ASSERT(strcmp(metadata.active_library, "signal") == 0);
+        ASSERT(metadata.scratch_bytes ==
+               (size_t)HNN_DIM * 4u * sizeof(float));
+    } else {
+        ASSERT_EQ_INT((int)metadata.active_abi_version, 0);
+        ASSERT(strcmp(metadata.active_library, "liblecore") == 0);
+        ASSERT(strncmp(metadata.active_source_revision,
+                       "sha256:", 7) == 0);
+        ASSERT(metadata.scratch_bytes ==
+               (kind == HNN_BACKEND_LECORE_DIRECT
+                    ? (size_t)HNN_DIM * sizeof(float)
+                    : (size_t)HNN_DIM * 4u * sizeof(float)));
+    }
     ASSERT(strcmp(metadata.liblecore_version, "0.1.0") == 0);
     ASSERT_EQ_INT((int)metadata.liblecore_abi_version, 0);
     ASSERT(strncmp(metadata.liblecore_source_revision,
                    "sha256:", 7) == 0);
     ASSERT(strncmp(metadata.liblecore_source_checksum,
                    "sha256:", 7) == 0);
-#ifdef SIGNAL_HNN_LECORE_AVAILABLE
     ASSERT(metadata.liblecore_compiled);
-#else
-    ASSERT(!metadata.liblecore_compiled);
-#endif
 }
 
 TEST(test_hnn_holonet_single_cell_matches_flat_trace) {
