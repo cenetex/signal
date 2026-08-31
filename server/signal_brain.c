@@ -2,6 +2,7 @@
  * signal_brain.c -- Minimal .nnckpt loader and WASD scorer for server bots.
  */
 #include "signal_brain.h"
+#include "holographic_nn_confidence.h"
 #include "sim_autopilot.h"
 #include "sim_nav.h"
 #include "station_util.h"
@@ -82,6 +83,17 @@ static bool signal_hnn_debug_enabled(void) {
                   strcmp(value, "0") != 0) ? 1 : 0;
     }
     return cached != 0;
+}
+
+static hnn_confidence_mode_t signal_hnn_confidence_mode(void) {
+    static int initialized = 0;
+    static hnn_confidence_mode_t mode = HNN_CONFIDENCE_MODE_SHADOW;
+    if (!initialized) {
+        mode = hnn_confidence_mode_from_string(
+            getenv("SIGNAL_HNN_CONFIDENCE_MODE"));
+        initialized = 1;
+    }
+    return mode;
 }
 
 #define SIGNAL_HNN_DEBUG_LOG(...) \
@@ -1073,6 +1085,26 @@ static int hnn_npc_best_allowed_action(
     return best;
 }
 
+static int hnn_npc_teacher_action(
+    const hnn_pilot_features_t *state,
+    const uint8_t allowed[HNN_ACTION_COUNT],
+    uint16_t allowed_mask) {
+    if (!state || !allowed || allowed_mask == 0) return 0;
+    float heading_error = state->heading_error * 3.14159265f;
+    int preferred = 1;
+    if (fabsf(heading_error) > 0.3f)
+        preferred = heading_error > 0.0f ? 6 : 5;
+    if (allowed[preferred]) return preferred;
+
+    int turn_only = heading_error >= 0.0f ? 3 : 2;
+    if (allowed[turn_only]) return turn_only;
+    if (allowed[4]) return 4;
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        if (allowed[i]) return i;
+    }
+    return 0;
+}
+
 static void hnn_npc_store_experience(npc_ship_t *npc,
                                      hnn_holonet_t *holonet,
                                      const hnn_pilot_features_t *route_state,
@@ -1316,6 +1348,8 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
     float selected_margin = margin;
     uint8_t allowed[HNN_ACTION_COUNT];
     uint16_t allowed_mask = hnn_npc_allowed_mask(&state_only, allowed);
+    int teacher_action = hnn_npc_teacher_action(&state_only, allowed,
+                                                allowed_mask);
     best_action = hnn_npc_best_allowed_action(
         scores, allowed, &selected_score, &selected_margin);
     if (best_action < 0) {
@@ -1323,6 +1357,31 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
         selected_score = scores[best_action];
         selected_margin = margin;
     }
+
+    hnn_memory_contract_t confidence_contract =
+        hnn_memory_contract(&npc->hnn_mem);
+    hnn_confidence_decision_t confidence = hnn_confidence_evaluate(
+        hnn_backend_active_kind(),
+        &confidence_contract,
+        selected_score,
+        selected_margin,
+        best_action >= 0 && best_action < HNN_ACTION_COUNT,
+        best_action >= 0 && best_action < HNN_ACTION_COUNT &&
+            allowed[best_action] != 0);
+    hnn_confidence_mode_t confidence_mode = signal_hnn_confidence_mode();
+    int hnn_action = best_action;
+    best_action = hnn_confidence_select_action(
+        confidence_mode, &confidence, hnn_action, teacher_action);
+    SIGNAL_HNN_DEBUG_LOG(
+        "[hnn] gate mode=%s result=%s score=%.6f margin=%.6f "
+        "load=%.3f hnn=%s selected=%s\n",
+        hnn_confidence_mode_name(confidence_mode),
+        hnn_confidence_reason_name(confidence.reason),
+        selected_score,
+        selected_margin,
+        confidence_contract.capacity_load,
+        SB_ACTIONS[hnn_action].name,
+        SB_ACTIONS[best_action].name);
 
     npc->hnn_mem.last_retrieval_similarity = selected_score;
     npc->hnn_mem.last_margin = selected_margin;

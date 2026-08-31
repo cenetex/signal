@@ -1,0 +1,74 @@
+{
+  "artifact_version": 1,
+  "contract": {
+    "action_vocabulary_hash": "62f731c037bc0461",
+    "backend_names": [
+      "builtin-radix2",
+      "lecore-direct",
+      "lecore-radix2"
+    ],
+    "contract_version": 1,
+    "dimension": 1024,
+    "encoder_version": 2,
+    "keygen_version": 1,
+    "seed": "07d00bb80fa00011",
+    "trace_capacity": 128,
+    "trace_format_version": 1
+  },
+  "corpus": {
+    "category_counts": {
+      "disrupted-world": 16,
+      "overloaded-memory": 8,
+      "shuffled-labels": 16,
+      "unrelated-trace": 16
+    },
+    "digest": "3a58545fa9cfaf17d66faa5f7761ddca3e83da3c9953d0ff75def74be85e7d27",
+    "generator_version": 1,
+    "name": "signal-hnn-null-replay",
+    "scenario_digest": "a4b14d3a4311e05e1bc97d5b71c294c9d4db714bb6aded535ff6b39c67b075d8",
+    "version": 1
+  },
+  "fixed_during_run": true,
+  "gates": {
+    "held_out_false_confidence_rate": 0.0,
+    "held_out_limit": 0.01,
+    "held_out_passed": true,
+    "over_capacity_always_rejected": true,
+    "positive_controls_accepted": 18,
+    "positive_controls_total": 18
+  },
+  "max_capacity_load": 1.0,
+  "schema": "signal.hnn_confidence_calibration.v1",
+  "thresholds": {
+    "builtin-radix2": {
+      "held_out_false_confident": 0,
+      "held_out_samples": 12,
+      "min_margin": 0.25,
+      "min_score": 0.7,
+      "positive_controls_accepted": 6,
+      "positive_controls_total": 6,
+      "training_false_confident": 0,
+      "training_samples": 44
+    },
+    "lecore-direct": {
+      "held_out_false_confident": 0,
+      "held_out_samples": 12,
+      "min_margin": 0.25,
+      "min_score": 0.7,
+      "positive_controls_accepted": 6,
+      "positive_controls_total": 6,
+      "training_false_confident": 0,
+      "training_samples": 44
+    },
+    "lecore-radix2": {
+      "held_out_false_confident": 0,
+      "held_out_samples": 12,
+      "min_margin": 0.25,
+      "min_score": 0.7,
+      "positive_controls_accepted": 6,
+      "positive_controls_total": 6,
+      "training_false_confident": 0,
+      "training_samples": 44
+    }
+  }
+}

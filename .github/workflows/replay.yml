@@ -27,6 +27,10 @@ on:
       - 'scripts/check_replay_cross_build.py'
       - 'scripts/compare_liblecore_replay.py'
       - 'scripts/test_compare_liblecore_replay.py'
+      - 'scripts/hnn_null_corpus.py'
+      - 'scripts/calibrate_hnn_confidence.py'
+      - 'scripts/test_hnn_calibration.py'
+      - 'docs/liblecore-pilot/hnn-calibration.json'
       - 'CMakeLists.txt'
       - 'Makefile'
       - '.github/workflows/replay.yml'
@@ -111,6 +115,17 @@ jobs:
         run: |
           python3 scripts/test_ai_episode_outcomes.py
           python3 scripts/test_compare_liblecore_replay.py
+          python3 scripts/test_hnn_calibration.py
+
+      - name: Verify frozen HNN confidence calibration
+        run: |
+          python3 scripts/calibrate_hnn_confidence.py \
+            --builtin build/signal_replay \
+            --direct build-lecore-direct/signal_replay \
+            --radix2 build-lecore-radix2/signal_replay \
+            --artifact docs/liblecore-pilot/hnn-calibration.json \
+            --header shared/holographic_nn_calibration_data.h \
+            --check
 
       - name: Preserve AI outcome facts across native and WASM
         run: |

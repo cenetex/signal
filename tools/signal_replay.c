@@ -38,6 +38,7 @@
 #include "gossip.h"
 #include "holographic_nn.h"
 #include "holographic_nn_backend.h"
+#include "holographic_nn_confidence.h"
 #include "manifest.h"
 #include "protocol.h"
 #include "sha256.h"
@@ -131,6 +132,7 @@ typedef struct {
     bool angle_set;
     vec2 spawn;
     vec2 goal;
+    vec2 hnn_query_goal;
     vec2 velocity;
     float angle;
     int horizon_ticks;
@@ -138,6 +140,9 @@ typedef struct {
     int prefix_count;
     bool candidate_enabled[SR_ACTION_COUNT];
     bool hnn_trace;
+    bool hnn_query_goal_set;
+    int hnn_label_shift;
+    hnn_confidence_mode_t hnn_confidence_mode;
     bool active_workers;
     int hnn_cleanup_steps;
     sr_provenance_script_t provenance_script;
@@ -274,6 +279,10 @@ typedef struct {
     float margin;
     float allowed_margin;
     float trace_fidelity;
+    hnn_confidence_decision_t confidence;
+    hnn_confidence_mode_t confidence_mode;
+    int teacher_action;
+    int selected_action;
     hnn_memory_contract_t contract;
     bool holonet_enabled;
     int holonet_active_count;
@@ -548,6 +557,9 @@ static void sr_usage(FILE *fp)
             "  --horizon-ticks N    branch horizon per candidate (default 36; max 120000)\n"
             "  --candidates LIST    comma-separated candidate actions; default all 9\n"
             "  --hnn-trace          train an HNN trace from the prefix and score each branch candidate\n"
+            "  --hnn-query-goal X,Y query the trace with an unrelated goal (offline null control)\n"
+            "  --hnn-label-shift N  rotate stored action labels by N (offline null control; 0..8)\n"
+            "  --hnn-confidence-mode MODE  shadow (default) or mixed\n"
             "  --active-workers     keep seeded NPC workers active and include AI/gossip/HNN metrics\n"
             "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
@@ -888,6 +900,20 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
             i++;
         } else if (strcmp(arg, "--hnn-trace") == 0) {
             config->hnn_trace = true;
+        } else if (strcmp(arg, "--hnn-query-goal") == 0 && value) {
+            if (!sr_parse_vec2(value, &config->hnn_query_goal)) return false;
+            config->hnn_query_goal_set = true;
+            i++;
+        } else if (strcmp(arg, "--hnn-label-shift") == 0 && value) {
+            if (!sr_parse_i32(value, 0, HNN_ACTION_COUNT - 1,
+                              &config->hnn_label_shift)) return false;
+            i++;
+        } else if (strcmp(arg, "--hnn-confidence-mode") == 0 && value) {
+            if (strcmp(value, "shadow") != 0 && strcmp(value, "mixed") != 0)
+                return false;
+            config->hnn_confidence_mode =
+                hnn_confidence_mode_from_string(value);
+            i++;
         } else if (strcmp(arg, "--active-workers") == 0) {
             config->active_workers = true;
         } else if (strcmp(arg, "--hnn-cleanup-steps") == 0 && value) {
@@ -4282,6 +4308,7 @@ static void sr_hnn_store_observation(const world_t *w,
                                      const server_player_t *sp,
                                      vec2 goal,
                                      int action,
+                                     int label_shift,
                                      hnn_memory_t *mem,
                                      hnn_holonet_t *net,
                                      const hnn_action_table_t *actions)
@@ -4291,13 +4318,15 @@ static void sr_hnn_store_observation(const world_t *w,
     float route_vec[HNN_DIM];
     float state_vec[HNN_DIM];
     if (!mem || !actions || action < 0 || action >= HNN_ACTION_COUNT) return;
+    int stored_action = (action + label_shift) % HNN_ACTION_COUNT;
     sr_hnn_fill_features(w, sp, goal, 0, &route_features);
     sr_hnn_fill_features(w, sp, goal, action, &features);
     hnn_encode_state(&route_features, route_vec);
     hnn_encode_state(&features, state_vec);
-    hnn_memory_store(mem, state_vec, actions->vecs[action]);
+    hnn_memory_store(mem, state_vec, actions->vecs[stored_action]);
     if (net)
-        hnn_holonet_store(net, route_vec, state_vec, actions->vecs[action]);
+        hnn_holonet_store(net, route_vec, state_vec,
+                          actions->vecs[stored_action]);
 }
 
 static bool sr_hnn_action_allowed(const hnn_pilot_features_t *state,
@@ -4385,6 +4414,26 @@ static int sr_hnn_best_allowed_action(const float scores[HNN_ACTION_COUNT],
     return best;
 }
 
+static int sr_hnn_teacher_action(
+    const hnn_pilot_features_t *state,
+    const uint8_t allowed[HNN_ACTION_COUNT],
+    uint16_t allowed_mask)
+{
+    if (!state || !allowed || allowed_mask == 0) return 0;
+    float heading_error = state->heading_error * PI_F;
+    int preferred = 1;
+    if (fabsf(heading_error) > 0.3f)
+        preferred = heading_error > 0.0f ? 6 : 5;
+    if (allowed[preferred]) return preferred;
+    int turn_only = heading_error >= 0.0f ? 3 : 2;
+    if (allowed[turn_only]) return turn_only;
+    if (allowed[4]) return 4;
+    for (int i = 0; i < HNN_ACTION_COUNT; i++) {
+        if (allowed[i]) return i;
+    }
+    return 0;
+}
+
 static void sr_hnn_evaluate_branch(const world_t *w,
                                    const server_player_t *sp,
                                    vec2 goal,
@@ -4393,6 +4442,7 @@ static void sr_hnn_evaluate_branch(const world_t *w,
                                    hnn_holonet_t *net,
                                    const hnn_action_table_t *actions,
                                    int cleanup_steps,
+                                   hnn_confidence_mode_t confidence_mode,
                                    sr_hnn_eval_t *out)
 {
     hnn_pilot_features_t state_only;
@@ -4466,6 +4516,19 @@ static void sr_hnn_evaluate_branch(const world_t *w,
     out->allowed_margin = allowed_margin;
     out->trace_fidelity = fidelity;
     out->contract = hnn_memory_contract(mem);
+    out->confidence_mode = confidence_mode;
+    out->teacher_action = sr_hnn_teacher_action(
+        &state_only, allowed, out->allowed_mask);
+    out->confidence = hnn_confidence_evaluate(
+        hnn_backend_active_kind(),
+        &out->contract,
+        top_allowed_score,
+        allowed_margin,
+        top_allowed >= 0 && top_allowed < HNN_ACTION_COUNT,
+        top_allowed >= 0 && top_allowed < HNN_ACTION_COUNT &&
+            allowed[top_allowed] != 0);
+    out->selected_action = hnn_confidence_select_action(
+        confidence_mode, &out->confidence, top_allowed, out->teacher_action);
 }
 
 static bool sr_replay_prefix(const sr_config_t *config,
@@ -4479,6 +4542,7 @@ static bool sr_replay_prefix(const sr_config_t *config,
     for (int i = 0; i < config->prefix_count; i++) {
         if (hnn_mem && hnn_actions) {
             sr_hnn_store_observation(w, sp, goal, config->prefix[i],
+                                     config->hnn_label_shift,
                                      hnn_mem, hnn_net, hnn_actions);
         }
         sr_apply_action(sp, config->prefix[i]);
@@ -4602,9 +4666,12 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
             (int)(w->tick - episode_start_tick);
     }
     if (config->hnn_trace) {
-        sr_hnn_evaluate_branch(w, sp, goal, candidate,
+        vec2 hnn_query_goal = config->hnn_query_goal_set
+            ? config->hnn_query_goal : goal;
+        sr_hnn_evaluate_branch(w, sp, hnn_query_goal, candidate,
                                hnn_mem_ptr, hnn_net_ptr, hnn_actions_ptr,
                                config->hnn_cleanup_steps,
+                               config->hnn_confidence_mode,
                                &out->hnn);
     }
     previous_pos = sp->ship->pos;
@@ -4973,10 +5040,14 @@ static void sr_write_ai_summary(FILE *out, const sr_ai_summary_t *ai)
     fprintf(out, "}");
 }
 
-static void sr_write_hnn_eval(FILE *out, const sr_hnn_eval_t *hnn)
+static void sr_write_hnn_eval(FILE *out,
+                              const sr_config_t *config,
+                              const sr_hnn_eval_t *hnn)
 {
     fprintf(out,
             ",\"hnn\":{\"schema\":\"signal.replay_hnn_eval.v1\","
+            "\"null_control\":{\"query_goal_unrelated\":%s,"
+            "\"label_shift\":%d,\"overloaded\":%s},"
             "\"top_action\":%d,"
             "\"top_action_name\":\"%s\","
             "\"top_allowed_action\":%d,"
@@ -4986,6 +5057,9 @@ static void sr_write_hnn_eval(FILE *out, const sr_hnn_eval_t *hnn)
             "\"candidate_allowed\":%s,"
             "\"candidate_allowed_rank\":%d,"
             "\"candidate_score\":",
+            config->hnn_query_goal_set ? "true" : "false",
+            config->hnn_label_shift,
+            hnn->contract.capacity_load > 1.0f ? "true" : "false",
             hnn->top_action,
             SR_ACTIONS[hnn->top_action].name,
             hnn->top_allowed_action,
@@ -5005,6 +5079,25 @@ static void sr_write_hnn_eval(FILE *out, const sr_hnn_eval_t *hnn)
     sr_json_float(out, hnn->allowed_margin);
     fprintf(out, ",\"trace_fidelity\":");
     sr_json_float(out, hnn->trace_fidelity);
+    fprintf(out,
+            ",\"confidence\":{\"mode\":\"%s\","
+            "\"accepted\":%s,\"reason\":\"%s\","
+            "\"min_score\":",
+            hnn_confidence_mode_name(hnn->confidence_mode),
+            hnn->confidence.accepted ? "true" : "false",
+            hnn_confidence_reason_name(hnn->confidence.reason));
+    sr_json_float(out, hnn->confidence.thresholds.min_score);
+    fprintf(out, ",\"min_margin\":");
+    sr_json_float(out, hnn->confidence.thresholds.min_margin);
+    fprintf(out, ",\"max_capacity_load\":");
+    sr_json_float(out, hnn->confidence.thresholds.max_capacity_load);
+    fprintf(out,
+            ",\"teacher_action\":%d,\"teacher_action_name\":\"%s\","
+            "\"selected_action\":%d,\"selected_action_name\":\"%s\"}",
+            hnn->teacher_action,
+            SR_ACTIONS[hnn->teacher_action].name,
+            hnn->selected_action,
+            SR_ACTIONS[hnn->selected_action].name);
     fprintf(out, ",\"contract\":");
     sr_write_hnn_contract(out, &hnn->contract);
     fprintf(out,
@@ -5370,7 +5463,7 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
         sr_write_ai_summary(out, &r->ai);
     }
     if (config->hnn_trace && r->hnn.enabled) {
-        sr_write_hnn_eval(out, &r->hnn);
+        sr_write_hnn_eval(out, config, &r->hnn);
     }
     sr_write_hnn_backend(out);
     sr_write_eval_summary(out, config, &r->evaluation);
