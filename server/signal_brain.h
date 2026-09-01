@@ -81,6 +81,7 @@ int signal_brain_holographic_npc_holonet_active_count(const world_t *w,
 signal_brain_hnn_confidence_metrics_t
 signal_brain_hnn_confidence_metrics(void);
 hnn_confidence_mode_t signal_brain_hnn_confidence_mode(void);
+void signal_brain_hnn_confidence_set_mode(hnn_confidence_mode_t mode);
 
 extern bool g_neural_singleplayer;
 

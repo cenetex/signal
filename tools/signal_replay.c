@@ -993,12 +993,8 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
 static bool sr_configure_runtime_hnn_mode(const sr_config_t *config)
 {
     if (!config || !config->hnn_confidence_mode_set) return true;
-    const char *mode = hnn_confidence_mode_name(config->hnn_confidence_mode);
-#if defined(_WIN32)
-    return _putenv_s("SIGNAL_HNN_CONFIDENCE_MODE", mode) == 0;
-#else
-    return setenv("SIGNAL_HNN_CONFIDENCE_MODE", mode, 1) == 0;
-#endif
+    signal_brain_hnn_confidence_set_mode(config->hnn_confidence_mode);
+    return true;
 }
 
 static void sr_hex(const uint8_t bytes[32], char out[65])

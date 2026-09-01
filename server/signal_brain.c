@@ -75,6 +75,9 @@ bool g_neural_singleplayer = false;
 static hnn_holonet_t g_npc_holonets[MAX_NPC_SHIPS];
 static bool g_npc_holonet_ready[MAX_NPC_SHIPS];
 static signal_brain_hnn_confidence_metrics_t g_hnn_confidence_metrics;
+static bool g_hnn_confidence_mode_initialized;
+static hnn_confidence_mode_t g_hnn_confidence_mode =
+    HNN_CONFIDENCE_MODE_SHADOW;
 
 static bool signal_hnn_debug_enabled(void) {
     static int cached = -1;
@@ -87,14 +90,19 @@ static bool signal_hnn_debug_enabled(void) {
 }
 
 hnn_confidence_mode_t signal_brain_hnn_confidence_mode(void) {
-    static int initialized = 0;
-    static hnn_confidence_mode_t mode = HNN_CONFIDENCE_MODE_SHADOW;
-    if (!initialized) {
-        mode = hnn_confidence_mode_from_string(
+    if (!g_hnn_confidence_mode_initialized) {
+        g_hnn_confidence_mode = hnn_confidence_mode_from_string(
             getenv("SIGNAL_HNN_CONFIDENCE_MODE"));
-        initialized = 1;
+        g_hnn_confidence_mode_initialized = true;
     }
-    return mode;
+    return g_hnn_confidence_mode;
+}
+
+void signal_brain_hnn_confidence_set_mode(hnn_confidence_mode_t mode) {
+    g_hnn_confidence_mode = mode == HNN_CONFIDENCE_MODE_MIXED
+        ? HNN_CONFIDENCE_MODE_MIXED
+        : HNN_CONFIDENCE_MODE_SHADOW;
+    g_hnn_confidence_mode_initialized = true;
 }
 
 #define SIGNAL_HNN_DEBUG_LOG(...) \
