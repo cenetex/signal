@@ -73,6 +73,7 @@
 #define SR_ROUTE_CELL_SIZE 256.0f
 #define SR_STUCK_TICK_THRESHOLD 120
 #define SR_GOAL_COMPLETION_RADIUS 250.0f
+#define SR_HNN_PILOT_COMPLETION_RADIUS 500.0f
 
 typedef enum {
     SR_PROVENANCE_SCRIPT_NONE = 0,
@@ -143,7 +144,9 @@ typedef struct {
     bool hnn_query_goal_set;
     int hnn_label_shift;
     hnn_confidence_mode_t hnn_confidence_mode;
+    bool hnn_confidence_mode_set;
     bool active_workers;
+    bool hnn_pilot;
     int hnn_cleanup_steps;
     sr_provenance_script_t provenance_script;
     sr_eval_world_t eval_world;
@@ -294,6 +297,27 @@ typedef struct {
 } sr_hnn_eval_t;
 
 typedef struct {
+    bool enabled;
+    int npc_slot;
+    int target_asteroid;
+    hnn_confidence_mode_t confidence_mode;
+    float start_distance;
+    float end_distance;
+    float min_distance;
+    float progress;
+    float travel_distance;
+    float route_efficiency;
+    float start_hull;
+    float end_hull;
+    float hull_loss;
+    int start_experiences;
+    int end_experiences;
+    int completion_tick;
+    bool destroyed;
+    signal_brain_hnn_confidence_metrics_t gate;
+} sr_hnn_pilot_summary_t;
+
+typedef struct {
     int existing_stations;
     int active_stations;
     int generated_outposts;
@@ -381,6 +405,7 @@ typedef struct {
     sr_event_counts_t events;
     sr_ai_summary_t ai;
     sr_hnn_eval_t hnn;
+    sr_hnn_pilot_summary_t hnn_pilot;
     sr_eval_summary_t evaluation;
     sr_receipt_trust_eval_t receipt_trust;
     uint8_t prefix_state_hash[32];
@@ -389,6 +414,28 @@ typedef struct {
     uint8_t state_root[SIGNAL_AUTH_STATE_DIGEST_SIZE];
     uint8_t event_hash[32];
 } sr_result_t;
+
+static signal_brain_hnn_confidence_metrics_t sr_hnn_metrics_delta(
+    signal_brain_hnn_confidence_metrics_t end,
+    signal_brain_hnn_confidence_metrics_t start)
+{
+    signal_brain_hnn_confidence_metrics_t out = {
+        .bootstrap_teacher_decisions =
+            end.bootstrap_teacher_decisions - start.bootstrap_teacher_decisions,
+        .evaluated_decisions =
+            end.evaluated_decisions - start.evaluated_decisions,
+        .accepted_decisions =
+            end.accepted_decisions - start.accepted_decisions,
+        .selected_hnn_decisions =
+            end.selected_hnn_decisions - start.selected_hnn_decisions,
+        .selected_teacher_decisions =
+            end.selected_teacher_decisions - start.selected_teacher_decisions,
+    };
+    for (int i = 0; i <= HNN_CONFIDENCE_REJECT_UNSAFE; i++) {
+        out.reason_counts[i] = end.reason_counts[i] - start.reason_counts[i];
+    }
+    return out;
+}
 
 _Static_assert((int)HNN_ACTION_COUNT == (int)SR_ACTION_COUNT,
                "signal_replay HNN actions must match replay actions");
@@ -561,6 +608,7 @@ static void sr_usage(FILE *fp)
             "  --hnn-label-shift N  rotate stored action labels by N (offline null control; 0..8)\n"
             "  --hnn-confidence-mode MODE  shadow (default) or mixed\n"
             "  --active-workers     keep seeded NPC workers active and include AI/gossip/HNN metrics\n"
+            "  --hnn-pilot          run one seeded worker through the runtime holographic flight gate\n"
             "  --hnn-cleanup-steps N cleanup steps for HNN retrieval (default 3; 0..8)\n"
             "  --provenance-script NAME  run a deterministic setup/action script\n"
             "                       before each branch; names: none,buy-sell,pod-tow-sell,mine-fracture,asteroid-death,planned-outpost,station-jostle,player-ram,npc-ram,thrown-rock-hit,fracture-claim,worker-tow-hnn,worker-repair-hnn,worker-delivery-proof-hnn,worker-gossip-courier,dense-asteroids\n"
@@ -913,8 +961,12 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
                 return false;
             config->hnn_confidence_mode =
                 hnn_confidence_mode_from_string(value);
+            config->hnn_confidence_mode_set = true;
             i++;
         } else if (strcmp(arg, "--active-workers") == 0) {
+            config->active_workers = true;
+        } else if (strcmp(arg, "--hnn-pilot") == 0) {
+            config->hnn_pilot = true;
             config->active_workers = true;
         } else if (strcmp(arg, "--hnn-cleanup-steps") == 0 && value) {
             if (!sr_parse_i32(value, 0, 8, &config->hnn_cleanup_steps)) return false;
@@ -936,6 +988,17 @@ static bool sr_parse_args(int argc, char **argv, sr_config_t *config)
         }
     }
     return true;
+}
+
+static bool sr_configure_runtime_hnn_mode(const sr_config_t *config)
+{
+    if (!config || !config->hnn_confidence_mode_set) return true;
+    const char *mode = hnn_confidence_mode_name(config->hnn_confidence_mode);
+#if defined(_WIN32)
+    return _putenv_s("SIGNAL_HNN_CONFIDENCE_MODE", mode) == 0;
+#else
+    return setenv("SIGNAL_HNN_CONFIDENCE_MODE", mode, 1) == 0;
+#endif
 }
 
 static void sr_hex(const uint8_t bytes[32], char out[65])
@@ -1362,6 +1425,87 @@ static void sr_move_pod_past_station_charge_boundary(world_t *w,
     w->cargo_pods[pod_idx].vel = v2(0.0f, 0.0f);
 }
 
+static bool sr_hnn_pilot_spawn_clear(const world_t *w,
+                                     vec2 pos,
+                                     int target_asteroid,
+                                     float ship_radius)
+{
+    if (!w) return false;
+    for (int s = 0; s < w->station_count; s++) {
+        float clearance = w->stations[s].radius + ship_radius + 300.0f;
+        if (v2_dist_sq(pos, w->stations[s].pos) < clearance * clearance)
+            return false;
+    }
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *asteroid = &w->asteroids[i];
+        if (i == target_asteroid || !asteroid->active) continue;
+        float clearance = asteroid->radius + ship_radius + 220.0f;
+        if (v2_dist_sq(pos, asteroid->pos) < clearance * clearance)
+            return false;
+    }
+    return true;
+}
+
+static bool sr_setup_hnn_pilot(world_t *w)
+{
+    npc_ship_t *pilot = NULL;
+    if (!w) return false;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w->npc_ships[i].active && w->npc_ships[i].ship) {
+            pilot = &w->npc_ships[i];
+            break;
+        }
+    }
+    if (!pilot) return false;
+
+    const hull_def_t *pilot_hull = npc_hull_def(pilot);
+    if (!pilot_hull) return false;
+    float ship_radius = pilot_hull->ship_radius;
+    int start_target = (int)(w->rng % MAX_ASTEROIDS);
+    int target = -1;
+    vec2 spawn = v2(0.0f, 0.0f);
+    for (int offset = 0; offset < MAX_ASTEROIDS && target < 0; offset++) {
+        int candidate = (start_target + offset) % MAX_ASTEROIDS;
+        const asteroid_t *asteroid = &w->asteroids[candidate];
+        if (!asteroid->active || asteroid_is_collectible(asteroid)) continue;
+        for (int direction = 0; direction < 16; direction++) {
+            float angle = (float)direction * (2.0f * PI_F / 16.0f);
+            vec2 candidate_spawn = v2_add(
+                asteroid->pos,
+                v2_scale(v2_from_angle(angle), 1800.0f));
+            if (!sr_hnn_pilot_spawn_clear(
+                    w, candidate_spawn, candidate, ship_radius)) {
+                continue;
+            }
+            target = candidate;
+            spawn = candidate_spawn;
+            break;
+        }
+    }
+    if (target < 0) return false;
+
+    pilot->brain_mode = SERVER_BRAIN_MODE_HOLOGRAPHIC;
+    pilot->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+    pilot->state_timer = 0.0f;
+    pilot->target_asteroid = target;
+    pilot->ship->pos = spawn;
+    pilot->ship->vel = v2(0.0f, 0.0f);
+    pilot->ship->angle = fixp_atan2f(
+        w->asteroids[target].pos.y - spawn.y,
+        w->asteroids[target].pos.x - spawn.x);
+    pilot->ship->hull = npc_max_hull(pilot);
+    memset(&pilot->input, 0, sizeof(pilot->input));
+    hnn_memory_init(&pilot->hnn_mem);
+    pilot->hnn_experience_version = 0;
+    pilot->hnn_experience_local_version = 0;
+    pilot->hnn_experience_uploaded_local_version = 0;
+    pilot->hnn_experience_uploaded_source_version = 0;
+    pilot->hnn_experience_station = 0xff;
+    pilot->hnn_experience_uploaded_station = 0xff;
+    pilot->hnn_experience_uploaded_source_station = 0xff;
+    return true;
+}
+
 static bool sr_setup_world(const sr_config_t *config,
                            world_t *w,
                            server_player_t **out_sp,
@@ -1406,6 +1550,8 @@ static bool sr_setup_world(const sr_config_t *config,
                    : fixp_atan2f(out_goal->y - sp->ship->pos.y,
                                   out_goal->x - sp->ship->pos.x);
     sp->ship->hull = ship_max_hull(sp->ship);
+
+    if (config->hnn_pilot && !sr_setup_hnn_pilot(w)) return false;
 
     if (out_spawn) *out_spawn = sp->ship->pos;
     if (out_sp) *out_sp = sp;
@@ -4589,6 +4735,14 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     uint64_t contract_teacher_start = 0;
     uint64_t worker_decisions_start = 0;
     uint64_t worker_teacher_start = 0;
+    npc_ship_t *hnn_pilot = NULL;
+    vec2 hnn_pilot_target = v2(0.0f, 0.0f);
+    vec2 hnn_pilot_previous_pos = v2(0.0f, 0.0f);
+    vec2 hnn_pilot_last_pos = v2(0.0f, 0.0f);
+    float hnn_pilot_last_hull = 0.0f;
+    int hnn_pilot_last_experiences = 0;
+    uint8_t hnn_pilot_token[sizeof(((npc_ship_t *)0)->session_token)] = {0};
+    signal_brain_hnn_confidence_metrics_t hnn_gate_start = {0};
     bool ok = false;
 
     memset(out, 0, sizeof(*out));
@@ -4599,6 +4753,7 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->contract_completion_tick = -1;
     out->repair_completion_tick = -1;
     out->ai.branch.first_worker_completion_tick = -1;
+    out->hnn_pilot.completion_tick = -1;
 
     w = (world_t *)calloc(1, sizeof(*w));
     if (!w) return false;
@@ -4674,6 +4829,48 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
                                config->hnn_confidence_mode,
                                &out->hnn);
     }
+    if (config->hnn_pilot) {
+        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+            npc_ship_t *candidate_pilot = &w->npc_ships[i];
+            if (!candidate_pilot->active || !candidate_pilot->ship ||
+                candidate_pilot->brain_mode !=
+                    SERVER_BRAIN_MODE_HOLOGRAPHIC ||
+                candidate_pilot->target_asteroid < 0 ||
+                candidate_pilot->target_asteroid >= MAX_ASTEROIDS) {
+                continue;
+            }
+            hnn_pilot = candidate_pilot;
+            out->hnn_pilot.enabled = true;
+            out->hnn_pilot.npc_slot = i;
+            out->hnn_pilot.target_asteroid =
+                candidate_pilot->target_asteroid;
+            out->hnn_pilot.confidence_mode =
+                signal_brain_hnn_confidence_mode();
+            hnn_pilot_target = w->asteroids[
+                candidate_pilot->target_asteroid].pos;
+            hnn_pilot_previous_pos = candidate_pilot->ship->pos;
+            hnn_pilot_last_pos = candidate_pilot->ship->pos;
+            hnn_pilot_last_hull = candidate_pilot->ship->hull;
+            hnn_pilot_last_experiences =
+                candidate_pilot->hnn_mem.experience_count;
+            memcpy(hnn_pilot_token, candidate_pilot->session_token,
+                   sizeof(hnn_pilot_token));
+            out->hnn_pilot.start_distance = v2_len(v2_sub(
+                hnn_pilot_target, candidate_pilot->ship->pos));
+            out->hnn_pilot.min_distance =
+                out->hnn_pilot.start_distance;
+            out->hnn_pilot.start_hull = candidate_pilot->ship->hull;
+            out->hnn_pilot.start_experiences =
+                candidate_pilot->hnn_mem.experience_count;
+            if (out->hnn_pilot.start_distance <=
+                SR_HNN_PILOT_COMPLETION_RADIUS) {
+                out->hnn_pilot.completion_tick = 0;
+            }
+            hnn_gate_start = signal_brain_hnn_confidence_metrics();
+            break;
+        }
+        if (!hnn_pilot) goto cleanup;
+    }
     previous_pos = sp->ship->pos;
     previous_dist = v2_len(v2_sub(goal, previous_pos));
     out->route_start_dist = previous_dist;
@@ -4696,6 +4893,35 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
         world_sim_step(w, SIM_DT);
         out->ticks_executed = i + 1;
         sr_accumulate_events(w, &out->events, &event_hash);
+        if (hnn_pilot && !out->hnn_pilot.destroyed) {
+            if (!hnn_pilot->active || !hnn_pilot->ship ||
+                memcmp(hnn_pilot_token, hnn_pilot->session_token,
+                       sizeof(hnn_pilot_token)) != 0) {
+                out->hnn_pilot.destroyed = true;
+            } else {
+                hnn_pilot_last_pos = hnn_pilot->ship->pos;
+                hnn_pilot_last_hull = hnn_pilot->ship->hull;
+                hnn_pilot_last_experiences =
+                    hnn_pilot->hnn_mem.experience_count;
+                if (hnn_pilot->ship->hull <= 0.0f) {
+                    out->hnn_pilot.destroyed = true;
+                } else {
+                    hnn_pilot_target = w->asteroids[
+                        out->hnn_pilot.target_asteroid].pos;
+                    float pilot_distance = v2_len(v2_sub(
+                        hnn_pilot_target, hnn_pilot->ship->pos));
+                    out->hnn_pilot.travel_distance += v2_len(v2_sub(
+                        hnn_pilot->ship->pos, hnn_pilot_previous_pos));
+                    hnn_pilot_previous_pos = hnn_pilot->ship->pos;
+                    if (pilot_distance < out->hnn_pilot.min_distance)
+                        out->hnn_pilot.min_distance = pilot_distance;
+                    if (out->hnn_pilot.completion_tick < 0 &&
+                        pilot_distance <= SR_HNN_PILOT_COMPLETION_RADIUS) {
+                        out->hnn_pilot.completion_tick = i + 1;
+                    }
+                }
+            }
+        }
         vec2 current_pos = sp->ship->pos;
         float step_distance = v2_len(v2_sub(current_pos, previous_pos));
         float current_dist = v2_len(v2_sub(goal, current_pos));
@@ -4772,6 +4998,27 @@ static bool sr_run_branch(const sr_config_t *config, int candidate, sr_result_t 
     out->worker_teacher_decisions =
         signal_intelligence_npc_worker_teacher_decision_count() -
         worker_teacher_start;
+    if (hnn_pilot) {
+        out->hnn_pilot.end_distance = v2_len(v2_sub(
+            hnn_pilot_target, hnn_pilot_last_pos));
+        out->hnn_pilot.progress = out->hnn_pilot.start_distance -
+                                  out->hnn_pilot.end_distance;
+        out->hnn_pilot.end_hull = hnn_pilot_last_hull;
+        out->hnn_pilot.hull_loss = out->hnn_pilot.start_hull -
+                                   out->hnn_pilot.end_hull;
+        if (out->hnn_pilot.hull_loss < 0.0f)
+            out->hnn_pilot.hull_loss = 0.0f;
+        out->hnn_pilot.end_experiences = hnn_pilot_last_experiences;
+        if (out->hnn_pilot.progress > 0.0f &&
+            out->hnn_pilot.travel_distance > 0.0001f) {
+            out->hnn_pilot.route_efficiency = sr_feature_clamp(
+                out->hnn_pilot.progress /
+                    out->hnn_pilot.travel_distance,
+                0.0f, 1.0f);
+        }
+        out->hnn_pilot.gate = sr_hnn_metrics_delta(
+            signal_brain_hnn_confidence_metrics(), hnn_gate_start);
+    }
     if (out->events.first_contract_complete_tick_set) {
         out->contract_completion_tick =
             (int)(out->events.first_contract_complete_tick -
@@ -5126,6 +5373,69 @@ static void sr_write_hnn_eval(FILE *out,
     fprintf(out, "]}");
 }
 
+static void sr_write_hnn_pilot(FILE *out,
+                               const sr_hnn_pilot_summary_t *pilot)
+{
+    fprintf(out,
+            ",\"hnn_pilot\":{\"schema\":\"signal.hnn_runtime_pilot.v1\","
+            "\"npc_slot\":%d,\"target_asteroid\":%d,"
+            "\"confidence_mode\":\"%s\","
+            "\"completion_radius\":%.3f,"
+            "\"completion_tick\":",
+            pilot->npc_slot,
+            pilot->target_asteroid,
+            hnn_confidence_mode_name(pilot->confidence_mode),
+            SR_HNN_PILOT_COMPLETION_RADIUS);
+    if (pilot->completion_tick >= 0)
+        fprintf(out, "%d", pilot->completion_tick);
+    else
+        fprintf(out, "null");
+    fprintf(out,
+            ",\"route\":{\"start_distance\":%.3f,"
+            "\"end_distance\":%.3f,\"min_distance\":%.3f,"
+            "\"progress\":%.3f,\"distance_traveled\":%.3f,"
+            "\"efficiency\":%.9f},"
+            "\"safety\":{\"start_hull\":%.3f,\"end_hull\":%.3f,"
+            "\"hull_loss\":%.3f,\"destroyed\":%s},"
+            "\"memory\":{\"start_experiences\":%d,"
+            "\"end_experiences\":%d},"
+            "\"gate\":{\"bootstrap_teacher\":%" PRIu64 ","
+            "\"evaluated\":%" PRIu64 ",\"accepted\":%" PRIu64 ","
+            "\"selected_hnn\":%" PRIu64 ","
+            "\"selected_teacher\":%" PRIu64 ","
+            "\"reasons\":{\"accepted\":%" PRIu64 ","
+            "\"empty\":%" PRIu64 ",\"contract\":%" PRIu64 ","
+            "\"capacity\":%" PRIu64 ",\"nonfinite\":%" PRIu64 ","
+            "\"score\":%" PRIu64 ",\"margin\":%" PRIu64 ","
+            "\"illegal\":%" PRIu64 ",\"unsafe\":%" PRIu64 "}}}",
+            pilot->start_distance,
+            pilot->end_distance,
+            pilot->min_distance,
+            pilot->progress,
+            pilot->travel_distance,
+            pilot->route_efficiency,
+            pilot->start_hull,
+            pilot->end_hull,
+            pilot->hull_loss,
+            pilot->destroyed ? "true" : "false",
+            pilot->start_experiences,
+            pilot->end_experiences,
+            pilot->gate.bootstrap_teacher_decisions,
+            pilot->gate.evaluated_decisions,
+            pilot->gate.accepted_decisions,
+            pilot->gate.selected_hnn_decisions,
+            pilot->gate.selected_teacher_decisions,
+            pilot->gate.reason_counts[HNN_CONFIDENCE_ACCEPTED],
+            pilot->gate.reason_counts[HNN_CONFIDENCE_REJECT_EMPTY],
+            pilot->gate.reason_counts[HNN_CONFIDENCE_REJECT_CONTRACT],
+            pilot->gate.reason_counts[HNN_CONFIDENCE_REJECT_CAPACITY],
+            pilot->gate.reason_counts[HNN_CONFIDENCE_REJECT_NONFINITE],
+            pilot->gate.reason_counts[HNN_CONFIDENCE_REJECT_SCORE],
+            pilot->gate.reason_counts[HNN_CONFIDENCE_REJECT_MARGIN],
+            pilot->gate.reason_counts[HNN_CONFIDENCE_REJECT_ILLEGAL],
+            pilot->gate.reason_counts[HNN_CONFIDENCE_REJECT_UNSAFE]);
+}
+
 static void sr_write_eval_summary(FILE *out,
                                   const sr_config_t *config,
                                   const sr_eval_summary_t *evaluation)
@@ -5465,6 +5775,9 @@ static void sr_write_row(FILE *out, const sr_config_t *config, const sr_result_t
     if (config->hnn_trace && r->hnn.enabled) {
         sr_write_hnn_eval(out, config, &r->hnn);
     }
+    if (config->hnn_pilot && r->hnn_pilot.enabled) {
+        sr_write_hnn_pilot(out, &r->hnn_pilot);
+    }
     sr_write_hnn_backend(out);
     sr_write_eval_summary(out, config, &r->evaluation);
     fprintf(out,
@@ -5516,6 +5829,10 @@ int main(int argc, char **argv)
     if (!sr_parse_args(argc, argv, &config)) {
         sr_usage(stderr);
         return 2;
+    }
+    if (!sr_configure_runtime_hnn_mode(&config)) {
+        fprintf(stderr, "signal_replay: could not set runtime HNN mode\n");
+        return 1;
     }
 
     if (config.out_path) {

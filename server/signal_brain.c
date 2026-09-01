@@ -74,6 +74,7 @@ static signal_brain_model_t g_brain;
 bool g_neural_singleplayer = false;
 static hnn_holonet_t g_npc_holonets[MAX_NPC_SHIPS];
 static bool g_npc_holonet_ready[MAX_NPC_SHIPS];
+static signal_brain_hnn_confidence_metrics_t g_hnn_confidence_metrics;
 
 static bool signal_hnn_debug_enabled(void) {
     static int cached = -1;
@@ -85,7 +86,7 @@ static bool signal_hnn_debug_enabled(void) {
     return cached != 0;
 }
 
-static hnn_confidence_mode_t signal_hnn_confidence_mode(void) {
+hnn_confidence_mode_t signal_brain_hnn_confidence_mode(void) {
     static int initialized = 0;
     static hnn_confidence_mode_t mode = HNN_CONFIDENCE_MODE_SHADOW;
     if (!initialized) {
@@ -147,6 +148,11 @@ int signal_brain_holographic_npc_holonet_active_count(const world_t *w,
     int slot = signal_brain_npc_slot(w, npc);
     if (slot < 0 || !g_npc_holonet_ready[slot]) return 0;
     return hnn_holonet_active_count(&g_npc_holonets[slot]);
+}
+
+signal_brain_hnn_confidence_metrics_t
+signal_brain_hnn_confidence_metrics(void) {
+    return g_hnn_confidence_metrics;
 }
 
 int signal_brain_flight_action_count(void) {
@@ -1310,6 +1316,8 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
         SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: encoding state...\n");
         SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: storing in memory...\n");
         hnn_npc_store_experience(npc, holonet, &gate_state, &fs, boot_action);
+        g_hnn_confidence_metrics.bootstrap_teacher_decisions++;
+        g_hnn_confidence_metrics.selected_teacher_decisions++;
         SIGNAL_HNN_DEBUG_LOG("[hnn] bootstrap: done! exp=%d\n",
                              npc->hnn_mem.experience_count);
         return;
@@ -1368,10 +1376,22 @@ static void signal_brain_drive_npc_holographic(world_t *w, npc_ship_t *npc) {
         best_action >= 0 && best_action < HNN_ACTION_COUNT,
         best_action >= 0 && best_action < HNN_ACTION_COUNT &&
             allowed[best_action] != 0);
-    hnn_confidence_mode_t confidence_mode = signal_hnn_confidence_mode();
+    hnn_confidence_mode_t confidence_mode =
+        signal_brain_hnn_confidence_mode();
     int hnn_action = best_action;
     best_action = hnn_confidence_select_action(
         confidence_mode, &confidence, hnn_action, teacher_action);
+    g_hnn_confidence_metrics.evaluated_decisions++;
+    if (confidence.accepted)
+        g_hnn_confidence_metrics.accepted_decisions++;
+    if ((unsigned)confidence.reason <= HNN_CONFIDENCE_REJECT_UNSAFE)
+        g_hnn_confidence_metrics.reason_counts[confidence.reason]++;
+    if (confidence_mode == HNN_CONFIDENCE_MODE_MIXED &&
+        confidence.accepted && best_action == hnn_action) {
+        g_hnn_confidence_metrics.selected_hnn_decisions++;
+    } else {
+        g_hnn_confidence_metrics.selected_teacher_decisions++;
+    }
     SIGNAL_HNN_DEBUG_LOG(
         "[hnn] gate mode=%s result=%s score=%.6f margin=%.6f "
         "load=%.3f hnn=%s selected=%s\n",

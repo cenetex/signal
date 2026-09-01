@@ -30,7 +30,10 @@ on:
       - 'scripts/hnn_null_corpus.py'
       - 'scripts/calibrate_hnn_confidence.py'
       - 'scripts/test_hnn_calibration.py'
+      - 'scripts/run_hnn_mixed_evaluation.py'
       - 'docs/liblecore-pilot/hnn-calibration.json'
+      - 'docs/liblecore-pilot/mixed-evaluation.json'
+      - 'docs/liblecore-pilot/mixed-evaluation.md'
       - 'CMakeLists.txt'
       - 'Makefile'
       - '.github/workflows/replay.yml'
@@ -126,6 +129,19 @@ jobs:
             --artifact docs/liblecore-pilot/hnn-calibration.json \
             --header shared/holographic_nn_calibration_data.h \
             --check
+
+      - name: Verify runtime HNN shadow versus mixed evaluation
+        run: |
+          python3 scripts/run_hnn_mixed_evaluation.py \
+            --builtin build/signal_replay \
+            --direct build-lecore-direct/signal_replay \
+            --radix2 build-lecore-radix2/signal_replay \
+            --output /tmp/hnn-mixed-evaluation.json \
+            --markdown /tmp/hnn-mixed-evaluation.md
+          cmp docs/liblecore-pilot/mixed-evaluation.json \
+            /tmp/hnn-mixed-evaluation.json
+          cmp docs/liblecore-pilot/mixed-evaluation.md \
+            /tmp/hnn-mixed-evaluation.md
 
       - name: Preserve AI outcome facts across native and WASM
         run: |
