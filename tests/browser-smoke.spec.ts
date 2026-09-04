@@ -1176,6 +1176,7 @@ const smokeLoopState = {
   refitSupplyInactive: 39,
   refitWorkAged: 40,
   cargoHopperGuide: 41,
+  storyCall: 42,
 } as const;
 
 const mobileFlag = {
@@ -2959,6 +2960,10 @@ test.describe('Browser smoke tests', () => {
     await setSmokeLoopState(page, smokeLoopState.onboardingComplete);
     expect(await hudHintText(page)).toContain(
       'ECONOMY LOOP COMPLETE ::::: MONEY STAYS LOCAL // GOODS TRAVEL',
+    );
+    await setSmokeLoopState(page, smokeLoopState.storyCall);
+    expect(await hudHintText(page)).toContain(
+      'STORY // THE CALL :: KRX-472 missed a corridor check-in',
     );
 
     expectNoFatalErrors(logs);
