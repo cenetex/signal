@@ -3,6 +3,7 @@
  * services text renderer.  Split from main.c for issue #99.
  */
 #include "client.h"
+#include "story_runtime.h"
 #include "render.h"
 #include "palette.h"
 #include "mining_client.h"
@@ -3507,11 +3508,20 @@ static bool station_player_memory_line(const station_t *st,
         const char *commodity = st->ledger[i].top_commodity < COMMODITY_COUNT
             ? commodity_short_name((commodity_t)st->ledger[i].top_commodity)
             : "cargo";
-        snprintf(out, cap, "You here: %u docks, %u earned, %u %s",
-                 (unsigned)st->ledger[i].total_docks,
-                 (unsigned)st->ledger[i].lifetime_credits_in,
-                 (unsigned)st->ledger[i].lifetime_ore_units,
-                 commodity);
+        if (story_runtime_is_complete()) {
+            snprintf(out, cap,
+                     "You here: route-builder // %u docks, %u earned, %u %s",
+                     (unsigned)st->ledger[i].total_docks,
+                     (unsigned)st->ledger[i].lifetime_credits_in,
+                     (unsigned)st->ledger[i].lifetime_ore_units,
+                     commodity);
+        } else {
+            snprintf(out, cap, "You here: %u docks, %u earned, %u %s",
+                     (unsigned)st->ledger[i].total_docks,
+                     (unsigned)st->ledger[i].lifetime_credits_in,
+                     (unsigned)st->ledger[i].lifetime_ore_units,
+                     commodity);
+        }
         return true;
     }
     return false;
