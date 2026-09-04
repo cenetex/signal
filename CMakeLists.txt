@@ -297,6 +297,8 @@ set(SIGNAL_CLIENT_SOURCES
     client/local_authority.c
     client/local_server.c
     client/onboarding.c
+    client/story_runtime.c
+    shared/story_loop.c
     client/contract_objective.c
     client/episode_lifecycle.c
     client/episode_media.c
@@ -384,6 +386,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_ship.c
         tests/c/test_client_log.c
         tests/c/test_episode_lifecycle.c
+        tests/c/test_story_loop.c
         tests/c/test_local_authority.c
         tests/c/test_legacy_recovery_ui.c
         tests/c/test_cell_geometry.c
@@ -469,6 +472,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         client/tow_presentation_diagnostics.c
         client/episode_lifecycle.c
         client/episode_media.c
+        shared/story_loop.c
         client/local_authority.c
         client/legacy_recovery_ui.c
         ${SIGNAL_SERVER_PERSISTENCE_SOURCES}

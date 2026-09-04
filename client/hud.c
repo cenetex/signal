@@ -4008,6 +4008,7 @@ enum {
     SMOKE_LOOP_STATE_REFIT_SUPPLY_INACTIVE = 39,
     SMOKE_LOOP_STATE_REFIT_WORK_AGED = 40,
     SMOKE_LOOP_STATE_CARGO_HOPPER_GUIDE = 41,
+    SMOKE_LOOP_STATE_STORY_CALL = 42,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -5084,6 +5085,8 @@ static int smoke_apply_loop_state(int state) {
         g.onboarding.viewed_trade = true;
         g.onboarding.complete = true;
         g.onboarding.welcomed = true;
+        g.worker_story.flags = 0xffu;
+        g.worker_story.loaded = true;
         g.tracked_contract = 0;
         g.selected_contract = 0;
         g.player_known_contract_mask = 1u;
@@ -5120,6 +5123,14 @@ static int smoke_apply_loop_state(int state) {
         sp->docked = true;
         g.station_view = STATION_VIEW_TRADE;
         g.onboarding.welcomed = false;
+        return 1;
+    case SMOKE_LOOP_STATE_STORY_CALL:
+        smoke_set_onboarding_economy_progress(true, true, true);
+        sp->docked = true;
+        g.station_view = STATION_VIEW_TRADE;
+        g.onboarding.welcomed = true;
+        g.worker_story.flags = 0u;
+        g.worker_story.loaded = true;
         return 1;
     case SMOKE_LOOP_STATE_SCAN_LASER_FAB: {
         if (g.world.station_count <= 2 || !station_exists(&g.world.stations[2]))

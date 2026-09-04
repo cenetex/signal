@@ -9,6 +9,7 @@ void register_math_tests(void);
 void register_ship_tests(void);
 void register_client_log_tests(void);
 void register_episode_lifecycle_tests(void);
+void register_story_loop_tests(void);
 void register_local_authority_tests(void);
 void register_legacy_recovery_ui_tests(void);
 void register_cell_geometry_tests(void);
@@ -168,6 +169,7 @@ int main(int argc, char **argv) {
     register_ship_tests();
     register_client_log_tests();
     register_episode_lifecycle_tests();
+    register_story_loop_tests();
     register_local_authority_tests();
     register_legacy_recovery_ui_tests();
     register_cell_geometry_tests();

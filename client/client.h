@@ -22,6 +22,7 @@
 #include "net.h"
 #include "net_latency.h"
 #include "episode.h"
+#include "story_loop.h"
 #include "music.h"
 #include "identity.h"
 #include "trade_paging.h"
@@ -552,6 +553,10 @@ typedef struct {
         bool welcomed;       /* completion message shown */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;
+    /* First story arc. Progress is a compact set of proof-backed milestones:
+     * station hails, the weak-signal crossing, relay work, a paid route, and
+     * the return to Prospect. Browser builds persist the flags locally. */
+    worker_story_state_t worker_story;
     /* Milestone videos wait for a quiet docked moment instead of covering
      * launch, mining, or the first station payout. */
     uint16_t deferred_episode_mask;

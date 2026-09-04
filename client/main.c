@@ -13,6 +13,7 @@
 #include "input.h"
 #include "net_sync.h"
 #include "onboarding.h"
+#include "story_runtime.h"
 #include "avatar.h"
 #include "mining_client.h"
 #include "neural_singleplayer.h"
@@ -758,6 +759,9 @@ static void sim_on_dock(const sim_event_t *ev) {
         if (g.episode.stations_visited == ((1u << SIGNAL_ROOT_STATION_COUNT) - 1u)) /* all relay roots */
             episode_trigger(&g.episode, 1); /* Ep 1: Kepler's Law */
     }
+    char story_notice[192];
+    if (story_runtime_mark_dock(ds, story_notice, sizeof(story_notice)))
+        set_notice("%s", story_notice);
 }
 
 static void sim_on_launch(const sim_event_t *ev) {
@@ -1019,6 +1023,11 @@ static void sim_on_contract_complete(const sim_event_t *ev) {
         set_notice("Bounty complete: asteroid broken, station memory updated.");
     } else if (ev->contract_complete.action == CONTRACT_DELIVERY) {
         set_notice("Delivery complete: cargo accepted, payout posted, route trust increased.");
+        char story_notice[192];
+        if (story_runtime_mark_delivery(story_notice,
+                                        sizeof(story_notice))) {
+            set_notice("%s", story_notice);
+        }
     }
 }
 
@@ -1039,6 +1048,11 @@ static void sim_on_outpost_placed(const sim_event_t *ev) {
     g.plan_target_station = ev->outpost_placed.slot;
     g.placement_target_station = ev->outpost_placed.slot;
     set_notice("Outpost blueprint placed. Bring relay material here to turn fringe space into signal.");
+    char story_notice[192];
+    if (story_runtime_mark_outpost_placed(story_notice,
+                                          sizeof(story_notice))) {
+        set_notice("%s", story_notice);
+    }
 }
 
 /* Spawn the 8 shards + cinematic state for a death event. */
@@ -1337,6 +1351,10 @@ static void sim_on_hail_response(const sim_event_t *ev) {
     }
     onboarding_mark_hailed();
 
+    char story_notice[192];
+    if (story_runtime_mark_hail(hs, story_notice, sizeof(story_notice)))
+        set_notice("%s", story_notice);
+
 }
 
 static void sim_on_module_activated(const sim_event_t *ev) {
@@ -1360,11 +1378,16 @@ static void sim_on_module_activated(const sim_event_t *ev) {
 }
 
 static void sim_on_outpost_activated(const sim_event_t *ev) {
-    (void)ev;
     if (!episode_was_watched(&g.episode, 4))
         episode_trigger(&g.episode, 4); /* Ep 4: Naming */
     audio_play_commission(&g.audio);
     set_notice("Outpost online: local signal expanded. Add modules to make the stop useful.");
+    char story_notice[192];
+    if (story_runtime_mark_outpost_active(ev->outpost_activated.slot,
+                                          story_notice,
+                                          sizeof(story_notice))) {
+        set_notice("%s", story_notice);
+    }
 }
 
 static void sim_on_npc_spawned(const sim_event_t *ev) {
@@ -1376,8 +1399,14 @@ static void sim_on_npc_spawned(const sim_event_t *ev) {
 }
 
 static void sim_on_signal_lost(const sim_event_t *ev) {
-    if (ev_is_local(ev) && !episode_was_watched(&g.episode, 7))
+    if (!ev_is_local(ev)) return;
+    if (!episode_was_watched(&g.episode, 7))
         episode_trigger(&g.episode, 7); /* Ep 7: Dark Sector */
+    char story_notice[192];
+    if (story_runtime_mark_signal_gap(story_notice,
+                                      sizeof(story_notice))) {
+        set_notice("%s", story_notice);
+    }
 }
 
 static void sim_on_station_connected(const sim_event_t *ev) {
@@ -1969,6 +1998,7 @@ static void init(void) {
     }
 
     onboarding_load();
+    story_runtime_load();
     mining_client_init();
     /* Bind to whatever session token the bootstrap world seeded. Remote
      * WebSocket connect rebinds to the authoritative token once the

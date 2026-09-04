@@ -10,6 +10,7 @@
  */
 #include "client.h"
 #include "contract_objective.h"
+#include "story_runtime.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL threshold */
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -308,6 +309,9 @@ bool onboarding_hint(char *label, size_t label_size,
                      "SIGNAL // GUIDE // ECONOMY LOOP COMPLETE ::::: MONEY STAYS LOCAL // GOODS TRAVEL");
             return true;
         }
+        if (story_runtime_hint(label, label_size,
+                               message, message_size))
+            return true;
         if (tracked_contract_directive(label, label_size,
                                        message, message_size))
             return true;
