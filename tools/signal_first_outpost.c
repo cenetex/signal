@@ -125,6 +125,8 @@ static bool checkpoint_roundtrip(world_t *w, const char *root,
 static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
     vec2 relative = v2_sub(ship->pos, st->pos);
     float radius = v2_len(relative);
+    if (radius < DOCK_APPROACH_RANGE + 40)
+        return station_approach_target(st, ship->pos);
     float angle = fixp_atan2f(relative.y, relative.x);
     if (radius > STATION_RING_RADIUS[station_max_ring(st)] + 200)
         return station_entry_target(st, ship->pos);
@@ -495,7 +497,9 @@ int main(int argc, char **argv) {
                 home = 1; stage = PHASE_DOCK; path = (nav_path_t){0};
             }
         } else if (stage == PHASE_UNPACK_INGOTS) {
-            if (ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) >= 8 &&
+            if (sp->ship->mining_level) {
+                stage = PHASE_HAUL; path = (nav_path_t){0};
+            } else if (ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) >= 8 &&
                 sp->ship->towed_pod_count < 2) {
                 stage = PHASE_HAUL; path = (nav_path_t){0};
             } else if (sp->ship->towed_pod_count) {
@@ -510,8 +514,15 @@ int main(int argc, char **argv) {
             if (hopper < 0) break;
             vec2 goal = module_world_pos_ring(st, st->modules[hopper].ring,
                                               st->modules[hopper].slot);
-            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, goal,
-                                                    40, 70, dt));
+            for (int m = 0; m < st->module_count; m++) {
+                if (st->modules[m].scaffold || st->modules[m].type != MODULE_FRAME_PRESS)
+                    continue;
+                vec2 press = module_world_pos_ring(st, st->modules[m].ring,
+                                                   st->modules[m].slot);
+                goal = v2_scale(v2_add(goal, press), 0.5f);
+                break;
+            }
+            apply_flight(&sp->input, steer_through_lane(sp->ship, goal));
             sp->input.tractor_hold = true;
             if (!has_undelivered_ingots(w, sp->ship, home)) {
                 sp->input.release_tow = true;
@@ -535,6 +546,10 @@ int main(int argc, char **argv) {
                     apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
                                                             goal, 30, 100, dt));
                     sp->input.tractor_hold = v2_dist_sq(sp->ship->pos, goal) < 100 * 100;
+                } else {
+                    fprintf(stderr, "more ore %.2f frames=%d\n", tick * dt,
+                            ship_finished_count(sp->ship, COMMODITY_FRAME));
+                    home = 0; stage = PHASE_LAUNCH; path = (nav_path_t){0};
                 }
             }
         } else if (stage == PHASE_TOW_RELAY) {
