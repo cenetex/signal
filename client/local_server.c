@@ -52,6 +52,8 @@ bool local_server_has_world(const local_server_t *ls) {
 
 void local_server_shutdown(local_server_t *ls) {
     if (!ls) return;
+    local_save_close(ls->save, ls->active ? local_server_world(ls) : NULL);
+    ls->save = NULL;
     /* Disable callbacks before invalidating their world pointer. */
     ls->active = false;
     net_set_loopback_send(NULL, NULL);
@@ -63,6 +65,11 @@ void local_server_shutdown(local_server_t *ls) {
 }
 
 bool local_server_init(local_server_t *ls, uint32_t seed) {
+    return local_server_init_persistent(ls, seed, NULL, NULL);
+}
+
+bool local_server_init_persistent(local_server_t *ls, uint32_t seed,
+                                   const char *root, const uint8_t pubkey[32]) {
     if (!ls) return false;
     bool throttled_snapshots = ls->throttled_snapshots;
     uint32_t generation = ls->generation;
@@ -72,15 +79,22 @@ bool local_server_init(local_server_t *ls, uint32_t seed) {
 
     LS_WORLD(ls).rng = seed ? seed : 2037u;
     world_reset(&LS_WORLD(ls));
+    bool fresh = true;
+    if (root) {
+        ls->save = local_save_open(root, &LS_WORLD(ls), pubkey, &fresh);
+        if (!ls->save) {
+            local_server_shutdown(ls);
+            return false;
+        }
+    }
     /* Mirror the dedicated-server load path: turn the seeded float
      * inventory into manifest units so the manifest-only TRADE picker
      * has rows to surface. Without this, a fresh singleplayer start
      * shows empty markets at every station. */
-    world_seed_station_manifests(&LS_WORLD(ls));
-    /* Singleplayer is always a fresh world at this layer (no save
-     * load); seed the chain log genesis events so MOTDs are part of
-     * the chain history just like on the dedicated server. */
-    world_seed_station_chain_genesis(&LS_WORLD(ls));
+    if (fresh) {
+        world_seed_station_manifests(&LS_WORLD(ls));
+        world_seed_station_chain_genesis(&LS_WORLD(ls));
+    }
     LS_WORLD(ls).players[0].connected = true;
     LS_WORLD(ls).players[0].id = 0;
     LS_WORLD(ls).players[0].session_ready = false;
@@ -300,6 +314,12 @@ static bool local_server_loopback_send(const uint8_t *data, int len, void *user)
                                                  len, &result) &&
             result.verified) {
             if (!server_finalize_pubkey_identity(&LS_WORLD(ls), pid)) {
+                server_player_clear_live_session_identity(sp);
+                sp->connected = false;
+                ls->active = false;
+                break;
+            }
+            if (ls->save && !local_save_restore_player(ls->save, &LS_WORLD(ls), pid)) {
                 server_player_clear_live_session_identity(sp);
                 sp->connected = false;
                 ls->active = false;

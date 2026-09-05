@@ -526,6 +526,9 @@ typedef struct {
      * new high-water mark. Zero on a fresh slot — the first action may use
      * any non-zero nonce. */
     uint64_t last_signed_nonce;
+    /* Local-client story/guide hints share the player save envelope. This
+     * metadata has no simulation or network authority. */
+    uint32_t client_progress_flags;
 } server_player_t;
 
 typedef struct {
@@ -1617,6 +1620,7 @@ bool world_save_legacy_v80_for_test(
 bool world_save_legacy_v81_for_test(
     const world_t *w,
     const char *path);
+bool world_save_legacy_v84_for_test(const world_t *w, const char *path);
 #endif
 /* Apply stock migrations that are keyed only by the decoded save version.
  * Kept separate from binary decoding so compatibility policy is directly

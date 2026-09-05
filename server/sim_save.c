@@ -90,7 +90,8 @@
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
 #define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
-#define SAVE_VERSION 84  /* v84: append the durable station payout journal so
+#define SAVE_VERSION 85  /* v85: persist the verified borrower of each loaned hull.
+                         * v84: append the durable station payout journal so
                           * a source/action identity cannot credit twice across
                           * retries, reconnects, or save/load.
                           * v83: append Engine commodity/module identities and
@@ -1949,6 +1950,7 @@ static bool write_ship_asset(FILE *f, const ship_asset_t *asset,
     ship_asset_t empty = {0};
     if (!asset) asset = &empty;
     if (!actor_principal_is_canonical(&asset->owner_principal) ||
+        !ship_asset_loan_is_canonical(asset) ||
         (asset->active &&
          (asset->asset_id == SHIP_ASSET_ID_NONE ||
           (unsigned)asset->hull_class >= HULL_CLASS_COUNT ||
@@ -1984,6 +1986,8 @@ static bool write_ship_asset(FILE *f, const ship_asset_t *asset,
                sizeof(asset->birth_fragment_pubs), 1, f) != 1) {
         return false;
     }
+    if (g_writing_save_version >= 85 &&
+        !write_actor_principal(f, &asset->borrower_principal)) return false;
     const ship_t *ship = live_ship ? live_ship : &asset->stored_ship;
     return write_asset_ship_payload(f, asset->active ? ship : NULL);
 }
@@ -2057,6 +2061,9 @@ static bool read_ship_asset(
             asset->provenance = SHIP_ASSET_PROVENANCE_LEGACY;
         }
     }
+    if (g_loaded_save_version >= 85 &&
+        !read_actor_principal(f, &asset->borrower_principal)) return false;
+    if (!ship_asset_loan_is_canonical(asset)) return false;
     if (!read_asset_ship_payload(
             f, &asset->stored_ship, load_result)) {
         return false;
@@ -3288,6 +3295,7 @@ static bool validate_v79_ownership(const world_t *w) {
 static bool world_save_payload(const world_t *w, FILE *f,
                                uint32_t output_version) {
     if (output_version != SAVE_VERSION &&
+        output_version != 84 &&
         output_version != 81 &&
         output_version != 80)
         return false;
@@ -3583,6 +3591,10 @@ bool world_save_legacy_v81_for_test(
     const world_t *w,
     const char *path) {
     return world_save_version(w, path, 81);
+}
+
+bool world_save_legacy_v84_for_test(const world_t *w, const char *path) {
+    return world_save_version(w, path, 84);
 }
 #endif
 
@@ -4657,7 +4669,8 @@ bool world_load(world_t *w, const char *path) {
 /* Player persistence                                                  */
 /* ================================================================== */
 
-#define PLAYER_MAGIC    0x504C5937u  /* "PLY7" — #479 D: appends per-ship receipt chains */
+#define PLAYER_MAGIC    0x504C5938u  /* "PLY8" — exact authenticated hull reference */
+#define PLAYER_MAGIC_V7 0x504C5937u  /* "PLY7" — #479 D: appends per-ship receipt chains */
 #define PLAYER_MAGIC_V6 0x504C5936u  /* "PLY6" — #479 A.3: appends last_signed_nonce */
 #define PLAYER_MAGIC_V5 0x504C5935u  /* "PLY5" — #339 A.2: adds ship.manifest tail */
 #define PLAYER_MAGIC_V4 0x504C5934u  /* "PLY4" — explicit ship payload, no runtime manifest pointers */
@@ -5150,6 +5163,16 @@ static player_save_create_result_t player_save_internal(
         }
     }
     if (ok) {
+        uint32_t asset_id = server_player_can_use_pubkey_persistence(sp)
+            ? sp->ship_asset_id : SHIP_ASSET_ID_NONE;
+        ok = fwrite(&asset_id, sizeof(asset_id), 1, f) == 1;
+        if (ok) crc = crc32_update(crc, &asset_id, sizeof(asset_id));
+    }
+    if (ok) {
+        ok = fwrite(&sp->client_progress_flags, sizeof(sp->client_progress_flags), 1, f) == 1;
+        if (ok) crc = crc32_update(crc, &sp->client_progress_flags, sizeof(sp->client_progress_flags));
+    }
+    if (ok) {
         uint32_t crc_magic = 0x43524332u; /* "CRC2" */
         ok = fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
              fwrite(&crc, sizeof(crc), 1, f) == 1;
@@ -5304,10 +5327,12 @@ static bool player_load_from_file_decode(
     float migrated_credits = 0.0f;
     bool is_v1 = false;
     bool manifest_already_loaded = false;
+    sp->client_progress_flags = 0;
 
     ship_cleanup(sp->ship);
 
-    if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V6 || magic == PLAYER_MAGIC_V5) {
+    if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V7 ||
+        magic == PLAYER_MAGIC_V6 || magic == PLAYER_MAGIC_V5) {
         /* PLY5 (manifest tail), PLY6 (manifest + last_signed_nonce),
          * PLY7 (manifest + last_signed_nonce + receipt chains). */
         player_save_data_t data;
@@ -5342,7 +5367,7 @@ static bool player_load_from_file_decode(
          * at zero, which lets the first signed action after the migration
          * use any non-zero nonce. */
         sp->last_signed_nonce = 0;
-        if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V6) {
+        if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V7 || magic == PLAYER_MAGIC_V6) {
             uint64_t nonce = 0;
             if (fread(&nonce, sizeof(nonce), 1, f) != 1) {
                 return false;
@@ -5355,7 +5380,7 @@ static bool player_load_from_file_decode(
          * v6 saves stop short here — the receipt store stays empty;
          * the next BUY/DELIVER for that cargo will sign a fresh
          * origin-attested receipt (one-time migration cost). */
-        if (magic == PLAYER_MAGIC) {
+        if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V7) {
             ship_receipts_t *rcpts = ship_get_receipts(sp->ship);
             if (!rcpts) return false;
             ship_receipts_clear(rcpts);
@@ -5388,6 +5413,12 @@ static bool player_load_from_file_decode(
                     }
                 }
             }
+            if (magic == PLAYER_MAGIC &&
+                fread(&sp->ship_asset_id, sizeof(sp->ship_asset_id), 1, f) != 1)
+                return false;
+            if (magic == PLAYER_MAGIC &&
+                fread(&sp->client_progress_flags, sizeof(sp->client_progress_flags), 1, f) != 1)
+                return false;
             long decoded_end = ftell(f);
             if (decoded_end < 0 || file_size < 8u ||
                 (uint64_t)decoded_end != file_size - 8u) {
@@ -5490,13 +5521,14 @@ static bool player_load_from_file_decode(
     return true;
 }
 
-static bool ship_asset_owner_matches_player_save(const ship_asset_t *asset,
+static bool ship_asset_matches_player_save(const ship_asset_t *asset,
                                                  const server_player_t *sp) {
     if (!asset || !sp) return false;
     actor_principal_t player = actor_principal_none();
     return actor_principal_from_verified_player(sp, &player) &&
-           actor_principal_equal(
-               &asset->owner_principal, &player);
+           (actor_principal_equal(&asset->owner_principal, &player) ||
+            (asset->loaner && ship_asset_loan_is_canonical(asset) &&
+             actor_principal_equal(&asset->borrower_principal, &player)));
 }
 
 static bool ship_asset_load_candidate_assignable(
@@ -5544,7 +5576,8 @@ static void ship_asset_release_loaded_provisional(ship_asset_t *asset,
     asset->operator_slot = -1;
 }
 
-static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int slot) {
+static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int slot,
+                                          bool exact_reference) {
     if (!sp || !w || slot < 0 || slot >= MAX_PLAYERS) return;
     if (sp != &w->players[slot]) return;
     actor_principal_t owner = actor_principal_none();
@@ -5555,7 +5588,8 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
     ship_asset_t *prior = world_ship_asset_by_id(w, sp->ship_asset_id);
     if (has_stable_owner &&
         ship_asset_load_bound_candidate_assignable(prior, slot) &&
-        ship_asset_owner_matches_player_save(prior, sp)) {
+        ship_asset_matches_player_save(prior, sp) &&
+        (exact_reference || actor_principal_equal(&prior->owner_principal, &owner))) {
         asset = prior;
     }
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
@@ -5565,9 +5599,16 @@ static void player_bind_loaded_ship_asset(server_player_t *sp, world_t *w, int s
             !ship_asset_load_candidate_assignable(candidate)) {
             continue;
         }
-        if (!ship_asset_owner_matches_player_save(candidate, sp)) continue;
+        if (!actor_principal_equal(&candidate->owner_principal, &owner)) continue;
         asset = candidate;
         break;
+    }
+    if (!asset && has_stable_owner && ship_asset_load_bound_candidate_assignable(prior, slot) &&
+        ship_asset_matches_player_save(prior, sp)) asset = prior;
+    for (int i = 0; !asset && has_stable_owner && i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *candidate = &w->ship_assets[i];
+        if (ship_asset_load_candidate_assignable(candidate) &&
+            ship_asset_matches_player_save(candidate, sp)) asset = candidate;
     }
     if (!asset && has_stable_owner) {
         asset = world_ship_asset_mint(
@@ -5657,6 +5698,7 @@ static bool player_load_from_open_file(
     ship_t *live_ship = sp->ship;
     entity_ref_t live_ship_ref = sp->ship_ref;
     uint64_t live_last_signed_nonce = sp->last_signed_nonce;
+    uint32_t provisional_asset_id = sp->ship_asset_id;
     if (!live_ship) return false;
     ship_t staged_ship = {0};
     server_player_t staged = *sp;
@@ -5667,6 +5709,27 @@ static bool player_load_from_open_file(
         ship_cleanup(staged.ship);
         return false;
     }
+    bool exact_reference = magic == PLAYER_MAGIC && staged.ship_asset_id != SHIP_ASSET_ID_NONE;
+    if (exact_reference && slot >= 0 && slot < MAX_PLAYERS && sp == &w->players[slot]) {
+        ship_asset_t *saved = world_ship_asset_by_id(w, staged.ship_asset_id);
+        if (!ship_asset_load_bound_candidate_assignable(saved, slot) ||
+            !ship_asset_matches_player_save(saved, sp)) {
+            ship_cleanup(staged.ship);
+            return false;
+        }
+        /* Return the bootstrap loan while its original ship is still live.
+         * The saved hull becomes the sole owner of the decoded payload. */
+        ship_asset_t *provisional = world_ship_asset_by_id(w, provisional_asset_id);
+        if (saved != provisional && ship_asset_is_station_loaner_for_slot(provisional, w, slot)) {
+            if (!world_player_release_ship_asset(w, slot)) {
+                ship_cleanup(staged.ship);
+                return false;
+            }
+            provisional->borrower_principal = actor_principal_none();
+        }
+    }
+    if (magic == PLAYER_MAGIC && !exact_reference)
+        staged.ship_asset_id = provisional_asset_id;
     if (staged.last_signed_nonce < live_last_signed_nonce)
         staged.last_signed_nonce = live_last_signed_nonce;
     ship_cleanup(live_ship);
@@ -5676,7 +5739,7 @@ static bool player_load_from_open_file(
     sp->ship = live_ship;
     sp->ship_ref = live_ship_ref;
     server_player_clear_transient_input(sp);
-    player_bind_loaded_ship_asset(sp, w, slot);
+    player_bind_loaded_ship_asset(sp, w, slot, exact_reference);
     player_restore_tow_links(sp, w, slot);
     return true;
 }
@@ -5700,7 +5763,7 @@ static bool player_load_from_path(
         fseek(f, 0, SEEK_SET) == 0 &&
         fread(&magic, sizeof(magic), 1, f) == 1 &&
         fseek(f, 0, SEEK_SET) == 0 &&
-        (magic != PLAYER_MAGIC ||
+        ((magic != PLAYER_MAGIC && magic != PLAYER_MAGIC_V7) ||
          player_save_verify_crc32_trailer(f, path)) &&
         fseek(f, 0, SEEK_SET) == 0) {
         ok = player_load_from_open_file(
@@ -6265,13 +6328,14 @@ static bool legacy_recovery_save_snapshot_valid(
     uint32_t magic = 0;
     memcpy(&magic, bytes, sizeof(magic));
     if (magic != PLAYER_MAGIC &&
+        magic != PLAYER_MAGIC_V7 &&
         magic != PLAYER_MAGIC_V6 &&
         magic != PLAYER_MAGIC_V5 &&
         magic != PLAYER_MAGIC_V4) {
         return false;
     }
     size_t payload_end = size;
-    if (magic == PLAYER_MAGIC) {
+    if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V7) {
         if (size < 8u) return false;
         uint32_t crc_magic = 0;
         uint32_t stored_crc = 0;
@@ -6370,7 +6434,7 @@ static bool legacy_recovery_save_snapshot_valid(
             unit.prefix_class >= INGOT_PREFIX_COUNT ||
             unit.recipe_id >= RECIPE_COUNT ||
             unit.origin_station >= MAX_STATIONS ||
-            (magic == PLAYER_MAGIC &&
+            ((magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V7) &&
              unit.quantity == 0) ||
             pubkey_is_zero32(unit.pub)) {
             return false;
@@ -6401,6 +6465,10 @@ static bool legacy_recovery_save_snapshot_valid(
             return false;
         }
         offset += chain_size;
+    }
+    if (magic == PLAYER_MAGIC) {
+        if (2u * sizeof(uint32_t) > payload_end - offset) return false;
+        offset += 2u * sizeof(uint32_t);
     }
     if (offset != payload_end) return false;
     if (magic_out) *magic_out = magic;
@@ -6567,7 +6635,7 @@ legacy_recovery_result_status_t legacy_recovery_execute(
             : LEGACY_RECOVERY_RESULT_INVALID_SOURCE;
     }
     player_bind_loaded_ship_asset(
-        staged, candidate, player_idx);
+        staged, candidate, player_idx, false);
     if (staged->ship_asset_id == SHIP_ASSET_ID_NONE ||
         !world_ship_asset_sync_from_player(candidate, staged)) {
         legacy_recovery_candidate_dispose(candidate);
