@@ -2397,19 +2397,12 @@ static float trade_station_pod_quote(const station_t *st,
             return 0.0f;
         }
         if (local_pod_has_detailed_manifest(pod)) {
-            float value = 0.0f;
-            for (uint16_t i = 0; i < pod->manifest_count; i++) {
-                const cargo_unit_t *unit = &pod->manifest_units[i];
-                float unit_value = station_sell_price_unit(st, unit);
-                unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
-                value += unit_value;
-            }
-            return value;
+            return station_market_pod_sell_quote(st, pod);
         }
         return trade_unit_price_with_summary_grade(price, pod) *
-               (float)pod->quantity;
+               (float)pod->quantity + station_pod_shell_quote(st, pod, true);
     }
-    return price * (float)pod->quantity;
+    return price * (float)pod->quantity + station_pod_shell_quote(st, pod, true);
 }
 
 static mining_grade_t trade_pod_display_grade(const cargo_pod_t *pod) {

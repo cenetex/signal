@@ -654,6 +654,28 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_definitions(flight_trace PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
+    add_executable(signal_first_outpost
+        tools/signal_first_outpost.c
+        ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
+        ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_first_outpost PRIVATE
+        ${SIGNAL_INCLUDE_DIRS} ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_definitions(signal_first_outpost PRIVATE SIGNAL_SERVER_PERSISTENCE=1)
+    signal_apply_sim_profile(signal_first_outpost)
+    if(NOT MSVC)
+        target_link_libraries(signal_first_outpost PRIVATE m)
+        target_compile_options(signal_first_outpost PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(signal_first_outpost PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_first_outpost PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
     add_executable(signal_replay
         tools/signal_replay.c
         ${SIGNAL_SIM_SOURCES}

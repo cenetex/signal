@@ -4949,27 +4949,6 @@ int world_ensure_starter_mining_refit_work_order(world_t *w) {
 static bool cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
                                           const contract_t *ct);
 
-static float station_pod_shell_quote(const station_t *st,
-                                     const cargo_pod_t *pod,
-                                     bool station_sells) {
-    if (!st || !pod || !pod->has_shell_frame ||
-        (commodity_t)pod->shell_frame.commodity != COMMODITY_FRAME) {
-        return 0.0f;
-    }
-    float value = station_sells
-        ? station_sell_price_unit(st, &pod->shell_frame)
-        : station_buy_price_unit(st, &pod->shell_frame);
-    if (value <= FLOAT_EPSILON &&
-        st->base_price[COMMODITY_FRAME] > FLOAT_EPSILON) {
-        value = st->base_price[COMMODITY_FRAME] *
-            prefix_class_price_multiplier(
-                (int)pod->shell_frame.prefix_class);
-    }
-    value *= mining_payout_multiplier(
-        (mining_grade_t)pod->shell_frame.grade);
-    return value > FLOAT_EPSILON ? value : 0.0f;
-}
-
 static float black_market_pod_quote(const station_t *st,
                                     const cargo_pod_t *pod) {
     if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
@@ -5277,39 +5256,6 @@ static bool cargo_pod_matches_buy_grade(const cargo_pod_t *pod,
             return false;
     }
     return true;
-}
-
-static float station_market_pod_sell_quote(const station_t *st,
-                                           const cargo_pod_t *pod) {
-    if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
-        pod->commodity >= COMMODITY_COUNT || pod->quantity == 0 ||
-        pod->shipment_id != 0) {
-        return 0.0f;
-    }
-    commodity_t c = pod->commodity;
-    float fallback = station_sell_price(st, c);
-    if (fallback <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
-        fallback = st->base_price[c];
-    if (fallback <= FLOAT_EPSILON) return 0.0f;
-
-    if (pod->manifest_count > 0) {
-        if (pod->manifest_count != pod->quantity ||
-            pod->manifest_count > CARGO_POD_MANIFEST_CAP ||
-            !is_finished_good(c)) {
-            return 0.0f;
-        }
-        float value = 0.0f;
-        for (uint16_t i = 0; i < pod->manifest_count; i++) {
-            const cargo_unit_t *unit = &pod->manifest_units[i];
-            if ((commodity_t)unit->commodity != c) return 0.0f;
-            float unit_value = station_sell_price_unit(st, unit);
-            unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
-            value += unit_value;
-        }
-        return value + station_pod_shell_quote(st, pod, true);
-    }
-    return fallback * (float)pod->quantity +
-           station_pod_shell_quote(st, pod, true);
 }
 
 static bool cargo_pod_custody_charge_range(
