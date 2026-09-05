@@ -64,7 +64,7 @@ def verify(root, manifest):
         if root.resolve() not in target.resolve().parents:
             raise ValueError(f"Media path leaves its root: {name}")
         record = files.get(name, {})
-        if not all(isinstance(record.get(key), str) and record[key].strip()
+        if not isinstance(record, dict) or not all(isinstance(record.get(key), str) and record[key].strip()
                    for key in ("sha256", "source", "license")):
             raise ValueError(f"Hash, source, and license are required: {name}")
         if record["sha256"] != digest(target):
@@ -118,8 +118,10 @@ def sync(root, manifest, source, sha256):
                 with pack.open(member) as src, dest.open("wb") as out:
                     shutil.copyfileobj(src, out)
         names = verify(stage, manifest)
-        # Validate the complete pack before replacing any installed file.
-        for name in names + [PROVENANCE]:
+        omitted = [name for name, optional in inventory(manifest).items()
+                   if optional and name not in names]
+        # Validate the complete pack and all destinations before installation.
+        for name in names + [PROVENANCE] + omitted:
             dest = root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             if root.resolve() not in dest.resolve().parents or dest.is_symlink():
@@ -133,6 +135,8 @@ def sync(root, manifest, source, sha256):
                 os.replace(staged, dest)
             finally:
                 staged.unlink(missing_ok=True)
+        for name in omitted:
+            (root / name).unlink(missing_ok=True)
     return verify(root, manifest)
 
 

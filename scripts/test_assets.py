@@ -47,6 +47,28 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(len(assets.sync(dest, self.manifest, str(pack), assets.digest(pack))), 3)
         self.assertEqual(len(assets.verify(dest, self.manifest)), 3)
 
+    def test_new_pack_removes_omitted_optional_media(self):
+        optional = self.source / "stations/a/motd.json"
+        optional.write_text('{"message":"previous"}')
+        self.metadata["files"]["stations/a/motd.json"] = {
+            "sha256": assets.digest(optional), "source": "fixture", "license": "test use"}
+        self.write_metadata()
+        pack = self.archive()
+        dest = self.root / "installed"
+        self.assertEqual(len(assets.sync(dest, self.manifest, str(pack), assets.digest(pack))), 4)
+        optional.unlink()
+        del self.metadata["files"]["stations/a/motd.json"]
+        self.write_metadata()
+        pack = self.archive()
+        self.assertEqual(len(assets.sync(dest, self.manifest, str(pack), assets.digest(pack))), 3)
+        self.assertFalse((dest / "stations/a/motd.json").exists())
+
+    def test_invalid_provenance_record_is_an_error(self):
+        self.metadata["files"]["music/song.mp3"] = "invalid"
+        self.write_metadata()
+        with self.assertRaisesRegex(ValueError, "source, and license"):
+            assets.verify(self.source, self.manifest)
+
     def test_bad_pack_hash_preserves_existing_files(self):
         pack = self.archive()
         dest = self.root / "installed"
