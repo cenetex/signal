@@ -7,10 +7,23 @@
 #include "net_protocol.h"
 #include "signal_crypto.h"
 #include "chain_log.h"
+#include "persistence_generation.h"
+#include <errno.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+typedef enum {
+    PHASE_LAUNCH, PHASE_SELECT_ROCK, PHASE_MINE, PHASE_COLLECT_ORE,
+    PHASE_DELIVER_ORE, PHASE_DOCK, PHASE_REFIT, PHASE_BUY_INGOTS,
+    PHASE_HAUL, PHASE_UNPACK_INGOTS, PHASE_DELIVER_INGOTS,
+    PHASE_COLLECT_FRAMES = 12, PHASE_TOW_RELAY
+} route_phase_t;
 
 static bool authenticate(world_t *w, uint8_t pubkey[32], uint8_t secret[64]) {
     server_player_t *sp = &w->players[0];
@@ -99,6 +112,59 @@ static int affordable_pod(const world_t *w, const server_player_t *sp,
     return -1;
 }
 
+static int towed_commodity(const world_t *w, const ship_t *ship, commodity_t commodity) {
+    for (int i = 0; i < ship->towed_pod_count; i++) {
+        int pod = ship->towed_pods[i];
+        if (pod >= 0 && pod < MAX_CARGO_PODS && w->cargo_pods[pod].active &&
+            w->cargo_pods[pod].commodity == commodity) return pod;
+    }
+    return -1;
+}
+
+static bool pod_origin_is(const cargo_pod_t *pod, int station) {
+    if (!pod->manifest_count) return false;
+    for (uint16_t i = 0; i < pod->manifest_count; i++)
+        if (pod->manifest_units[i].origin_station != station) return false;
+    return true;
+}
+
+static int local_frame_pod(const world_t *w, const ship_t *ship, bool towed_only) {
+    int best = -1;
+    float distance = 1e30f;
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || pod->commodity != COMMODITY_FRAME || !pod_origin_is(pod, 1)) continue;
+        bool towed = false;
+        for (int t = 0; t < ship->towed_pod_count; t++)
+            towed = towed || ship->towed_pods[t] == i;
+        if (towed_only && !towed) continue;
+        float d = v2_dist_sq(ship->pos, pod->pos);
+        if (d < distance) { distance = d; best = i; }
+    }
+    return best;
+}
+
+static int owned_relay_scaffold(const world_t *w) {
+    for (int i = 0; i < MAX_SCAFFOLDS; i++)
+        if (w->scaffolds[i].active && w->scaffolds[i].owner == 0 &&
+            w->scaffolds[i].module_type == MODULE_SIGNAL_RELAY) return i;
+    return -1;
+}
+
+static vec2 frontier_point(const world_t *w) {
+    vec2 best = v2(0, 0);
+    float distance = 1e30f;
+    for (int y = -12000; y <= 18000; y += 250) {
+        for (int x = -12000; x <= 12000; x += 250) {
+            vec2 pos = v2((float)x, (float)y);
+            if (!can_place_outpost(w, pos)) continue;
+            float d = v2_dist_sq(pos, w->stations[1].pos);
+            if (d < distance) { best = pos; distance = d; }
+        }
+    }
+    return best;
+}
+
 static bool present_pod(world_t *w, int pod, const uint8_t secret[64]) {
     uint8_t message[SIGNED_ACTION_HEADER_SIZE + 35 + SIGNED_ACTION_SIG_SIZE] = {NET_MSG_SIGNED_ACTION};
     uint64_t nonce = w->players[0].last_signed_nonce + 1;
@@ -129,6 +195,23 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: signal_first_outpost seconds fresh-chain-directory\n");
         return 2;
     }
+    errno = 0;
+    char *end = NULL;
+    long duration = strtol(argv[1], &end, 10);
+    if (errno || !end || *end || duration < 1 || duration > 3600 ||
+        strlen(argv[2]) > PERSISTENCE_GENERATION_PATH_MAX - 32) {
+        fprintf(stderr, "Choose 1..3600 seconds and a path shorter than 480 bytes.\n");
+        return 2;
+    }
+#ifdef _WIN32
+    int made = _mkdir(argv[2]);
+#else
+    int made = mkdir(argv[2], 0700);
+#endif
+    if (made != 0) {
+        fprintf(stderr, "Choose a fresh writable chain directory: %s\n", argv[2]);
+        return 2;
+    }
     chain_log_set_dir(argv[2]);
     world_t *w = calloc(1, sizeof(*w));
     if (!w) return 2;
@@ -137,12 +220,17 @@ int main(int argc, char **argv) {
     world_seed_station_manifests(w);
     world_seed_station_chain_genesis(w);
     uint8_t pubkey[32], secret[64];
-    if (!authenticate(w, pubkey, secret)) return 2;
+    if (!authenticate(w, pubkey, secret)) {
+        world_cleanup(w);
+        free(w);
+        return 2;
+    }
     server_player_t *sp = &w->players[0];
     player_seed_credits(sp, w);
     const float dt = 1.0f / 120.0f;
     nav_path_t path = {0};
-    int stage = 0, target = -1;
+    route_phase_t stage = PHASE_LAUNCH;
+    int target = -1;
     int home = sp->current_station;
     float last_payout = 0;
     int last_pod_count = 0;
@@ -150,34 +238,36 @@ int main(int argc, char **argv) {
         const station_t *st = &w->stations[i];
         fprintf(stderr, "%s %.0f %.0f frames=%d lasers=%d tractors=%d relay=%d\n", st->name, st->pos.x, st->pos.y, station_finished_count(st, COMMODITY_FRAME), station_finished_count(st, COMMODITY_LASER_MODULE), station_finished_count(st, COMMODITY_TRACTOR_MODULE), station_can_order_scaffold(st, MODULE_SIGNAL_RELAY));
     }
-    bool fracture = false, tow = false, payout = false;
-    printf("seconds,stage,x,y,hull,target,towed,earned,balance\n");
-    for (int tick = 0; tick < (argc > 1 ? atoi(argv[1]) : 600) * 120; tick++) {
+    bool fracture = false, tow = false, payout = false, active_outpost = false;
+    bool relay_ordered = false;
+    vec2 frontier = frontier_point(w);
+    printf("seconds,phase,x,y,hull,target,ore_tows,pod_tows,earned,balance,docked,speed,mining,hold,held_frames,station_frames\n");
+    for (int tick = 0; tick < (int)duration * 120; tick++) {
         sp->input = (input_intent_t){.mining_target_hint = -1,
             .place_target_station = -1, .place_target_ring = -1,
             .place_target_slot = -1};
-        if (home == 0 && stage < 5 && payout &&
+        if (home == 0 && stage < PHASE_DOCK && payout &&
             !ship_has_towed_fragments(sp->ship) && sp->ship->towed_pod_count > 0) {
-            stage = 8;
+            stage = PHASE_DOCK;
             path = (nav_path_t){0};
             fprintf(stderr, "physical cargo %.2f pods=%d\n", tick * dt,
                     sp->ship->towed_pod_count);
         }
-        if (stage == 0) {
+        if (stage == PHASE_LAUNCH) {
             if (sp->docked) sp->input.launch = true;
             vec2 exit = station_exit_target(&w->stations[home], sp->ship->pos);
             vec2 direction = v2_norm(v2_sub(exit, w->stations[home].pos));
             exit = v2_add(w->stations[home].pos, v2_scale(direction, 1700));
             apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, exit, 60, 200, dt));
             if (v2_dist_sq(sp->ship->pos, w->stations[home].pos) > 1450 * 1450) {
-                stage = 1; path = (nav_path_t){0};
+                stage = PHASE_SELECT_ROCK; path = (nav_path_t){0};
             }
-        } else if (stage == 1) {
+        } else if (stage == PHASE_SELECT_ROCK) {
             target = nearest_rock(w, sp->ship, false, home);
-            if (target >= 0) { stage = 2; path = (nav_path_t){0}; }
-        } else if (stage == 2) {
+            if (target >= 0) { stage = PHASE_MINE; path = (nav_path_t){0}; }
+        } else if (stage == PHASE_MINE) {
             asteroid_t *a = &w->asteroids[target];
-            if (!a->active || asteroid_is_collectible(a)) { stage = 3; path = (nav_path_t){0}; }
+            if (!a->active || asteroid_is_collectible(a)) { stage = PHASE_COLLECT_ORE; path = (nav_path_t){0}; }
             else {
                 float dist = sqrtf(v2_dist_sq(sp->ship->pos, a->pos));
                 flight_cmd_t cmd = dist > a->radius + 200
@@ -191,17 +281,17 @@ int main(int argc, char **argv) {
             if (sp->ship->stat_asteroids_fractured > 0 && !fracture) {
                 fracture = true; fprintf(stderr, "fracture %.2f\n", tick * dt);
             }
-        } else if (stage == 3) {
+        } else if (stage == PHASE_COLLECT_ORE) {
             sp->input.tractor_hold = true;
             target = nearest_rock(w, sp->ship, true, home);
             if (ship_has_towed_fragments(sp->ship)) {
                 if (!tow) { tow = true; fprintf(stderr, "tow %.2f\n", tick * dt); }
-                stage = 4; path = (nav_path_t){0};
+                stage = PHASE_DELIVER_ORE; path = (nav_path_t){0};
             } else if (target >= 0) {
                 apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
                     w->asteroids[target].pos, 40, 120, dt));
-            } else stage = 1;
-        } else if (stage == 4) {
+            } else stage = PHASE_SELECT_ROCK;
+        } else if (stage == PHASE_DELIVER_ORE) {
             sp->input.tractor_hold = true;
             flight_cmd_t cmd = flight_steer_to(w, sp->ship, &path,
                 drop_point(&w->stations[home]), 80, 120, dt);
@@ -213,60 +303,149 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "payout %.2f earned=%.1f balance=%.1f home=%d\n", tick * dt, last_payout, ledger_balance_by_pubkey(&w->stations[home], pubkey), home);
             }
             if (!ship_has_towed_fragments(sp->ship)) {
-                stage = affordable_pod(w, sp, 0, COMMODITY_FERRITE_INGOT) >= 0 ? 5 : 1;
+                stage = affordable_pod(w, sp, 0, COMMODITY_FERRITE_INGOT) >= 0 ? PHASE_DOCK : PHASE_SELECT_ROCK;
                 path = (nav_path_t){0};
             }
-        } else if (stage == 5) {
+        } else if (stage == PHASE_DOCK) {
             station_t *st = &w->stations[home];
             vec2 approach = station_approach_target(st, sp->ship->pos);
-            if (!nav_segment_clear(w, sp->ship->pos, approach,
-                                   ship_hull_def(sp->ship)->ship_radius + 30)) {
-                vec2 entry = station_entry_target(st, sp->ship->pos);
-                if (v2_dist_sq(sp->ship->pos, entry) > 140 * 140)
-                    approach = entry;
-            }
-            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, approach, 40, 70, dt));
+            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, approach, 40,
+                sp->ship->towed_pod_count ? 70 : 160, dt));
             if (sp->in_dock_range && sp->nearby_station == home) {
                 sp->input.dock = true;
                 sp->input.thrust = 0;
             }
-            if (sp->docked) { stage = home == 0 ? 7 : 6; fprintf(stderr, "dock %.2f\n", tick * dt); }
-        } else if (stage == 6) {
-            if (sp->ship->towed_pod_count) {
-                if (!present_pod(w, sp->ship->towed_pods[0], secret)) break;
+            if (sp->docked) { stage = home == 0 ? PHASE_UNPACK_INGOTS : PHASE_REFIT; fprintf(stderr, "dock %.2f\n", tick * dt); }
+        } else if (stage == PHASE_REFIT) {
+            station_t *st = &w->stations[home];
+            if (home >= SIGNAL_FIRST_OUTPOST_INDEX) {
+                sp->input.service_sell = true;
+                sp->input.service_sell_only = COMMODITY_FRAME;
+                if (station_is_active(st) && !st->scaffold &&
+                    memcmp(st->outpost_founder_pubkey, pubkey, 32) == 0 &&
+                    station_has_module(st, MODULE_SIGNAL_RELAY)) {
+                    fprintf(stderr, "active outpost %.2f slot=%d\n", tick * dt, home);
+                    active_outpost = true;
+                    break;
+                }
+            } else if (!sp->ship->mining_level) {
+                sp->input.upgrade_mining = true;
+                sp->input.service_sell = !can_afford_upgrade(st, sp->ship,
+                    SHIP_UPGRADE_MINING, ledger_balance_by_pubkey(st, pubkey));
+                sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+            } else if (!relay_ordered) {
+                sp->input.buy_scaffold_kit = true;
+                sp->input.scaffold_kit_module = MODULE_SIGNAL_RELAY;
+                if (st->pending_scaffold_count > 0 || owned_relay_scaffold(w) >= 0) {
+                    relay_ordered = true;
+                    fprintf(stderr, "ordered %.2f balance=%.1f\n", tick * dt,
+                            ledger_balance_by_pubkey(st, pubkey));
+                }
+            } else if (towed_commodity(w, sp->ship, COMMODITY_FERRITE_INGOT) >= 0) {
+                stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
+            } else {
+                int frames = local_frame_pod(w, sp->ship, true);
+                if (frames >= 0) {
+                    if (!present_pod(w, frames, secret)) break;
+                } else if (!sp->ship->hold_level && can_afford_upgrade(st, sp->ship,
+                        SHIP_UPGRADE_HOLD, ledger_balance_by_pubkey(st, pubkey))) {
+                    sp->input.upgrade_hold = true;
+                } else if (sp->ship->hold_level &&
+                        ship_finished_count(sp->ship, COMMODITY_FRAME) >= 48) {
+                    stage = PHASE_TOW_RELAY; path = (nav_path_t){0};
+                    fprintf(stderr, "activation frames %.2f held=%d\n", tick * dt,
+                            ship_finished_count(sp->ship, COMMODITY_FRAME));
+                } else {
+                    stage = PHASE_COLLECT_FRAMES; path = (nav_path_t){0};
+                }
             }
-            sp->input.service_sell = ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) > 0;
-            sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
-            sp->input.upgrade_mining = sp->ship->mining_level == 0;
-            sp->input.upgrade_hold = !sp->input.upgrade_mining && sp->ship->hold_level == 0;
-            if (sp->ship->mining_level && sp->ship->hold_level) {
-                fprintf(stderr, "upgraded %.2f balance=%.1f\n", tick * dt, ledger_balance_by_pubkey(&w->stations[home], pubkey));
-                break;
-            }
-        } else if (stage == 7) {
+        } else if (stage == PHASE_BUY_INGOTS) {
             int pod = affordable_pod(w, sp, 0, COMMODITY_FERRITE_INGOT);
             if (sp->ship->towed_pod_count) {
                 fprintf(stderr, "bought %.2f units=%d\n", tick * dt,
                     w->cargo_pods[sp->ship->towed_pods[0]].quantity);
-                stage = 8; path = (nav_path_t){0};
+                stage = PHASE_HAUL; path = (nav_path_t){0};
             } else if (pod >= 0) {
                 sp->input.buy_product = true;
                 sp->input.buy_commodity = COMMODITY_FERRITE_INGOT;
                 sp->input.buy_grade = MINING_GRADE_COUNT;
                 sp->input.buy_station_pod = true;
                 sp->input.buy_station_pod_index = (uint16_t)pod;
-            } else { stage = 0; path = (nav_path_t){0}; }
-        } else if (stage == 8) {
+            } else { stage = PHASE_LAUNCH; path = (nav_path_t){0}; }
+        } else if (stage == PHASE_HAUL) {
             if (sp->docked) sp->input.launch = true;
             vec2 exit = station_exit_target(&w->stations[home], sp->ship->pos);
             vec2 direction = v2_norm(v2_sub(exit, w->stations[home].pos));
             exit = v2_add(w->stations[home].pos, v2_scale(direction, 1700));
-            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, exit, 60, 70, dt));
+            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, exit, 60,
+                sp->ship->towed_pod_count ? 70 : 200, dt));
             if (v2_dist_sq(sp->ship->pos, w->stations[home].pos) > 1450 * 1450) {
-                home = 1; stage = 5; path = (nav_path_t){0};
+                home = 1; stage = PHASE_DOCK; path = (nav_path_t){0};
+            }
+        } else if (stage == PHASE_UNPACK_INGOTS) {
+            if (ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) >= 8 &&
+                sp->ship->towed_pod_count < 2) {
+                stage = PHASE_HAUL; path = (nav_path_t){0};
+            } else if (sp->ship->towed_pod_count) {
+                if (!present_pod(w, sp->ship->towed_pods[0], secret)) break;
+            } else if (ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) > 0) {
+                stage = PHASE_HAUL; path = (nav_path_t){0};
+            } else stage = PHASE_BUY_INGOTS;
+        } else if (stage == PHASE_DELIVER_INGOTS) {
+            if (sp->docked) sp->input.launch = true;
+            station_t *st = &w->stations[home];
+            int hopper = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+            if (hopper < 0) break;
+            vec2 goal = module_world_pos_ring(st, st->modules[hopper].ring,
+                                              st->modules[hopper].slot);
+            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, goal,
+                                                    40, 70, dt));
+            sp->input.tractor_hold = true;
+            if (towed_commodity(w, sp->ship, COMMODITY_FERRITE_INGOT) < 0) {
+                fprintf(stderr, "ingot hopper %.2f frames=%d balance=%.1f\n", tick * dt,
+                    station_finished_count(st, COMMODITY_FRAME),
+                    ledger_balance_by_pubkey(st, pubkey));
+                stage = PHASE_DOCK; path = (nav_path_t){0};
             }
         }
-        if (sp->ship->towed_pod_count > 0 && (stage == 8 || stage == 5)) {
+        if (stage == PHASE_COLLECT_FRAMES) {
+            if (sp->docked) sp->input.launch = true;
+            if (local_frame_pod(w, sp->ship, true) >= 0) {
+                stage = PHASE_DOCK; path = (nav_path_t){0};
+            } else if (sp->ship->towed_pod_count) {
+                sp->input.release_tow = true;
+            } else {
+                int pod = local_frame_pod(w, sp->ship, false);
+                if (pod >= 0) {
+                    vec2 goal = w->cargo_pods[pod].pos;
+                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                                                            goal, 30, 100, dt));
+                    sp->input.tractor_hold = v2_dist_sq(sp->ship->pos, goal) < 100 * 100;
+                }
+            }
+        } else if (stage == PHASE_TOW_RELAY) {
+            if (sp->docked) sp->input.launch = true;
+            int scaffold = sp->ship->towed_scaffold;
+            if (scaffold >= 0) {
+                apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                                                        frontier, 40, 70, dt));
+                sp->input.tractor_hold = true;
+                sp->input.thrust = fminf(sp->input.thrust, 0.3f);
+                if (can_place_outpost(w, w->scaffolds[scaffold].pos))
+                    sp->input.place_outpost = true;
+            } else if (w->station_count > SIGNAL_FIRST_OUTPOST_INDEX) {
+                home = SIGNAL_FIRST_OUTPOST_INDEX;
+                stage = PHASE_DOCK; path = (nav_path_t){0};
+            } else {
+                scaffold = owned_relay_scaffold(w);
+                if (scaffold >= 0 && w->scaffolds[scaffold].state == SCAFFOLD_LOOSE) {
+                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                        w->scaffolds[scaffold].pos, 30, 100, dt));
+                    sp->input.tractor_hold = true;
+                }
+            }
+        }
+        if (sp->ship->towed_pod_count > 0 && (stage == PHASE_HAUL || stage == PHASE_DOCK || stage == PHASE_DELIVER_INGOTS)) {
             sp->input.tractor_hold = true;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
@@ -276,14 +455,33 @@ int main(int argc, char **argv) {
             fprintf(stderr, "pod count %.2f count=%d stage=%d pos=%.0f/%.0f\n", tick * dt, last_pod_count, stage, sp->ship->pos.x, sp->ship->pos.y);
         }
         if (tick % 1200 == 0) {
-            printf("%.2f,%d,%.1f,%.1f,%.1f,%d,%d,%.1f,%.1f,docked=%d,speed=%.1f,thrust=%.2f,goal=%.1f/%.1f,tow=%.1f/%.1f\n", tick * dt,
-                stage, sp->ship->pos.x, sp->ship->pos.y, sp->ship->hull,
-                target, sp->ship->towed_count, sp->ship->stat_credits_earned,
-                ledger_balance_by_pubkey(&w->stations[home], pubkey), sp->docked, v2_len(sp->ship->vel), sp->input.thrust, drop_point(&w->stations[home]).x, drop_point(&w->stations[home]).y, sp->ship->towed_count ? w->asteroids[sp->ship->towed_fragments[0]].pos.x : 0, sp->ship->towed_count ? w->asteroids[sp->ship->towed_fragments[0]].pos.y : 0);
+            printf("%.2f,%d,%.1f,%.1f,%.1f,%d,%d,%d,%.1f,%.1f,%d,%.1f,%d,%d,%d,%d\n",
+                tick * dt, stage, sp->ship->pos.x, sp->ship->pos.y,
+                sp->ship->hull, target, sp->ship->towed_count,
+                sp->ship->towed_pod_count, sp->ship->stat_credits_earned,
+                ledger_balance_by_pubkey(&w->stations[home], pubkey),
+                sp->docked, v2_len(sp->ship->vel), sp->ship->mining_level,
+                sp->ship->hold_level, ship_finished_count(sp->ship, COMMODITY_FRAME),
+                station_finished_count(&w->stations[home], COMMODITY_FRAME));
             fflush(stdout);
+            if (stage >= PHASE_REFIT)
+                fprintf(stderr, "refit %.1f levels=%d/%d frames=%d lasers=%d hold=%d cost=%.1f\n", tick * dt,
+                    sp->ship->mining_level, sp->ship->hold_level,
+                    station_finished_count(&w->stations[home], COMMODITY_FRAME),
+                    station_finished_count(&w->stations[home], COMMODITY_LASER_MODULE),
+                    ship_finished_count(sp->ship, COMMODITY_FRAME),
+                    upgrade_station_credit_cost(&w->stations[home], sp->ship, SHIP_UPGRADE_MINING, 8));
         }
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active) continue;
+        fprintf(stderr, "remaining pod=%d commodity=%s quantity=%d origin=%u pos=%.0f/%.0f custody=%u\n",
+                i, commodity_short_name(pod->commodity), pod->quantity,
+                pod->manifest_count ? pod->manifest_units[0].origin_station : 255,
+                pod->pos.x, pod->pos.y, pod->custody_station);
     }
     world_cleanup(w);
     free(w);
-    return fracture && tow && payout ? 0 : 1;
+    return fracture && tow && payout && active_outpost ? 0 : 1;
 }
