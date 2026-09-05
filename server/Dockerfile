@@ -23,6 +23,8 @@ RUN emcmake cmake -S . -B build-web \
           build-web/play.html build-web/signal-touch-controls.js public/ \
     && if [ -d build-web/anime ]; then cp -R build-web/anime public/; fi \
     && if [ -d build-web/music ]; then cp -R build-web/music public/; fi \
+    && if [ -d assets/stations ]; then cp -R assets/stations public/; fi \
+    && if [ -f assets/media-provenance.json ]; then cp assets/media-provenance.json public/; fi \
     && cp web/index.html web/mine.html web/ost.html web/ost-manifest.json \
           web/ost-cover.jpg public/
 

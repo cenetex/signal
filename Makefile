@@ -356,12 +356,9 @@ signal-hnn-shadow:
 		$(if $(SIGNAL_HNN_SHADOW_MIN_P50_FIDELITY),--min-p50-fidelity $(SIGNAL_HNN_SHADOW_MIN_P50_FIDELITY),) \
 		$(if $(SIGNAL_HNN_SHADOW_MAX_P90_CAPACITY_LOAD),--max-p90-capacity-load $(SIGNAL_HNN_SHADOW_MAX_P90_CAPACITY_LOAD),)
 
-# The former S3 sync script was removed with the retired AWS deployment.
-# Keep the old target fail-loud so a stale command cannot silently succeed
-# merely because the assets/ directory exists.
+# The pack URL and SHA-256 select one reviewed external media pack.
 assets:
-	@echo "make assets is retired: assets/manifest.txt inventories external/local media, but this repository has no download command" >&2
-	@exit 2
+	python3 scripts/assets.py sync
 
 PROTOCOL_CHECK_URL ?= http://127.0.0.1:9091/api/protocol
 

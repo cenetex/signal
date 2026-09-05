@@ -952,6 +952,27 @@ if(EMSCRIPTEN)
         SIGNAL_HAS_WEB_EPISODE_ASSETS=${SIGNAL_HAS_WEB_EPISODE_ASSETS}
         SIGNAL_HAS_WEB_MUSIC_ASSETS=${SIGNAL_HAS_WEB_MUSIC_ASSETS})
 
+    file(GLOB_RECURSE SIGNAL_WEB_STATION_ASSETS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/stations/*")
+    if(SIGNAL_WEB_STATION_ASSETS)
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp
+            COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/stations
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_CURRENT_SOURCE_DIR}/assets/stations
+                ${CMAKE_CURRENT_BINARY_DIR}/stations
+            COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp
+            DEPENDS ${SIGNAL_WEB_STATION_ASSETS}
+            VERBATIM)
+    else()
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp
+            COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/stations
+            COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp
+            VERBATIM)
+    endif()
+    list(APPEND SIGNAL_WEB_ASSET_STAMPS ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp)
+
     set(SIGNAL_EMSCRIPTEN_EXPORTS
         "'_main'"
         "'__saudio_emsc_pull'"

@@ -104,6 +104,13 @@ jobs:
         with:
           version: ${{ vars.FLYCTL_VERSION || '0.4.59' }}
 
+      - name: Provision configured media before the container build
+        if: vars.SIGNAL_ASSET_PACK_URL != ''
+        env:
+          SIGNAL_ASSET_PACK_URL: ${{ vars.SIGNAL_ASSET_PACK_URL }}
+          SIGNAL_ASSET_PACK_SHA256: ${{ vars.SIGNAL_ASSET_PACK_SHA256 }}
+        run: python3 scripts/assets.py sync
+
       - name: Validate Fly config
         run: flyctl config validate --config fly.toml
 
