@@ -1999,6 +1999,49 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  test('local world checkpoints survive reload with the same ship and station balance', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'local save test uses isolated browser storage');
+    const logs = installFatalCollectors(page);
+    const summary = () => page.evaluate(() => {
+      const mod = (window as any).Module;
+      return JSON.parse(mod.ccall('signal_debug_local_save_summary', 'string', [], []));
+    });
+    const canvas = await loadGame(page, false);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    await canvas.click();
+    await tap(page, 'E');
+    await hold(page, 'W', 1200);
+    const before = await summary();
+    expect(before.time).toBeGreaterThan(1);
+    expect(before.ship).toBeGreaterThan(0);
+    await expect.poll(() => wasmNumber(page, 'signal_save_local_world')).toBe(1);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    await page.reload();
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    const after = await summary();
+    expect(after.seed).toBe(before.seed);
+    expect(after.time).toBeGreaterThanOrEqual(before.time);
+    expect(after.ship).toBe(before.ship);
+    expect(after.credits).toBe(before.credits);
+    expect(after.stations).toBe(before.stations);
+    expectNoFatalErrors(logs);
+  });
+
+  test('local world storage has one active browser owner', async ({ page, context }) => {
+    test.skip(usesLiveSmokeUrl(), 'local save lock test uses isolated browser storage');
+    await loadGame(page, false);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    const second = await context.newPage();
+    await second.goto('/play.html?singleplayer=1&smoke=1');
+    await expect(second.locator('#loading')).toHaveText(
+      'Local world is open in another tab. Close that tab, then reload.');
+    await page.close();
+    await second.reload();
+    await waitForRenderedGame(second, second.locator('canvas'), false);
+    await expect.poll(() => wasmNumber(second, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    await second.close();
+  });
+
   test('WebCrypto failure leaves identity and authentication unpersisted', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
 
