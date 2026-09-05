@@ -28,7 +28,7 @@
 #define SIGNAL_MAYBE_UNUSED
 #endif
 
-static const uint8_t COL_TRACKED_JOB[3] = { 255, 222, 51 };
+static const uint8_t COL_TRACKED_JOB[3] = { PAL_TRADE_TRACKED };
 
 static void station_ui_append_text(char *out, size_t cap, const char *text) {
     if (!out || cap == 0 || !text) return;
@@ -3377,7 +3377,7 @@ static float draw_station_route_history_rows(const station_t *st,
     int count = chain_log_read_route_history_tail(st, rows, 2);
     if (count <= 0) return my;
 
-    const uint8_t COL_HISTORY[3] = { 135, 220, 195 };
+    const uint8_t COL_HISTORY[3] = { PAL_TRADE_HISTORY };
     const uint8_t COL_DIM[3]     = { PAL_TEXT_SECONDARY };
     const float row_h = compact ? 14.0f : 15.0f;
 
@@ -3409,7 +3409,7 @@ static float draw_station_policy_rows(const station_t *st,
 {
     if (!st) return my;
 
-    const uint8_t COL_POLICY[3] = { 170, 210, 255 };
+    const uint8_t COL_POLICY[3] = { PAL_TRADE_POLICY };
     const uint8_t COL_DIM[3]    = { PAL_TEXT_FADED };
     const float row_h = compact ? 14.0f : 15.0f;
 
@@ -3607,8 +3607,8 @@ typedef struct {
 
 static const uint8_t ARRIVAL_READY[3]  = { PAL_CONTRACT_READY };
 static const uint8_t ARRIVAL_CREDIT[3] = { PAL_STATION_HINT };
-static const uint8_t ARRIVAL_MEMORY[3] = { 135, 220, 195 };
-static const uint8_t ARRIVAL_PRODUCTION[3] = { 120, 220, 170 };
+static const uint8_t ARRIVAL_MEMORY[3] = { PAL_TRADE_HISTORY };
+static const uint8_t ARRIVAL_PRODUCTION[3] = { PAL_TRADE_FLOW_OK };
 
 static bool station_credit_bridge_line(int current_station,
                                        char *out,
@@ -3908,7 +3908,7 @@ static float draw_station_memory_summary(const station_t *st,
                                          bool compact)
 {
     const float row_h = compact ? 14.0f : 15.0f;
-    const uint8_t COL_HISTORY[3] = { 135, 220, 195 };
+    const uint8_t COL_HISTORY[3] = { PAL_TRADE_HISTORY };
     const uint8_t COL_DIM[3]     = { PAL_TEXT_FADED };
     char known[112];
     char player[112];
@@ -3969,7 +3969,7 @@ static void draw_history_view(const station_ui_state_t *ui,
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
     const float row_h = compact ? 14.0f : 15.0f;
-    const uint8_t COL_HISTORY[3] = { 135, 220, 195 };
+    const uint8_t COL_HISTORY[3] = { PAL_TRADE_HISTORY };
     const uint8_t COL_DIM[3]     = { PAL_TEXT_SECONDARY };
     const uint8_t COL_FADED[3]   = { PAL_TEXT_FADED };
 
@@ -4124,9 +4124,9 @@ static bool draw_trade_lineage_focus(const station_t *st,
         return false;
     }
 
-    const uint8_t COL_TITLE[3] = { 130, 210, 255 };
+    const uint8_t COL_TITLE[3] = { PAL_TRADE_TITLE };
     const uint8_t COL_STORY[3] = { PAL_TEXT_SECONDARY };
-    const uint8_t COL_CURRENT[3] = { 130, 230, 150 };
+    const uint8_t COL_CURRENT[3] = { PAL_TRADE_GAIN };
     const uint8_t COL_GAP[3] = { PAL_WARNING };
     const uint8_t COL_PROOF[3] = { PAL_TEXT_FADED };
     *my += draw_section_header(cx, *my, inner_right,
@@ -4212,14 +4212,14 @@ static void draw_trade_view(const station_ui_state_t *ui,
     float row_h = compact ? 14.0f : 15.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
-    const uint8_t COL_GAIN[3]  = { 130, 230, 150 };  /* + sell: green */
-    const uint8_t COL_COST[3]  = { 230, 110, 110 };  /* - buy:  red   */
+    const uint8_t COL_GAIN[3]  = { PAL_TRADE_GAIN };  /* + sell: green */
+    const uint8_t COL_COST[3]  = { PAL_TRADE_COST };  /* - buy:  red   */
     const uint8_t COL_DIM[3]   = { PAL_AFFORD_INACTIVE };
     const uint8_t COL_FADED[3] = { PAL_TEXT_FADED };
     const uint8_t COL_TEXT[3]  = { PAL_TEXT_SECONDARY };
-    const uint8_t COL_FLOW_OK[3]   = { 120, 220, 170 };
-    const uint8_t COL_FLOW_WARN[3] = { 235, 195, 95 };
-    const uint8_t COL_FLOW_BAD[3]  = { 235, 110, 110 };
+    const uint8_t COL_FLOW_OK[3]   = { PAL_TRADE_FLOW_OK };
+    const uint8_t COL_FLOW_WARN[3] = { PAL_TRADE_FLOW_WARN };
+    const uint8_t COL_FLOW_BAD[3]  = { PAL_TRADE_FLOW_BAD };
     char flow_line[128] = "";
     const uint8_t *flow_rgb = NULL;
     float panel_x = 0.0f, panel_y = 0.0f, panel_w = 0.0f, panel_h = 0.0f;
@@ -4228,6 +4228,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
     (void)panel_w;
     float content_bottom = panel_y + panel_h - 42.0f;
 
+    if (!station_row_has_room(my, row_h * 2.0f, content_bottom)) return;
     my += draw_section_header(cx, my, inner_right, "TRADE", HDR_TRADE);
 
     {
@@ -4260,33 +4261,39 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
     {
         char right[64];
-        snprintf(right, sizeof(right), "%d crates / %d units",
-                 board.towed_crates, board.towed_units);
-        draw_row_lr(cx, my, inner_right, COL_TEXT, "Your towed crates",
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
+        if (compact) snprintf(right, sizeof(right), "%d crates", board.towed_crates);
+        else snprintf(right, sizeof(right), "%d crates / %d units",
+                      board.towed_crates, board.towed_units);
+        draw_row_lr(cx, my, inner_right, COL_TEXT, compact ? "Towed" : "Your towed crates",
                     board.towed_crates > 0 ? COL_TEXT : COL_FADED, right);
         my += row_h;
 
-        snprintf(right, sizeof(right), "%d crates / %d units",
-                 board.station_crates, board.station_units);
-        draw_row_lr(cx, my, inner_right, COL_TEXT, "Station crates for sale",
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
+        if (compact) snprintf(right, sizeof(right), "%d crates", board.station_crates);
+        else snprintf(right, sizeof(right), "%d crates / %d units",
+                      board.station_crates, board.station_units);
+        draw_row_lr(cx, my, inner_right, COL_TEXT, compact ? "For sale" : "Station crates for sale",
                     board.station_crates > 0 ? COL_TEXT : COL_FADED, right);
         my += row_h;
 
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         snprintf(right, sizeof(right), "%d/%d crates",
                  board.accepted_crates, board.towed_crates);
         draw_row_lr(cx, my, inner_right,
                     board.accepted_crates > 0 ? COL_GAIN : COL_TEXT,
-                    board.black_market ? "Intakes accept (black market)"
-                                       : "Intakes accept",
+                    compact ? "Accepted" : (board.black_market ? "Intakes accept (black market)"
+                                                               : "Intakes accept"),
                     board.accepted_crates > 0 ? COL_GAIN : COL_FADED,
                     right);
         my += row_h;
 
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         snprintf(right, sizeof(right), "%d open / %d ready",
                  board.exact_contracts, board.exact_ready_crates);
         draw_row_lr(cx, my, inner_right,
                     board.exact_ready_crates > 0 ? COL_GAIN : COL_TEXT,
-                    "Contracts needing exact crates",
+                    compact ? "Jobs" : "Contracts needing exact crates",
                     board.exact_contracts > 0 ? COL_TEXT : COL_FADED,
                     right);
         my += row_h + (compact ? 3.0f : 5.0f);
@@ -4302,10 +4309,12 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
     if (row_count == 0) {
         if (flow_line[0]) {
+            if (!station_row_has_room(my, row_h, content_bottom)) return;
             draw_row_lr(cx, my, inner_right, flow_rgb ? flow_rgb : COL_FADED,
                         flow_line, NULL, NULL);
             my += row_h;
         }
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         draw_row_lr(cx, my, inner_right, COL_FADED,
                     "No local buy/sell rows right now.", NULL, NULL);
         return;
@@ -4319,7 +4328,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
         if (total_pages > 1)
             snprintf(pg, sizeof(pg), "page %d/%d   [F] next",
                      page + 1, total_pages);
-        const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
+        const uint8_t COL_ACTIVE[3] = { PAL_TRADE_TITLE };
         bool sell_page = first < last && rows[first].kind != 0;
         bool pod_page = station_trade_page_has_pod_rows(rows, first, last);
         const char *page_kind = sell_page
@@ -4334,6 +4343,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
         } else {
             snprintf(page_left, sizeof(page_left), "%s", page_kind);
         }
+        if (!station_row_has_room(my, row_h, content_bottom)) return;
         draw_row_lr(cx, my, inner_right, page_left_rgb, page_left, COL_FADED,
                     pg[0] ? pg : NULL);
         my += row_h;
