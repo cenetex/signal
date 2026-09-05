@@ -1,7 +1,7 @@
-# Proposed release: v0.6.0 — First Outpost
+# Release in progress: v0.6.0 — First Outpost
 
 Review date: 2026-09-05. Code reviewed: `9337c7eeacd00e91d058172e98ba7d2f99ec2d6a`.
-Status: proposed scope and release gates.
+Status: implementation and acceptance checks are in progress.
 
 The release promise is simple: earn your way from a starter ship to an active
 relay, understand how your work changed the route, and return to that progress
@@ -12,6 +12,58 @@ release outcome.
 Use v0.6.0 because the 65 commits since v0.5.4 add a worker story, physical trade,
 shared gameplay paths, and durable economy work. "First Outpost" is the proposed
 release name. The release date follows the acceptance results.
+
+## Build status
+
+Updated September 5 after implementation began. The original review below
+records the starting point; this table records the release work.
+
+| Work | Current result | Next check |
+| --- | --- | --- |
+| Player story and guide | [#723](https://github.com/cenetex/signal/pull/723) merged. Progress is scoped to the player and local world or server. | Final route checkpoints. |
+| Panel controls and receipts | [#724](https://github.com/cenetex/signal/pull/724) merged. Escape closes the active panel; receipt names and narrow trade rows are readable. | Final packaged play review. |
+| Local world recovery | [#725](https://github.com/cenetex/signal/pull/725) passed every required CI check at `7209e146e455b5d55c145f3cf7342687fb656f43`. World save 85 and player save PLY8 preserve the exact borrowed hull and local progress. | A coherent production backup before the save upgrade. The brief service pause is awaiting approval. |
+| Media packages | [#726](https://github.com/cenetex/signal/pull/726) adds pinned pack hashes, source records, and native/web/server archive layouts. Nine small-file tests pass. All 28 music tracks and 10 episode clips are recovered and hashed. | Three station portraits, publication permission notes, and checks of the complete archives. |
+| Ordinary-action route | [#727](https://github.com/cenetex/signal/pull/727) is ready for review. macOS and Linux both reach an active owned relay at 1,155.53 game seconds. All seven saved milestones restore the exact player assets and progress. | New-player play. All required CI checks passed at `d4108f7`. |
+| Crate trade data | #727 includes the frame shell in the charge and sends the exact quote and unpack source in protocol 8. | Final CI and the complete route. |
+| Physical play and final release | The deterministic route meets the planned timing targets and finishes with 97.1 hull health. Draft release notes are prepared. | Named-hardware motion captures, new-player play, final memory checks, complete archives, and deployment. |
+
+The route implementation passes [all required CI checks](https://github.com/cenetex/signal/actions/runs/33991102149)
+at `d4108f77190318d678086ef90fc73cef4dabe57f`. The Linux evidence artifact records
+the tested PR merge revision `1e3f277`, the same route timings, all seven
+checkpoints, and two successful server starts. The
+[full memory check](https://github.com/cenetex/signal/actions/runs/33990451351)
+uses `2f0e1f7`; application and native test sources match the passing route head.
+Later documentation changes preserve that implementation.
+
+The merged changes are live at `eba8e77`. The public health check reports four
+healthy station chains. The save-format and media branches remain separate
+from that deployment while the required backup and source files are pending.
+
+Current local checks on the route branch: the complete First Outpost route, 1,697 native tests, 1,697 sanitizer
+tests, 9 functional soak tests, and 57 Chromium checks pass; 4 browser checks
+require their dedicated live/adverse-network setup. The web build uses 885
+initial WASM pages. These results cover the current changes; final candidate
+qualification follows the remaining implementation.
+
+Measured route milestones are controller results. A new-player session
+will measure pacing. The fresh run fractures at 13.93 seconds, attaches ore at
+14.64 seconds, and receives its first payment at 186.08 seconds. The physical
+route reaches the mining upgrade at 367.58 seconds and the hold
+upgrade at 377.59 seconds. The complete route makes the scaffold at about 520 seconds, collects 68 frames at
+904.87 seconds, and activates the owned relay at 1,155.53 seconds. All seven
+checkpoints pass, including the active relay. The final hull has 97.1 health.
+The driver returns success after an active owned relay and successful
+checkpoint checks.
+
+The extracted macOS ARM64 server archive built from `540de4f` passes two
+localhost starts at protocol 8. All four station chains are healthy. World
+time continues from tick 121 to 125. Graceful shutdown takes 0.019 and 0.022
+seconds, and each shutdown publishes a new complete generation. This result
+covers an empty local server on ordinary disk; the slow-disk and occupied
+server checks remain open.
+
+Release copy is in [the draft notes](release-notes-v0.6.0-draft.md).
 
 ## Review result
 

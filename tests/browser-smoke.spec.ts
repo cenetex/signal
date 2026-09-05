@@ -1353,21 +1353,21 @@ function protocolInfoPacket(version: number): Buffer {
   packet[7] = 2;
 
   // WORLD_CARGO_PODS: live, server→client, relevance-filtered,
-  // header=2, record=72, max=64, non-zero cadence.
+  // header=2, record=77, max=64, non-zero cadence.
   packet[8] = 0x46;
   packet[9] = 2;
   packet.writeUInt16LE(0x0009, 10);
   packet.writeUInt16LE(2, 12);
-  packet.writeUInt16LE(72, 14);
+  packet.writeUInt16LE(77, 14);
   packet.writeUInt16LE(64, 16);
   packet.writeUInt16LE(100, 18);
 
-  // WORLD_CARGO_PODS_Q: the exact compact v4 companion schema.
+  // WORLD_CARGO_PODS_Q: the exact compact v8 companion schema.
   packet[20] = 0x62;
   packet[21] = 2;
   packet.writeUInt16LE(0x0009, 22);
   packet.writeUInt16LE(2, 24);
-  packet.writeUInt16LE(62, 26);
+  packet.writeUInt16LE(67, 26);
   packet.writeUInt16LE(64, 28);
   packet.writeUInt16LE(100, 30);
   return packet;
