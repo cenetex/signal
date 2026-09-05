@@ -49,7 +49,7 @@ struct local_save {
     float balance;
     uint32_t ship_asset_id;
     uint64_t signed_nonce;
-    uint8_t mining_level, hold_level, tractor_level;
+    int mining_level, hold_level, tractor_level;
     bool ready;
     bool failed;
     bool was_docked;

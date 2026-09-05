@@ -2429,7 +2429,7 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
-  test('fresh and mature play produce attributed jank reports and smooth accelerated rocks', async ({ page }) => {
+  test('fresh play and fracture rendering produce attributed jank reports and smooth accelerated rocks', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'requires the local singleplayer authority');
     const seconds = Number(process.env.SIGNAL_JANK_PROFILE_SECONDS || '2');
     test.setTimeout(Math.max(45_000, seconds * 2_000 + 30_000));
@@ -2459,18 +2459,20 @@ test.describe('Browser smoke tests', () => {
     expect(fresh.slow_frames.unexplained)
       .toBeLessThanOrEqual(fresh.slow_frames.over_16_6);
 
+    // The fracture fixture pauses the local server to hold its render scene.
+    // Reset after applying it so the second sample measures that scene alone.
+    await setSmokeLoopState(page, smokeLoopState.fractureTableau);
     await page.evaluate(() => {
       const mod = (window as unknown as {
         Module?: { ccall?: (name: string, returnType: null, argTypes: unknown[], args: unknown[]) => void };
       }).Module;
       mod?.ccall?.('signal_jank_profile_reset', null, [], []);
     });
-    await setSmokeLoopState(page, smokeLoopState.fractureTableau);
     await page.waitForTimeout(seconds * 1_000);
     const mature = await jankProfileReport(page);
     expect(mature.frames).toBeGreaterThan(30);
     expect(mature.frame_ms.p99).toBeGreaterThan(0);
-    expect(mature.snapshots.packets).toBeGreaterThan(0);
+    expect(mature.snapshots.packets).toBe(0);
     for (const entity of [
       'asteroid', 'cargo_pod', 'scaffold', 'npc', 'remote_player',
     ]) {
