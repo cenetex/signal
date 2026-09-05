@@ -22,7 +22,7 @@ typedef enum {
     PHASE_LAUNCH, PHASE_SELECT_ROCK, PHASE_MINE, PHASE_COLLECT_ORE,
     PHASE_DELIVER_ORE, PHASE_DOCK, PHASE_REFIT, PHASE_BUY_INGOTS,
     PHASE_HAUL, PHASE_UNPACK_INGOTS, PHASE_DELIVER_INGOTS,
-    PHASE_COLLECT_FRAMES = 12, PHASE_TOW_RELAY
+    PHASE_DELIVER_FRAMES, PHASE_COLLECT_FRAMES, PHASE_TOW_RELAY, PHASE_WAIT_FRAMES, PHASE_EXIT_FRAMES
 } route_phase_t;
 
 static bool authenticate(world_t *w, uint8_t pubkey[32], uint8_t secret[64]) {
@@ -107,6 +107,15 @@ static bool checkpoint_roundtrip(world_t *w, const char *root,
                  w->stations[i].scaffold == copy->stations[i].scaffold &&
                  memcmp(w->stations[i].outpost_founder_pubkey,
                         copy->stations[i].outpost_founder_pubkey, 32) == 0;
+        }
+        for (int i = 0; ok && i < before->ship->towed_pod_count; i++) {
+            int lhs_index = before->ship->towed_pods[i];
+            int rhs_index = after->ship->towed_pods[i];
+            uint8_t lhs[32], rhs[32];
+            ok = lhs_index == rhs_index &&
+                 cargo_pod_selection_digest(&w->cargo_pods[lhs_index], lhs) &&
+                 cargo_pod_selection_digest(&copy->cargo_pods[rhs_index], rhs) &&
+                 memcmp(lhs, rhs, sizeof(lhs)) == 0;
         }
         for (uint16_t i = 0; ok && i < before->ship->manifest.count; i++) {
             uint8_t lhs[CARGO_UNIT_WIRE_SIZE], rhs[CARGO_UNIT_WIRE_SIZE];
@@ -343,6 +352,7 @@ int main(int argc, char **argv) {
     int home = sp->current_station;
     float last_payout = 0;
     int last_pod_count = 0;
+    int shipyard_wait_until = 0;
     for (int i = 0; i < w->station_count; i++) {
         const station_t *st = &w->stations[i];
         fprintf(stderr, "%s %.0f %.0f frames=%d lasers=%d tractors=%d relay=%d\n", st->name, st->pos.x, st->pos.y, station_finished_count(st, COMMODITY_FRAME), station_finished_count(st, COMMODITY_LASER_MODULE), station_finished_count(st, COMMODITY_TRACTOR_MODULE), station_can_order_scaffold(st, MODULE_SIGNAL_RELAY));
@@ -459,7 +469,11 @@ int main(int argc, char **argv) {
                 stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
             } else {
                 int frames = local_frame_pod(w, sp->ship, true);
-                if (frames >= 0) {
+                int relay = owned_relay_scaffold(w);
+                bool building = relay >= 0 && w->scaffolds[relay].state == SCAFFOLD_NASCENT;
+                if (frames >= 0 && building && sp->ship->hold_level) {
+                    stage = PHASE_EXIT_FRAMES; path = (nav_path_t){0};
+                } else if (frames >= 0) {
                     if (!present_pod(w, frames, secret)) break;
                 } else if (!sp->ship->hold_level && can_afford_upgrade(st, sp->ship,
                         SHIP_UPGRADE_HOLD, ledger_balance_by_pubkey(st, pubkey))) {
@@ -533,7 +547,45 @@ int main(int argc, char **argv) {
                 stage = PHASE_DOCK; path = (nav_path_t){0};
             }
         }
-        if (stage == PHASE_COLLECT_FRAMES) {
+        if (stage == PHASE_EXIT_FRAMES) {
+            if (sp->docked) sp->input.launch = true;
+            vec2 exit = station_exit_target(&w->stations[home], sp->ship->pos);
+            vec2 direction = v2_norm(v2_sub(exit, w->stations[home].pos));
+            exit = v2_add(w->stations[home].pos, v2_scale(direction, 1700));
+            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, exit, 60, 70, dt));
+            sp->input.tractor_hold = true;
+            sp->input.thrust = fminf(sp->input.thrust, 0.3f);
+            if (v2_dist_sq(sp->ship->pos, w->stations[home].pos) > 1450 * 1450) {
+                stage = PHASE_DELIVER_FRAMES; path = (nav_path_t){0};
+            }
+        } else if (stage == PHASE_DELIVER_FRAMES) {
+            if (sp->docked) sp->input.launch = true;
+            station_t *st = &w->stations[home];
+            int hopper = station_find_hopper_for(st, COMMODITY_FRAME);
+            int pod = local_frame_pod(w, sp->ship, true);
+            if (hopper < 0) break;
+            vec2 goal = module_world_pos_ring(st, st->modules[hopper].ring,
+                                              st->modules[hopper].slot);
+            vec2 approach = v2_add(goal, v2_scale(v2_norm(v2_sub(goal, st->pos)), 60));
+            if (v2_dist_sq(sp->ship->pos, st->pos) > 450 * 450)
+                approach = dock_route_target(st, sp->ship);
+            apply_flight(&sp->input, steer_through_lane(sp->ship, approach));
+            sp->input.tractor_hold = true;
+            sp->input.thrust = fminf(sp->input.thrust, 0.3f);
+            if (pod < 0 || v2_dist_sq(w->cargo_pods[pod].pos, goal) <
+                    HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE) {
+                sp->input.release_tow = true;
+                sp->input.tractor_hold = false;
+                stage = PHASE_WAIT_FRAMES; path = (nav_path_t){0};
+                shipyard_wait_until = tick + 20 * 120;
+                fprintf(stderr, "shipyard frames %.2f\n", tick * dt);
+            }
+        } else if (stage == PHASE_WAIT_FRAMES) {
+            apply_flight(&sp->input, steer_through_lane(sp->ship, sp->ship->pos));
+            if (tick >= shipyard_wait_until) {
+                stage = PHASE_DOCK; path = (nav_path_t){0};
+            }
+        } else if (stage == PHASE_COLLECT_FRAMES) {
             if (sp->docked) sp->input.launch = true;
             if (local_frame_pod(w, sp->ship, true) >= 0) {
                 stage = PHASE_DOCK; path = (nav_path_t){0};
@@ -619,6 +671,27 @@ int main(int argc, char **argv) {
                 sp->ship->hold_level, ship_finished_count(sp->ship, COMMODITY_FRAME),
                 station_finished_count(&w->stations[home], COMMODITY_FRAME));
             fflush(stdout);
+            if (stage == PHASE_WAIT_FRAMES) {
+                int hopper = station_find_hopper_for(&w->stations[home], COMMODITY_FRAME);
+                vec2 goal = module_world_pos_ring(&w->stations[home], w->stations[home].modules[hopper].ring,
+                                                 w->stations[home].modules[hopper].slot);
+                for (int p = 0; p < MAX_CARGO_PODS; p++) {
+                    const cargo_pod_t *pod = &w->cargo_pods[p];
+                    if (!pod->active || pod->commodity != COMMODITY_FRAME || !pod_origin_is(pod, home)) continue;
+                    int ps = -1, pm = -1;
+                    cargo_pod_module_tractor_indices(pod, &ps, &pm);
+                    fprintf(stderr, "frame pod=%d qty=%d player=%d module=%d/%d arrived=%d hopper=%.0f charge=%lld pos=%.0f/%.0f\n",
+                            p, pod->quantity, cargo_pod_player_tractor(pod), ps, pm,
+                            cargo_pod_module_tractor_arrived(w, pod, ps, pm),
+                            v2_len(v2_sub(pod->pos, goal)), (long long)pod->custody_charge_total, pod->pos.x, pod->pos.y);
+                }
+            }
+            int relay = owned_relay_scaffold(w);
+            if (relay >= 0 && stage >= PHASE_REFIT)
+                fprintf(stderr, "relay state=%d material=%.0f/%.0f pos=%.0f/%.0f\n",
+                        w->scaffolds[relay].state, w->scaffolds[relay].build_amount,
+                        module_build_cost_lookup(MODULE_SIGNAL_RELAY), w->scaffolds[relay].pos.x,
+                        w->scaffolds[relay].pos.y);
             if (stage >= PHASE_REFIT)
                 fprintf(stderr, "refit %.1f levels=%d/%d frames=%d lasers=%d hold=%d cost=%.1f\n", tick * dt,
                     sp->ship->mining_level, sp->ship->hold_level,
