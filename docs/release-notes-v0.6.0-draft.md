@@ -29,12 +29,10 @@ pause are awaiting approval.
 
 ## Release checks still open
 
-- Complete the fresh-world route in Linux CI. The local run activates an
-  owned relay at 1,155.53 game seconds and passes all seven saved checkpoints.
 - Confirm the worker story through a new-player play session.
 - Record the haul, combat, and camera review on named hardware.
 - Qualify slow-disk saves and recovery with connected players.
-- Supply the canonical music and station portraits, then verify real native
-  and web archives.
-- Complete candidate CI and the full memory check, then verify deployment and
-  public version and chain health.
+- Supply the three station portraits and publication permission notes, then
+  verify real native and web archives. All 28 tracks and 10 clips are recovered.
+- Record the final memory-check result, then verify deployment and public
+  version and chain health. Required implementation CI already passes.
