@@ -104,6 +104,7 @@ jobs:
           bash scripts/check_vendor_drift.sh
           bash scripts/test_vendor_drift_detection.sh
           python3 scripts/test_compare_liblecore_replay.py
+          python3 scripts/test_assets.py
 
   native:
     name: Linux native, sanitizer, and static gates
