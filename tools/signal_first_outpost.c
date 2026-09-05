@@ -53,6 +53,83 @@ static bool authenticate(world_t *w, uint8_t pubkey[32], uint8_t secret[64]) {
                                                 &proved) && proved.verified;
 }
 
+static bool checkpoint_roundtrip(world_t *w, const char *root,
+                                 uint8_t pubkey[32], uint8_t secret[64]) {
+    char saves[PERSISTENCE_GENERATION_PATH_MAX];
+    int size = snprintf(saves, sizeof(saves), "%s/checkpoints", root);
+    if (size <= 0 || (size_t)size >= sizeof(saves)) return false;
+    bool slots[MAX_PLAYERS] = {true};
+    persistence_generation_paths_t saved;
+    if (!persistence_generation_commit(saves, NULL, w, slots,
+            PERSISTENCE_GENERATION_FAULT_NONE, &saved)) return false;
+    world_t *copy = calloc(1, sizeof(*copy));
+    if (!copy) return false;
+    bool ok = station_catalog_load_all(copy->stations, MAX_STATIONS,
+                                       saved.catalog_dir) >= 0 &&
+              world_load(copy, saved.world_path) &&
+              authenticate(copy, pubkey, secret) &&
+              player_load_by_pubkey(&copy->players[0], copy, saved.player_dir, pubkey);
+    const server_player_t *before = &w->players[0];
+    const server_player_t *after = &copy->players[0];
+    fprintf(stderr, "checkpoint decoded=%d\n", ok);
+    if (ok) {
+        fprintf(stderr, "checkpoint compare asset=%u/%u nonce=%llu/%llu mining=%d/%d hold=%d/%d manifest=%u/%u ore=%d/%d pods=%d/%d scaffold=%d/%d stations=%d/%d\n",
+            before->ship_asset_id, after->ship_asset_id,
+            (unsigned long long)before->last_signed_nonce, (unsigned long long)after->last_signed_nonce,
+            before->ship->mining_level, after->ship->mining_level,
+            before->ship->hold_level, after->ship->hold_level,
+            before->ship->manifest.count, after->ship->manifest.count,
+            before->ship->towed_count, after->ship->towed_count,
+            before->ship->towed_pod_count, after->ship->towed_pod_count,
+            before->ship->towed_scaffold, after->ship->towed_scaffold,
+            w->station_count, copy->station_count);
+        ok = before->ship_asset_id == after->ship_asset_id &&
+             before->last_signed_nonce == after->last_signed_nonce &&
+             before->ship->mining_level == after->ship->mining_level &&
+             before->ship->hold_level == after->ship->hold_level &&
+             before->ship->manifest.count == after->ship->manifest.count &&
+             before->ship->towed_count == after->ship->towed_count &&
+             before->ship->towed_pod_count == after->ship->towed_pod_count &&
+             before->ship->towed_scaffold == after->ship->towed_scaffold &&
+             w->station_count == copy->station_count;
+        for (int i = 0; ok && i < w->station_count; i++) {
+            ok = ledger_balance_by_pubkey(&w->stations[i], pubkey) ==
+                 ledger_balance_by_pubkey(&copy->stations[i], pubkey) &&
+                 w->stations[i].scaffold == copy->stations[i].scaffold &&
+                 memcmp(w->stations[i].outpost_founder_pubkey,
+                        copy->stations[i].outpost_founder_pubkey, 32) == 0;
+        }
+        for (uint16_t i = 0; ok && i < before->ship->manifest.count; i++) {
+            uint8_t lhs[CARGO_UNIT_WIRE_SIZE], rhs[CARGO_UNIT_WIRE_SIZE];
+            cargo_unit_wire_pack(&before->ship->manifest.units[i], lhs);
+            cargo_unit_wire_pack(&after->ship->manifest.units[i], rhs);
+            ok = memcmp(lhs, rhs, sizeof(lhs)) == 0;
+        }
+    }
+    fprintf(stderr, "checkpoint tick=%u generation=%llu restored=%d\n", w->tick,
+            (unsigned long long)saved.generation, ok);
+    world_cleanup(copy);
+    free(copy);
+    return ok;
+}
+
+static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
+    vec2 approach = station_approach_target(st, ship->pos);
+    int outer = station_max_ring(st);
+    int road = outer;
+    while (road > 1 && ring_module_count(st, road) <= 1) road--;
+    if (outer <= 1 || !station_ring_open_gap_lane(st, road, NULL, NULL))
+        return approach;
+    float radius = v2_len(v2_sub(ship->pos, st->pos));
+    vec2 entry = station_entry_target(st, ship->pos);
+    if (radius > STATION_RING_RADIUS[outer] + 80 &&
+        v2_dist_sq(ship->pos, entry) > 140 * 140) return entry;
+    float inner = fmaxf(STATION_RING_RADIUS[road] - 90, st->radius + 90);
+    if (radius > inner + 20)
+        return station_ring_open_gap_lane_pos(st, road, inner);
+    return approach;
+}
+
 static int nearest_rock(const world_t *w, const ship_t *ship, bool fragment, int home) {
     int best = -1;
     float distance = 1e30f;
@@ -241,6 +318,9 @@ int main(int argc, char **argv) {
     bool fracture = false, tow = false, payout = false, active_outpost = false;
     bool relay_ordered = false;
     vec2 frontier = frontier_point(w);
+    int checkpoint_mining = 0, checkpoint_hold = 0, checkpoint_stations = w->station_count;
+    bool checkpoint_payout = false, checkpoint_order = false, checkpoint_frames = false;
+    bool checkpoints_ok = true;
     printf("seconds,phase,x,y,hull,target,ore_tows,pod_tows,earned,balance,docked,speed,mining,hold,held_frames,station_frames\n");
     for (int tick = 0; tick < (int)duration * 120; tick++) {
         sp->input = (input_intent_t){.mining_target_hint = -1,
@@ -308,9 +388,9 @@ int main(int argc, char **argv) {
             }
         } else if (stage == PHASE_DOCK) {
             station_t *st = &w->stations[home];
-            vec2 approach = station_approach_target(st, sp->ship->pos);
+            vec2 approach = dock_route_target(st, sp->ship);
             apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, approach, 40,
-                sp->ship->towed_pod_count ? 70 : 160, dt));
+                70, dt));
             if (sp->in_dock_range && sp->nearby_station == home) {
                 sp->input.dock = true;
                 sp->input.thrust = 0;
@@ -450,6 +530,23 @@ int main(int argc, char **argv) {
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
         world_sim_step(w, dt);
+        bool next_payout = sp->ship->stat_credits_earned > 0;
+        bool next_frames = ship_finished_count(sp->ship, COMMODITY_FRAME) >= 48;
+        if ((!checkpoint_payout && next_payout) ||
+            checkpoint_mining != sp->ship->mining_level ||
+            checkpoint_hold != sp->ship->hold_level ||
+            checkpoint_stations != w->station_count ||
+            (!checkpoint_order && relay_ordered) ||
+            (!checkpoint_frames && next_frames)) {
+            checkpoints_ok = checkpoint_roundtrip(w, argv[2], pubkey, secret);
+            if (!checkpoints_ok) break;
+            checkpoint_payout = next_payout;
+            checkpoint_mining = sp->ship->mining_level;
+            checkpoint_hold = sp->ship->hold_level;
+            checkpoint_stations = w->station_count;
+            checkpoint_order = relay_ordered;
+            checkpoint_frames = next_frames;
+        }
         if (sp->ship->towed_pod_count != last_pod_count) {
             last_pod_count = sp->ship->towed_pod_count;
             fprintf(stderr, "pod count %.2f count=%d stage=%d pos=%.0f/%.0f\n", tick * dt, last_pod_count, stage, sp->ship->pos.x, sp->ship->pos.y);
@@ -473,6 +570,8 @@ int main(int argc, char **argv) {
                     upgrade_station_credit_cost(&w->stations[home], sp->ship, SHIP_UPGRADE_MINING, 8));
         }
     }
+    if (active_outpost)
+        checkpoints_ok = checkpoint_roundtrip(w, argv[2], pubkey, secret);
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
@@ -483,5 +582,5 @@ int main(int argc, char **argv) {
     }
     world_cleanup(w);
     free(w);
-    return fracture && tow && payout && active_outpost ? 0 : 1;
+    return fracture && tow && payout && active_outpost && checkpoints_ok ? 0 : 1;
 }

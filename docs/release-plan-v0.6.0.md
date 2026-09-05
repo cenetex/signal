@@ -1,7 +1,7 @@
-# Proposed release: v0.6.0 — First Outpost
+# Release in progress: v0.6.0 — First Outpost
 
 Review date: 2026-09-05. Code reviewed: `9337c7eeacd00e91d058172e98ba7d2f99ec2d6a`.
-Status: proposed scope and release gates.
+Status: implementation and acceptance checks are in progress.
 
 The release promise is simple: earn your way from a starter ship to an active
 relay, understand how your work changed the route, and return to that progress
@@ -12,6 +12,41 @@ release outcome.
 Use v0.6.0 because the 65 commits since v0.5.4 add a worker story, physical trade,
 shared gameplay paths, and durable economy work. "First Outpost" is the proposed
 release name. The release date follows the acceptance results.
+
+## Build status
+
+Updated September 5 after implementation began. The original review below
+records the starting point; this table records the release work.
+
+| Work | Current result | Next check |
+| --- | --- | --- |
+| Player story and guide | [#723](https://github.com/cenetex/signal/pull/723) merged. Progress is scoped to the player and local world or server. | Final route checkpoints. |
+| Panel controls and receipts | [#724](https://github.com/cenetex/signal/pull/724) merged. Escape closes the active panel; receipt names and narrow trade rows are readable. | Final packaged play review. |
+| Local world recovery | [#725](https://github.com/cenetex/signal/pull/725) passed every required CI check at `7209e146e455b5d55c145f3cf7342687fb656f43`. World save 85 and player save PLY8 preserve the exact borrowed hull and local progress. | A coherent production backup before the save upgrade. The brief service pause is awaiting approval. |
+| Media packages | [#726](https://github.com/cenetex/signal/pull/726) adds pinned pack hashes, source records, and native/web/server archive layouts. Nine small-file tests pass. | The canonical music and portrait files, then checks of the real archives. |
+| Ordinary-action route | [#727](https://github.com/cenetex/signal/pull/727) is a draft. Fresh runs reach fracture, tow, payment, the first mining upgrade, and physical frame production. | Complete relay activation and prove each saved milestone. |
+| Crate trade data | #727 includes the frame shell in the charge and sends the exact quote and unpack source in protocol 8. | Final CI and the complete route. |
+| Physical play and final release | Pending the completed route baseline. | Named-hardware motion captures, new-player play, final memory checks, archives, and release notes. |
+
+The merged changes are live at `eba8e77`. The public health check reports four
+healthy station chains. The save-format and media branches remain separate
+from that deployment while the required backup and source files are pending.
+
+Current local checks on the route branch: 1,696 native tests, 1,696 sanitizer
+tests, 9 functional soak tests, and 57 Chromium checks pass; 4 browser checks
+require their dedicated live/adverse-network setup. The web build uses 885
+initial WASM pages. These results cover the current changes; final candidate
+qualification follows the remaining implementation.
+
+Measured route milestones are controller results, rather than new-player
+pacing results. The fresh run fractures at 13.93 seconds, attaches ore at
+14.64 seconds, and receives its first payment at 186.08 seconds. A run that
+unpacks both ingot crates at Prospect reaches the first mining upgrade at
+about 275 seconds. The physical frame-haul variant reaches Kepler at about
+572 seconds and starts unpacking locally produced frames at about 644 seconds.
+The route driver returns success after an active owned relay and successful
+checkpoint checks. Its current draft continues to expose route and recovery
+gaps during that full run.
 
 ## Review result
 
