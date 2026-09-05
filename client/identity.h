@@ -51,6 +51,9 @@ typedef struct {
  */
 bool identity_load_or_generate(player_identity_t *out);
 
+/* Resolve a named companion file in the native player data directory. */
+bool identity_data_path(char *out, size_t cap, const char *filename);
+
 /* Test-only entry points: explicit path, no platform resolution. Useful
  * for unit tests that want to round-trip identities through TMP() paths
  * and verify the corruption recovery behavior. Both return true on

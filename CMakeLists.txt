@@ -298,6 +298,7 @@ set(SIGNAL_CLIENT_SOURCES
     client/local_server.c
     client/onboarding.c
     client/story_runtime.c
+    client/progress_store.c
     shared/story_loop.c
     client/contract_objective.c
     client/episode_lifecycle.c
@@ -387,6 +388,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_client_log.c
         tests/c/test_episode_lifecycle.c
         tests/c/test_story_loop.c
+        tests/c/test_progress_store.c
         tests/c/test_local_authority.c
         tests/c/test_legacy_recovery_ui.c
         tests/c/test_cell_geometry.c
@@ -464,6 +466,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_ai_feature_contract.c
         tests/c/test_hud_attention.c
         client/identity.c
+        client/progress_store.c
         client/public_actor_presentation.c
         client/client_log.c
         client/reconciliation_diagnostics.c
@@ -1059,6 +1062,7 @@ if(EMSCRIPTEN)
         "'_signal_smoke_legacy_recovery_reset'"
         "'_signal_debug_held_control_mask'"
         "'_signal_debug_identity_available'"
+        "'_signal_debug_player_progress'"
         "'_signal_debug_auth_available'"
         "'_signal_debug_net_connected'"
         "'_signal_smoke_market_memory_packet_parity'"

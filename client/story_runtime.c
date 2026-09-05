@@ -2,10 +2,7 @@
 
 #include "client.h"
 #include "story_loop.h"
-
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
+#include "progress_store.h"
 
 static bool story_runtime_is_local_outpost(const station_t *station)
 {
@@ -21,25 +18,14 @@ static bool story_runtime_is_local_outpost(const station_t *station)
 
 static void story_runtime_save(void)
 {
-#ifdef __EMSCRIPTEN__
-    char js[112];
-    snprintf(js, sizeof(js),
-             "localStorage.setItem('signal_story_loop_v1','%u')",
-             (unsigned)g.worker_story.flags);
-    emscripten_run_script(js);
-#endif
+    client_progress_save_story(g.worker_story.flags);
 }
 
 void story_runtime_load(void)
 {
     if (g.worker_story.loaded) return;
     g.worker_story.loaded = true;
-#ifdef __EMSCRIPTEN__
-    int flags = emscripten_run_script_int(
-        "(function(){var s=localStorage.getItem('signal_story_loop_v1');"
-        "if(!s)return 0;return parseInt(s,10)||0;})()");
-    g.worker_story.flags = (uint16_t)((unsigned)flags & 0xffu);
-#endif
+    g.worker_story.flags = client_progress_current().story;
 }
 
 static bool story_runtime_finish_mark(bool changed,
