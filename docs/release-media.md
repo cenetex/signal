@@ -1,6 +1,9 @@
 # Release media
 
-`make assets` installs one reviewed ZIP pack before CMake runs. Set
+`make assets` installs one reviewed ZIP pack before CMake runs. Release and
+Fly deployment workflows require the pack before their candidate checks.
+A missing pack reference or a failed verification stops the workflow before
+deployment. Set
 `SIGNAL_ASSET_PACK_URL` to an HTTPS URL and `SIGNAL_ASSET_PACK_SHA256` to its
 lowercase SHA-256. A local ZIP can be passed with
 `python3 scripts/assets.py sync --pack /path/pack.zip --sha256 HASH`.

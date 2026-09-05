@@ -29,6 +29,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.release_ref || github.ref }}
+      - name: Provision verified media before candidate checks
+        run: python3 scripts/assets.py sync
       - name: Install native dependencies
         run: |
           sudo apt-get update
