@@ -25,8 +25,8 @@ TEST(test_state_digest_reports_versioned_schema_and_is_repeatable)
 
     world_reset(&w);
     ASSERT_STR_EQ(signal_authoritative_state_digest_schema(),
-                  "signal.authoritative_state.v3");
-    ASSERT_EQ_INT((int)signal_authoritative_state_digest_version(), 3);
+                  "signal.authoritative_state.v4");
+    ASSERT_EQ_INT((int)signal_authoritative_state_digest_version(), 4);
 
     state_root(&w, first);
     state_root(&w, second);

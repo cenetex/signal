@@ -218,9 +218,8 @@ set(SIGNAL_SIM_SOURCES
     server/sim_ship.c
 )
 
-# Native authoritative persistence orchestration.  This is intentionally not
-# part of SIGNAL_SIM_SOURCES: browser/single-player simulations do not own the
-# server's crash-consistent generation directory.
+# Authoritative persistence orchestration. Dedicated servers and local worlds
+# each own a complete generation directory.
 set(SIGNAL_SERVER_PERSISTENCE_SOURCES
     server/legacy_save_recovery.c
     server/persistence_generation.c
@@ -296,6 +295,7 @@ set(SIGNAL_CLIENT_SOURCES
     client/integration/work/signal/signal_client_strategic.c
     client/local_authority.c
     client/local_server.c
+    client/local_save.c
     client/onboarding.c
     client/story_runtime.c
     client/progress_store.c
@@ -389,6 +389,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_episode_lifecycle.c
         tests/c/test_story_loop.c
         tests/c/test_progress_store.c
+        tests/c/test_local_save.c
         tests/c/test_local_authority.c
         tests/c/test_legacy_recovery_ui.c
         tests/c/test_cell_geometry.c
@@ -467,6 +468,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_hud_attention.c
         client/identity.c
         client/progress_store.c
+        client/local_save.c
         client/public_actor_presentation.c
         client/client_log.c
         client/reconciliation_diagnostics.c
@@ -652,6 +654,28 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_definitions(flight_trace PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
+    add_executable(signal_first_outpost
+        tools/signal_first_outpost.c
+        ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
+        ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_first_outpost PRIVATE
+        ${SIGNAL_INCLUDE_DIRS} ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_definitions(signal_first_outpost PRIVATE SIGNAL_SERVER_PERSISTENCE=1)
+    signal_apply_sim_profile(signal_first_outpost)
+    if(NOT MSVC)
+        target_link_libraries(signal_first_outpost PRIVATE m)
+        target_compile_options(signal_first_outpost PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(signal_first_outpost PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_first_outpost PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
     add_executable(signal_replay
         tools/signal_replay.c
         ${SIGNAL_SIM_SOURCES}
@@ -761,11 +785,12 @@ set(GAME_SOURCES
     ${SIGNAL_SIM_SOURCES}
     ${SIGNAL_SIM_HELPERS}
     ${SIGNAL_CRYPTO_SOURCES}
+    ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
 )
 
 # Native builds link mongoose for WebSocket client networking.
 if(NOT EMSCRIPTEN)
-    list(APPEND GAME_SOURCES server/mongoose.c)
+    list(APPEND GAME_SOURCES server/mongoose.c server/persistence_writer.c)
 endif()
 
 if(WIN32 AND NOT EMSCRIPTEN)
@@ -779,7 +804,7 @@ target_include_directories(signal SYSTEM PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
 )
 target_include_directories(signal PRIVATE ${SIGNAL_INCLUDE_DIRS} ${SIGNAL_CRYPTO_INCLUDE_DIR})
-target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}")
+target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}" SIGNAL_SERVER_PERSISTENCE=1)
 signal_apply_sim_profile(signal)
 
 if(SIGNAL_VOICE)
@@ -952,6 +977,27 @@ if(EMSCRIPTEN)
         SIGNAL_HAS_WEB_EPISODE_ASSETS=${SIGNAL_HAS_WEB_EPISODE_ASSETS}
         SIGNAL_HAS_WEB_MUSIC_ASSETS=${SIGNAL_HAS_WEB_MUSIC_ASSETS})
 
+    file(GLOB_RECURSE SIGNAL_WEB_STATION_ASSETS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/stations/*")
+    if(SIGNAL_WEB_STATION_ASSETS)
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp
+            COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/stations
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_CURRENT_SOURCE_DIR}/assets/stations
+                ${CMAKE_CURRENT_BINARY_DIR}/stations
+            COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp
+            DEPENDS ${SIGNAL_WEB_STATION_ASSETS}
+            VERBATIM)
+    else()
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp
+            COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/stations
+            COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp
+            VERBATIM)
+    endif()
+    list(APPEND SIGNAL_WEB_ASSET_STAMPS ${CMAKE_CURRENT_BINARY_DIR}/station_assets.stamp)
+
     set(SIGNAL_EMSCRIPTEN_EXPORTS
         "'_main'"
         "'__saudio_emsc_pull'"
@@ -1063,6 +1109,9 @@ if(EMSCRIPTEN)
         "'_signal_debug_held_control_mask'"
         "'_signal_debug_identity_available'"
         "'_signal_debug_player_progress'"
+        "'_signal_save_local_world'"
+        "'_signal_debug_local_save_generation'"
+        "'_signal_debug_local_save_summary'"
         "'_signal_debug_auth_available'"
         "'_signal_debug_net_connected'"
         "'_signal_smoke_market_memory_packet_parity'"
@@ -1078,6 +1127,8 @@ if(EMSCRIPTEN)
         "'_free'"
     )
     list(JOIN SIGNAL_EMSCRIPTEN_EXPORTS "," SIGNAL_EMSCRIPTEN_EXPORTS_CSV)
+    set_property(TARGET signal APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/web/local-persistence.js")
     set_target_properties(signal PROPERTIES SUFFIX ".js")
     target_link_options(signal PRIVATE
         "SHELL:-sWASM=1"
@@ -1091,6 +1142,8 @@ if(EMSCRIPTEN)
         "SHELL:-sEXPORTED_FUNCTIONS=[${SIGNAL_EMSCRIPTEN_EXPORTS_CSV}]"
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:-lwebsocket.js"
+        "SHELL:-lidbfs.js"
+        "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/web/local-persistence.js"
     )
     # Copy static web assets into build-web as real dependencies so JS-only
     # iteration updates the local smoke-test server without forcing a relink.

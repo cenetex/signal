@@ -39,6 +39,23 @@ make protocol-check
 Override `PROTOCOL_CHECK_URL` when checking a non-default local relay or a
 staging endpoint.
 
+## Version 8 crate trade data
+
+Version 8 appends a four-byte unsigned total price and a one-byte source
+station tag to each cargo-pod identity record. Full records are 77 bytes;
+compact records are 67 bytes. The price includes the frame shell and follows
+the server's remaining custody charge after a partial unpack. Zero means a
+station quote is unavailable. Source tag zero means unknown or mixed origin;
+other values encode the station index plus one.
+
+Clients use the price for the BUY row and the source for the UNPACK action.
+The server still verifies the signed action and charges the authoritative
+amount. A change in the price also marks the record for a new delta.
+
+Client and server deployments must use version 8 together. Existing browser
+sessions receive a protocol mismatch and can reload the updated client.
+These display fields are separate from save version 85.
+
 ## Stream Classes
 
 - `static`: identity/config snapshots such as `NET_MSG_STATION_IDENTITY`.

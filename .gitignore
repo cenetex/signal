@@ -40,6 +40,8 @@ _site/
 assets/anime/*.mp4
 assets/anime/*.mpg
 assets/music/*.mp3
+assets/stations/*/portrait.png
+assets/media-provenance.json
 
 # voicebox runtime assets — fetched at configure time, not committed
 assets/voice/voicebox

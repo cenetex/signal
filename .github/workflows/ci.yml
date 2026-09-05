@@ -104,6 +104,7 @@ jobs:
           bash scripts/check_vendor_drift.sh
           bash scripts/test_vendor_drift_detection.sh
           python3 scripts/test_compare_liblecore_replay.py
+          python3 scripts/test_assets.py
 
   native:
     name: Linux native, sanitizer, and static gates
@@ -300,7 +301,7 @@ jobs:
     needs: classify
     if: needs.classify.outputs.tools == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - name: Install toolchain
@@ -314,8 +315,28 @@ jobs:
             -DGIT_HASH="${GITHUB_SHA::7}"
           cmake --build build-tools --parallel --target \
             signal_verify signal_chain_assets signal_rati_receipt \
-            flight_trace signal_replay signal_hnn_pilot_benchmark
+            flight_trace signal_replay signal_hnn_pilot_benchmark \
+            signal_first_outpost signal_server
           ./build-tools/signal_hnn_pilot_benchmark --samples 64
+      - name: First Outpost and server restart
+        run: |
+          mkdir -p test-results/first-outpost
+          timeout 900 ./build-tools/signal_first_outpost 3600 \
+            "$RUNNER_TEMP/signal-first-outpost" \
+            > test-results/first-outpost/route.csv \
+            2> test-results/first-outpost/route.log
+          python3 scripts/check_release_restart.py \
+            --server build-tools/signal_server \
+            --output "$RUNNER_TEMP/signal-server-restart" --protocol 8
+          cp "$RUNNER_TEMP/signal-server-restart/restart-report.json" \
+            test-results/first-outpost/
+      - name: Upload First Outpost evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-outpost-${{ github.sha }}
+          path: test-results/first-outpost/
+          if-no-files-found: warn
       - name: Build and run packnft tests
         run: |
           cmake -G Ninja -S tools/packnft -B build-packnft \

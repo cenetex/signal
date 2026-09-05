@@ -689,14 +689,14 @@ function decodeRecordInfo(payload, clientEntry) {
 
   if (type === 0x62 && payload.length >= 2) {
     const count = payload[1];
-    const recordSize = 62;
+    const recordSize = 67;
     const expected = 2 + count * recordSize;
     return payload.length === expected ? { records: count } : null;
   }
 
   if (type === 0x46 && payload.length >= 2) {
     const count = payload[1];
-    const recordSize = 72;
+    const recordSize = 77;
     const expected = 2 + count * recordSize;
     return payload.length === expected ? { records: count } : null;
   }

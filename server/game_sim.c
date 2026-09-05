@@ -3276,7 +3276,11 @@ static bool ship_asset_player_can_reclaim_bound(const world_t *w,
         return false;
     }
     if (ship_asset_player_matches_owner(w, asset, sp)) return true;
+    actor_principal_t player = actor_principal_none();
+    if (asset->loaner && actor_principal_from_verified_player(sp, &player) &&
+        actor_principal_equal(&asset->borrower_principal, &player)) return true;
     return asset->owner_principal.kind == ACTOR_PRINCIPAL_STATION &&
+           asset->borrower_principal.kind == ACTOR_PRINCIPAL_NONE &&
            asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
            asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
            asset->operator_slot == player_slot;
@@ -3310,6 +3314,7 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
             old_asset->ship = &old_asset->stored_ship;
             old_asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
             old_asset->operator_slot = -1;
+            old_asset->borrower_principal = actor_principal_none();
             if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS)
                 old_asset->custody_station = (int16_t)sp->current_station;
         }
@@ -3354,6 +3359,11 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
     asset->live_ship_ref = sp->ship_ref;
     asset->ship = sp->ship;
     asset->custody_station = (int16_t)sp->current_station;
+    if (asset->loaner && asset->owner_principal.kind == ACTOR_PRINCIPAL_STATION) {
+        actor_principal_t borrower = actor_principal_none();
+        if (actor_principal_from_verified_player(sp, &borrower))
+            asset->borrower_principal = borrower;
+    }
     if (!already_live) {
         ship_cleanup(&asset->stored_ship);
         memset(&asset->stored_ship, 0, sizeof(asset->stored_ship));
@@ -3384,7 +3394,7 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
                                            bound->custody_station);
     }
 
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = 0; pass < 4; pass++) {
         for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
             ship_asset_t *asset = &w->ship_assets[i];
             if (!asset->active || asset->destroyed) continue;
@@ -3394,8 +3404,12 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
                   asset->operator_slot == player_slot)) {
                 continue;
             }
-            if (!ship_asset_player_matches_owner(w, asset, sp)) continue;
-            if (pass == 0 && asset->custody_station != station_idx) continue;
+            actor_principal_t player = actor_principal_none();
+            bool borrowed = asset->loaner &&
+                actor_principal_from_verified_player(sp, &player) &&
+                actor_principal_equal(&asset->borrower_principal, &player);
+            if (pass < 2 ? !ship_asset_player_matches_owner(w, asset, sp) : !borrowed) continue;
+            if ((pass % 2) == 0 && asset->custody_station != station_idx) continue;
             return ship_asset_assign_to_player(w, player_slot, asset,
                                                asset->custody_station);
         }
@@ -3412,6 +3426,7 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
             continue;
         }
         if (!asset->loaner) continue;
+        if (asset->borrower_principal.kind != ACTOR_PRINCIPAL_NONE) continue;
         if (asset->custody_station != station_idx) continue;
         return ship_asset_assign_to_player(w, player_slot, asset, station_idx);
     }
@@ -4934,27 +4949,6 @@ int world_ensure_starter_mining_refit_work_order(world_t *w) {
 static bool cargo_pod_fits_contract_exact(const cargo_pod_t *pod,
                                           const contract_t *ct);
 
-static float station_pod_shell_quote(const station_t *st,
-                                     const cargo_pod_t *pod,
-                                     bool station_sells) {
-    if (!st || !pod || !pod->has_shell_frame ||
-        (commodity_t)pod->shell_frame.commodity != COMMODITY_FRAME) {
-        return 0.0f;
-    }
-    float value = station_sells
-        ? station_sell_price_unit(st, &pod->shell_frame)
-        : station_buy_price_unit(st, &pod->shell_frame);
-    if (value <= FLOAT_EPSILON &&
-        st->base_price[COMMODITY_FRAME] > FLOAT_EPSILON) {
-        value = st->base_price[COMMODITY_FRAME] *
-            prefix_class_price_multiplier(
-                (int)pod->shell_frame.prefix_class);
-    }
-    value *= mining_payout_multiplier(
-        (mining_grade_t)pod->shell_frame.grade);
-    return value > FLOAT_EPSILON ? value : 0.0f;
-}
-
 static float black_market_pod_quote(const station_t *st,
                                     const cargo_pod_t *pod) {
     if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
@@ -5262,39 +5256,6 @@ static bool cargo_pod_matches_buy_grade(const cargo_pod_t *pod,
             return false;
     }
     return true;
-}
-
-static float station_market_pod_sell_quote(const station_t *st,
-                                           const cargo_pod_t *pod) {
-    if (!st || !pod || !pod->active || pod->kind != CARGO_POD_CARGO ||
-        pod->commodity >= COMMODITY_COUNT || pod->quantity == 0 ||
-        pod->shipment_id != 0) {
-        return 0.0f;
-    }
-    commodity_t c = pod->commodity;
-    float fallback = station_sell_price(st, c);
-    if (fallback <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
-        fallback = st->base_price[c];
-    if (fallback <= FLOAT_EPSILON) return 0.0f;
-
-    if (pod->manifest_count > 0) {
-        if (pod->manifest_count != pod->quantity ||
-            pod->manifest_count > CARGO_POD_MANIFEST_CAP ||
-            !is_finished_good(c)) {
-            return 0.0f;
-        }
-        float value = 0.0f;
-        for (uint16_t i = 0; i < pod->manifest_count; i++) {
-            const cargo_unit_t *unit = &pod->manifest_units[i];
-            if ((commodity_t)unit->commodity != c) return 0.0f;
-            float unit_value = station_sell_price_unit(st, unit);
-            unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
-            value += unit_value;
-        }
-        return value + station_pod_shell_quote(st, pod, true);
-    }
-    return fallback * (float)pod->quantity +
-           station_pod_shell_quote(st, pod, true);
 }
 
 static bool cargo_pod_custody_charge_range(
@@ -9926,15 +9887,13 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
     server_player_t *sp = &w->players[tractor_player];
     station_t *st = &w->stations[best_station];
     int owner_station = cargo_pod_custody_station(pod);
+    /* The player keeps a picked-up source crate until an explicit release.
+     * This lets its tow clear the producer or source hopper. Release puts the
+     * loose crate back through normal station acquisition. */
     if (local_output_handoff ||
         (owner_station == best_station &&
          station_owned_pod_inside_charge_boundary(w, owner_station, pod))) {
-        if (!player_detach_cargo_pod(w, sp, pod_idx)) return false;
-        (void)world_cargo_pod_set_module_tractor(
-            w, pod_idx, best_station, best_module);
-        if (best_module >= 0 && best_module < MAX_MODULES_PER_STATION)
-            st->modules[best_module].active_pulse = 1.0f;
-        return true;
+        return false;
     }
     if (owner_station >= 0) {
         (void)charge_station_owned_pod_if_due(w, pod_idx, pod);
@@ -18525,6 +18484,15 @@ bool server_finalize_pubkey_identity(world_t *w, int player_idx) {
     sp->pubkey_identity_finalized = true;
     actor_principal_t player = actor_principal_none();
     if (actor_principal_from_verified_player(sp, &player)) {
+        ship_asset_t *loan = world_ship_asset_by_id(w, sp->ship_asset_id);
+        if (loan && loan->loaner && loan->owner_principal.kind == ACTOR_PRINCIPAL_STATION &&
+            loan->status == SHIP_ASSET_STATUS_ASSIGNED &&
+            loan->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+            loan->operator_slot == player_idx) {
+            if (loan->borrower_principal.kind != ACTOR_PRINCIPAL_NONE &&
+                !actor_principal_equal(&loan->borrower_principal, &player)) return false;
+            loan->borrower_principal = player;
+        }
         for (int i = 0; i < MAX_CARGO_PODS; i++) {
             cargo_pod_t *pod = &w->cargo_pods[i];
             if (!pod->active ||

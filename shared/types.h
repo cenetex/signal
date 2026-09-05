@@ -596,6 +596,9 @@ typedef struct {
     entity_ref_t live_ship_ref;
     ship_t *ship; /* transient non-owning view; rebuild after load/world copy */
     actor_principal_t owner_principal;
+    /* A station loan remains reserved for its verified borrower across
+     * disconnects and world reloads. Ownership stays with the station. */
+    actor_principal_t borrower_principal;
     /* Stable foreign key to the exact inert ownership-quarantine row when
      * owner_principal is NONE. Zero for actionable owned assets. */
     uint64_t owner_quarantine_record_id;
@@ -613,6 +616,13 @@ typedef struct {
     uint8_t birth_material_root[32];
     uint8_t birth_fragment_pubs[SHIP_BIRTH_PROOF_FRAGMENT_COUNT][32];
 } ship_asset_t;
+
+static inline bool ship_asset_loan_is_canonical(const ship_asset_t *asset) {
+    return asset && actor_principal_is_canonical(&asset->borrower_principal) &&
+        (asset->borrower_principal.kind == ACTOR_PRINCIPAL_NONE ||
+         (asset->loaner && asset->owner_principal.kind == ACTOR_PRINCIPAL_STATION &&
+          asset->borrower_principal.kind == ACTOR_PRINCIPAL_PLAYER));
+}
 
 typedef struct {
     hull_class_t hull_class;
@@ -1141,6 +1151,8 @@ typedef struct {
      * serialization time; remote mirrors retain it for the signed action.
      * Never persisted and never treated as cargo proof. */
     uint8_t selection_token[32];
+    uint32_t summary_buy_quote; /* server quote, including the frame shell */
+    uint8_t summary_origin_station; /* 0 unknown/mixed; station index + 1 */
     vec2 pos;
     vec2 vel;
     float radius;

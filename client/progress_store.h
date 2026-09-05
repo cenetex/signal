@@ -24,5 +24,8 @@ void client_progress_select(const uint8_t pubkey[32], const char *authority);
 client_progress_t client_progress_current(void);
 void client_progress_save_story(uint16_t flags);
 void client_progress_save_guide(uint16_t flags);
+void client_progress_defer_writes(bool deferred);
+uint32_t client_progress_pack_local(void);
+void client_progress_restore_local(uint32_t flags);
 
 #endif

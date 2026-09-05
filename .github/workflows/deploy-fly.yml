@@ -49,6 +49,8 @@ env:
   FLY_ORG: ${{ vars.FLY_ORG || '' }}
   FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
   SIGNAL_STATION_AUTH_SECRET: ${{ secrets.SIGNAL_STATION_AUTH_SECRET }}
+  SIGNAL_ASSET_PACK_URL: ${{ vars.SIGNAL_ASSET_PACK_URL }}
+  SIGNAL_ASSET_PACK_SHA256: ${{ vars.SIGNAL_ASSET_PACK_SHA256 }}
 
 jobs:
   verify:
@@ -56,6 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Provision verified media before candidate checks
+        run: python3 scripts/assets.py sync
       - name: Install native dependencies
         run: |
           sudo apt-get update
@@ -103,6 +107,9 @@ jobs:
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
         with:
           version: ${{ vars.FLYCTL_VERSION || '0.4.59' }}
+
+      - name: Provision verified media before the container build
+        run: python3 scripts/assets.py sync
 
       - name: Validate Fly config
         run: flyctl config validate --config fly.toml

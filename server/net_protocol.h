@@ -4304,7 +4304,7 @@ _Static_assert(
     "SCAFFOLD_MOTION_Q_RECORD_SIZE must match serialized scaffold q motion layout"
 );
 _Static_assert(
-    4 + 6 * 4 + 2 + 2 + 2 + 1 + 1 + 2 + 1 + 1 + 32 ==
+    4 + 6 * 4 + 2 + 2 + 2 + 1 + 1 + 2 + 1 + 1 + 32 + 4 + 1 ==
         CARGO_POD_RECORD_SIZE,
     "CARGO_POD_RECORD_SIZE must match serialized cargo pod layout"
 );
@@ -5054,6 +5054,37 @@ static inline void cargo_pod_summary_fields(const cargo_pod_t *pod,
     if (best_grade_out) *best_grade_out = best_grade;
 }
 
+/* Public trade facts accompany each opaque cargo selection token. */
+static inline void serialize_cargo_trade_summary(uint8_t *p, const world_t *w,
+                                                 const cargo_pod_t *pod) {
+    memset(p, 0, 5);
+    if (!w || !pod || !pod->active) return;
+    if (pod->manifest_count > 0 && pod->manifest_count <= CARGO_POD_MANIFEST_CAP) {
+        uint8_t origin = pod->manifest_units[0].origin_station;
+        bool same = origin < MAX_STATIONS;
+        for (uint16_t i = 1; i < pod->manifest_count; i++)
+            same = same && pod->manifest_units[i].origin_station == origin;
+        if (same) p[4] = (uint8_t)(origin + 1u);
+    }
+    int owner = cargo_pod_custody_station(pod);
+    if (owner < 0) {
+        int module;
+        (void)cargo_pod_module_tractor_indices(pod, &owner, &module);
+    }
+    if (owner < 0 || owner >= MAX_STATIONS) return;
+    float quoted = station_market_pod_sell_quote(&w->stations[owner], pod);
+    if (pod->custody_charge_total > 0 && cargo_pod_custody_charge_anchor_valid(pod)) {
+        int64_t count = pod->custody_charge_unit_count;
+        int64_t done = pod->custody_charge_units_processed;
+        int64_t remainder = pod->custody_charge_total % count;
+        int64_t charged = (pod->custody_charge_total / count) * done +
+                          (done < remainder ? done : remainder);
+        quoted = (float)(pod->custody_charge_total - charged);
+    }
+    if (isfinite(quoted) && quoted > 0 && quoted <= LEDGER_FLOAT_LIMIT)
+        write_u32_le(p, (uint32_t)llroundf(quoted));
+}
+
 static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_pod_t *pod) {
     p[0] = (uint8_t)index;
     p[1] = (uint8_t)pod->kind;
@@ -5084,6 +5115,8 @@ static inline void serialize_one_cargo_pod(uint8_t *p, int index, const cargo_po
         ? pod->tow_hardpoint_tag : 0;
     p[39] = pod->custody_station;
     memcpy(&p[40], pod->selection_token, 32);
+    write_u32_le(&p[72], pod->summary_buy_quote);
+    p[76] = pod->summary_origin_station;
 }
 
 static inline void serialize_one_cargo_pod_for_world(
@@ -5093,6 +5126,7 @@ static inline void serialize_one_cargo_pod_for_world(
     uint8_t token[32] = {0};
     if (server_cargo_pod_selection_token(w, index, token))
         memcpy(&p[40], token, sizeof(token));
+    serialize_cargo_trade_summary(&p[72], w, pod);
 }
 
 static inline uint16_t cargo_pod_motion_q_encode_rotation(float rotation);
@@ -5137,6 +5171,8 @@ static inline void serialize_one_cargo_pod_q(uint8_t *p,
         ? pod->tow_hardpoint_tag : 0;
     p[29] = pod->custody_station;
     memcpy(&p[30], pod->selection_token, 32);
+    write_u32_le(&p[62], pod->summary_buy_quote);
+    p[66] = pod->summary_origin_station;
 }
 
 static inline void serialize_one_cargo_pod_q_for_world(
@@ -5146,6 +5182,7 @@ static inline void serialize_one_cargo_pod_q_for_world(
     uint8_t token[32] = {0};
     if (server_cargo_pod_selection_token(w, index, token))
         memcpy(&p[30], token, sizeof(token));
+    serialize_cargo_trade_summary(&p[62], w, pod);
 }
 
 static inline int serialize_cargo_pods(uint8_t *buf, const cargo_pod_t *pods) {
