@@ -29,8 +29,8 @@ pause are awaiting approval.
 
 ## Release checks still open
 
-- Finish the fresh-world route through an active owned relay and its saved
-  checkpoint. Current runs prove both upgrades and 49 activation frames.
+- Complete the fresh-world route in Linux CI. The local run activates an
+  owned relay at 1,155.53 game seconds and passes all seven saved checkpoints.
 - Confirm the worker story through a new-player play session.
 - Record the haul, combat, and camera review on named hardware.
 - Qualify slow-disk saves and recovery with connected players.

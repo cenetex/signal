@@ -24,7 +24,7 @@ records the starting point; this table records the release work.
 | Panel controls and receipts | [#724](https://github.com/cenetex/signal/pull/724) merged. Escape closes the active panel; receipt names and narrow trade rows are readable. | Final packaged play review. |
 | Local world recovery | [#725](https://github.com/cenetex/signal/pull/725) passed every required CI check at `7209e146e455b5d55c145f3cf7342687fb656f43`. World save 85 and player save PLY8 preserve the exact borrowed hull and local progress. | A coherent production backup before the save upgrade. The brief service pause is awaiting approval. |
 | Media packages | [#726](https://github.com/cenetex/signal/pull/726) adds pinned pack hashes, source records, and native/web/server archive layouts. Nine small-file tests pass. | The canonical music and portrait files, then checks of the real archives. |
-| Ordinary-action route | [#727](https://github.com/cenetex/signal/pull/727) is a draft. Fresh runs reach fracture, tow, payment, both first upgrades, and 49 activation frames. Saved milestones restore exact crate content and held cargo. | Complete relay activation and prove each saved milestone. |
+| Ordinary-action route | [#727](https://github.com/cenetex/signal/pull/727) is a draft. The fresh world reaches an active owned relay at 1,155.53 game seconds. All seven saved milestones restore the exact player assets and progress. | The same route in Linux CI, then new-player play. |
 | Crate trade data | #727 includes the frame shell in the charge and sends the exact quote and unpack source in protocol 8. | Final CI and the complete route. |
 | Physical play and final release | Pending the completed route baseline. | Named-hardware motion captures, new-player play, final memory checks, archives, and release notes. |
 
@@ -32,7 +32,7 @@ The merged changes are live at `eba8e77`. The public health check reports four
 healthy station chains. The save-format and media branches remain separate
 from that deployment while the required backup and source files are pending.
 
-Current local checks on the route branch: 1,697 native tests, 1,697 sanitizer
+Current local checks on the route branch: the complete First Outpost route, 1,697 native tests, 1,697 sanitizer
 tests, 9 functional soak tests, and 57 Chromium checks pass; 4 browser checks
 require their dedicated live/adverse-network setup. The web build uses 885
 initial WASM pages. These results cover the current changes; final candidate
@@ -40,9 +40,11 @@ qualification follows the remaining implementation.
 
 Measured route milestones are controller results. A new-player session
 will measure pacing. The fresh run fractures at 13.93 seconds, attaches ore at
-14.64 seconds, and receives its first payment at 186.08 seconds. The physical route reaches the mining upgrade at 367.58 seconds and the hold
-upgrade at 377.59 seconds. A second ore haul raises held frames to 49 at
-918.93 seconds. Shipyard delivery and relay activation remain in progress.
+14.64 seconds, and receives its first payment at 186.08 seconds. The physical
+route reaches the mining upgrade at 367.58 seconds and the hold
+upgrade at 377.59 seconds. The complete route makes the scaffold at about 520 seconds, collects 68 frames at
+904.87 seconds, and activates the owned relay at 1,155.53 seconds. All seven
+checkpoints pass, including the active relay. The final hull has 97.1 health.
 The driver returns success after an active owned relay and successful
 checkpoint checks.
 

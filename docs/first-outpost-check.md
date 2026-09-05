@@ -29,8 +29,16 @@ the normal hopper handoff and station charge boundary.
 At payment, upgrades, relay order, activation-frame collection, and outpost
 creation, the check writes a complete generation. It loads that generation in
 a second world and proves the same player identity. It compares the ship asset,
-signed nonce, upgrades, exact held cargo identities, tow counts, station
+signed nonce, upgrades, exact held cargo identities, crate payload and charge digests, tow counts, station
 balances, and outpost ownership. A final checkpoint covers the active relay.
+
+The September 5 baseline uses world seed 2037. It reaches the first mining
+upgrade at 367.58 seconds, the first hold upgrade at 377.59 seconds, and an
+active owned relay at 1,155.53 seconds. All seven saved checkpoints pass.
+
+The standalone tools CI job runs the same route with a 15-minute wall-clock
+limit and runs the localhost server restart check. It uploads the motion CSV,
+milestone log, and restart report as the `first-outpost` artifact.
 
 These are deterministic controller results. A new-player session supplies the
 release's pacing and clarity evidence. The current results and remaining

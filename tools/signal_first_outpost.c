@@ -155,6 +155,26 @@ static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
     return station_approach_target(st, ship->pos);
 }
 
+static vec2 exit_route_target(const station_t *st, const ship_t *ship) {
+    vec2 relative = v2_sub(ship->pos, st->pos);
+    float radius = v2_len(relative);
+    float angle = fixp_atan2f(relative.y, relative.x);
+    for (int ring = 1; ring <= station_max_ring(st); ring++) {
+        if (radius > STATION_RING_RADIUS[ring] + 10 || ring_module_count(st, ring) <= 1)
+            continue;
+        if (!station_ring_open_gap_lane(st, ring, NULL, NULL)) continue;
+        float lane = station_ring_open_gap_angle(st, ring);
+        float difference = wrap_angle(lane - angle);
+        if (fabsf(difference) > 0.25f) {
+            float waypoint_angle = angle + clampf(difference, -0.3f, 0.3f);
+            float inside = fminf(radius, STATION_RING_RADIUS[ring] - 70);
+            return v2_add(st->pos, v2_scale(v2_from_angle(waypoint_angle), inside));
+        }
+        return station_ring_open_gap_lane_pos(st, ring, STATION_RING_RADIUS[ring] + 70);
+    }
+    return v2_add(st->pos, v2_scale(v2_from_angle(angle), 1700));
+}
+
 static int nearest_rock(const world_t *w, const ship_t *ship, bool fragment, int home) {
     int best = -1;
     float distance = 1e30f;
@@ -275,6 +295,12 @@ static vec2 frontier_point(const world_t *w) {
         for (int x = -12000; x <= 12000; x += 250) {
             vec2 pos = v2((float)x, (float)y);
             if (!can_place_outpost(w, pos)) continue;
+            bool tow_room = true;
+            for (int side = 0; side < 8; side++) {
+                vec2 edge = v2_add(pos, v2_scale(v2_from_angle((float)side * PI_F / 4), 250));
+                if (!can_place_outpost(w, edge)) { tow_room = false; break; }
+            }
+            if (!tow_room) continue;
             float d = v2_dist_sq(pos, w->stations[1].pos);
             if (d < distance) { best = pos; distance = d; }
         }
@@ -353,6 +379,7 @@ int main(int argc, char **argv) {
     float last_payout = 0;
     int last_pod_count = 0;
     int shipyard_wait_until = 0;
+    int frame_pickup_after = 0;
     for (int i = 0; i < w->station_count; i++) {
         const station_t *st = &w->stations[i];
         fprintf(stderr, "%s %.0f %.0f frames=%d lasers=%d tractors=%d relay=%d\n", st->name, st->pos.x, st->pos.y, station_finished_count(st, COMMODITY_FRAME), station_finished_count(st, COMMODITY_LASER_MODULE), station_finished_count(st, COMMODITY_TRACTOR_MODULE), station_can_order_scaffold(st, MODULE_SIGNAL_RELAY));
@@ -549,12 +576,10 @@ int main(int argc, char **argv) {
         }
         if (stage == PHASE_EXIT_FRAMES) {
             if (sp->docked) sp->input.launch = true;
-            vec2 exit = station_exit_target(&w->stations[home], sp->ship->pos);
-            vec2 direction = v2_norm(v2_sub(exit, w->stations[home].pos));
-            exit = v2_add(w->stations[home].pos, v2_scale(direction, 1700));
-            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, exit, 60, 70, dt));
+            vec2 exit = exit_route_target(&w->stations[home], sp->ship);
+            apply_flight(&sp->input, steer_through_lane(sp->ship, exit));
             sp->input.tractor_hold = true;
-            sp->input.thrust = fminf(sp->input.thrust, 0.3f);
+            sp->input.thrust = fminf(sp->input.thrust * 3.333333f, 1.0f);
             if (v2_dist_sq(sp->ship->pos, w->stations[home].pos) > 1450 * 1450) {
                 stage = PHASE_DELIVER_FRAMES; path = (nav_path_t){0};
             }
@@ -591,13 +616,19 @@ int main(int argc, char **argv) {
                 stage = PHASE_DOCK; path = (nav_path_t){0};
             } else if (sp->ship->towed_pod_count) {
                 sp->input.release_tow = true;
+                frame_pickup_after = tick + 60;
+                int pod = local_frame_pod(w, sp->ship, false);
+                if (pod >= 0)
+                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                        w->cargo_pods[pod].pos, 30, 100, dt));
             } else {
                 int pod = local_frame_pod(w, sp->ship, false);
                 if (pod >= 0) {
                     vec2 goal = w->cargo_pods[pod].pos;
                     apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
                                                             goal, 30, 100, dt));
-                    sp->input.tractor_hold = v2_dist_sq(sp->ship->pos, goal) < 100 * 100;
+                    sp->input.tractor_hold = tick >= frame_pickup_after &&
+                        v2_dist_sq(sp->ship->pos, goal) < 100 * 100;
                 } else {
                     fprintf(stderr, "more ore %.2f frames=%d\n", tick * dt,
                             ship_finished_count(sp->ship, COMMODITY_FRAME));
@@ -608,8 +639,12 @@ int main(int argc, char **argv) {
             if (sp->docked) sp->input.launch = true;
             int scaffold = sp->ship->towed_scaffold;
             if (scaffold >= 0) {
-                apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
-                                                        frontier, 40, 70, dt));
+                if (v2_dist_sq(sp->ship->pos, w->stations[1].pos) < 1000 * 1000)
+                    apply_flight(&sp->input, steer_through_lane(sp->ship,
+                        exit_route_target(&w->stations[1], sp->ship)));
+                else
+                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                                                            frontier, 40, 70, dt));
                 sp->input.tractor_hold = true;
                 sp->input.thrust = fminf(sp->input.thrust, 0.3f);
                 if (can_place_outpost(w, w->scaffolds[scaffold].pos))
