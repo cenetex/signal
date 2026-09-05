@@ -689,6 +689,7 @@ static void digest_ship_asset(state_digest_ctx_t *ctx,
     digest_i32(ctx, (int32_t)asset->hull_class);
     digest_entity_ref(ctx, asset->live_ship_ref);
     digest_actor_principal(ctx, &asset->owner_principal);
+    digest_actor_principal(ctx, &asset->borrower_principal);
     digest_u64(ctx, asset->owner_quarantine_record_id);
     digest_u8(ctx, asset->status);
     digest_u8(ctx, asset->operator_kind);

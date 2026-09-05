@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "local_save.h"
 #include "persistence_generation.h"
+#include "progress_store.h"
 
 static const uint8_t local_test_pubkey[32] = {19, 7, 11};
 
@@ -34,6 +35,7 @@ TEST(test_local_save_restart_restores_world_player_and_currency) {
     player_seed_credits(&w.players[0], &w);
     w.time = 123.0f;
     w.players[0].ship->hull = 42.0f;
+    uint32_t ship_id = w.players[0].ship_asset_id;
     ledger_earn_by_pubkey(&w.stations[0], local_test_pubkey, 200.0f);
     float balance = ledger_balance_by_pubkey(&w.stations[0], local_test_pubkey);
     ASSERT(local_save_request(save, &w, true));
@@ -49,6 +51,7 @@ TEST(test_local_save_restart_restores_world_player_and_currency) {
     ASSERT(local_test_authenticate(&w, 0, 9));
     ASSERT(local_save_restore_player(save, &w, 0));
     ASSERT_EQ_FLOAT(w.players[0].ship->hull, 42.0f, 0.01f);
+    ASSERT_EQ_INT(w.players[0].ship_asset_id, ship_id);
     player_seed_credits(&w.players[0], &w);
     ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(&w.stations[0], local_test_pubkey), balance, 0.01f);
     ASSERT(strcmp(w.stations[0].currency_name, "prospect vouchers") == 0);
@@ -86,9 +89,11 @@ TEST(test_local_save_recovers_previous_complete_generation) {
     ASSERT(local_save_restore_player(save, &w, 0));
     w.time = 10.0f;
     w.players[0].ship->hull = 33.0f;
+    client_progress_restore_local(0x80070023u);
     ASSERT(local_save_request(save, &w, true));
     w.time = 20.0f;
     w.players[0].ship->hull = 66.0f;
+    client_progress_restore_local(0x803f01ffu);
     ASSERT(local_save_request(save, &w, true));
     persistence_generation_paths_t selected;
     ASSERT_EQ_INT(persistence_generation_resolve(root, &selected), PERSISTENCE_GENERATION_CURRENT);
@@ -105,6 +110,8 @@ TEST(test_local_save_recovers_previous_complete_generation) {
     ASSERT(local_test_authenticate(&w, 0, 6));
     ASSERT(local_save_restore_player(save, &w, 0));
     ASSERT_EQ_FLOAT(w.players[0].ship->hull, 33.0f, 0.01f);
+    ASSERT_EQ_INT(client_progress_current().story, 7);
+    ASSERT_EQ_INT(client_progress_current().guide, 35);
     local_save_close(save, NULL);
 }
 

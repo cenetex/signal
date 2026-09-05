@@ -11,8 +11,8 @@ local_save_t *local_save_open(const char *root, world_t *world,
                               const uint8_t pubkey[32], bool *fresh);
 bool local_save_restore_player(local_save_t *save, world_t *world, int slot);
 void local_save_update(local_save_t *save, world_t *world, float dt);
-bool local_save_request(local_save_t *save, const world_t *world, bool wait);
-void local_save_close(local_save_t *save, const world_t *world);
+bool local_save_request(local_save_t *save, world_t *world, bool wait);
+void local_save_close(local_save_t *save, world_t *world);
 uint64_t local_save_generation(const local_save_t *save);
 bool local_save_failed(const local_save_t *save);
 

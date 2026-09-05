@@ -7,6 +7,7 @@
 #include "persistence_generation.h"
 #include "sim_catalog.h"
 #include "actor_principal_resolver.h"
+#include "progress_store.h"
 
 #include <errno.h>
 #include <math.h>
@@ -161,6 +162,8 @@ bool local_save_restore_player(local_save_t *save, world_t *world, int slot) {
     if (save->selected.generation &&
         !player_load_by_pubkey(player, world, save->selected.player_dir,
                                save->pubkey)) return false;
+    if (save->selected.generation)
+        client_progress_restore_local(player->client_progress_flags);
     save->player_slot = slot;
     save->ready = true;
     save->was_docked = player->docked;
@@ -185,7 +188,7 @@ static void local_save_poll(local_save_t *save, bool wait) {
 #endif
 }
 
-bool local_save_request(local_save_t *save, const world_t *world, bool wait) {
+bool local_save_request(local_save_t *save, world_t *world, bool wait) {
     if (!save || !save->ready || !world) return false;
     const server_player_t *player = &world->players[save->player_slot];
     if (!server_player_can_use_pubkey_persistence(player) ||
@@ -193,6 +196,7 @@ bool local_save_request(local_save_t *save, const world_t *world, bool wait) {
     local_save_poll(save, wait);
     bool slots[MAX_PLAYERS] = {false};
     slots[save->player_slot] = true;
+    world->players[save->player_slot].client_progress_flags = client_progress_pack_local();
 #ifdef __EMSCRIPTEN__
     if (local_save_browser_state() == 2) return false;
     persistence_generation_paths_t published = {0};
@@ -254,7 +258,7 @@ void local_save_update(local_save_t *save, world_t *world, float dt) {
     }
 }
 
-void local_save_close(local_save_t *save, const world_t *world) {
+void local_save_close(local_save_t *save, world_t *world) {
     if (!save) return;
     if (save->ready && world && !local_save_request(save, world, true))
         fprintf(stderr, "[local-save] Final checkpoint needs a retry: %s\n", save->root);

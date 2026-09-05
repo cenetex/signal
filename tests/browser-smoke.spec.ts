@@ -1977,16 +1977,16 @@ test.describe('Browser smoke tests', () => {
     await hold(page, 'W', 250);
     const before = await wasmNumber(page, 'signal_debug_player_progress');
     expect(before & (1 << 8)).toBe(1 << 8);
+    await expect.poll(() => wasmNumber(page, 'signal_save_local_world')).toBe(1);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
     await page.reload();
     await waitForRenderedGame(page, page.locator('canvas'), false);
     expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(before);
 
     await page.evaluate(() => {
-      const original = Storage.prototype.setItem;
-      Storage.prototype.setItem = function (key, value) {
-        if (key.startsWith('signal_progress_v2:'))
-          throw new DOMException('injected storage full', 'QuotaExceededError');
-        original.call(this, key, value);
+      const storage = (window as any).Module.signalLocalPersistence;
+      storage.flush = function () {
+        storage.state = -1;
       };
     });
     await page.locator('canvas').click();
@@ -2389,7 +2389,7 @@ test.describe('Browser smoke tests', () => {
     expect(perturbed.first_drift.semantic_cause_mask).toBe(0);
     expect(perturbed.first_drift.transport_cause_mask).toBe(0);
     expect(perturbed.first_drift.root_schema)
-      .toBe('signal.authoritative_state.v3');
+      .toBe('signal.authoritative_state.v4');
     expect(perturbed.first_drift.authoritative_root)
       .toMatch(/^[0-9a-f]{64}$/);
 

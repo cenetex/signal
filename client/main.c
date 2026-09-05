@@ -2029,6 +2029,7 @@ static void init(void) {
 #endif
         client_progress_select(g.identity_ready ? g.identity.pubkey : NULL,
                                server_url);
+        client_progress_defer_writes(!(server_url && server_url[0]));
         onboarding_load();
         story_runtime_load();
         signal_intelligence_holographic_init();
@@ -2062,6 +2063,9 @@ static void init(void) {
                     g.net_authority_enabled = true;
                     set_notice(
                         "Local save recovery required. Check the client log, then reload.");
+                } else {
+                    onboarding_load();
+                    story_runtime_load();
                 }
             }
         }
@@ -5244,14 +5248,16 @@ static void frame(void) {
         frame_dt = 0.0f;
     g.net_time += frame_dt;
     if (g.local_server.active) {
-        static uint16_t checkpoint_story;
+        static uint32_t checkpoint_progress;
         bool failed_before = local_save_failed(g.local_server.save);
         local_save_update(g.local_server.save,
                            local_server_world(&g.local_server), frame_dt);
-        if (checkpoint_story != g.worker_story.flags &&
+        uint32_t progress = client_progress_pack_local();
+        if (checkpoint_progress != progress &&
+            !local_save_failed(g.local_server.save) &&
             local_save_request(g.local_server.save,
                 local_server_world(&g.local_server), false))
-            checkpoint_story = g.worker_story.flags;
+            checkpoint_progress = progress;
         if (!failed_before && local_save_failed(g.local_server.save))
             set_notice("Local save needs a retry. Check available storage.");
     }
@@ -6130,7 +6136,7 @@ const char *signal_debug_local_save_summary(void) {
 }
 
 int signal_debug_auth_available(void) {
-    return (g.identity_ready && g.net_authority_enabled) ? 1 : 0;
+    return (g.identity_ready && net_is_gameplay_ready()) ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE

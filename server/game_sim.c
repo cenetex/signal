@@ -3276,7 +3276,11 @@ static bool ship_asset_player_can_reclaim_bound(const world_t *w,
         return false;
     }
     if (ship_asset_player_matches_owner(w, asset, sp)) return true;
+    actor_principal_t player = actor_principal_none();
+    if (asset->loaner && actor_principal_from_verified_player(sp, &player) &&
+        actor_principal_equal(&asset->borrower_principal, &player)) return true;
     return asset->owner_principal.kind == ACTOR_PRINCIPAL_STATION &&
+           asset->borrower_principal.kind == ACTOR_PRINCIPAL_NONE &&
            asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
            asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
            asset->operator_slot == player_slot;
@@ -3310,6 +3314,7 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
             old_asset->ship = &old_asset->stored_ship;
             old_asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
             old_asset->operator_slot = -1;
+            old_asset->borrower_principal = actor_principal_none();
             if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS)
                 old_asset->custody_station = (int16_t)sp->current_station;
         }
@@ -3354,6 +3359,11 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
     asset->live_ship_ref = sp->ship_ref;
     asset->ship = sp->ship;
     asset->custody_station = (int16_t)sp->current_station;
+    if (asset->loaner && asset->owner_principal.kind == ACTOR_PRINCIPAL_STATION) {
+        actor_principal_t borrower = actor_principal_none();
+        if (actor_principal_from_verified_player(sp, &borrower))
+            asset->borrower_principal = borrower;
+    }
     if (!already_live) {
         ship_cleanup(&asset->stored_ship);
         memset(&asset->stored_ship, 0, sizeof(asset->stored_ship));
@@ -3384,7 +3394,7 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
                                            bound->custody_station);
     }
 
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = 0; pass < 4; pass++) {
         for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
             ship_asset_t *asset = &w->ship_assets[i];
             if (!asset->active || asset->destroyed) continue;
@@ -3394,8 +3404,12 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
                   asset->operator_slot == player_slot)) {
                 continue;
             }
-            if (!ship_asset_player_matches_owner(w, asset, sp)) continue;
-            if (pass == 0 && asset->custody_station != station_idx) continue;
+            actor_principal_t player = actor_principal_none();
+            bool borrowed = asset->loaner &&
+                actor_principal_from_verified_player(sp, &player) &&
+                actor_principal_equal(&asset->borrower_principal, &player);
+            if (pass < 2 ? !ship_asset_player_matches_owner(w, asset, sp) : !borrowed) continue;
+            if ((pass % 2) == 0 && asset->custody_station != station_idx) continue;
             return ship_asset_assign_to_player(w, player_slot, asset,
                                                asset->custody_station);
         }
@@ -3412,6 +3426,7 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
             continue;
         }
         if (!asset->loaner) continue;
+        if (asset->borrower_principal.kind != ACTOR_PRINCIPAL_NONE) continue;
         if (asset->custody_station != station_idx) continue;
         return ship_asset_assign_to_player(w, player_slot, asset, station_idx);
     }
@@ -18525,6 +18540,15 @@ bool server_finalize_pubkey_identity(world_t *w, int player_idx) {
     sp->pubkey_identity_finalized = true;
     actor_principal_t player = actor_principal_none();
     if (actor_principal_from_verified_player(sp, &player)) {
+        ship_asset_t *loan = world_ship_asset_by_id(w, sp->ship_asset_id);
+        if (loan && loan->loaner && loan->owner_principal.kind == ACTOR_PRINCIPAL_STATION &&
+            loan->status == SHIP_ASSET_STATUS_ASSIGNED &&
+            loan->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
+            loan->operator_slot == player_idx) {
+            if (loan->borrower_principal.kind != ACTOR_PRINCIPAL_NONE &&
+                !actor_principal_equal(&loan->borrower_principal, &player)) return false;
+            loan->borrower_principal = player;
+        }
         for (int i = 0; i < MAX_CARGO_PODS; i++) {
             cargo_pod_t *pod = &w->cargo_pods[i];
             if (!pod->active ||
