@@ -3445,7 +3445,13 @@ test.describe('Browser smoke tests', () => {
     });
     await attachPerceptionReview(testInfo, canvas, 'hud-attention-station', 'desktop');
 
+    await canvas.click();
+    await tap(page, 'Tab');
+    await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
+    await attachPerceptionReview(testInfo, canvas, 'trade-panel', 'desktop');
     await page.setViewportSize({ width: 390, height: 760 });
+    await expect.poll(async () => stationPanelLabel(page)).toBe('TRADE');
+    await attachPerceptionReview(testInfo, canvas, 'trade-panel', 'narrow');
     await setSmokeLoopState(page, smokeLoopState.narrowCameraOffset);
     await expect.poll(async () => hudAttentionSurface(page)).toBe('message');
     expect(await hudAttentionTelemetry(page)).toEqual({
@@ -3460,6 +3466,11 @@ test.describe('Browser smoke tests', () => {
     await expect.poll(async () => hudAttentionSurface(page)).toBe('scoreboard');
     await attachPerceptionReview(testInfo, canvas, 'hud-attention-scoreboard', 'narrow');
 
+    await tap(page, 'Escape');
+    await expect.poll(async () => hudAttentionSurface(page)).toBe('message');
+    await tap(page, 'Tab');
+    await expect.poll(async () => hudAttentionSurface(page)).toBe('scoreboard');
+
     await tap(page, 'F3');
     await expect.poll(async () => (await hudAttentionTelemetry(page)).debugVisible).toBe(1);
     await tap(page, 'F3');
@@ -3468,6 +3479,13 @@ test.describe('Browser smoke tests', () => {
     await setSmokeLoopState(page, smokeLoopState.npcMotiveCrisp);
     await expect.poll(async () => hudAttentionSurface(page)).toBe('inspect');
     await attachPerceptionReview(testInfo, canvas, 'hud-attention-inspect', 'narrow');
+
+    await setSmokeLoopState(page, -1);
+    expect(await hudAttentionSurface(page)).toBe('inspect');
+    await tap(page, 'Escape');
+    await expect.poll(async () => hudAttentionSurface(page)).toMatch(/flight|message/);
+    await tap(page, 'Tab');
+    await expect.poll(async () => hudAttentionSurface(page)).toBe('scoreboard');
 
     await expect
       .poll(async () => (await readCanvasStats(canvas)).nonBlackRatio, { timeout: 5_000 })

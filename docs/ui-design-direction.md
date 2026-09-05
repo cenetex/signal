@@ -177,22 +177,26 @@ Control collapses toward 0 at the FRONTIER band, and the HUD now fires a
 `LOW SIGNAL -- CTRL n%` warning before total collapse. Future work here is
 threshold/intensity tuning, not new conceptual UI.
 
-## 6. Cleanup to fold into the UI pass (confirmed defects)
+## 6. UI cleanup status
 
-These came out of the UI review and should be swept while the surfaces are open:
+The current baseline includes these completed repairs:
 
-- **Compact panels overflow with no clipping** — the compact TRADE panel runs ~100px past its frame; no scissor anywhere in `station_ui.c`. Clip to the panel rect or budget rows against remaining height (drop optional lineage lines first). This violates the narrow-window requirement.
-- **Dead `[S] deliver` label on the SHIP panel** — the construction row advertises a key the SHIP input handler never reads. Either wire it or remove the label.
-- **Native ESC quits the app at the event layer**, bypassing plan-mode / popup modal handling. Gate the quit behind a no-modal-active check and let ESC flow through the intent sampler.
-- **Multiplayer ledger snapshot parity** — SP can read local world ledgers;
-  multiplayer still needs explicit known-ledger rows before rendering the same
-  cross-station strip honestly.
-- **Always-on chain-audit lineage dump on trade rows** (`serial / parent / ep / seal`) — forensic detail with no player verb. Gate behind an explicit inspect toggle; keep serial + origin in the default view.
+- TRADE preamble, page labels, and item rows use the panel's remaining height.
+- The SHIP panel shows the controls handled by its input view.
+- Escape closes inspect and scoreboard panels. Repeated key-down events keep
+  the same dismissal. Rendering and input use the shared attention selector.
+- Multiplayer ledger rows carry known/unknown state and show local balances.
+- Cargo lineage opens through an explicit inspect toggle.
+- Receipt-link identities use the same callsigns as the surrounding cargo UI.
+- Station trade colors use named palette entries.
+
+Release visual review covers short and narrow viewports, station header fit,
+receipt labels, and touch-control overlap. Frame and panel bounds both matter.
 
 ## 7. What already works — protect it
 
 - A real **virtual canvas with DPI handling** (`ui_window_*`, `ui_scale`) — the HUD is not raw pixels; text scales and reflows.
-- **Centralized, themeable palette** with near-zero scattered color literals, and **position-aware signal desaturation** in one place.
+- **Centralized palette entries** for station trade colors, with **position-aware signal desaturation** for world geometry.
 - **Shared row builders** (`build_trade_rows`, `build_work_slots`) feed both renderer and input picker — the key you press is provably the row you see.
 - **Hashes render as callsigns/words**, never raw hex.
 - **Touch is real on web** via a synthetic-keycode bridge reusing the intent pipeline.

@@ -23,6 +23,7 @@
 #include "net_latency.h"
 #include "episode.h"
 #include "story_loop.h"
+#include "hud_attention.h"
 #include "music.h"
 #include "identity.h"
 #include "trade_paging.h"
@@ -880,6 +881,8 @@ void draw_ui_meter(float x, float y, float width, float height, float fill, floa
 void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float* top_h,
     float* bottom_x, float* bottom_y, float* bottom_w, float* bottom_h);
 bool hud_should_draw_message_panel(void);
+hud_attention_surface_t hud_attention_current_surface(void);
+bool hud_dismiss_primary_panel(void);
 const char *hud_attention_current_surface_name(void);
 void get_hud_message_panel_rect(float* x, float* y, float* width, float* height);
 void get_station_panel_rect(float* x, float* y, float* width, float* height);
