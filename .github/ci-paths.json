@@ -190,7 +190,10 @@
         "scripts/hnn_null_corpus.py",
         "scripts/calibrate_hnn_confidence.py",
         "scripts/test_hnn_calibration.py",
-        "docs/liblecore-pilot/hnn-calibration.json"
+        "scripts/run_hnn_mixed_evaluation.py",
+        "docs/liblecore-pilot/hnn-calibration.json",
+        "docs/liblecore-pilot/mixed-evaluation.json",
+        "docs/liblecore-pilot/mixed-evaluation.md"
       ],
       "lanes": [
         "replay"

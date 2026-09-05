@@ -1,0 +1,952 @@
+{
+  "checks": {
+    "failures": [],
+    "passed": 162,
+    "total": 162
+  },
+  "results": [
+    {
+      "backend": "builtin-radix2",
+      "case": "seeded-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 910,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1304.334,
+          "efficiency": 0.998397589,
+          "end_distance": 497.755,
+          "min_distance": 497.755,
+          "progress": 1302.244,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 2037,
+      "world": "seeded-only"
+    },
+    {
+      "backend": "builtin-radix2",
+      "case": "seeded-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 910,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1304.334,
+          "efficiency": 0.998397589,
+          "end_distance": 497.755,
+          "min_distance": 497.755,
+          "progress": 1302.244,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 2037,
+      "world": "seeded-only"
+    },
+    {
+      "backend": "builtin-radix2",
+      "case": "weak-signal-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": null,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 86.046,
+          "efficiency": 1.0,
+          "end_distance": 1712.015,
+          "min_distance": 1712.015,
+          "progress": 87.985,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 3
+      },
+      "seed": 4099,
+      "world": "weak-signal"
+    },
+    {
+      "backend": "builtin-radix2",
+      "case": "weak-signal-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": null,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 86.046,
+          "efficiency": 1.0,
+          "end_distance": 1712.015,
+          "min_distance": 1712.015,
+          "progress": 87.985,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 3
+      },
+      "seed": 4099,
+      "world": "weak-signal"
+    },
+    {
+      "backend": "builtin-radix2",
+      "case": "disrupted-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 453,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1715.859,
+          "efficiency": 0.993408501,
+          "end_distance": 95.452,
+          "min_distance": 90.798,
+          "progress": 1704.548,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 7919,
+      "world": "route-disrupted"
+    },
+    {
+      "backend": "builtin-radix2",
+      "case": "disrupted-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 453,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1715.859,
+          "efficiency": 0.993408501,
+          "end_distance": 95.452,
+          "min_distance": 90.798,
+          "progress": 1704.548,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 7919,
+      "world": "route-disrupted"
+    },
+    {
+      "backend": "lecore-direct",
+      "case": "seeded-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 910,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1304.334,
+          "efficiency": 0.998397589,
+          "end_distance": 497.755,
+          "min_distance": 497.755,
+          "progress": 1302.244,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 2037,
+      "world": "seeded-only"
+    },
+    {
+      "backend": "lecore-direct",
+      "case": "seeded-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 910,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1304.334,
+          "efficiency": 0.998397589,
+          "end_distance": 497.755,
+          "min_distance": 497.755,
+          "progress": 1302.244,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 2037,
+      "world": "seeded-only"
+    },
+    {
+      "backend": "lecore-direct",
+      "case": "weak-signal-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": null,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 86.046,
+          "efficiency": 1.0,
+          "end_distance": 1712.015,
+          "min_distance": 1712.015,
+          "progress": 87.985,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 3
+      },
+      "seed": 4099,
+      "world": "weak-signal"
+    },
+    {
+      "backend": "lecore-direct",
+      "case": "weak-signal-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": null,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 86.046,
+          "efficiency": 1.0,
+          "end_distance": 1712.015,
+          "min_distance": 1712.015,
+          "progress": 87.985,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 3
+      },
+      "seed": 4099,
+      "world": "weak-signal"
+    },
+    {
+      "backend": "lecore-direct",
+      "case": "disrupted-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 453,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1715.859,
+          "efficiency": 0.993408501,
+          "end_distance": 95.452,
+          "min_distance": 90.798,
+          "progress": 1704.548,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 7919,
+      "world": "route-disrupted"
+    },
+    {
+      "backend": "lecore-direct",
+      "case": "disrupted-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 453,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1715.859,
+          "efficiency": 0.993408501,
+          "end_distance": 95.452,
+          "min_distance": 90.798,
+          "progress": 1704.548,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 7919,
+      "world": "route-disrupted"
+    },
+    {
+      "backend": "lecore-radix2",
+      "case": "seeded-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 910,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1304.334,
+          "efficiency": 0.998397589,
+          "end_distance": 497.755,
+          "min_distance": 497.755,
+          "progress": 1302.244,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 2037,
+      "world": "seeded-only"
+    },
+    {
+      "backend": "lecore-radix2",
+      "case": "seeded-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 910,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1304.334,
+          "efficiency": 0.998397589,
+          "end_distance": 497.755,
+          "min_distance": 497.755,
+          "progress": 1302.244,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 2037,
+      "world": "seeded-only"
+    },
+    {
+      "backend": "lecore-radix2",
+      "case": "weak-signal-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": null,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 86.046,
+          "efficiency": 1.0,
+          "end_distance": 1712.015,
+          "min_distance": 1712.015,
+          "progress": 87.985,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 3
+      },
+      "seed": 4099,
+      "world": "weak-signal"
+    },
+    {
+      "backend": "lecore-radix2",
+      "case": "weak-signal-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": null,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 86.046,
+          "efficiency": 1.0,
+          "end_distance": 1712.015,
+          "min_distance": 1712.015,
+          "progress": 87.985,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 3
+      },
+      "seed": 4099,
+      "world": "weak-signal"
+    },
+    {
+      "backend": "lecore-radix2",
+      "case": "disrupted-route",
+      "mode": "shadow",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 453,
+        "confidence_mode": "shadow",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1715.859,
+          "efficiency": 0.993408501,
+          "end_distance": 95.452,
+          "min_distance": 90.798,
+          "progress": 1704.548,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 7919,
+      "world": "route-disrupted"
+    },
+    {
+      "backend": "lecore-radix2",
+      "case": "disrupted-route",
+      "mode": "mixed",
+      "pilot": {
+        "completion_radius": 500.0,
+        "completion_tick": 453,
+        "confidence_mode": "mixed",
+        "gate": {
+          "accepted": 0,
+          "bootstrap_teacher": 1,
+          "evaluated": 959,
+          "reasons": {
+            "accepted": 0,
+            "capacity": 831,
+            "contract": 0,
+            "empty": 0,
+            "illegal": 0,
+            "margin": 0,
+            "nonfinite": 0,
+            "score": 128,
+            "unsafe": 0
+          },
+          "selected_hnn": 0,
+          "selected_teacher": 960
+        },
+        "memory": {
+          "end_experiences": 960,
+          "start_experiences": 0
+        },
+        "npc_slot": 0,
+        "route": {
+          "distance_traveled": 1715.859,
+          "efficiency": 0.993408501,
+          "end_distance": 95.452,
+          "min_distance": 90.798,
+          "progress": 1704.548,
+          "start_distance": 1800.0
+        },
+        "safety": {
+          "destroyed": false,
+          "end_hull": 100.0,
+          "hull_loss": 0.0,
+          "start_hull": 100.0
+        },
+        "schema": "signal.hnn_runtime_pilot.v1",
+        "target_asteroid": 0
+      },
+      "seed": 7919,
+      "world": "route-disrupted"
+    }
+  ],
+  "schema": "signal.hnn_mixed_evaluation.v1",
+  "scope": {
+    "backends": [
+      "builtin-radix2",
+      "lecore-direct",
+      "lecore-radix2"
+    ],
+    "cases": 3,
+    "horizon_ticks": 960,
+    "modes": [
+      "shadow",
+      "mixed"
+    ]
+  },
+  "summary": {
+    "comparison_ok": true,
+    "mixed_decisions": 8631,
+    "mixed_mode_exercised": false,
+    "mixed_selected_hnn": 0,
+    "passed_checks": 162,
+    "pilot_deaths": 0,
+    "pilot_hull_loss": 0.0,
+    "recommendation": "hold-shadow-default",
+    "total_checks": 162
+  }
+}

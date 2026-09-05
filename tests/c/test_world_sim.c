@@ -6486,12 +6486,30 @@ TEST(test_holographic_npc_bootstrap_gate_blocks_forward_thrust) {
     w.asteroids[0].pos = v2(npc->ship->pos.x + 1200.0f, npc->ship->pos.y);
     w.asteroids[0].radius = 80.0f;
 
+    signal_brain_hnn_confidence_metrics_t before =
+        signal_brain_hnn_confidence_metrics();
     signal_brain_drive_npc(&w, npc, SIM_DT);
+    signal_brain_hnn_confidence_metrics_t after_bootstrap =
+        signal_brain_hnn_confidence_metrics();
 
     ASSERT_EQ_INT(npc->hnn_mem.experience_count, 1);
     ASSERT_EQ_INT(signal_brain_holographic_npc_holonet_active_count(&w, npc), 1);
     ASSERT(npc->input.thrust <= 0.0f);
     ASSERT(!npc->thrusting);
+    ASSERT(after_bootstrap.bootstrap_teacher_decisions ==
+           before.bootstrap_teacher_decisions + 1);
+    ASSERT(after_bootstrap.selected_teacher_decisions ==
+           before.selected_teacher_decisions + 1);
+
+    signal_brain_drive_npc(&w, npc, SIM_DT);
+    signal_brain_hnn_confidence_metrics_t after_gate =
+        signal_brain_hnn_confidence_metrics();
+    ASSERT(after_gate.evaluated_decisions ==
+           after_bootstrap.evaluated_decisions + 1);
+    ASSERT(after_gate.selected_hnn_decisions +
+               after_gate.selected_teacher_decisions ==
+           after_bootstrap.selected_hnn_decisions +
+               after_bootstrap.selected_teacher_decisions + 1);
 }
 
 TEST(test_world_network_writes_persist) {

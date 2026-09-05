@@ -10,6 +10,7 @@
 
 #include "game_sim.h"
 #include "holographic_nn.h"
+#include "holographic_nn_confidence.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -33,6 +34,15 @@ typedef struct signal_brain_flight_decision {
     bool forward_blocked;
     bool hard_override;
 } signal_brain_flight_decision_t;
+
+typedef struct signal_brain_hnn_confidence_metrics {
+    uint64_t bootstrap_teacher_decisions;
+    uint64_t evaluated_decisions;
+    uint64_t accepted_decisions;
+    uint64_t selected_hnn_decisions;
+    uint64_t selected_teacher_decisions;
+    uint64_t reason_counts[HNN_CONFIDENCE_REJECT_UNSAFE + 1];
+} signal_brain_hnn_confidence_metrics_t;
 
 bool signal_brain_load_checkpoint(const char *path, char *err, size_t err_size);
 bool signal_brain_loaded(void);
@@ -68,6 +78,10 @@ void signal_brain_drive_npc(world_t *w, npc_ship_t *npc, float dt);
 void signal_brain_holographic_init(void);
 int signal_brain_holographic_npc_holonet_active_count(const world_t *w,
                                                       const npc_ship_t *npc);
+signal_brain_hnn_confidence_metrics_t
+signal_brain_hnn_confidence_metrics(void);
+hnn_confidence_mode_t signal_brain_hnn_confidence_mode(void);
+void signal_brain_hnn_confidence_set_mode(hnn_confidence_mode_t mode);
 
 extern bool g_neural_singleplayer;
 
