@@ -1682,6 +1682,41 @@ TEST(test_towed_shell_pod_keeps_shell_after_intake_custody_sale) {
     ASSERT_EQ_INT(station_finished_count(st, COMMODITY_FERRITE_INGOT), 0);
 }
 
+TEST(test_player_keeps_source_crate_until_explicit_release) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    server_player_t *sp = &w.players[0];
+    station_t *st = &w.stations[1];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0x44, sizeof(sp->session_token));
+    int furnace = -1;
+    for (int i = 0; i < st->module_count; i++)
+        if (st->modules[i].type == MODULE_FRAME_PRESS) { furnace = i; break; }
+    ASSERT(furnace >= 0);
+    station_module_t *module = &st->modules[furnace];
+    vec2 position = module_world_pos_ring(st, module->ring, module->slot);
+    int index = test_spawn_exact_pod(&w, position, COMMODITY_FRAME, 6);
+    ASSERT(index >= 0);
+    cargo_pod_t *pod = &w.cargo_pods[index];
+    for (uint16_t i = 0; i < pod->manifest_count; i++)
+        pod->manifest_units[i].origin_station = 1;
+    cargo_pod_set_station_custody(pod, 1);
+    ASSERT(world_cargo_pod_set_player_tractor(&w, index, 0));
+    float before = ledger_balance(st, sp->session_token);
+    for (int i = 0; i < 10; i++) step_station_cargo_pod_tractors(&w, 0);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(pod), 0);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    ASSERT_EQ_FLOAT(ledger_balance(st, sp->session_token), before, 0.001f);
+    world_cargo_pod_clear_tractor(&w, index);
+    step_station_cargo_pod_tractors(&w, 0);
+    ASSERT(cargo_pod_has_module_tractor(pod));
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
+    ASSERT_EQ_FLOAT(ledger_balance(st, sp->session_token), before, 0.001f);
+}
+
 TEST(test_buy_station_held_pod_transfers_custody_to_ship) {
     WORLD_DECL;
     world_reset(&w);
@@ -5895,6 +5930,11 @@ TEST(test_kepler_frame_press_accepts_player_repositioned_local_frame_crate) {
     ASSERT(!cargo_pod_has_module_tractor(&w.cargo_pods[frame_pod]));
 
     w.cargo_pods[frame_pod].pos = press_pos;
+    step_station_cargo_pod_tractors(&w, SIM_DT);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    sp->input.tractor_hold = false;
+    sp->input.release_tow = true;
+    world_sim_step(&w, SIM_DT);
     step_station_cargo_pod_tractors(&w, SIM_DT);
 
     ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
@@ -12471,6 +12511,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_towed_cargo_pod_sells_at_matching_intake);
     RUN(test_kepler_ingot_hopper_auto_trades_and_feeds_frame_press);
     RUN(test_towed_shell_pod_keeps_shell_after_intake_custody_sale);
+    RUN(test_player_keeps_source_crate_until_explicit_release);
     RUN(test_buy_station_held_pod_transfers_custody_to_ship);
     RUN(test_buy_selected_station_held_pod_transfers_that_pod);
     RUN(test_tractor_pull_auto_buys_station_market_pod_on_exit);

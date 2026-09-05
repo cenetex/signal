@@ -50,7 +50,20 @@ static bool authenticate(world_t *w, uint8_t pubkey[32], uint8_t secret[64]) {
     memcpy(proof + PROVE_PUBKEY_SIG_OFFSET, signature, sizeof(signature));
     server_pubkey_proof_result_t proved;
     return server_dispatch_pubkey_proof_message(w, 0, proof, sizeof(proof),
-                                                &proved) && proved.verified;
+                                                &proved) && proved.verified &&
+           server_finalize_pubkey_identity(w, 0);
+}
+
+static bool load_checkpoint(world_t *copy, const persistence_generation_paths_t *saved,
+                            uint8_t pubkey[32], uint8_t secret[64]) {
+    int catalogs = station_catalog_load_all(copy->stations, MAX_STATIONS, saved->catalog_dir);
+    bool loaded = catalogs >= 0 && world_load(copy, saved->world_path);
+    bool authenticated = loaded && authenticate(copy, pubkey, secret);
+    bool restored = authenticated && player_load_by_pubkey(&copy->players[0], copy,
+                                                           saved->player_dir, pubkey);
+    fprintf(stderr, "checkpoint catalogs=%d world=%d authentication=%d player=%d\n",
+            catalogs, loaded, authenticated, restored);
+    return restored;
 }
 
 static bool checkpoint_roundtrip(world_t *w, const char *root,
@@ -64,11 +77,7 @@ static bool checkpoint_roundtrip(world_t *w, const char *root,
             PERSISTENCE_GENERATION_FAULT_NONE, &saved)) return false;
     world_t *copy = calloc(1, sizeof(*copy));
     if (!copy) return false;
-    bool ok = station_catalog_load_all(copy->stations, MAX_STATIONS,
-                                       saved.catalog_dir) >= 0 &&
-              world_load(copy, saved.world_path) &&
-              authenticate(copy, pubkey, secret) &&
-              player_load_by_pubkey(&copy->players[0], copy, saved.player_dir, pubkey);
+    bool ok = load_checkpoint(copy, &saved, pubkey, secret);
     const server_player_t *before = &w->players[0];
     const server_player_t *after = &copy->players[0];
     fprintf(stderr, "checkpoint decoded=%d\n", ok);
@@ -114,20 +123,25 @@ static bool checkpoint_roundtrip(world_t *w, const char *root,
 }
 
 static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
-    vec2 approach = station_approach_target(st, ship->pos);
-    int outer = station_max_ring(st);
-    int road = outer;
-    while (road > 1 && ring_module_count(st, road) <= 1) road--;
-    if (outer <= 1 || !station_ring_open_gap_lane(st, road, NULL, NULL))
-        return approach;
-    float radius = v2_len(v2_sub(ship->pos, st->pos));
-    vec2 entry = station_entry_target(st, ship->pos);
-    if (radius > STATION_RING_RADIUS[outer] + 80 &&
-        v2_dist_sq(ship->pos, entry) > 140 * 140) return entry;
-    float inner = fmaxf(STATION_RING_RADIUS[road] - 90, st->radius + 90);
-    if (radius > inner + 20)
-        return station_ring_open_gap_lane_pos(st, road, inner);
-    return approach;
+    vec2 relative = v2_sub(ship->pos, st->pos);
+    float radius = v2_len(relative);
+    float angle = fixp_atan2f(relative.y, relative.x);
+    if (radius > STATION_RING_RADIUS[station_max_ring(st)] + 200)
+        return station_entry_target(st, ship->pos);
+    for (int ring = station_max_ring(st); ring >= 1; ring--) {
+        float inner = STATION_RING_RADIUS[ring] - 70;
+        if (radius < inner || ring_module_count(st, ring) <= 1) continue;
+        if (!station_ring_open_gap_lane(st, ring, NULL, NULL)) continue;
+        float lane = station_ring_open_gap_angle(st, ring);
+        float difference = wrap_angle(lane - angle);
+        if (fabsf(difference) > 0.12f) {
+            float waypoint_angle = angle + clampf(difference, -0.3f, 0.3f);
+            float outside = fmaxf(radius, STATION_RING_RADIUS[ring] + 100);
+            return v2_add(st->pos, v2_scale(v2_from_angle(waypoint_angle), outside));
+        }
+        return station_ring_open_gap_lane_pos(st, ring, inner);
+    }
+    return station_approach_target(st, ship->pos);
 }
 
 static int nearest_rock(const world_t *w, const ship_t *ship, bool fragment, int home) {
@@ -167,6 +181,21 @@ static vec2 drop_point(const station_t *st) {
     return target;
 }
 
+static flight_cmd_t steer_through_lane(const ship_t *ship, vec2 target) {
+    vec2 delta = v2_sub(target, ship->pos);
+    float distance = v2_len(delta);
+    vec2 wanted = distance > 1 ? v2_scale(delta, fminf(50, distance) / distance) : v2(0, 0);
+    vec2 error = v2_sub(wanted, ship->vel);
+    float magnitude = v2_len(error);
+    if (magnitude < 0.5f) return (flight_cmd_t){0};
+    float heading = fixp_atan2f(error.y, error.x);
+    float facing = fixp_cosf(wrap_angle(heading - ship->angle));
+    return (flight_cmd_t){
+        .turn = flight_face_heading(ship, heading),
+        .thrust = facing > 0.7f ? fminf(0.3f, magnitude / 100.0f) : 0.0f,
+    };
+}
+
 static void apply_flight(input_intent_t *input, flight_cmd_t command) {
     input->turn = command.turn;
     input->thrust = command.thrust;
@@ -189,13 +218,13 @@ static int affordable_pod(const world_t *w, const server_player_t *sp,
     return -1;
 }
 
-static int towed_commodity(const world_t *w, const ship_t *ship, commodity_t commodity) {
+static bool has_undelivered_ingots(const world_t *w, const ship_t *ship, int station) {
     for (int i = 0; i < ship->towed_pod_count; i++) {
-        int pod = ship->towed_pods[i];
-        if (pod >= 0 && pod < MAX_CARGO_PODS && w->cargo_pods[pod].active &&
-            w->cargo_pods[pod].commodity == commodity) return pod;
+        const cargo_pod_t *pod = &w->cargo_pods[ship->towed_pods[i]];
+        if (pod->active && pod->commodity == COMMODITY_FERRITE_INGOT &&
+            cargo_pod_custody_station(pod) != station) return true;
     }
-    return -1;
+    return false;
 }
 
 static bool pod_origin_is(const cargo_pod_t *pod, int station) {
@@ -304,6 +333,7 @@ int main(int argc, char **argv) {
     }
     server_player_t *sp = &w->players[0];
     player_seed_credits(sp, w);
+    uint32_t starter_asset = sp->ship_asset_id;
     const float dt = 1.0f / 120.0f;
     nav_path_t path = {0};
     route_phase_t stage = PHASE_LAUNCH;
@@ -389,8 +419,10 @@ int main(int argc, char **argv) {
         } else if (stage == PHASE_DOCK) {
             station_t *st = &w->stations[home];
             vec2 approach = dock_route_target(st, sp->ship);
-            apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, approach, 40,
-                70, dt));
+            flight_cmd_t approach_cmd = v2_dist_sq(sp->ship->pos, st->pos) < 1000 * 1000
+                ? steer_through_lane(sp->ship, approach)
+                : flight_steer_to(w, sp->ship, &path, approach, 40, 70, dt);
+            apply_flight(&sp->input, approach_cmd);
             if (sp->in_dock_range && sp->nearby_station == home) {
                 sp->input.dock = true;
                 sp->input.thrust = 0;
@@ -421,7 +453,7 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "ordered %.2f balance=%.1f\n", tick * dt,
                             ledger_balance_by_pubkey(st, pubkey));
                 }
-            } else if (towed_commodity(w, sp->ship, COMMODITY_FERRITE_INGOT) >= 0) {
+            } else if (has_undelivered_ingots(w, sp->ship, home)) {
                 stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
             } else {
                 int frames = local_frame_pod(w, sp->ship, true);
@@ -481,7 +513,9 @@ int main(int argc, char **argv) {
             apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path, goal,
                                                     40, 70, dt));
             sp->input.tractor_hold = true;
-            if (towed_commodity(w, sp->ship, COMMODITY_FERRITE_INGOT) < 0) {
+            if (!has_undelivered_ingots(w, sp->ship, home)) {
+                sp->input.release_tow = true;
+                sp->input.tractor_hold = false;
                 fprintf(stderr, "ingot hopper %.2f frames=%d balance=%.1f\n", tick * dt,
                     station_finished_count(st, COMMODITY_FRAME),
                     ledger_balance_by_pubkey(st, pubkey));
@@ -525,11 +559,16 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (sp->ship->towed_pod_count > 0 && (stage == PHASE_HAUL || stage == PHASE_DOCK || stage == PHASE_DELIVER_INGOTS)) {
+        if (!sp->input.release_tow && sp->ship->towed_pod_count > 0 && (stage == PHASE_HAUL || stage == PHASE_DOCK || stage == PHASE_DELIVER_INGOTS)) {
             sp->input.tractor_hold = true;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
         world_sim_step(w, dt);
+        if (sp->ship_asset_id != starter_asset ||
+            (fracture && sp->ship->stat_asteroids_fractured == 0)) {
+            fprintf(stderr, "route stopped after ship loss at %.2f seconds\n", tick * dt);
+            break;
+        }
         bool next_payout = sp->ship->stat_credits_earned > 0;
         bool next_frames = ship_finished_count(sp->ship, COMMODITY_FRAME) >= 48;
         if ((!checkpoint_payout && next_payout) ||
@@ -538,6 +577,10 @@ int main(int argc, char **argv) {
             checkpoint_stations != w->station_count ||
             (!checkpoint_order && relay_ordered) ||
             (!checkpoint_frames && next_frames)) {
+            if (checkpoint_mining != sp->ship->mining_level ||
+                checkpoint_hold != sp->ship->hold_level)
+                fprintf(stderr, "upgrade %.2f mining=%d hold=%d\n", tick * dt,
+                        sp->ship->mining_level, sp->ship->hold_level);
             checkpoints_ok = checkpoint_roundtrip(w, argv[2], pubkey, secret);
             if (!checkpoints_ok) break;
             checkpoint_payout = next_payout;

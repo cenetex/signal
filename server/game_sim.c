@@ -9887,15 +9887,13 @@ static bool cargo_pod_try_handoff_to_matching_hopper(world_t *w,
     server_player_t *sp = &w->players[tractor_player];
     station_t *st = &w->stations[best_station];
     int owner_station = cargo_pod_custody_station(pod);
+    /* The player keeps a picked-up source crate until an explicit release.
+     * This lets its tow clear the producer or source hopper. Release puts the
+     * loose crate back through normal station acquisition. */
     if (local_output_handoff ||
         (owner_station == best_station &&
          station_owned_pod_inside_charge_boundary(w, owner_station, pod))) {
-        if (!player_detach_cargo_pod(w, sp, pod_idx)) return false;
-        (void)world_cargo_pod_set_module_tractor(
-            w, pod_idx, best_station, best_module);
-        if (best_module >= 0 && best_module < MAX_MODULES_PER_STATION)
-            st->modules[best_module].active_pulse = 1.0f;
-        return true;
+        return false;
     }
     if (owner_station >= 0) {
         (void)charge_station_owned_pod_if_due(w, pod_idx, pod);

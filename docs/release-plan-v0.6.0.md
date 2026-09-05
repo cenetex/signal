@@ -38,8 +38,8 @@ require their dedicated live/adverse-network setup. The web build uses 885
 initial WASM pages. These results cover the current changes; final candidate
 qualification follows the remaining implementation.
 
-Measured route milestones are controller results, rather than new-player
-pacing results. The fresh run fractures at 13.93 seconds, attaches ore at
+Measured route milestones are controller results. A new-player session
+will measure pacing. The fresh run fractures at 13.93 seconds, attaches ore at
 14.64 seconds, and receives its first payment at 186.08 seconds. A run that
 unpacks both ingot crates at Prospect reaches the first mining upgrade at
 about 275 seconds. The physical frame-haul variant reaches Kepler at about
