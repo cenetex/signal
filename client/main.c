@@ -14,6 +14,7 @@
 #include "net_sync.h"
 #include "onboarding.h"
 #include "story_runtime.h"
+#include "progress_store.h"
 #include "avatar.h"
 #include "mining_client.h"
 #include "neural_singleplayer.h"
@@ -1997,8 +1998,6 @@ static void init(void) {
                 "network authentication disabled\n");
     }
 
-    onboarding_load();
-    story_runtime_load();
     mining_client_init();
     /* Bind to whatever session token the bootstrap world seeded. Remote
      * WebSocket connect rebinds to the authoritative token once the
@@ -2020,6 +2019,10 @@ static void init(void) {
         /* Native: check SIGNAL_SERVER environment variable or command line */
         server_url = getenv("SIGNAL_SERVER");
 #endif
+        client_progress_select(g.identity_ready ? g.identity.pubkey : NULL,
+                               server_url);
+        onboarding_load();
+        story_runtime_load();
         signal_intelligence_holographic_init();
         {
             NetCallbacks cbs;
@@ -6069,6 +6072,12 @@ int signal_debug_held_control_mask(void) {
 
 int signal_debug_identity_available(void) {
     return g.identity_ready ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int signal_debug_player_progress(void) {
+    return (int)g.worker_story.flags |
+        ((int)client_progress_current().guide << 8);
 }
 
 int signal_debug_auth_available(void) {

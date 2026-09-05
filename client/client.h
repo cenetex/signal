@@ -551,11 +551,11 @@ typedef struct {
         bool boosted;        /* held SHIFT outside core signal */
         bool complete;       /* first physical economy loop is complete */
         bool welcomed;       /* completion message shown */
-        bool loaded;         /* state loaded from localStorage */
+        bool loaded;         /* selected player's guide progress loaded */
     } onboarding;
     /* First story arc. Progress is a compact set of proof-backed milestones:
      * station hails, the weak-signal crossing, relay work, a paid route, and
-     * the return to Prospect. Browser builds persist the flags locally. */
+     * the return to Prospect. Progress follows the player and authority. */
     worker_story_state_t worker_story;
     /* Milestone videos wait for a quiet docked moment instead of covering
      * launch, mining, or the first station payout. */

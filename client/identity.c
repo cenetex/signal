@@ -105,6 +105,32 @@ static bool resolve_default_path(char *out, size_t cap) {
 }
 #endif /* !__EMSCRIPTEN__ */
 
+bool identity_data_path(char *out, size_t cap, const char *filename) {
+    if (!out || !cap || !filename || !filename[0]) return false;
+    out[0] = '\0';
+    for (const char *p = filename; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') ||
+              *p == '-' || *p == '.')) return false;
+    }
+    if (filename[0] == '.') return false;
+#ifdef __EMSCRIPTEN__
+    int n = snprintf(out, cap, "/signal-client/%s", filename);
+    return n > 0 && (size_t)n < cap;
+#else
+    char path[2048];
+    if (!resolve_default_path(path, sizeof(path))) return false;
+    char *separator = strrchr(path, '/');
+#ifdef _WIN32
+    char *backslash = strrchr(path, '\\');
+    if (backslash && (!separator || backslash > separator)) separator = backslash;
+#endif
+    if (!separator) return false;
+    separator[1] = '\0';
+    int n = snprintf(out, cap, "%s%s", path, filename);
+    return n > 0 && (size_t)n < cap;
+#endif
+}
+
 /* ---------------------------------------------------------------------
  * File I/O — POSIX/Windows path
  * ------------------------------------------------------------------ */

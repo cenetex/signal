@@ -1933,6 +1933,72 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  test('player progress migrates once and stays separate by identity and authority', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'progress migration uses isolated local storage');
+    const logs = installFatalCollectors(page);
+    await page.addInitScript(() => {
+      localStorage.setItem('signal_story_loop_v1', '31');
+      localStorage.setItem('signal_onboarding', '1023');
+    });
+    await loadGame(page, false);
+    const migrated = 31 | (1023 << 8);
+    expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(migrated);
+    const firstIdentity = await page.evaluate(() => localStorage.getItem('signal:identity'));
+    await page.reload();
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(migrated);
+
+    const remoteUrl = 'ws://signal-progress.invalid/ws';
+    await page.routeWebSocket(remoteUrl, ws => { ws.onMessage(() => {}); });
+    await page.goto(`/play.html?smoke=1&server=${encodeURIComponent(remoteUrl)}`);
+    await waitForRuntime(page);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_player_progress')).toBe(0);
+
+    await page.goto('/play.html?singleplayer=1&smoke=1');
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(migrated);
+    await page.evaluate(() => {
+      localStorage.removeItem('signal:identity');
+      localStorage.removeItem('signal_session_token');
+    });
+    await page.reload();
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(0);
+    expect(await page.evaluate(() => localStorage.getItem('signal:identity'))).not.toBe(firstIdentity);
+    expectNoFatalErrors(logs);
+  });
+
+  test('player guide saves normal actions and tolerates a failed storage write', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'progress failure injection uses isolated local storage');
+    const logs = installFatalCollectors(page);
+    const canvas = await loadGame(page, false);
+    await canvas.click();
+    await tap(page, 'E');
+    await hold(page, 'W', 250);
+    const before = await wasmNumber(page, 'signal_debug_player_progress');
+    expect(before & (1 << 8)).toBe(1 << 8);
+    await page.reload();
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(before);
+
+    await page.evaluate(() => {
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith('signal_progress_v2:'))
+          throw new DOMException('injected storage full', 'QuotaExceededError');
+        original.call(this, key, value);
+      };
+    });
+    await page.locator('canvas').click();
+    await tap(page, 'H');
+    expect((await wasmNumber(page, 'signal_debug_player_progress')) & (1 << 12)).toBe(1 << 12);
+    expect(await wasmNumber(page, 'signal_debug_identity_available')).toBe(1);
+    await page.reload();
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(before);
+    expectNoFatalErrors(logs);
+  });
+
   test('WebCrypto failure leaves identity and authentication unpersisted', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'fault injection requires the local browser bundle');
 

@@ -11,22 +11,20 @@
 #include "client.h"
 #include "contract_objective.h"
 #include "story_runtime.h"
+#include "progress_store.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL threshold */
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
 
 /* ------------------------------------------------------------------ */
-/* Persistence (localStorage for browser, no-op for native)           */
+/* Progress follows the selected player and authority.                */
 /* ------------------------------------------------------------------ */
 
 void onboarding_load(void) {
     if (g.onboarding.loaded) return;
     g.onboarding.loaded = true;
-#ifdef __EMSCRIPTEN__
-    int flags = emscripten_run_script_int(
-        "(function(){var s=localStorage.getItem('signal_onboarding');"
-        "if(!s)return 0;return parseInt(s,10)||0;})()");
+    unsigned flags = client_progress_current().guide;
     g.onboarding.moved                = (flags & (1 << 0)) != 0;
     g.onboarding.fractured            = (flags & (1 << 1)) != 0;
     g.onboarding.tractored            = (flags & (1 << 2)) != 0;
@@ -37,7 +35,6 @@ void onboarding_load(void) {
     g.onboarding.viewed_trade         = (flags & (1 << 7)) != 0;
     g.onboarding.boosted              = (flags & (1 << 8)) != 0;
     g.onboarding.welcomed             = (flags & (1 << 9)) != 0;
-#endif
     g.onboarding.complete = g.onboarding.moved &&
                             g.onboarding.hailed &&
                             g.onboarding.fractured &&
@@ -46,7 +43,6 @@ void onboarding_load(void) {
 }
 
 static void onboarding_save(void) {
-#ifdef __EMSCRIPTEN__
     int flags = 0;
     if (g.onboarding.moved)     flags |= (1 << 0);
     if (g.onboarding.fractured) flags |= (1 << 1);
@@ -58,10 +54,7 @@ static void onboarding_save(void) {
     if (g.onboarding.viewed_trade) flags |= (1 << 7);
     if (g.onboarding.boosted)   flags |= (1 << 8);
     if (g.onboarding.welcomed)  flags |= (1 << 9);
-    char js[80];
-    snprintf(js, sizeof(js), "localStorage.setItem('signal_onboarding','%d')", flags);
-    emscripten_run_script(js);
-#endif
+    client_progress_save_guide((uint16_t)flags);
 }
 
 /* ------------------------------------------------------------------ */
