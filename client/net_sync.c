@@ -2664,6 +2664,8 @@ void apply_remote_cargo_pods(const NetCargoPodState* received, int count) {
         pod->shipment_id = received[i].shipment_id;
         pod->summary_flags = received[i].summary_flags;
         pod->summary_grade = received[i].summary_grade;
+        pod->summary_buy_quote = received[i].summary_buy_quote;
+        pod->summary_origin_station = received[i].summary_origin_station;
         pod->custody_station = received[i].custody_station;
         memcpy(pod->selection_token,
                received[i].selection_token,

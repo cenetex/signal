@@ -1151,6 +1151,8 @@ typedef struct {
      * serialization time; remote mirrors retain it for the signed action.
      * Never persisted and never treated as cargo proof. */
     uint8_t selection_token[32];
+    uint32_t summary_buy_quote; /* server quote, including the frame shell */
+    uint8_t summary_origin_station; /* 0 unknown/mixed; station index + 1 */
     vec2 pos;
     vec2 vel;
     float radius;

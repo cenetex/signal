@@ -2857,6 +2857,49 @@ TEST(test_roundtrip_asteroids_full_skips_inactive_slots) {
     free(buf);
 }
 
+TEST(test_cargo_trade_summary_tracks_price_and_origin) {
+    WORLD_DECL;
+    world_reset(&w);
+    cargo_pod_t *pod = &w.cargo_pods[0];
+    memset(pod, 0, sizeof(*pod));
+    pod->active = true;
+    pod->kind = CARGO_POD_CARGO;
+    pod->commodity = COMMODITY_FERRITE_INGOT;
+    pod->quantity = pod->manifest_count = 1;
+    pod->manifest_units[0].commodity = COMMODITY_FERRITE_INGOT;
+    pod->manifest_units[0].origin_station = 0;
+    pod->has_shell_frame = true;
+    pod->shell_frame.commodity = COMMODITY_FRAME;
+    cargo_pod_set_station_custody(pod, 0);
+    uint8_t full[CARGO_POD_RECORD_SIZE];
+    uint8_t compact[CARGO_POD_Q_RECORD_SIZE];
+    serialize_one_cargo_pod_for_world(full, 0, pod, &w);
+    serialize_one_cargo_pod_q_for_world(compact, 0, pod, &w);
+    uint32_t quote = (uint32_t)llroundf(station_market_pod_sell_quote(&w.stations[0], pod));
+    ASSERT(quote > 0);
+    ASSERT_EQ_INT(read_u32_le(full + 72), quote);
+    ASSERT_EQ_INT(read_u32_le(compact + 62), quote);
+    ASSERT_EQ_INT(full[76], 1);
+    ASSERT_EQ_INT(compact[66], 1);
+    uint64_t before = cargo_pod_net_semantic_sig_for_world(&w, 0, pod);
+    w.stations[0].base_price[COMMODITY_FRAME] *= 2;
+    ASSERT(cargo_pod_net_semantic_sig_for_world(&w, 0, pod) != before);
+    pod->quantity = pod->manifest_count = 2;
+    pod->manifest_units[1] = pod->manifest_units[0];
+    pod->manifest_units[1].origin_station = 1;
+    serialize_one_cargo_pod_for_world(full, 0, pod, &w);
+    ASSERT_EQ_INT(full[76], 0);
+    pod->custody_charge_total = 101;
+    pod->custody_charge_unit_count = 3;
+    pod->custody_charge_units_processed = 1;
+    ASSERT(cargo_pod_ordered_manifest_digest(pod, pod->custody_charge_manifest_digest));
+    ASSERT(cargo_pod_custody_charge_anchor_valid(pod));
+    serialize_one_cargo_pod_for_world(full, 0, pod, &w);
+    serialize_one_cargo_pod_q_for_world(compact, 0, pod, &w);
+    ASSERT_EQ_INT(read_u32_le(full + 72), 67);
+    ASSERT_EQ_INT(read_u32_le(compact + 62), 67);
+}
+
 TEST(test_roundtrip_cargo_pods) {
     cargo_pod_t pods[MAX_CARGO_PODS];
     memset(pods, 0, sizeof(pods));
@@ -8979,7 +9022,7 @@ TEST(test_protocol_info_serializes_stream_map) {
     uint8_t buf[PROTOCOL_INFO_SIZE];
     int len = serialize_protocol_info(buf, 8, 50, 100, 250, 300, 2000);
 
-    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 7);
+    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 8);
     ASSERT_EQ_INT(SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION, 3);
     ASSERT(len >= PROTOCOL_INFO_HEADER_SIZE);
     ASSERT(len <= PROTOCOL_INFO_SIZE);
@@ -10093,6 +10136,7 @@ void register_protocol_main_tests(void) {
     RUN(test_asteroid_delta_uses_compact_removal_stream_when_available);
     RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
     RUN(test_roundtrip_cargo_pods);
+    RUN(test_cargo_trade_summary_tracks_price_and_origin);
     RUN(test_roundtrip_cargo_pods_q_quantizes_visual_pose);
     RUN(test_cargo_pod_world_summary_issues_generation_bound_selection_token);
     RUN(test_remote_receipts_survive_large_manifest_replacement);
