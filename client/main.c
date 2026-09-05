@@ -5511,14 +5511,17 @@ static void event(const sapp_event* event) {
                         input_tractor_key_down();
                 }
             }
-            if (event->key_code == SAPP_KEYCODE_ESCAPE &&
+            if (event->key_code == SAPP_KEYCODE_ESCAPE && !event->key_repeat &&
                 !legacy_recovery_ui_visible(&legacy_recovery_ui) &&
                 !g.plan_mode_active &&
-                !episode_is_active(&g.episode) &&
-                !LOCAL_PLAYER.docked &&
-                !g.death_cinematic.active &&
-                g.death_cinematic.menu_alpha <= 0.001f) {
-                sapp_request_quit();
+                !episode_is_active(&g.episode)) {
+                if (hud_dismiss_primary_panel()) {
+                    g.input.key_pressed[SAPP_KEYCODE_ESCAPE] = false;
+                } else if (!LOCAL_PLAYER.docked &&
+                           !g.death_cinematic.active &&
+                           g.death_cinematic.menu_alpha <= 0.001f) {
+                    sapp_request_quit();
+                }
             }
             break;
         }

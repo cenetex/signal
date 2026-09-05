@@ -359,6 +359,15 @@
 
 /* Dim/inactive affordability */
 #define PAL_AFFORD_INACTIVE  108, 120, 145
+#define PAL_TRADE_TRACKED    255, 222, 51
+#define PAL_TRADE_HISTORY    135, 220, 195
+#define PAL_TRADE_POLICY     170, 210, 255
+#define PAL_TRADE_TITLE      130, 210, 255
+#define PAL_TRADE_GAIN       130, 230, 150
+#define PAL_TRADE_COST       230, 110, 110
+#define PAL_TRADE_FLOW_OK    120, 220, 170
+#define PAL_TRADE_FLOW_WARN  235, 195, 95
+#define PAL_TRADE_FLOW_BAD   235, 110, 110
 #define PAL_F_AFFORD_INACTIVE 0.42f, 0.47f, 0.57f
 
 /* ================================================================

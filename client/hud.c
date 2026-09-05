@@ -1398,9 +1398,6 @@ static const char *hud_grade_short_label(uint8_t grade) {
 }
 
 static bool hash32_is_zero(const uint8_t hash[32]);
-static void hud_hash_detail_label(const uint8_t hash[32],
-                                  char *out,
-                                  size_t cap);
 
 static const char *hud_inspect_diag_label(uint8_t kind) {
     switch ((inspect_diag_kind_t)kind) {
@@ -1757,21 +1754,6 @@ static void hud_hash_short_label(const uint8_t hash[32], char out[8]) {
         return;
     }
     mining_callsign_from_pubkey(hash, out);
-}
-
-static void hud_hash_detail_label(const uint8_t hash[32],
-                                  char *out,
-                                  size_t cap) {
-    if (!out || cap == 0) return;
-    out[0] = '\0';
-    if (hash32_is_zero(hash)) return;
-    if (cap < 17) {
-        hud_hash_short_label(hash, out);
-        return;
-    }
-    snprintf(out, cap, "%02x%02x%02x%02x%02x%02x%02x%02x",
-             hash[0], hash[1], hash[2], hash[3],
-             hash[4], hash[5], hash[6], hash[7]);
 }
 
 static void hud_cargo_label(const uint8_t pub[32], char out[12]) {
@@ -2571,12 +2553,12 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         const NetInspectSnapshotRow *row = &snap->rows[i];
         if (row->flags & INSPECT_ROW_DIAGNOSTIC) {
             if (row->commodity == (uint8_t)INSPECT_DIAG_RECEIPT_LINK) {
-                char author[20];
-                char recipient[20];
-                char head[20];
-                hud_hash_detail_label(row->origin_station, author, sizeof(author));
-                hud_hash_detail_label(row->latest_station, recipient, sizeof(recipient));
-                hud_hash_detail_label(row->receipt_head, head, sizeof(head));
+                char author[8];
+                char recipient[8];
+                char head[8];
+                hud_hash_short_label(row->origin_station, author);
+                hud_hash_short_label(row->latest_station, recipient);
+                hud_hash_short_label(row->receipt_head, head);
                 float y = next_y;
                 sdtx_pos(px / cell, y / cell);
                 sdtx_color3b(PAL_CONTRACT_READY);
@@ -3446,17 +3428,40 @@ bool hud_should_draw_message_panel(void) {
                              &r, &g0, &b);
 }
 
-const char *hud_attention_current_surface_name(void) {
+hud_attention_surface_t hud_attention_current_surface(void) {
     hud_attention_flags_t flags = {
         .death = g.death_screen_timer > 0.0f ||
                  g.death_cinematic.active ||
                  g.death_cinematic.menu_alpha > 0.001f,
-        .docked = LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f,
+        .docked = LOCAL_PLAYER.docked,
         .inspect = hud_inspect_surface_active(),
         .scoreboard = g.scoreboard.show,
         .message = hud_should_draw_message_panel(),
     };
-    return hud_attention_surface_name(hud_attention_select(flags));
+    return hud_attention_select(flags);
+}
+
+const char *hud_attention_current_surface_name(void) {
+    return hud_attention_surface_name(hud_attention_current_surface());
+}
+
+bool hud_dismiss_primary_panel(void) {
+    switch (hud_attention_current_surface()) {
+    case HUD_ATTENTION_INSPECT:
+        g.inspect_station = -1;
+        g.inspect_module = -1;
+        g.inspect_snapshot_timer = 0.0f;
+        g.inspect_snapshot.target_type = INSPECT_TARGET_NONE;
+        g.inspect_receipt_browser = false;
+        g.inspect_receipt_page = 0;
+        g.scoreboard.show = false;
+        return true;
+    case HUD_ATTENTION_SCOREBOARD:
+        g.scoreboard.show = false;
+        return true;
+    default:
+        return false;
+    }
 }
 
 void get_hud_message_panel_rect(float* x, float* y, float* width, float* height) {
@@ -5308,6 +5313,12 @@ int set_smoke_loop_state(int state) {
         smoke_loop_state_override = 0;
         return 0;
     }
+    /* Release a visual fixture while retaining its current scene so normal
+     * input can be exercised against that scene. */
+    if (state == -1) {
+        smoke_loop_state_override = 0;
+        return 1;
+    }
     int ok = smoke_apply_loop_state(state);
     smoke_loop_state_override = ok ? state : 0;
     return ok;
@@ -5872,9 +5883,11 @@ void draw_hud(void) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
 
-    /* Death-screen overlay short-circuits the rest of the HUD. */
-    if (draw_death_overlay(screen_w, screen_h)) return;
-    if (hud_inspect_surface_active() && !LOCAL_PLAYER.docked) {
+    switch (hud_attention_current_surface()) {
+    case HUD_ATTENTION_DEATH:
+        if (draw_death_overlay(screen_w, screen_h)) return;
+        break;
+    case HUD_ATTENTION_INSPECT: {
         sdtx_canvas(screen_w / ui_text_zoom(), screen_h / ui_text_zoom());
         sdtx_font(0);
         sdtx_origin(0.0f, 0.0f);
@@ -5886,12 +5899,12 @@ void draw_hud(void) {
         draw_damage_flash(screen_w, screen_h);
         return;
     }
-    /* The scoreboard is a deliberate modal glance, not another layer on top
-     * of flight, tutorial, inspect, and connection chrome. */
-    if (g.scoreboard.show && !LOCAL_PLAYER.docked) {
+    case HUD_ATTENTION_SCOREBOARD:
         hud_draw_scoreboard(screen_w, screen_h);
         draw_damage_flash(screen_w, screen_h);
         return;
+    default:
+        break;
     }
 
     bool compact = ui_is_compact();
