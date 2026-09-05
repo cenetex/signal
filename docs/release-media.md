@@ -44,6 +44,10 @@ the headless executable. Each archive includes `SHA256SUMS`; client archives
 also include the media provenance record. The draft release adds hashes for
 the complete archive set.
 
-As of September 5, the local checkout contains the ten episode clips. The
-current music and portrait source is pending. The first complete pack and its
+On September 5, all 28 music tracks were recovered from the project owner's
+Downloads folder. All 10 episode files were recovered from the existing
+checkout.
+The source names and SHA-256 hashes are in
+[the recovery index](recovered-media-index.json). The three station portraits
+and publication permission notes are pending. The first complete pack and its
 deployment proof remain release acceptance work.
