@@ -4,6 +4,70 @@ This study compares the complete `SIGNAL_CONNECTOME_STRATEGY` switch: station
 postures, reward learning, and worker job reassignment. Both settings use the
 same connectome, its fixed seed of 42, and the drive-history fix in PR #736.
 
+## Neural coverage audit
+
+The five-minute and thirty-minute studies used the fly navigation circuit plus
+station strategy. Their outcome tables describe that combination.
+
+| Component | Earlier study coverage |
+|---|---|
+| Fly navigation connectome | Active: 4,564 neurons from the committed nav.cnx |
+| Full fly connectome | Optional deep circuit unset; zero deep promotions |
+| Station posture learning | Active in the strategy-on episodes |
+| Holographic market memory | Shared simulation job-memory and gossip paths use the built-in HNN backend |
+| Trained worker policy | Checkpoint absent; existing job rules selected work |
+| Built-in CRLPLRIMES flight policy | Available in the binary; connectome NPCs take the separate fly steering path |
+| Trained contract policy | Checkpoint absent |
+| Holographic pilot | Separate NPC pilot mode; the study workers use connectome mode |
+| leCore HNN backend | Build uses builtin-radix2; leCore option is off |
+
+The optional full fly circuit is documented as 138,584 neurons. The current local
+server configuration at commit 37764277c1b5fdf27b44cfd734f0889e3715a35a also uses
+nav.cnx, and adds an active trained worker checkpoint. This is a source/configuration
+check; deployment state requires its own check.
+
+The probe now mirrors the server's worker checkpoint loading and holographic pilot
+initialization. Each result reports circuit neuron counts, kernel steps, HNN backend,
+checkpoint load state, and flight, contract, and worker inference counts. The runner
+accepts --worker-checkpoint, sets active mode, records the checkpoint hash, and checks
+that the requested model loaded. A missing requested checkpoint ends the run before
+simulation.
+
+Worker activation has a further scope limit in npc_worker_score_assignment:
+the model ranks mining, hauling, and other options, while the active dispatch handles
+self-refit, escort, and patrol choices. The existing job rules handle the remaining
+choices. An inference count measures scoring; it does not establish that a selected
+action changed the world. Also, connectome worker reassignment requires strategy-on,
+so a strategy-off episode can load the model and still record zero worker decisions.
+
+The fly steering path retains shared route planning, speed control, and collision
+avoidance. Several pilot types are alternatives selected by NPC brain mode. Testing
+the whole suite therefore needs separate mode coverage and action coverage.
+
+### Thirty-minute worker load check
+
+Seed 2037 ran for 216,000 ticks with the worker checkpoint loaded in active mode,
+strategy off/on, and a full repeat of each. All earlier outcome fields matched
+the original thirty-minute run exactly: 88/139 smelt units and 0/3 ship losses.
+Both settings reported 4,564 fast neurons, zero deep neurons, 6,469,230 connectome
+steps, and zero worker decisions or inferences. Flight and contract inferences
+were also zero. The repeat JSON matched exactly.
+
+Measured source: b4d8d4b99d5205cfd0f286711939793dbc7e7e01.
+Worker checkpoint SHA256:
+c346439b6ce1a6681c037167e16447e0f75f5491a2eafd88685b6e5d36292f8e.
+
+[Audit outcomes](evidence/connectome-worker-audit-2026-09-12/comparison.json)
+and [manifest](evidence/connectome-worker-audit-2026-09-12/manifest.json)
+preserve the numeric evidence. Raw logs and station archives remain local.
+
+This exposed a planner timer bug: assignment ran before dock/idle countdown,
+then role logic consumed the expiry tick and either reset the timer or departed.
+The fix lets assignment run on the tick where the timer reaches zero. A repair
+assignment regression starts with a positive timer, verifies it waits for the
+first tick, and verifies the repair occurs on the expiry tick. It failed before
+the fix.
+
 ## Thirty-minute follow-up
 
 The longer run shows an output and survival tradeoff. Strategy produced **260

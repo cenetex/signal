@@ -8165,7 +8165,7 @@ TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
-    npc->state_timer = 0.0f;
+    npc->state_timer = 1.5f * SIM_DT;
     memset(&npc->ship->knowledge, 0, sizeof(npc->ship->knowledge));
     knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
     ship_t *ship = world_npc_ship_for(&w, slot);
@@ -8184,6 +8184,10 @@ TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
     ASSERT(knowledge_item_from_market_memory(&supply, &item));
     knowledge_view_insert(&npc->ship->knowledge, &item);
 
+    /* The assignment gets its turn as the dock timer expires. */
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_REPAIR_KIT), before_kits);
     step_npc_ships(&w, SIM_DT);
 
     ASSERT(ship->hull > npc_max_hull(npc) - 12.0f);
