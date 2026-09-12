@@ -22,16 +22,24 @@ SIGNAL_CONNECTOME_FAST=/path/to/nav.cnx ./build/signal_server
 SIGNAL_CONNECTOME_FAST=/path/to/nav.cnx ./build/signal        # singleplayer
 ```
 
+In the Fly deployment, `fly.toml` sets `SIGNAL_CONNECTOME_FAST=/app/nav.cnx`
+and `SIGNAL_CONNECTOME_BUDGET=30`; `server/Dockerfile` copies the committed
+blob to that path. The machine only runs while players are connected
+(`min_machines_running = 0`), so the flies work during live sessions only.
+
 Both `server/main.c` and `client/local_server.c` call `signal_connectome_init()`
 before the world loads, so NPC spawn stamps the mode from the first tick.
 
-### Circuit blobs are not in this repo
+### Circuit blobs
 
-`nav.cnx` (~871 KB, 4,564 neurons) and `full.cnx` (~24 MB, 138,584 neurons) are
-compiled from the multi-GB FlyWire export by the upstream flybrain project's
-`tools/`, and follow the same rule as `assets/anime/*.mp4` — too large for git,
-kept externally. `*.cnx` is gitignored so a stray blob cannot be committed by
-accident.
+`nav.cnx` (~871 KB, 4,564 neurons) is committed at
+`assets/connectome/nav.cnx` so the Fly image can enable the brain without a
+build-time network fetch; `server/Dockerfile` copies it to `/app/nav.cnx`.
+`full.cnx` (~24 MB, 138,584 neurons) stays external — it is only needed for the
+optional `SIGNAL_CONNECTOME_DEEP` deliberation slots. Both are compiled from the
+multi-GB FlyWire export by the upstream flybrain project's `tools/`. The
+`*.cnx` ignore rule still excludes every other circuit; the committed file is
+explicitly re-included.
 
 A blob must carry the `ring` and `columnar` populations (injection sites) and
 `dn_left` / `dn_right` (the descending readout). `escape_*`, `escape2_*` and
