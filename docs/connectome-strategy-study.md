@@ -68,6 +68,40 @@ assignment regression starts with a positive timer, verifies it waits for the
 first tick, and verifies the repair occurs on the expiry tick. It failed before
 the fix.
 
+### Thirty-minute check after the timer fix
+
+The same seed, checkpoint, and duration ran again from source
+3b3432a with the timer fix. Strategy-on recorded **3,151 worker decisions and
+9,391 candidate inferences**, with zero teacher decisions. Strategy-off recorded
+zero worker decisions, consistent with its assignment gate. Both settings kept
+the fly navigation circuit active.
+
+Every earlier outcome field stayed identical in this seed, including 88/139
+smelt units and 0/3 ship losses. All freight, crafting, construction, and contract
+completion counts stayed at zero. The full repeat JSON and uncompressed signed
+chain contents matched exactly. The result confirms restored model use; measured
+economic outcomes stayed unchanged in this one-seed check. The full five-seed
+study still describes the earlier implementation.
+
+[Corrected outcomes](evidence/connectome-worker-fixed-2026-09-12/comparison.json),
+[manifest](evidence/connectome-worker-fixed-2026-09-12/manifest.json), and
+[production windows](evidence/connectome-worker-fixed-2026-09-12/production-windows.json).
+
+Validation: all 1,711 C tests passed, with eight optional-tool warnings. The
+17 assignment tests and eight Python analysis tests passed. Two roster fixtures
+now hold other workers at dock so they test one replacement request, and observe
+the new worker when it spawns.
+
+Reproduce with a matching worker artifact from a clean committed checkout:
+
+```sh
+python3 scripts/compare_connectome_strategy.py \
+  --probe build-study/connectome_swarm_probe \
+  --worker-checkpoint /absolute/path/to/signal_npc_worker.nnckpt \
+  --output /tmp/signal-worker-fixed \
+  --ticks 216000 --seeds 2037 --workers 4 --timeout 3600
+```
+
 ## Thirty-minute follow-up
 
 The longer run shows an output and survival tradeoff. Strategy produced **260
