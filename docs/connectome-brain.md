@@ -112,6 +112,26 @@ Per NPC, recomputed each tick from world state, all Q16:
   rocks get a wider radius than drift) plus low-hull dread.
 - **PAIN** — hull loss since last tick, spikes then decays over ~1 s.
 
+## Combined brain: connectome flight + strategic planner
+
+By default a connectome fly is also its own planner: the role state machine
+picks the job and the connectome biases the flight. `SIGNAL_CONNECTOME_STRATEGY=1`
+splits those roles. Connectome NPCs are then handed to the strategic worker
+planner in `server/sim_ai.c`, which scores the legal high-level options
+(mine, haul, courier, refit, supply, escort, patrol, risky profit) and
+reassigns the fly. The connectome still flies it -- the planner never
+touches the rudder.
+
+This is the "learned strategy, fixed reflex" split: the planner is the
+`signal-npc-worker-v2` model when a checkpoint is loaded
+(`SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT`), and falls back to teacher
+scores otherwise. With no strategic checkpoint the split still runs, using
+the heuristic option scores; it is inert only when the adapter itself did
+not load.
+
+Off by default. With the flag unset, or the adapter not loaded,
+`npc_can_reassign` keeps its original behaviour and nothing changes.
+
 ## Brain-time as an economy
 
 One shared read-only connectome, N agent states. Each tick a fixed integer
@@ -167,6 +187,7 @@ dumps agent 0's drive, turn and thrust every *n* ticks.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SIGNAL_CONNECTOME_FAST` | — | nav `.cnx` path; **required to enable** |
+| `SIGNAL_CONNECTOME_STRATEGY` | 0 | also run the strategic worker planner for connectome flies |
 | `SIGNAL_CONNECTOME_DEEP` | — | full-brain `.cnx` for deliberation slots |
 | `SIGNAL_CONNECTOME_DT_US` | 4000 | kernel step; changing this invalidates the tonic |
 | `SIGNAL_CONNECTOME_TONIC_UV` | 2200 | columnar arousal; must clear the ignition cliff |

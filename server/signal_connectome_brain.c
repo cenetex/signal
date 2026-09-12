@@ -136,6 +136,17 @@ bool signal_connectome_enabled(void)
     return g_cb.enabled != 0;
 }
 
+bool signal_connectome_strategy_requested(void)
+{
+    const char *v = getenv("SIGNAL_CONNECTOME_STRATEGY");
+    return v && v[0] && v[0] != '0';
+}
+
+bool signal_connectome_strategy_enabled(void)
+{
+    return g_cb.enabled && signal_connectome_strategy_requested();
+}
+
 bool signal_connectome_init(void)
 {
     if (g_cb.init_attempted) return g_cb.enabled != 0;
@@ -267,6 +278,9 @@ bool signal_connectome_init(void)
            cb->budget, cb->deep_slots,
            cb->promote_stake, cb->demote_stake, cb->dt_us,
            cb->awake_hz_q16 / 65536.0);
+    if (signal_connectome_strategy_requested())
+        printf("[connectome] combined brain: connectome flight + strategic "
+               "planner\n");
     return true;
 }
 

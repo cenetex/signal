@@ -49,6 +49,14 @@ bool signal_connectome_init(void);
 /* True when the connectome brain is loaded (does not trigger init). */
 bool signal_connectome_enabled(void);
 
+/* Combined brain: when requested, connectome flies also go through the
+ * strategic worker planner in server/sim_ai.c, so the job is chosen by the
+ * learned (or teacher-fallback) planner while the connectome flies it.
+ * Opt-in via SIGNAL_CONNECTOME_STRATEGY=1, and inert unless the adapter
+ * actually loaded. */
+bool signal_connectome_strategy_requested(void);
+bool signal_connectome_strategy_enabled(void);
+
 void signal_connectome_shutdown(void);
 
 /* Called from step_npc_ships after the per-NPC loop: updates drives,

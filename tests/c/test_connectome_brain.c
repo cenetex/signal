@@ -389,6 +389,20 @@ TEST(test_connectome_adapter_disabled_without_env) {
     ASSERT(!signal_connectome_stats(&st));
 }
 
+TEST(test_connectome_strategy_flag_is_off_by_default) {
+    unsetenv("SIGNAL_CONNECTOME_STRATEGY");
+    ASSERT(!signal_connectome_strategy_requested());
+    setenv("SIGNAL_CONNECTOME_STRATEGY", "1", 1);
+    ASSERT(signal_connectome_strategy_requested());
+    setenv("SIGNAL_CONNECTOME_STRATEGY", "0", 1);
+    ASSERT(!signal_connectome_strategy_requested());
+
+    /* Requested, but inert while the adapter itself is disabled. */
+    setenv("SIGNAL_CONNECTOME_STRATEGY", "1", 1);
+    ASSERT(!signal_connectome_strategy_enabled());
+    unsetenv("SIGNAL_CONNECTOME_STRATEGY");
+}
+
 void register_connectome_brain_tests(void);
 void register_connectome_brain_tests(void) {
     RUN(test_connectome_blob_loader_rejects_garbage);
@@ -401,4 +415,5 @@ void register_connectome_brain_tests(void) {
     RUN(test_connectome_swarm_deep_promotion_by_stake);
     RUN(test_connectome_swarm_checksum_deterministic);
     RUN(test_connectome_adapter_disabled_without_env);
+    RUN(test_connectome_strategy_flag_is_off_by_default);
 }
