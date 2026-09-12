@@ -21,6 +21,9 @@
  */
 #include "game_sim.h"
 #include "signal_connectome_brain.h"
+#include "connectome_probe_metrics.h"
+#include "chain_log.h"
+#include <inttypes.h>
 
 #include <errno.h>
 #include <math.h>
@@ -44,19 +47,50 @@ static const char *state_name(int s)
 
 static world_t g_world;
 
+static bool probe_chain_counts(const world_t *w, uint64_t *counts)
+{
+    memset(counts, 0, sizeof(uint64_t) * CHAIN_EVT_TYPE_COUNT);
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        const station_t *st = &w->stations[i];
+        if (st->chain_event_count == 0) continue;
+        chain_log_verify_report_t report = {0};
+        if (!chain_log_verify_station(st, NULL, NULL, &report) ||
+            report.valid_events != st->chain_event_count) return false;
+        for (int k = 0; k < CHAIN_EVT_TYPE_COUNT; k++)
+            counts[k] += report.event_type_counts[k];
+    }
+    return true;
+}
+
+static bool probe_uint(const char *s, uint32_t max, uint32_t *out)
+{
+    char *end = NULL;
+    errno = 0;
+    unsigned long value = strtoul(s, &end, 10);
+    if (!s[0] || s[0] == '-' || errno || *end || !value || value > max) return false;
+    *out = (uint32_t)value;
+    return true;
+}
+
 int main(int argc, char **argv)
 {
-    int ticks = 3600;
-    if (argc > 1) {
-        char *end = NULL;
-        errno = 0;
-        long parsed = strtol(argv[1], &end, 10);
-        if (errno != 0 || end == argv[1] || *end != '\0' ||
-            parsed < 1 || parsed > 1000000) {
-            fprintf(stderr, "usage: %s [ticks]\n", argv[0]);
-            return 2;
-        }
-        ticks = (int)parsed;
+    uint32_t ticks = 3600, seed = 2037;
+    const char *json_path = NULL, *chain_dir = NULL;
+    if (argc > 1 && !probe_uint(argv[1], 1000000, &ticks)) return 2;
+    for (int arg = 2; arg < argc; arg += 2) {
+        if (arg + 1 >= argc) return 2;
+        if (!strcmp(argv[arg], "--seed")) {
+            if (!probe_uint(argv[arg + 1], UINT32_MAX, &seed)) return 2;
+        } else if (!strcmp(argv[arg], "--json")) json_path = argv[arg + 1];
+        else if (!strcmp(argv[arg], "--chain-dir")) chain_dir = argv[arg + 1];
+        else return 2;
+    }
+    /* Study runs own a fresh history directory, with the same genesis as
+     * a fresh server. The runner provides a separate directory per run. */
+    if (json_path && !chain_dir) return 2;
+    if (chain_dir) {
+        chain_log_set_dir(chain_dir);
+        chain_log_set_disk_enabled(true);
     }
 
     /* Must run before world_reset so NPC spawn stamps the brain mode. */
@@ -64,11 +98,22 @@ int main(int argc, char **argv)
 
     world_t *w = &g_world;
     memset(w, 0, sizeof(*w));
-    w->rng = 2037u;
+    w->rng = seed;
     world_reset(w);
+    uint64_t initial_chain[CHAIN_EVT_TYPE_COUNT] = {0};
+    connectome_probe_metrics_t metrics = {0};
+    if (json_path) {
+        if (!on) { fprintf(stderr, "study requires a loaded connectome\n"); return 2; }
+        world_seed_station_chain_genesis(w);
+        for (int i = 0; i < w->station_count && i < SIGNAL_ROOT_STATION_COUNT; i++)
+            if (!w->stations[i].chain_event_count) return 3;
+        if (!probe_chain_counts(w, initial_chain)) return 3;
+        connectome_probe_sample(&metrics, w, true);
+    }
+    uint32_t initial_rng = w->rng;
 
     printf("connectome brain: %s\n", on ? "ENABLED" : "disabled (baseline)");
-    printf("running %d ticks at 120 Hz (%.1f s of sim)\n\n",
+    printf("running %u ticks at 120 Hz (%.1f s of sim)\n\n",
            ticks, (double)ticks / 120.0);
 
     vec2 prev[MAX_NPC_SHIPS];
@@ -88,8 +133,9 @@ int main(int argc, char **argv)
         last_state[i] = n->state;
     }
 
-    for (int t = 0; t < ticks; t++) {
+    for (uint32_t t = 0; t < ticks; t++) {
         world_sim_step(w, 1.0f / 120.0f);
+        if (json_path) connectome_probe_sample(&metrics, w, false);
         for (int i = 0; i < MAX_NPC_SHIPS; i++) {
             npc_ship_t *n = &w->npc_ships[i];
             if (!n->active || !n->ship) continue;
@@ -150,5 +196,35 @@ int main(int argc, char **argv)
         printf("            checksum: %016llx\n",
                (unsigned long long)signal_connectome_checksum());
     }
-    return (active > 0 && moving > 0) ? 0 : 1;
+    if (json_path) {
+        uint64_t counts[CHAIN_EVT_TYPE_COUNT] = {0};
+        if (!probe_chain_counts(w, counts)) return 3;
+        for (int k = 0; k < CHAIN_EVT_TYPE_COUNT; k++) {
+            if (counts[k] < initial_chain[k]) return 3;
+            counts[k] -= initial_chain[k];
+        }
+        FILE *out = fopen(json_path, "w");
+        if (!out) return 3;
+        fprintf(out, "{\n  \"schema\": 1, \"seed\": %u, \"ticks\": %u, "
+                     "\"strategy\": %s, \"initial_rng\": %u,\n",
+                seed, ticks, signal_connectome_strategy_enabled() ? "true" : "false", initial_rng);
+        fprintf(out, "  \"chain_verified\": true, \"smelt_output_units\": %" PRIu64
+                     ", \"craft_events\": %" PRIu64 ", \"construction_contributions\": %" PRIu64 ",\n",
+                counts[CHAIN_EVT_SMELT], counts[CHAIN_EVT_CRAFT], counts[CHAIN_EVT_CONSTRUCTION]);
+        fprintf(out, "  \"delivered_units\": %" PRIu64 ", \"destroyed_ships\": %" PRIu64
+                     ", \"contract_completions\": %" PRIu64 ",\n",
+                metrics.delivered_units, metrics.destroyed_ships, metrics.contract_completions);
+        fprintf(out, "  \"distance\": %.9f, \"observed_hull_loss\": %.9f,\n",
+                metrics.distance, metrics.observed_hull_loss);
+        fprintf(out, "  \"active_ticks\": %" PRIu64 ", \"travel_ticks\": %" PRIu64
+                     ", \"docked_ticks\": %" PRIu64 ", \"idle_ticks\": %" PRIu64
+                     ", \"towing_ticks\": %" PRIu64 ", \"event_capacity_ticks\": %" PRIu64 ",\n",
+                metrics.active_ticks, metrics.travel_ticks, metrics.docked_ticks,
+                metrics.idle_ticks, metrics.towing_ticks, metrics.event_capacity_ticks);
+        fprintf(out, "  \"active_at_end\": %d, \"strategy_changes\": %u, "
+                     "\"connectome_checksum\": \"%016" PRIx64 "\"\n}\n",
+                active, st.strategy_changes, signal_connectome_checksum());
+        if (fclose(out)) return 3;
+    }
+    return json_path ? 0 : ((active > 0 && moving > 0) ? 0 : 1);
 }
