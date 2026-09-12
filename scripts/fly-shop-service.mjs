@@ -46,6 +46,14 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
     if (!response.ok) throw fail('world_unavailable', 503);
     return response.json();
   };
+  const reserve = async q => {
+    const result = await core('reserve', { id: q.id, wallet: Buffer.from(decode58(q.wallet, 32)).toString('hex'), station: q.station });
+    if (result.ok !== true || !Number.isSafeInteger(result.assetId) || result.assetId <= 0) throw fail('world_unavailable', 503);
+  };
+  const broadcast = async q => {
+    await reserve(q);
+    return rpc('sendTransaction', [q.signed, { encoding: 'base64', skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 5 }]);
+  };
   const worldView = wallet => core('view', { wallet: Buffer.from(decode58(wallet, 32)).toString('hex') });
   const publicView = () => core('view', { wallet: '00'.repeat(32) });
   const fulfill = async q => {
@@ -124,7 +132,7 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
           } catch {
             try {
               if (!await recoverExpired(q) && q.state === 'quoted' && q.signed)
-                await rpc('sendTransaction', [q.signed, { encoding: 'base64', skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 5 }]);
+                await broadcast(q);
             } catch { /* Retry after the chain or world reconnects. */ }
           }
         }
@@ -182,7 +190,7 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
             const view = await worldView(wallet);
             const open = store.rows.filter(q => q.state !== 'fulfilled');
             let q = open.find(q => q.wallet === wallet);
-            if (!view.ready || (!q && view.remaining <= open.length) || store.rows.length >= 5000) throw fail('shop_full', 409);
+            if (!view.ready || (!q && view.remaining <= 0) || store.rows.length >= 5000) throw fail('shop_full', 409);
             if (q?.state === 'paid' || q?.signature) throw fail('finish_existing_purchase', 409);
             if (q && q.station !== data.station) throw fail('finish_existing_purchase', 409);
             if (!q) {
@@ -192,6 +200,7 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
             }
             const prepared = await prepareFlyBurn(rpc, q);
             await commit(() => { q.prepared = prepared.transaction; q.lastValidBlockHeight = prepared.lastValidBlockHeight; if (!store.rows.includes(q)) store.rows.push(q); });
+            await reserve(q);
             return { ...publicQuote(q), transaction: prepared.transaction, mint: FLY_MINT };
           });
           json(res, 200, result); return;
@@ -211,7 +220,7 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
             // Persist the signed receipt before the first network broadcast.
             if (!q.signature) await commit(() => { q.signature = signature; q.signed = data.transaction; });
             if (q.state === 'quoted') {
-              try { await rpc('sendTransaction', [q.signed, { encoding: 'base64', skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 5 }]); }
+              try { await broadcast(q); }
               catch { /* Confirmation and retry use the saved signature and identical bytes. */ }
             }
             return publicQuote(q);

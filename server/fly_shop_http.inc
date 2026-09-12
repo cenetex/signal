@@ -37,12 +37,13 @@ static void handle_fly_shop(struct mg_connection *c, struct mg_http_message *hm)
     bool wallet_ok = fly_shop_hex(wallet_text, wallet, 32);
     free(wallet_text);
     if (!wallet_ok) { mg_http_reply(c, 400, api_headers, "{\"error\":\"invalid wallet\"}"); return; }
-    if (mg_match(hm->uri, mg_str("/internal/v1/fly-shop/grant"), NULL)) {
+    bool reserve = mg_match(hm->uri, mg_str("/internal/v1/fly-shop/reserve"), NULL);
+    if (reserve || mg_match(hm->uri, mg_str("/internal/v1/fly-shop/grant"), NULL)) {
         char *id_text = mg_json_get_str(hm->body, "$.id");
         char *sig_text = mg_json_get_str(hm->body, "$.signature");
         uint8_t id[32] = {0}, signature[64] = {0};
         double station = -1;
-        bool valid = fly_shop_hex(id_text, id, 32) && fly_shop_hex(sig_text, signature, 64) &&
+        bool valid = fly_shop_hex(id_text, id, 32) && (reserve || fly_shop_hex(sig_text, signature, 64)) &&
             mg_json_get_num(hm->body, "$.station", &station) &&
             station >= 0 && station <= 2 && station == floor(station);
         free(id_text); free(sig_text);
@@ -51,7 +52,9 @@ static void handle_fly_shop(struct mg_connection *c, struct mg_http_message *hm)
         }
         /* Finish an older background save before publishing this purchase. */
         wait_for_persistence_writer_result(mg_millis());
-        const fly_purchase_t *p = world_fly_purchase_grant(&world, id, wallet, signature, (int)station);
+        const fly_purchase_t *p = reserve
+            ? world_fly_purchase_reserve(&world, id, wallet, (int)station)
+            : world_fly_purchase_grant(&world, id, wallet, signature, (int)station);
         if (!p) { mg_http_reply(c, 409, api_headers, "{\"error\":\"worker grant unavailable\"}"); return; }
         if (!save_persistent_state()) {
             mg_http_reply(c, 503, api_headers, "{\"error\":\"purchase save pending\"}"); return;
@@ -66,9 +69,16 @@ static void handle_fly_shop(struct mg_connection *c, struct mg_http_message *hm)
     char *out = calloc(CAP, 1);
     if (!out) { mg_http_reply(c, 503, api_headers, "{}"); return; }
     size_t pos = 0;
+    uint32_t free_assets = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        const ship_asset_t *asset = &world.ship_assets[i];
+        if (!asset->active || (asset->destroyed && asset->provenance != SHIP_ASSET_PROVENANCE_FLY_PURCHASE)) free_assets++;
+    }
+    uint32_t remaining = MAX_FLY_PURCHASES - world.fly_purchase_count;
+    if (remaining > free_assets) remaining = free_assets;
     BUF_APPEND(pos, out, CAP, "{\"ready\":%s,\"remaining\":%u,\"tick\":%llu,\"stations\":[",
         signal_connectome_enabled() ? "true" : "false",
-        MAX_FLY_PURCHASES - world.fly_purchase_count, (unsigned long long)world.tick);
+        remaining, (unsigned long long)world.tick);
     for (int i = 0; i < 3; i++)
         BUF_APPEND(pos, out, CAP, "%s{\"id\":%d,\"x\":%.3f,\"y\":%.3f}",
             i ? "," : "", i, world.stations[i].pos.x, world.stations[i].pos.y);
@@ -77,6 +87,9 @@ static void handle_fly_shop(struct mg_connection *c, struct mg_http_message *hm)
     for (uint32_t i = 0; i < world.fly_purchase_count; i++) {
         const fly_purchase_t *p = &world.fly_purchases[i];
         if (memcmp(p->wallet, wallet, 32)) continue;
+        bool paid = false;
+        for (size_t k = 0; k < 64; k++) if (p->burn_signature[k]) paid = true;
+        if (!paid) continue;
         const ship_asset_t *asset = world_ship_asset_by_id_const(&world, p->asset_id);
         if (!asset) continue;
         const ship_t *ship = world_ship_asset_state_const(&world, asset);

@@ -22,6 +22,8 @@ binds the site origin, wallet, nonce and five-minute expiry. The session uses a
 Secure, HttpOnly, SameSite cookie. POST requests require the configured origin.
 
 A saved quote binds a random purchase ID, wallet, station, mint and amount.
+The world reserves and saves the actual hull before the quote reaches the wallet.
+The reserved hull launches after its finalized receipt is recorded.
 The wallet signs an exact Token-2022 `BurnChecked` transaction with a purchase
 memo. The gateway checks the signature and full message. It saves the signed
 transaction and signature before broadcasting. Retries broadcast the same bytes.

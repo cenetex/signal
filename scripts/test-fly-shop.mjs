@@ -25,7 +25,7 @@ async function setup(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'signal-fly-test-'));
   const buyer = key(), token = key().address, hash = key().address;
   let shop, origin, grantCalls = 0, coreAvailable = true, chainFinal = false, currentQuote, lastSignature, sent = 0, height = 500, chainError = false;
-  const grants = new Map();
+  const grants = new Map(), reservations = new Map();
   const rpc = async (method, params) => {
     switch (method) {
       case 'getGenesisHash': return MAINNET_GENESIS;
@@ -47,7 +47,12 @@ async function setup(t) {
   const core = async (url, options) => {
     const data = JSON.parse(options.body);
     assert.equal(options.headers['x-fly-shop-key'], 'a'.repeat(64));
-    if (url.endsWith('/view')) return Response.json({ ready: true, remaining: 80 - grants.size, workers: [...grants.values()].filter(g => g.wallet === data.wallet).map(g => ({ id: g.id, assetId: g.assetId })), stations: [] });
+    if (url.endsWith('/view')) return Response.json({ ready: true, remaining: 80 - reservations.size, workers: [...grants.values()].filter(g => g.wallet === data.wallet).map(g => ({ id: g.id, assetId: g.assetId })), stations: [] });
+    if (url.endsWith('/reserve')) {
+      if (!coreAvailable) return new Response('', { status: 503 });
+      if (!reservations.has(data.id)) reservations.set(data.id, { ...data, assetId: reservations.size + 1 });
+      return Response.json({ ok: true, assetId: reservations.get(data.id).assetId });
+    }
     grantCalls++;
     if (!coreAvailable) return new Response('', { status: 503 });
     if (!grants.has(data.id)) grants.set(data.id, { ...data, assetId: grants.size + 1 });
@@ -164,4 +169,13 @@ test('saved finalized receipt restores ownership after world rollback', async t 
   assert.equal(f.grants.size, 1); f.grants.clear(); await f.restart(); await f.retry();
   assert.equal(f.grants.size, 1); await f.login();
   assert.equal((await f.request('me')).data.purchases[0].state, 'fulfilled');
+});
+
+test('a failed world reservation prevents payment broadcast', async t => {
+  const f = await setup(t); await f.login(); f.setCore(false);
+  assert.equal((await f.quote()).status, 503); assert.equal(f.sent, 0);
+  f.setCore(true); const q = (await f.quote()).data; f.setCore(false);
+  const submitted = await f.request('submit', { id: q.id, transaction: f.signed(q) });
+  assert.equal(submitted.data.state, 'quoted'); assert.equal(f.sent, 0);
+  f.setCore(true); await f.retry(); assert.equal(f.sent, 1);
 });

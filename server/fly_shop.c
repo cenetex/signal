@@ -13,14 +13,17 @@ bool world_fly_purchases_valid(const world_t *w) {
         const fly_purchase_t *p = &w->fly_purchases[i];
         const ship_asset_t *asset = world_ship_asset_by_id_const(w, p->asset_id);
         if (p->station > 2 || !any_bytes(p->purchase_id, 32) ||
-            !any_bytes(p->wallet, 32) || !any_bytes(p->burn_signature, 64) ||
+            !any_bytes(p->wallet, 32) ||
             !asset || asset->provenance != SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
             asset->owner_principal.kind != ACTOR_PRINCIPAL_PLAYER ||
             memcmp(asset->owner_principal.id, p->wallet, 32)) return false;
+        if (!any_bytes(p->burn_signature, 64) &&
+            (asset->destroyed || asset->status != SHIP_ASSET_STATUS_STORED ||
+             asset->operator_kind != SHIP_ASSET_OPERATOR_NONE)) return false;
         for (uint32_t j = 0; j < i; j++) {
             const fly_purchase_t *prior = &w->fly_purchases[j];
             if (!memcmp(prior->purchase_id, p->purchase_id, 32) ||
-                !memcmp(prior->burn_signature, p->burn_signature, 64) ||
+                (any_bytes(p->burn_signature, 64) && !memcmp(prior->burn_signature, p->burn_signature, 64)) ||
                 prior->asset_id == p->asset_id) return false;
         }
     }
@@ -35,22 +38,27 @@ bool world_fly_purchases_valid(const world_t *w) {
     return true;
 }
 
-const fly_purchase_t *world_fly_purchase_grant(world_t *w,
+static const fly_purchase_t *fly_purchase_apply(world_t *w,
     const uint8_t id[32], const uint8_t wallet[32], const uint8_t signature[64], int station) {
     if (!w || !id || !wallet || !signature || station < 0 || station > 2 ||
         !any_bytes(id, 32) ||
-        !any_bytes(wallet, 32) || !any_bytes(signature, 64) ||
+        !any_bytes(wallet, 32) ||
         w->fly_purchase_count > MAX_FLY_PURCHASES) return NULL;
     for (uint32_t i = 0; i < w->fly_purchase_count; i++) {
         fly_purchase_t *p = &w->fly_purchases[i];
         if (!memcmp(p->purchase_id, id, 32)) {
-            if (p->station != station || memcmp(p->wallet, wallet, 32) ||
-                memcmp(p->burn_signature, signature, 64)) return NULL;
+            if (p->station != station || memcmp(p->wallet, wallet, 32)) return NULL;
+            if (any_bytes(signature, 64)) {
+                if (any_bytes(p->burn_signature, 64) && memcmp(p->burn_signature, signature, 64)) return NULL;
+                for (uint32_t j = 0; j < w->fly_purchase_count; j++)
+                    if (j != i && !memcmp(w->fly_purchases[j].burn_signature, signature, 64)) return NULL;
+                memcpy(p->burn_signature, signature, 64);
+            }
             ship_asset_t *asset = world_ship_asset_by_id(w, p->asset_id);
             if (asset) (void)ship_asset_launch_fly_worker(w, asset, station);
             return p;
         }
-        if (!memcmp(p->burn_signature, signature, 64)) return NULL;
+        if (any_bytes(signature, 64) && !memcmp(p->burn_signature, signature, 64)) return NULL;
     }
     if (w->fly_purchase_count == MAX_FLY_PURCHASES ||
         !station_is_active(&w->stations[station])) return NULL;
@@ -70,4 +78,16 @@ const fly_purchase_t *world_fly_purchase_grant(world_t *w,
     p->station = (uint8_t)station;
     (void)ship_asset_launch_fly_worker(w, asset, station);
     return p;
+}
+
+const fly_purchase_t *world_fly_purchase_reserve(world_t *w,
+    const uint8_t id[32], const uint8_t wallet[32], int station) {
+    const uint8_t unsigned_receipt[64] = {0};
+    return fly_purchase_apply(w, id, wallet, unsigned_receipt, station);
+}
+
+const fly_purchase_t *world_fly_purchase_grant(world_t *w,
+    const uint8_t id[32], const uint8_t wallet[32], const uint8_t signature[64], int station) {
+    if (!signature || !any_bytes(signature, 64)) return NULL;
+    return fly_purchase_apply(w, id, wallet, signature, station);
 }

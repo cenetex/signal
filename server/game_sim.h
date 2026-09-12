@@ -1528,6 +1528,8 @@ bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot);
 bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx);
 int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role);
 int ship_asset_launch_fly_worker(world_t *w, ship_asset_t *asset, int station);
+const fly_purchase_t *world_fly_purchase_reserve(world_t*, const uint8_t id[32],
+    const uint8_t wallet[32], int station);
 const fly_purchase_t *world_fly_purchase_grant(world_t *w,
     const uint8_t id[32], const uint8_t wallet[32], const uint8_t signature[64], int station);
 bool world_fly_purchases_valid(const world_t *w);

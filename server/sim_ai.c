@@ -1899,6 +1899,13 @@ int ship_asset_launch_fly_worker(world_t *w, ship_asset_t *asset, int station) {
         asset->owner_principal.kind != ACTOR_PRINCIPAL_PLAYER ||
         asset->status != SHIP_ASSET_STATUS_STORED || station < 0 || station > 2)
         return -1;
+    bool paid = false;
+    for (uint32_t i = 0; i < w->fly_purchase_count; i++) {
+        if (w->fly_purchases[i].asset_id != asset->asset_id) continue;
+        for (size_t k = 0; k < 64; k++)
+            if (w->fly_purchases[i].burn_signature[k]) paid = true;
+    }
+    if (!paid) return -1;
     npc_role_t role = station == 1 ? NPC_ROLE_TOW : NPC_ROLE_MINER;
     return npc_claim_selected_asset(w, station, role, asset);
 }
