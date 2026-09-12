@@ -79,6 +79,7 @@ jobs:
           node scripts/test-rati-anchor-stamp.mjs
           node scripts/test-relay-region-broker.mjs
           node --test scripts/test-relay-traffic-probe.mjs
+          node --test scripts/test-solana-ship-burn.mjs
           node scripts/test-ws-backpressure-soak.mjs
           node scripts/test-ws-latency-proxy.mjs
       - name: Run checked policy self-tests
