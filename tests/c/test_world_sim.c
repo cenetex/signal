@@ -7019,22 +7019,27 @@ TEST(test_miner_inside_station_nav_envelope_routes_to_outer_gap) {
     }
     ASSERT(miner >= 0);
 
+    /* Target a rock the world actually maintains. This used to hand-seed
+     * one into an inactive slot, but the sim reclaims that slot on the very
+     * first step, so the miner was left holding a dead target every time.
+     * The test passed anyway because selection then swept the entire world
+     * and handed back a real rock somewhere else -- meaning it exercised
+     * the global scan, not the nav route it is named for. Selection is
+     * bounded by sight now, so the target has to be real to survive.
+     *
+     * Any fracturable rock outside the station envelope will do; what is
+     * under test is that a miner starting INSIDE the envelope routes out
+     * through the gap rather than straight through the ring. */
     int target_a = -1;
+    float far_d = 0.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!w.asteroids[i].active) { target_a = i; break; }
+        const asteroid_t *cand = &w.asteroids[i];
+        if (!mining_level_can_fracture_asteroid(1, cand)) continue;
+        float d = v2_dist_sq(cand->pos, w.stations[2].pos);
+        if (d < 2500.0f * 2500.0f) continue;   /* clear of the envelope */
+        if (d > far_d) { far_d = d; target_a = i; }
     }
     ASSERT(target_a >= 0);
-    asteroid_t *a = &w.asteroids[target_a];
-    memset(a, 0, sizeof(*a));
-    a->active = true;
-    a->tier = ASTEROID_TIER_M;
-    a->commodity = COMMODITY_CUPRITE_ORE;
-    a->ore = 30.0f;
-    a->max_ore = 30.0f;
-    a->hp = 100.0f;
-    a->max_hp = 100.0f;
-    a->radius = 30.0f;
-    a->pos = v2_add(w.stations[2].pos, v2(3240.0f, -4200.0f));
 
     npc_ship_t *npc = &w.npc_ships[miner];
     npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;

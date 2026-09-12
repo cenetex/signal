@@ -215,6 +215,7 @@ set(SIGNAL_SIM_SOURCES
     server/sim_construction.c
     server/sim_mining.c
     server/sim_anchor.c
+    server/sim_scent.c
     server/sim_ship.c
     # Fly connectome brain: vendored integer LIF kernel (upstream: the
     # flybrain project) plus the signal adapter. Kernel is float-free in
@@ -469,6 +470,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_hnn_confidence.c
         tests/c/test_gossip.c
         tests/c/test_connectome_brain.c
+        tests/c/test_scent.c
         tests/c/test_npc_radio.c
         tests/c/test_ai_feature_contract.c
         tests/c/test_hud_attention.c

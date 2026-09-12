@@ -111,6 +111,7 @@ void register_hnn_backend_tests(void);
 void register_hnn_confidence_tests(void);
 void register_gossip_tests(void);
 void register_connectome_brain_tests(void);
+void register_scent_tests(void);
 void register_npc_radio_tests(void);
 void register_ai_feature_contract_tests(void);
 void register_hud_attention_tests(void);
@@ -271,6 +272,7 @@ int main(int argc, char **argv) {
     register_hnn_confidence_tests();
     register_gossip_tests();
     register_connectome_brain_tests();
+    register_scent_tests();
     register_npc_radio_tests();
     register_ai_feature_contract_tests();
     register_hud_attention_tests();

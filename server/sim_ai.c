@@ -10,6 +10,7 @@
 #include "sim_flight.h"
 #include "signal_intelligence.h"
 #include "signal_connectome_brain.h"
+#include "sim_scent.h"
 #include "sim_ship.h"
 #include "sim_physics.h"
 #include "sim_mining.h"
@@ -2044,27 +2045,37 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         if (!miner_target_taken(w, idx, self_npc_slot)) return idx;
     }
 
-    /* Most-needed useful rock: the home station must expose a concrete
-     * furnace+hopper endpoint for the ore, and the ore must feed a
-     * non-saturated downstream chain. Distance only breaks ties within
-     * the same demand band; otherwise Helios keeps mining nearby
-     * crystal while the laser line is actually starved for crystal. */
+    /* Most-needed useful rock THE MINER CAN SEE. This used to sweep every
+     * asteroid in the world and rank them by home-station demand, which
+     * meant a rock on the far side of the map advertised itself exactly as
+     * loudly as one off the bow. Nothing was ever discovered because
+     * nothing was ever hidden, and every miner in a station converged on
+     * the same globally-optimal answer.
+     *
+     * Sight is bounded by scent_sight_radius(), which collapses out past
+     * the relay chain. A miner that sees nothing is not stuck: the caller
+     * falls back to smell, and the ore-scent field will walk it toward a
+     * patch until something comes into view. Returning -1 here is an
+     * ordinary answer, not a failure. */
     const station_t *home = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
                           ? &w->stations[npc->home_station]
                           : NULL;
     if (!home) return -1;
+    float sight = scent_sight_radius(w, npc->ship);
+    float sight_sq = sight * sight;
     int best = -1;
     float best_need = 0.0f;
     float best_d = 1e18f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!mining_level_can_fracture_asteroid(npc->ship->mining_level, a)) continue;
+        float d = v2_dist_sq(npc->ship->pos, a->pos);
+        if (d > sight_sq) continue;                 /* out of view */
         if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
         if (miner_target_taken(w, i, self_npc_slot)) continue;
         if (!station_smelt_pair_for_ore(home, a->commodity, NULL)) continue;
         float need = station_raw_ore_need_score(home, a->commodity);
         if (need <= 0.0f) continue;
-        float d = v2_dist_sq(npc->ship->pos, a->pos);
         if (need > best_need + 0.05f ||
             (fabsf(need - best_need) <= 0.05f && d < best_d)) {
             best_need = need;
@@ -2073,6 +2084,31 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         }
     }
     return best;
+}
+
+/* Where should a miner with nothing in sight go? Up the ore-scent
+ * gradient. This is deliberately a heading and not a destination: the
+ * field resolves patches, not rocks, so smell can only say "richer that
+ * way" and hand over to sight on arrival.
+ *
+ * Returns false when the field is flat, which is the fly's cue to cast
+ * rather than commit -- the caller keeps its existing wander. */
+static bool npc_scent_seek_heading(const world_t *w, const npc_ship_t *npc,
+                            vec2 *out_target) {
+    if (!w || !npc || !npc->ship || !out_target) return false;
+    /* A fly out of signal cannot smell either; it is not a radio, but the
+     * field is only maintained where the sim is paying attention. */
+    if (signal_npc_confidence(signal_strength_at(w, npc->ship->pos)) < 0.05f)
+        return false;
+    vec2 dir; float here = 0.0f;
+    if (!scent_gradient(w, npc->ship->pos, SIGNAL_FIELD_KIND_ORE_SCENT,
+                        &dir, &here))
+        return false;
+    /* Step about one cell up-gradient. Short enough that the fly re-smells
+     * often and follows a curving plume instead of committing to a line. */
+    *out_target = v2(npc->ship->pos.x + dir.x * SIGNAL_FIELD_CELL_SIZE,
+                     npc->ship->pos.y + dir.y * SIGNAL_FIELD_CELL_SIZE);
+    return true;
 }
 
 static bool npc_claim_fracture_contracts_for_target(
@@ -6956,6 +6992,17 @@ void step_npc_ships(world_t *w, float dt) {
             break;
         }
         case NPC_STATE_IDLE: {
+            /* Nothing in sight is not nothing to do. Follow the ore scent
+             * up-gradient and keep re-smelling: the heading is recomputed
+             * every tick, so the fly tracks a curving plume instead of
+             * committing to a bearing it took once. When the field is flat
+             * it gets no heading and simply drifts, which is the cast --
+             * and drifting moves it to a new sample point, which is how a
+             * cast finds a plume in the first place. */
+            vec2 scent_target;
+            if (npc_scent_seek_heading(w, npc, &scent_target))
+                npc_steer_with_path(w, n, npc, scent_target,
+                                    /*thrust_scale=*/0.55f, dt);
             npc_apply_physics(npc, dt, w);
             npc->state_timer -= dt;
             if (npc->state_timer <= 0.0f) {
@@ -6972,7 +7019,9 @@ void step_npc_ships(world_t *w, float dt) {
                 }
                 int target = npc_find_mineable_asteroid(w, npc);
                 if (target >= 0) { npc->target_asteroid = target; npc->state = NPC_STATE_TRAVEL_TO_ASTEROID; }
-                else npc->state_timer = 3.0f;
+                /* Short re-look: the fly is moving up-gradient between
+                 * checks, so the view changes even when nothing else does. */
+                else npc->state_timer = 0.6f;
             }
             break;
         }
