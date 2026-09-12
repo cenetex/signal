@@ -29,7 +29,8 @@ It fetches finalized transaction and signature status from its own RPC endpoint.
 The verifier checks the signer, instruction, memo and exact token balance change.
 
 The gateway stores quotes and receipts in `fly-shop.json` with atomic rename and
-file and directory sync. Paid orders retry every 15 seconds. An expired signed
+file and directory sync. Paid orders retry every 15 seconds. Saved finalized receipts also restore worker
+ownership if world recovery selects an older generation. An expired signed
 transaction can be replaced after finalized block height passes its validity
 window and RPC confirms its receipt is absent or finalized with an error.
 

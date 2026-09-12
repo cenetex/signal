@@ -105,6 +105,15 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
     retrying = true;
     try {
       await store.exclusive(async () => {
+        // Restore paid ownership if world recovery selected an older generation.
+        const owners = new Map();
+        for (const q of store.rows.filter(q => q.state === 'fulfilled')) {
+          try {
+            if (!owners.has(q.wallet)) owners.set(q.wallet, await worldView(q.wallet));
+            const view = owners.get(q.wallet);
+            if (Array.isArray(view.workers) && !view.workers.some(worker => worker.id === q.id)) await fulfill(q);
+          } catch { break; }
+        }
         for (const q of store.rows.filter(q => q.state !== 'fulfilled' && q.signature)) {
           try {
             if (q.state === 'quoted') {

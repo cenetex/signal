@@ -47,7 +47,7 @@ async function setup(t) {
   const core = async (url, options) => {
     const data = JSON.parse(options.body);
     assert.equal(options.headers['x-fly-shop-key'], 'a'.repeat(64));
-    if (url.endsWith('/view')) return Response.json({ ready: true, remaining: 80 - grants.size, workers: [], stations: [] });
+    if (url.endsWith('/view')) return Response.json({ ready: true, remaining: 80 - grants.size, workers: [...grants.values()].filter(g => g.wallet === data.wallet).map(g => ({ id: g.id, assetId: g.assetId })), stations: [] });
     grantCalls++;
     if (!coreAvailable) return new Response('', { status: 503 });
     if (!grants.has(data.id)) grants.set(data.id, { ...data, assetId: grants.size + 1 });
@@ -156,4 +156,12 @@ test('background recovery completes a saved finalized signature after restart', 
   await f.request('submit', { id: q.id, transaction: f.signed(q) });
   await f.restart(); f.setFinal(true); f.setHeight(1000); await f.retry(); await f.login();
   assert.equal((await f.request('me')).data.purchases[0].state, 'fulfilled'); assert.equal(f.grants.size, 1);
+});
+
+test('saved finalized receipt restores ownership after world rollback', async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  await f.request('submit', { id: q.id, transaction: f.signed(q) }); f.setFinal(true); await f.retry();
+  assert.equal(f.grants.size, 1); f.grants.clear(); await f.restart(); await f.retry();
+  assert.equal(f.grants.size, 1); await f.login();
+  assert.equal((await f.request('me')).data.purchases[0].state, 'fulfilled');
 });
