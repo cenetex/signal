@@ -147,7 +147,11 @@
         "scripts/fly-webrtc-entrypoint.sh",
         "scripts/lightsail-webrtc-entrypoint.sh",
         "scripts/test-webrtc-gateway.mjs",
-        "scripts/webrtc-gateway.mjs"
+        "scripts/webrtc-gateway.mjs",
+        "scripts/fly-shop-chain.mjs",
+        "scripts/fly-shop-service.mjs",
+        "scripts/fly-shop-store.mjs",
+        "scripts/solana-ship-burn.mjs"
       ],
       "lanes": [
         "container"

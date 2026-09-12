@@ -123,7 +123,7 @@ async function refresh() {
       const card = element('article', '', 'card'), offer = catalog?.offers[worker.station];
       card.append(element('div', offer?.name || 'Sector One', 'eyebrow'), element('h3', `${offer?.ship || 'Worker'} #${worker.assetId}`));
       const canvas = document.createElement('canvas'); canvas.setAttribute('aria-label', 'Live map centered on your worker'); card.append(canvas);
-      const job = worker.lost ? 'Ship lost' : !worker.launched ? 'Launch queued' : worker.towing ? 'Towing cargo' : 'Working autonomously';
+      const job = worker.lost ? 'Ship lost' : !worker.launched ? 'Launch queued' : worker.towing ? 'Towing cargo' : ['Choosing a job', 'Flying to the rock field', 'Mining', 'Returning to station', 'Docked', 'Flying to destination', 'Unloading'][worker.state] || 'Working autonomously';
       card.append(element('div', job, 'job'), element('small', `Hull ${Math.max(0, Math.round(worker.hull))} / ${Math.round(worker.maxHull)}`));
       $('workers').append(card); drawMap(canvas, worker, me.stations);
     }

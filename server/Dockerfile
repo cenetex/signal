@@ -60,7 +60,7 @@ RUN npm ci --omit=dev \
 
 COPY --from=builder /src/build/signal_server ./signal-server
 COPY --from=web-builder /src/public ./public
-COPY scripts/webrtc-gateway.mjs scripts/fly-shop-*.mjs scripts/solana-ship-burn.mjs ./scripts/
+COPY scripts/webrtc-gateway.mjs scripts/fly-shop-chain.mjs scripts/fly-shop-service.mjs scripts/fly-shop-store.mjs scripts/solana-ship-burn.mjs ./scripts/
 COPY web/fly-codec.mjs ./web/fly-codec.mjs
 COPY scripts/fly-webrtc-entrypoint.sh ./scripts/fly-webrtc-entrypoint.sh
 COPY scripts/lightsail-webrtc-entrypoint.sh ./scripts/lightsail-webrtc-entrypoint.sh

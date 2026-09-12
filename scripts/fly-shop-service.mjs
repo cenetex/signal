@@ -8,18 +8,24 @@ const now = () => Date.now();
 const fail = (code, status = 400) => Object.assign(new Error(code), { status });
 const pubkey = wallet => createPublicKey({ format: 'der', type: 'spki',
   key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(decode58(wallet, 32))]) });
-const cookieName = '__Host-signalFly';
+
 export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
   fetchImpl = fetch, clock = now, allowHttp = false }) {
+  const cookieName = allowHttp ? 'signalFlyDev' : '__Host-signalFly';
   const site = new URL(origin);
   if ((!allowHttp && site.protocol !== 'https:') || site.origin !== origin || !/^[a-f0-9]{64}$/.test(coreKey))
     throw fail('invalid_shop_configuration');
   const store = await new FlyShopStore(path.join(dataDir, 'fly-shop.json')).init();
+  const savedSignatures = new Set();
   for (const q of store.rows) {
     if (q.mint !== FLY_MINT || q.tokenProgram !== TOKEN_2022_PROGRAM || q.decimals !== 9 ||
         q.amount !== String(BigInt(OFFERS[q.station].tokens) * 1000000000n)) throw fail('invalid_shop_store');
     decode58(q.wallet, 32);
-    if (q.state !== 'quoted') decode58(q.signature, 64);
+    if (q.signature || q.state !== 'quoted') {
+      decode58(q.signature, 64);
+      if (savedSignatures.has(q.signature)) throw fail('invalid_shop_store');
+      savedSignatures.add(q.signature);
+    }
   }
   const challenges = new Map(), sessions = new Map(), rates = new Map();
   const json = (res, status, data, extra = {}) => {
@@ -87,7 +93,9 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
       rpc('getTransaction', [q.signature, { commitment: 'finalized', encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]),
     ]);
     const status = statuses?.value?.[0];
-    if (transaction || status && !(status.confirmationStatus === 'finalized' && status.err)) return false;
+    if (transaction && transaction.meta?.err === null ||
+        status && !(status.confirmationStatus === 'finalized' && status.err)) return false;
+    if (transaction && !transaction.meta?.err) return false;
     await commit(() => { q.expiredSignature = q.signature; delete q.signature; delete q.signed; delete q.prepared; });
     return true;
   };
@@ -118,6 +126,7 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
   interval.unref();
   return {
     close() { clearInterval(interval); },
+    retryPending: retry,
     async handle(req, res, url) {
       try {
         if (req.method === 'POST' && req.headers.origin !== origin) throw fail('origin_mismatch', 403);

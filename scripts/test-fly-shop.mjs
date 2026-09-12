@@ -24,7 +24,7 @@ function finalized(q, signature) {
 async function setup(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'signal-fly-test-'));
   const buyer = key(), token = key().address, hash = key().address;
-  let shop, origin, grantCalls = 0, coreAvailable = true, chainFinal = false, currentQuote, lastSignature, sent = 0;
+  let shop, origin, grantCalls = 0, coreAvailable = true, chainFinal = false, currentQuote, lastSignature, sent = 0, height = 500, chainError = false;
   const grants = new Map();
   const rpc = async (method, params) => {
     switch (method) {
@@ -32,15 +32,15 @@ async function setup(t) {
       case 'getAccountInfo': return mintAccount();
       case 'getTokenAccountsByOwner': return { value: [{ pubkey: token, account: { owner: TOKEN_2022_PROGRAM, data: { parsed: { info: { owner: params[0], mint: FLY_MINT, state: 'initialized', tokenAmount: { amount: '1000000000000', decimals: 9 } } } } } }] };
       case 'getLatestBlockhash': return { value: { blockhash: hash, lastValidBlockHeight: 999 } };
-      case 'getBlockHeight': return 500;
+      case 'getBlockHeight': return height;
       case 'sendTransaction': {
         const saved = JSON.parse(await readFile(path.join(dir, 'fly-shop.json'), 'utf8')).quotes;
         lastSignature = encode58(Buffer.from(params[0], 'base64').subarray(1, 65));
         assert.ok(saved.some(q => q.signature === lastSignature && q.signed === params[0]), 'signed receipt is durable before broadcast');
         sent++; return lastSignature;
       }
-      case 'getSignatureStatuses': return { value: [chainFinal ? { slot: 100, err: null, confirmationStatus: 'finalized' } : null] };
-      case 'getTransaction': return chainFinal ? finalized(currentQuote, params[0]) : null;
+      case 'getSignatureStatuses': return { value: [chainFinal ? { slot: 100, err: chainError ? 'failed' : null, confirmationStatus: 'finalized' } : null] };
+      case 'getTransaction': { const tx = chainFinal ? finalized(currentQuote, params[0]) : null; if (tx && chainError) tx.meta.err = 'failed'; return tx; }
       default: throw Error(method);
     }
   };
@@ -77,7 +77,8 @@ async function setup(t) {
     const bytes = Buffer.from(q.transaction, 'base64'); sign(null, bytes.subarray(65), buyer.privateKey).copy(bytes, 1); return bytes.toString('base64');
   }
   return { request, login, quote, signed, buyer, rpc, dir, grants,
-    setFinal(value) { chainFinal = value; }, setCore(value) { coreAvailable = value; },
+    setFinal(value) { chainFinal = value; }, setHeight(value) { height = value; }, setChainError(value) { chainError = value; },
+    retry() { return shop.retryPending(); }, setCore(value) { coreAvailable = value; },
     async restart() { shop.close(); shop = await start(); cookie = ''; },
     get sent() { return sent; }, get grantCalls() { return grantCalls; } };
 }
@@ -137,4 +138,22 @@ test('altered transaction and another wallet cannot redeem a purchase', async t 
   await f.login(key());
   assert.equal((await f.request('submit', { id: q.id, transaction: f.signed(q) })).status, 404);
   assert.equal(f.sent, 0);
+});
+
+for (const failed of [false, true]) test(`expired ${failed ? 'failed' : 'absent'} signature allows a fresh wallet attempt`, async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  const sent = (await f.request('submit', { id: q.id, transaction: f.signed(q) })).data;
+  assert.equal((await f.quote()).status, 409);
+  f.setHeight(1000); f.setFinal(failed); f.setChainError(failed);
+  await f.retry();
+  const me = (await f.request('me')).data;
+  assert.equal(me.purchases[0].signature, null);
+  assert.equal(me.purchases[0].expiredSignature, sent.signature);
+  assert.equal((await f.quote()).status, 200); assert.equal(f.grants.size, 0);
+});
+test('background recovery completes a saved finalized signature after restart', async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  await f.request('submit', { id: q.id, transaction: f.signed(q) });
+  await f.restart(); f.setFinal(true); f.setHeight(1000); await f.retry(); await f.login();
+  assert.equal((await f.request('me')).data.purchases[0].state, 'fulfilled'); assert.equal(f.grants.size, 1);
 });
