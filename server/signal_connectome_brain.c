@@ -41,6 +41,7 @@
  *   SIGNAL_CONNECTOME_SEED        default 42
  */
 #include "signal_connectome_brain.h"
+#include "signal_connectome_drives.h"
 #include "connectome/flybrain.h"
 #include "connectome/flyswarm.h"
 #include "sim_nav.h"
@@ -51,30 +52,6 @@
 #include <string.h>
 
 #define CB_MAX_AGENTS MAX_NPC_SHIPS
-#define Q16_ONE 65536
-
-/* Strategic postures for the hybrid brain. The sampler's weight array is
- * indexed by this, so order is load-bearing. */
-typedef enum {
-    CB_STRAT_FORAGE = 0,   /* mine, hunger-led */
-    CB_STRAT_PROSPECT,     /* bolder, farther ore */
-    CB_STRAT_CAUTION,      /* threat-averse */
-    CB_STRAT_HAUL,         /* cargo-led */
-    CB_STRAT_REGROUP,      /* hurt or idle: go home */
-    CB_STRAT_COUNT
-} cb_strategy_t;
-
-/* ---------------- per-agent drive state (runtime only) ---------------- */
-
-typedef struct {
-    int32_t  lust;      /* Q16: courtship arousal -- towing ore */
-    int32_t  hunger;    /* Q16: foraging arousal -- empty-handed */
-    int32_t  fear;      /* Q16: closing-rock threat + low hull */
-    int32_t  pain;      /* Q16: recent hull damage, decays ~1 s */
-    float    last_hull;
-    int32_t  pending_u; /* Q16 steering intent recorded by flight_cmd */
-    int32_t  turn_ema;  /* Q16 smoothed descending turn, see flight_cmd */
-} cb_agent_state_t;
 
 typedef struct {
     int      enabled;
@@ -469,34 +446,6 @@ static void cb_station_strategy_advance(const world_t *w,
     }
 }
 
-static int32_t cb_strategy_blend(int32_t v, float delta, float authority)
-{
-    float nv = (float)v + (float)v * delta * authority;
-    if (nv < 0.0f) nv = 0.0f;
-    if (nv > (float)Q16_ONE) nv = (float)Q16_ONE;
-    return (int32_t)nv;
-}
-
-/* Apply the station's posture, scaled by how much of its signal the fly
- * can actually hear. Out of range the leash goes slack and the fly falls
- * back to its own connectome drives. */
-static void cb_strategy_modulate(cb_agent_state_t *st, int strat,
-                                 float authority)
-{
-    float dh = 0.0f, dl = 0.0f, df = 0.0f;
-    switch (strat) {
-    case CB_STRAT_FORAGE:   dh =  0.25f;  break;
-    case CB_STRAT_PROSPECT: dh =  0.125f; break;
-    case CB_STRAT_CAUTION:  df =  0.5f;   break;
-    case CB_STRAT_HAUL:     dl =  0.25f;  break;
-    case CB_STRAT_REGROUP:  dh = -0.25f;  break;
-    default: return;
-    }
-    st->hunger = cb_strategy_blend(st->hunger, dh, authority);
-    st->lust   = cb_strategy_blend(st->lust,   dl, authority);
-    st->fear   = cb_strategy_blend(st->fear,   df, authority);
-}
-
 /* Update one fly's drives from world state. Q16 throughout. */
 static void cb_update_drives(const world_t *w, npc_ship_t *npc, int i)
 {
@@ -506,18 +455,7 @@ static void cb_update_drives(const world_t *w, npc_ship_t *npc, int i)
     int carrying = (int)s->towed_count + (int)s->towed_pod_count +
                    (s->towed_scaffold >= 0 ? 1 : 0);
 
-    /* LUST: the fly is in love with its ore. Rises while towing,
-     * glows and fades after delivery. */
-    if (carrying > 0)
-        st->lust = st->lust < Q16_ONE - 4096 ? st->lust + 4096 : Q16_ONE;
-    else
-        st->lust -= st->lust >> 6;
-
-    /* HUNGER: foraging drive. Empty-handed working flies get hungry. */
-    if (carrying == 0 && npc->state != NPC_STATE_DOCKED)
-        st->hunger = st->hunger < Q16_ONE - 2048 ? st->hunger + 2048 : Q16_ONE;
-    else
-        st->hunger = 0;
+    cb_update_cargo_drives(st, carrying, npc->state == NPC_STATE_DOCKED);
 
     /* PAIN: hull drop since last tick spikes, then decays (~1 s). */
     if (st->last_hull > 0.0f && s->hull < st->last_hull - 0.5f)
