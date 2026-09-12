@@ -21,6 +21,7 @@
 #include "connectome/flybrain.h"
 #include "connectome/flyswarm.h"
 #include "signal_connectome_brain.h"
+#include "signal_connectome_drives.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -442,6 +443,34 @@ TEST(test_connectome_bandit_learns_and_is_bounded) {
     ASSERT(values[1] <= 4096u);
 }
 
+TEST(test_connectome_posture_preserves_drive_history) {
+    cb_agent_state_t base = {0}, haul = {0}, regroup = {0};
+    /* Pick up ore, then deliver it and remain empty for a full window. */
+    cb_update_cargo_drives(&base, 1, false);
+    haul = base;
+    regroup = base;
+    for (int tick = 0; tick < 300; tick++) {
+        cb_update_cargo_drives(&base, 0, false);
+        cb_update_cargo_drives(&haul, 0, false);
+        cb_update_cargo_drives(&regroup, 0, false);
+        cb_strategy_modulate(&haul, CB_STRAT_HAUL, 1.0f);
+        cb_strategy_modulate(&regroup, CB_STRAT_REGROUP, 1.0f);
+        ASSERT_EQ_INT(haul.sensed_lust, base.lust);
+        ASSERT_EQ_INT(regroup.sensed_hunger, base.hunger);
+        ASSERT_EQ_INT(haul.lust, base.lust + base.lust / 4);
+        ASSERT_EQ_INT(regroup.hunger, (base.hunger * 3) / 4);
+    }
+    ASSERT(haul.lust < 100);
+    /* Losing the broadcast immediately exposes the sensed drives. */
+    cb_update_cargo_drives(&haul, 0, false);
+    cb_update_cargo_drives(&base, 0, false);
+    cb_strategy_modulate(&haul, CB_STRAT_HAUL, 0.0f);
+    ASSERT_EQ_INT(haul.lust, base.lust);
+    ASSERT_EQ_INT(haul.hunger, base.hunger);
+    cb_update_cargo_drives(&haul, 0, true);
+    ASSERT_EQ_INT(haul.hunger, 0);
+}
+
 void register_connectome_brain_tests(void);
 void register_connectome_brain_tests(void) {
     RUN(test_connectome_blob_loader_rejects_garbage);
@@ -457,4 +486,5 @@ void register_connectome_brain_tests(void) {
     RUN(test_connectome_strategy_flag_is_off_by_default);
     RUN(test_connectome_weighted_pick_is_deterministic);
     RUN(test_connectome_bandit_learns_and_is_bounded);
+    RUN(test_connectome_posture_preserves_drive_history);
 }
