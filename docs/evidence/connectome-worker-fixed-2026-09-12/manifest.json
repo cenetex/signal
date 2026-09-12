@@ -1,0 +1,40 @@
+{
+  "schema": "signal.connectome_strategy_comparison.v1",
+  "source_commit": "3b3432a1b7d9d494d149fd13757194abae63da2c",
+  "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "build_type": "Release",
+  "probe_sha256": "a91fa94929ae7027596fcb5ac12f5264cd4d4c4a3afd5404cdf5e4e83c1483c1",
+  "circuit_sha256": "91e9cb058f30f8c1d528b35ef35bb292c6d1b9376aaeecf8d30d16e048683a2c",
+  "worker_checkpoint_sha256": "c346439b6ce1a6681c037167e16447e0f75f5491a2eafd88685b6e5d36292f8e",
+  "runner_sha256": "eda5223583343af2f2d9664a16989094c05b2ddac831ca70ca177942912e3cb9",
+  "ticks": 216000,
+  "seeds": [
+    2037
+  ],
+  "workers": 4,
+  "settings": {
+    "SIGNAL_CONNECTOME_BUDGET": "30",
+    "SIGNAL_CONNECTOME_STRATEGY_PERIOD": "300",
+    "SIGNAL_CONNECTOME_SEED": "42",
+    "SIGNAL_NPC_WORKER_BRAIN_MODE": "active"
+  },
+  "environment": "isolated; default settings plus listed overrides",
+  "scenario": "fresh server genesis; no connected players; normal NPC respawn",
+  "status": "complete",
+  "artifacts": {
+    "2037-off-chain.tar.gz": "6c3f9d6959d5e7e166345a6514834c33076dbdb6a449c0591e3804f4417a8edb",
+    "2037-off-repeat-chain.tar.gz": "8e8a8bd4562d35c40f1b87bde9c517f2d19e987c6cae7a3104840d3c8c787af9",
+    "2037-off-repeat.json": "462dd1a4da3f9fb09112c9e8b1644bed3a2ce2ca113b71061c5635f8e9e3c8c8",
+    "2037-off-repeat.log": "5be16eafcb3327623732ab11b11e46aa50a4fa1f5b66e36b456a852011b9a2f6",
+    "2037-off.json": "462dd1a4da3f9fb09112c9e8b1644bed3a2ce2ca113b71061c5635f8e9e3c8c8",
+    "2037-off.log": "5be16eafcb3327623732ab11b11e46aa50a4fa1f5b66e36b456a852011b9a2f6",
+    "2037-on-chain.tar.gz": "79ea739384d440868b98891a85c5c7708b1979c057da20f10da4db14e6b1c93b",
+    "2037-on-repeat-chain.tar.gz": "61791179d4c0481dbc121ffd346f488a24436b7ae40177c161a53940bd14c62e",
+    "2037-on-repeat.json": "97c6df3abe01614c05dab1e459d38c76b027745aa14475c9eedc5cbf8aa1af42",
+    "2037-on-repeat.log": "30861decea5fc3f27292ac7628b18f3dd5a62064ca039ffa1c5a4c904165c5a2",
+    "2037-on.json": "97c6df3abe01614c05dab1e459d38c76b027745aa14475c9eedc5cbf8aa1af42",
+    "2037-on.log": "30861decea5fc3f27292ac7628b18f3dd5a62064ca039ffa1c5a4c904165c5a2",
+    "comparison.json": "7b05d460e3722379df4bf3aa84e1ecf79bbf3662af559c91367953093023ee5f"
+  }
+}

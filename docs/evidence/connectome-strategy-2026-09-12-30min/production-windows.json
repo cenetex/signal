@@ -1,0 +1,148 @@
+{
+  "schema": "signal.connectome_production_windows.v1",
+  "measured_source": "b8169101b914798bb32625e591745dc642f91bdf",
+  "study_manifest_sha256": "3aca6d00a97a8fe04def7e7bceb040bcfc2ad443ccf086172ed068cd68b4d122",
+  "analyzer_sha256": "92383cba9b71973bee3676a83ecb1b67502303de4c7257b92e87e19f30d753da",
+  "ticks": 216000,
+  "window_ticks": 36000,
+  "episodes": [
+    {
+      "seed": 2037,
+      "strategy": false,
+      "smelt_units": [
+        88,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 2037,
+      "strategy": true,
+      "smelt_units": [
+        110,
+        29,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 2141,
+      "strategy": false,
+      "smelt_units": [
+        0,
+        28,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 2141,
+      "strategy": true,
+      "smelt_units": [
+        64,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 3253,
+      "strategy": false,
+      "smelt_units": [
+        0,
+        17,
+        27,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 3253,
+      "strategy": true,
+      "smelt_units": [
+        0,
+        14,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 4363,
+      "strategy": false,
+      "smelt_units": [
+        23,
+        0,
+        21,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 4363,
+      "strategy": true,
+      "smelt_units": [
+        22,
+        21,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 5471,
+      "strategy": false,
+      "smelt_units": [
+        32,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 5471,
+      "strategy": true,
+      "smelt_units": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "totals": {
+    "off": [
+      143,
+      45,
+      48,
+      0,
+      0,
+      0
+    ],
+    "on": [
+      196,
+      64,
+      0,
+      0,
+      0,
+      0
+    ]
+  }
+}
