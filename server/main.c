@@ -17,6 +17,7 @@
 #include "sim_asteroid.h"
 #include "sim_autopilot.h"
 #include "signal_intelligence.h"
+#include "signal_connectome_brain.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 #include "cargo_legacy_inventory.h"
@@ -8545,6 +8546,11 @@ int main(void) {
 
     chain_log_set_disk_enabled(true);
     signal_chain_set_disk_enabled(true);
+    /* Fly connectome brain: must init before the world loads so NPC
+     * spawn/normalize stamps CONNECTOME from the first tick. Enabled
+     * only when SIGNAL_CONNECTOME_FAST points at a compiled .cnx
+     * circuit; prints its own status block. */
+    (void)signal_connectome_init();
     if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
     if (!load_world_state()) return 1;

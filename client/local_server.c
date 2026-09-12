@@ -17,6 +17,7 @@
 #include "cargo_receipt_issue.h"
 #include "sim_ai.h"
 #include "sim_asteroid.h"
+#include "signal_connectome_brain.h"
 #include "station_util.h"
 
 #include <limits.h>
@@ -69,6 +70,13 @@ bool local_server_init(local_server_t *ls, uint32_t seed) {
     local_server_shutdown(ls);
     ls->throttled_snapshots = throttled_snapshots;
     if (!local_authority_acquire(&ls->authority)) return false;
+
+    /* Fly connectome brain, same as the dedicated server: idempotent, and
+     * a no-op unless SIGNAL_CONNECTOME_FAST names a circuit. It has to run
+     * before world_reset so NPC spawn stamps CONNECTOME on the first tick
+     * rather than a tick later. Without this call singleplayer could never
+     * reach the mode at all -- only server/main.c initialised it. */
+    (void)signal_connectome_init();
 
     LS_WORLD(ls).rng = seed ? seed : 2037u;
     world_reset(&LS_WORLD(ls));

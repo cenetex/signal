@@ -64,6 +64,10 @@ COPY scripts/webrtc-gateway.mjs ./scripts/webrtc-gateway.mjs
 COPY scripts/fly-webrtc-entrypoint.sh ./scripts/fly-webrtc-entrypoint.sh
 COPY scripts/lightsail-webrtc-entrypoint.sh ./scripts/lightsail-webrtc-entrypoint.sh
 
+# nav circuit blob for the connectome NPC brain (SIGNAL_CONNECTOME_FAST in
+# fly.toml points here). See docs/connectome-brain.md.
+COPY assets/connectome/nav.cnx ./nav.cnx
+
 ENV PORT=8080
 ENV SIGNAL_SERVER_PORT=9091
 ENV SIGNAL_DATA_DIR=/app/data

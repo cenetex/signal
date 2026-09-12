@@ -10,7 +10,7 @@ enum {
     SIGNAL_FIELD_WIDTH = 32,
     SIGNAL_FIELD_HEIGHT = 32,
     SIGNAL_FIELD_CELL_COUNT = SIGNAL_FIELD_WIDTH * SIGNAL_FIELD_HEIGHT,
-    SIGNAL_FIELD_KIND_COUNT = 6,
+    SIGNAL_FIELD_KIND_COUNT = 8,
 };
 
 #define SIGNAL_FIELD_CELL_SIZE 4096.0f
@@ -29,7 +29,17 @@ typedef enum {
     SIGNAL_FIELD_KIND_PROOF,
     SIGNAL_FIELD_KIND_HOLOGRAM,
     SIGNAL_FIELD_KIND_RISK,
+    /* Scent. The kinds above are gossip -- things somebody was told. These
+     * two are physical traces left in the world, which is why nothing has
+     * to carry them between stations for them to be smelled. */
+    SIGNAL_FIELD_KIND_ORE_SCENT,   /* rock, by ore load and grade */
+    SIGNAL_FIELD_KIND_CARGO_WAKE,  /* a laden ship's followable trail */
 } signal_field_kind_t;
+
+/* Half-life multiplier applied per kind on top of the caller's base, so one
+ * decay pass can carry traces that persist and traces that must go stale.
+ * Every pre-scent kind returns 1.0 and is unaffected. */
+float signal_field_kind_half_life_scale(signal_field_kind_t kind);
 
 typedef struct {
     float strength[SIGNAL_FIELD_KIND_COUNT];

@@ -40,6 +40,7 @@
 #include "station_policy.h"
 #include "gossip.h"
 #include "ship.h"
+#include "sim_scent.h"
 #include "sim_ai.h"
 #include "sim_autopilot.h"
 #include "signal_intelligence.h"
@@ -16866,6 +16867,9 @@ enum {
 
 static void step_signal_field_decay(world_t *w) {
     if (!w) return;
+    /* Lay down this tick's physical traces before decaying the field, so a
+     * live source always wins against its own decay. */
+    scent_step(w);
     if (w->signal_field_decay_tick == 0u) {
         w->signal_field_decay_tick = w->tick;
         return;
