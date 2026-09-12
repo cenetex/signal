@@ -76,6 +76,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", type=Path, required=True)
     parser.add_argument("--circuit", type=Path, default=ROOT / "assets/connectome/nav.cnx")
+    parser.add_argument("--worker-checkpoint", type=Path, help="load the trained worker policy in active mode")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--ticks", type=int, default=36000)
     parser.add_argument("--seeds", type=int, nargs="+", default=[2037, 2141, 3253, 4363, 5471])
@@ -103,13 +104,18 @@ def main() -> None:
            "SIGNAL_CONNECTOME_FAST": str(circuit),
            "SIGNAL_CONNECTOME_BUDGET": "30", "SIGNAL_CONNECTOME_STRATEGY_PERIOD": "300",
            "SIGNAL_CONNECTOME_SEED": "42"}
+    worker = args.worker_checkpoint.resolve() if args.worker_checkpoint else None
+    if worker:
+        env["SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT"] = str(worker)
+        env["SIGNAL_NPC_WORKER_BRAIN_MODE"] = "active"
     manifest = {"schema": "signal.connectome_strategy_comparison.v1", "source_commit": source,
                 "platform": platform.platform(), "machine": platform.machine(),
                 "build_type": next(line.split("=", 1)[1] for line in cache.splitlines() if line.startswith("CMAKE_BUILD_TYPE:STRING=")),
                 "probe_sha256": sha256(probe), "circuit_sha256": sha256(circuit),
+                "worker_checkpoint_sha256": sha256(worker) if worker else None,
                 "runner_sha256": sha256(Path(__file__)), "ticks": args.ticks,
                 "seeds": args.seeds, "workers": args.workers,
-                "settings": {k: v for k, v in env.items() if k.startswith("SIGNAL_") and k != "SIGNAL_CONNECTOME_FAST"},
+                "settings": {k: v for k, v in env.items() if k.startswith("SIGNAL_") and k not in ("SIGNAL_CONNECTOME_FAST", "SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT")},
                 "environment": "isolated; default settings plus listed overrides",
                 "scenario": "fresh server genesis; no connected players; normal NPC respawn",
                 "status": "running"}
@@ -130,6 +136,8 @@ def main() -> None:
                 archive.add(Path(tmp) / "chain", arcname="chain")
         row = json.loads(result_path.read_text())
         validate(row, seed, args.ticks, strategy)
+        if row.get("brains", {}).get("worker_loaded") is not bool(worker):
+            raise ValueError("worker checkpoint load state differs from requested episode")
         print(f"{label}: {time.monotonic() - start:.1f}s; smelt={row['smelt_output_units']}, "
               f"delivered={row['delivered_units']}, lost={row['destroyed_ships']}", flush=True)
         return row

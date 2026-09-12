@@ -21,6 +21,8 @@
  */
 #include "game_sim.h"
 #include "signal_connectome_brain.h"
+#include "signal_intelligence.h"
+#include "holographic_nn_backend.h"
 #include "connectome_probe_metrics.h"
 #include "chain_log.h"
 #include <inttypes.h>
@@ -109,6 +111,16 @@ int main(int argc, char **argv)
             if (!w->stations[i].chain_event_count) return 3;
         if (!probe_chain_counts(w, initial_chain)) return 3;
         connectome_probe_sample(&metrics, w, true);
+    }
+    /* Match the server's independent worker checkpoint loading path. */
+    signal_intelligence_holographic_init();
+    const char *worker_path = getenv("SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT");
+    if (worker_path && worker_path[0]) {
+        char error[512] = {0};
+        if (!signal_intelligence_load_npc_worker_checkpoint(worker_path, error, sizeof(error))) {
+            fprintf(stderr, "worker checkpoint load failed: %s\n", error);
+            return 2;
+        }
     }
     uint32_t initial_rng = w->rng;
 
@@ -221,6 +233,23 @@ int main(int argc, char **argv)
                      ", \"towing_ticks\": %" PRIu64 ", \"event_capacity_ticks\": %" PRIu64 ",\n",
                 metrics.active_ticks, metrics.travel_ticks, metrics.docked_ticks,
                 metrics.idle_ticks, metrics.towing_ticks, metrics.event_capacity_ticks);
+        fprintf(out, "  \"brains\": {\"fast_neurons\": %u, \"deep_neurons\": %u, "
+                     "\"connectome_steps\": %" PRIu64 ", \"deep_promotions\": %u, "
+                     "\"hnn_backend\": \"%s\", \"flight_builtin_available\": %s, "
+                     "\"flight_inferences\": %" PRIu64 ", \"contract_loaded\": %s, "
+                     "\"contract_inferences\": %" PRIu64 ", \"worker_loaded\": %s, "
+                     "\"worker_inferences\": %" PRIu64 ", \"worker_decisions\": %" PRIu64 ", "
+                     "\"worker_teacher_decisions\": %" PRIu64 "},\n",
+                st.fast_neurons, st.deep_neurons, st.steps, st.promotions,
+                hnn_backend_kind_name(hnn_backend_active_kind()),
+                signal_intelligence_flight_builtin_available() ? "true" : "false",
+                signal_intelligence_flight_inference_count(),
+                signal_intelligence_contract_loaded() ? "true" : "false",
+                signal_intelligence_contract_inference_count(),
+                signal_intelligence_npc_worker_loaded() ? "true" : "false",
+                signal_intelligence_npc_worker_inference_count(),
+                signal_intelligence_npc_worker_decision_count(),
+                signal_intelligence_npc_worker_teacher_decision_count());
         fprintf(out, "  \"active_at_end\": %d, \"strategy_changes\": %u, "
                      "\"connectome_checksum\": \"%016" PRIx64 "\"\n}\n",
                 active, st.strategy_changes, signal_connectome_checksum());
