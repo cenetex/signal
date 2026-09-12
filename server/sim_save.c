@@ -90,7 +90,8 @@
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
 #define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
-#define SAVE_VERSION 84  /* v84: append the durable station payout journal so
+#define SAVE_VERSION 85  /* v85: append wallet-owned FLY purchase receipts.
+                          * v84: append the durable station payout journal so
                           * a source/action identity cannot credit twice across
                           * retries, reconnects, or save/load.
                           * v83: append Engine commodity/module identities and
@@ -1955,7 +1956,7 @@ static bool write_ship_asset(FILE *f, const ship_asset_t *asset,
           asset->status > SHIP_ASSET_STATUS_DESTROYED ||
           asset->operator_kind > SHIP_ASSET_OPERATOR_NPC ||
           asset->provenance >
-              SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY ||
+              SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
           !ship_asset_birth_proof_is_canonical(asset)))) {
         return false;
     }
@@ -2073,7 +2074,7 @@ static bool read_ship_asset(
         asset->status > SHIP_ASSET_STATUS_DESTROYED ||
         asset->operator_kind > SHIP_ASSET_OPERATOR_NPC ||
         asset->provenance >
-            SHIP_ASSET_PROVENANCE_BIRTH_ASSEMBLY ||
+            SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
         !actor_principal_is_canonical(&asset->owner_principal) ||
         !ship_asset_birth_proof_is_canonical(asset)) {
         return false;
@@ -3294,7 +3295,9 @@ static bool world_save_payload(const world_t *w, FILE *f,
     if (!world_validate_station_actor_ids(w) ||
         !validate_v79_ownership(w) ||
         !world_ship_birth_saved_assemblies_valid(w) ||
-        !validate_ship_birth_provenance_uniqueness(w)) {
+        !validate_ship_birth_provenance_uniqueness(w) ||
+        !world_fly_purchases_valid(w) ||
+        (output_version < 85 && w->fly_purchase_count)) {
         return false;
     }
     /* Header */
@@ -3473,6 +3476,18 @@ static bool world_save_payload(const world_t *w, FILE *f,
             WRITE_FIELD(f, receipt->action);
             WRITE_FIELD(f, receipt->authority_generation);
             WRITE_FIELD(f, receipt->_pad);
+        }
+    }
+
+    if (output_version >= 85) {
+        WRITE_FIELD(f, w->fly_purchase_count);
+        for (uint32_t i = 0; i < w->fly_purchase_count; i++) {
+            const fly_purchase_t *p = &w->fly_purchases[i];
+            WRITE_FIELD(f, p->purchase_id);
+            WRITE_FIELD(f, p->wallet);
+            WRITE_FIELD(f, p->burn_signature);
+            WRITE_FIELD(f, p->asset_id);
+            WRITE_FIELD(f, p->station);
         }
     }
 
@@ -3907,6 +3922,22 @@ static bool world_load_payload(
         w->payout_journal.count = count;
         w->payout_journal.capacity = count;
     }
+
+    w->fly_purchase_count = 0;
+    memset(w->fly_purchases, 0, sizeof(w->fly_purchases));
+    if (version >= 85) {
+        READ_FIELD(f, w->fly_purchase_count);
+        if (w->fly_purchase_count > MAX_FLY_PURCHASES) return false;
+        for (uint32_t i = 0; i < w->fly_purchase_count; i++) {
+            fly_purchase_t *p = &w->fly_purchases[i];
+            READ_FIELD(f, p->purchase_id);
+            READ_FIELD(f, p->wallet);
+            READ_FIELD(f, p->burn_signature);
+            READ_FIELD(f, p->asset_id);
+            READ_FIELD(f, p->station);
+        }
+    }
+    if (!world_fly_purchases_valid(w)) return false;
 
     if (version >= 78) {
         if (!read_ownership_quarantine(

@@ -3096,8 +3096,9 @@ TEST(test_v81_cargo_pod_player_slot_migrates_to_bound_quarantine) {
              * v82: each active cargo pod replaces its 1-byte player slot
              * with a 33-byte principal plus 8-byte quarantine binding.
              * Fresh worlds have two starter pods, so +80 bytes.
-             * v84: +4B empty durable payout-journal count. */
-#define EXPECTED_SAVE_SIZE 846458
+             * v84: +4B empty durable payout-journal count.
+             * v85: +4B empty FLY purchase count. */
+#define EXPECTED_SAVE_SIZE 846462
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -3134,7 +3135,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 84);
+    ASSERT_EQ_INT((int)version, 85);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

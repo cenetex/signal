@@ -1773,17 +1773,10 @@ static ship_asset_t *ship_asset_find_stored_npc_hull(world_t *w,
     return NULL;
 }
 
-int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
-    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return -1;
+static int npc_claim_selected_asset(world_t *w, int station_idx,
+                                     npc_role_t role, ship_asset_t *asset) {
     station_t *st = &w->stations[station_idx];
-    if (!station_exists(st)) return -1;
     hull_class_t hc = npc_resident_hull_class_for_role(role);
-    ship_asset_t *asset = ship_asset_find_stored_npc_hull(w, station_idx, hc);
-    if (!asset) {
-        (void)shipyard_queue_station_hull_request(w, station_idx, hc);
-        return -1;
-    }
-
     int slot = npc_alloc_free_slot(w);
     if (slot < 0) return -1;
     npc_ship_t *npc = &w->npc_ships[slot];
@@ -1884,6 +1877,37 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
             role == NPC_ROLE_HAULER ? "hauler" : "npc",
             station_idx, slot);
     return slot;
+}
+
+int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return -1;
+    station_t *st = &w->stations[station_idx];
+    if (!station_exists(st)) return -1;
+    hull_class_t hc = npc_resident_hull_class_for_role(role);
+    ship_asset_t *asset = ship_asset_find_stored_npc_hull(w, station_idx, hc);
+    if (!asset) {
+        (void)shipyard_queue_station_hull_request(w, station_idx, hc);
+        return -1;
+    }
+
+    return npc_claim_selected_asset(w, station_idx, role, asset);
+}
+
+int ship_asset_launch_fly_worker(world_t *w, ship_asset_t *asset, int station) {
+    if (!w || !asset || !asset->active || asset->destroyed ||
+        asset->provenance != SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
+        asset->owner_principal.kind != ACTOR_PRINCIPAL_PLAYER ||
+        asset->status != SHIP_ASSET_STATUS_STORED || station < 0 || station > 2)
+        return -1;
+    bool paid = false;
+    for (uint32_t i = 0; i < w->fly_purchase_count; i++) {
+        if (w->fly_purchases[i].asset_id != asset->asset_id) continue;
+        for (size_t k = 0; k < 64; k++)
+            if (w->fly_purchases[i].burn_signature[k]) paid = true;
+    }
+    if (!paid) return -1;
+    npc_role_t role = station == 1 ? NPC_ROLE_TOW : NPC_ROLE_MINER;
+    return npc_claim_selected_asset(w, station, role, asset);
 }
 
 /* Test/bootstrap shim. Production roster replenishment claims existing
@@ -6606,6 +6630,14 @@ static void step_scaffold_tow_contract(world_t *w, npc_ship_t *npc, int n, float
 #define NPC_CONTACT_GOSSIP_INTERVAL_TICKS 120u
 
 void step_npc_ships(world_t *w, float dt) {
+    if (w && w->tick % 120 == 0) {
+        for (uint32_t i = 0; i < w->fly_purchase_count; i++) {
+            const fly_purchase_t *p = &w->fly_purchases[i];
+            ship_asset_t *asset = world_ship_asset_by_id(w, p->asset_id);
+            if (asset) (void)ship_asset_launch_fly_worker(w, asset, p->station);
+        }
+    }
+
     /* Replenish dead haulers/miners on a slow drip. The first call
      * after world_reset waits the full interval so the seeded roster
      * isn't immediately doubled. */
