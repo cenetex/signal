@@ -237,6 +237,11 @@ enum {
     SERVER_BRAIN_MODE_NEURAL_FLIGHT = 1,
     SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS = 2,
     SERVER_BRAIN_MODE_HOLOGRAPHIC = 3,
+    /* Fly connectome: integer leaky-integrate-and-fire kernel over a
+     * FlyWire Drosophila subgraph (server/connectome/). The wiring is
+     * the program; drives (hunger/lust/fear/pain) modulate injection,
+     * and brain-time is rationed by economic stake via flyswarm. */
+    SERVER_BRAIN_MODE_CONNECTOME = 4,
 };
 
 /* input_intent_t lives in shared/types.h since slice 2 of #294 — both

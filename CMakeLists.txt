@@ -216,6 +216,12 @@ set(SIGNAL_SIM_SOURCES
     server/sim_mining.c
     server/sim_anchor.c
     server/sim_ship.c
+    # Fly connectome brain: vendored integer LIF kernel (upstream: the
+    # flybrain project) plus the signal adapter. Kernel is float-free in
+    # the step path; see server/connectome/ headers for provenance.
+    server/connectome/flybrain.c
+    server/connectome/flyswarm.c
+    server/signal_connectome_brain.c
 )
 
 # Native authoritative persistence orchestration.  This is intentionally not
@@ -462,6 +468,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_hnn_backend.c
         tests/c/test_hnn_confidence.c
         tests/c/test_gossip.c
+        tests/c/test_connectome_brain.c
         tests/c/test_npc_radio.c
         tests/c/test_ai_feature_contract.c
         tests/c/test_hud_attention.c
@@ -650,6 +657,28 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_options(flight_trace PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
         target_compile_definitions(flight_trace PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    # Headless NPC-swarm probe for the connectome brain. The unit tests
+    # cannot enable the process-global adapter without flipping every
+    # other sim test's NPCs, so this is where the mode gets end-to-end
+    # coverage. See tools/connectome_swarm_probe.c.
+    add_executable(connectome_swarm_probe
+        tools/connectome_swarm_probe.c
+        ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
+        ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(connectome_swarm_probe PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_definitions(
+        connectome_swarm_probe PRIVATE SIGNAL_SERVER_PERSISTENCE=1)
+    signal_apply_sim_profile(connectome_swarm_probe)
+    if(NOT MSVC)
+        target_link_libraries(connectome_swarm_probe PRIVATE m)
     endif()
 
     add_executable(signal_replay

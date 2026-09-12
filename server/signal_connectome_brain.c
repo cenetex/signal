@@ -1,0 +1,622 @@
+/*
+ * signal_connectome_brain.c -- adapter between signal's NPC flight loop
+ * and the vendored fly connectome kernel (server/connectome/).
+ *
+ * Data flow per 120 Hz tick, in order:
+ *
+ *   1. The NPC state machines steer as usual (npc_steer_with_path).
+ *      CONNECTOME NPCs call signal_connectome_flight_cmd(), which reads
+ *      the descending-bus command their brain computed last tick,
+ *      applies it as a bounded, clearance-scaled BIAS on the reflex
+ *      controller (see flight_cmd for why the brain is not allowed to
+ *      steer outright), gates thrust on arousal, and records the reflex
+ *      turn as the sensory drive for this tick's injection.
+ *   2. At the end of step_npc_ships, signal_connectome_tick() updates
+ *      each fly's drives (hunger/lust/fear/pain) from world state, sets
+ *      its economic stake, injects tonic + steering + fear drive into
+ *      the shared circuit, and spends the tick's brain budget through
+ *      flyswarm (stake-proportional; docked flies sleep at stake 0 and
+ *      rent their share to the swarm).
+ *
+ * The one-tick latency between injection and readout is not a hack; it
+ * is the synapse. Everything here is integer in the kernel and float
+ * only where the rest of the sim is already float.
+ *
+ * Env (read once on first init):
+ *   SIGNAL_CONNECTOME_FAST        path, required to enable (nav .cnx)
+ *   SIGNAL_CONNECTOME_DEEP        path, optional (full-brain .cnx)
+ *   SIGNAL_CONNECTOME_DT_US       brain step, default 4000 (0.48x realtime)
+ *   SIGNAL_CONNECTOME_TONIC_UV    columnar arousal, default 2200 (must
+ *                                 clear the ignition cliff at this dt)
+ *   SIGNAL_CONNECTOME_STEER_UV    ring steering amplitude, default 2500
+ *   SIGNAL_CONNECTOME_NOISE_UV    per-step membrane jitter, default 0
+ *   SIGNAL_CONNECTOME_TURN_GAIN_X100  brain steering bias ceiling,
+ *                                 default 35 (=0.35 of the turn axis)
+ *   SIGNAL_CONNECTOME_BUDGET      kernel-step units per tick, default 120
+ *                                 (one fast step = 1 unit, deep = 25)
+ *   SIGNAL_CONNECTOME_DEEP_SLOTS  scarce deliberation slots, default 3
+ *   SIGNAL_CONNECTOME_PROMOTE_STAKE  default 400
+ *   SIGNAL_CONNECTOME_DEMOTE_STAKE  default 200
+ *   SIGNAL_CONNECTOME_AWAKE_HZ_X100  descending-drive gate, default 10 (=0.10 Hz)
+ *   SIGNAL_CONNECTOME_SEED        default 42
+ */
+#include "signal_connectome_brain.h"
+#include "connectome/flybrain.h"
+#include "connectome/flyswarm.h"
+#include "sim_nav.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define CB_MAX_AGENTS MAX_NPC_SHIPS
+#define Q16_ONE 65536
+
+/* ---------------- per-agent drive state (runtime only) ---------------- */
+
+typedef struct {
+    int32_t  lust;      /* Q16: courtship arousal -- towing ore */
+    int32_t  hunger;    /* Q16: foraging arousal -- empty-handed */
+    int32_t  fear;      /* Q16: closing-rock threat + low hull */
+    int32_t  pain;      /* Q16: recent hull damage, decays ~1 s */
+    float    last_hull;
+    int32_t  pending_u; /* Q16 steering intent recorded by flight_cmd */
+    int32_t  turn_ema;  /* Q16 smoothed descending turn, see flight_cmd */
+} cb_agent_state_t;
+
+typedef struct {
+    int      enabled;
+    int      init_attempted;
+
+    fb_circuit fast;
+    int      has_fast;
+    fb_circuit deep;
+    int      has_deep;
+    fb_swarm  swarm;
+
+    /* config */
+    int32_t  dt_us;
+    int32_t  tonic_uv;
+    int32_t  steer_uv;
+    int32_t  noise_uv;
+    uint32_t budget;
+    int32_t  turn_gain;   /* Q16 ceiling on the brain's steering bias */
+    uint32_t debug_every; /* ticks between diagnostic dumps, 0 = off */
+    uint32_t deep_slots;
+    uint32_t promote_stake;
+    uint32_t demote_stake;
+    int32_t  awake_hz_q16;
+    uint64_t seed;
+
+    /* cached populations of the fast circuit, for injection */
+    const uint32_t *ring_idx;   uint32_t ring_n;
+    const uint32_t *col_idx;    uint32_t col_n;
+
+    /* injection scratch, sized to the fast circuit's populations */
+    int32_t *col_scratch;
+    int32_t *ring_scratch;
+
+    /* per-agent drives */
+    cb_agent_state_t agent[CB_MAX_AGENTS];
+
+    /* stats */
+    signal_connectome_stats_t stats;
+} cb_state_t;
+
+static cb_state_t g_cb;
+
+/* ---------------- small helpers ---------------- */
+
+static int32_t cb_env_int(const char *name, int32_t fallback)
+{
+    const char *v = getenv(name);
+    if (!v || !v[0]) return fallback;
+    char *end = NULL;
+    long n = strtol(v, &end, 0);
+    if (end == v) return fallback;
+    return (int32_t)n;
+}
+
+static int32_t cb_q16_from_x100(int32_t x100)
+{
+    if (x100 <= 0) return 0;
+    return (int32_t)(((int64_t)x100 * Q16_ONE) / 100);
+}
+
+static float cb_clampf(float v, float lo, float hi)
+{
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+/* ---------------- init ---------------- */
+
+bool signal_connectome_enabled(void)
+{
+    return g_cb.enabled != 0;
+}
+
+bool signal_connectome_init(void)
+{
+    if (g_cb.init_attempted) return g_cb.enabled != 0;
+
+    const char *fast_path = getenv("SIGNAL_CONNECTOME_FAST");
+    if (!fast_path || !fast_path[0]) {
+        g_cb.init_attempted = 1;   /* not configured: mode stays off */
+        return false;
+    }
+
+    memset(&g_cb, 0, sizeof(g_cb));
+    g_cb.init_attempted = 1;
+
+    cb_state_t *cb = &g_cb;
+    cb->dt_us         = cb_env_int("SIGNAL_CONNECTOME_DT_US", 4000);
+    /* Tonic must clear the circuit's ignition threshold AT THIS dt, and
+     * that threshold is a cliff, not a ramp. A neuron driven with a
+     * constant uv per step settles at uv/(1 - exp(-dt/tau)); at the
+     * default dt=4000 that is uv/0.1813, so the old 900 uV default
+     * settled at 4964 uV against a 7000 uV threshold and NOTHING in the
+     * circuit ever fired. Every connectome NPC then read drive=0, failed
+     * the arousal gate below, and sat motionless with thrust clamped to
+     * zero. Measured on nav.cnx: silent below ~1600 uV, ~28-31 Hz from
+     * 2200 uV up. Noise defaults off because the steering asymmetry it
+     * has to compete with is only ~0.29 wide (see flight_cmd). */
+    cb->tonic_uv      = cb_env_int("SIGNAL_CONNECTOME_TONIC_UV", 2200);
+    cb->steer_uv      = cb_env_int("SIGNAL_CONNECTOME_STEER_UV", 2500);
+    cb->noise_uv      = cb_env_int("SIGNAL_CONNECTOME_NOISE_UV", 0);
+    cb->turn_gain     = cb_q16_from_x100(
+        cb_env_int("SIGNAL_CONNECTOME_TURN_GAIN_X100", 35));
+    cb->budget        = (uint32_t)cb_env_int("SIGNAL_CONNECTOME_BUDGET", 120);
+    cb->deep_slots    = (uint32_t)cb_env_int("SIGNAL_CONNECTOME_DEEP_SLOTS", 3);
+    cb->promote_stake = (uint32_t)cb_env_int("SIGNAL_CONNECTOME_PROMOTE_STAKE", 400);
+    cb->demote_stake  = (uint32_t)cb_env_int("SIGNAL_CONNECTOME_DEMOTE_STAKE", 200);
+    cb->awake_hz_q16  = cb_q16_from_x100(
+        cb_env_int("SIGNAL_CONNECTOME_AWAKE_HZ_X100", 10));
+    cb->seed          = (uint64_t)cb_env_int("SIGNAL_CONNECTOME_SEED", 42);
+    cb->debug_every   = (uint32_t)cb_env_int("SIGNAL_CONNECTOME_DEBUG", 0);
+
+    if (fb_circuit_load(&cb->fast, fast_path) != 0) {
+        fprintf(stderr, "[connectome] [FATAL] cannot load "
+                        "SIGNAL_CONNECTOME_FAST=%s\n", fast_path);
+        return false;
+    }
+    cb->has_fast = 1;
+
+    const char *deep_path = getenv("SIGNAL_CONNECTOME_DEEP");
+    if (deep_path && deep_path[0]) {
+        if (fb_circuit_load(&cb->deep, deep_path) != 0) {
+            fprintf(stderr, "[connectome] [FATAL] cannot load "
+                            "SIGNAL_CONNECTOME_DEEP=%s\n", deep_path);
+            fb_circuit_free(&cb->fast);
+            return false;
+        }
+        cb->has_deep = 1;
+    }
+
+    if (fb_swarm_init(&cb->swarm, &cb->fast, cb->has_deep ? &cb->deep : NULL,
+                      CB_MAX_AGENTS, cb->dt_us, cb->seed) != 0) {
+        fprintf(stderr, "[connectome] [FATAL] swarm init failed\n");
+        fb_circuit_free(&cb->fast);
+        if (cb->has_deep) fb_circuit_free(&cb->deep);
+        return false;
+    }
+
+    /* Brain-time is rented, not granted: no reflex floor. Every unit a
+     * fly gets comes from its own stake or from a sleeping fly's share. */
+    cb->swarm.floor_units   = 0;
+    cb->swarm.budget_units  = cb->budget;
+    cb->swarm.deep_slots    = cb->deep_slots;
+    cb->swarm.promote_stake = cb->promote_stake;
+    cb->swarm.demote_stake  = cb->demote_stake;
+
+    cb->swarm.sim_fast.noise_uv = (uint32_t)cb->noise_uv;
+    if (cb->has_deep)
+        cb->swarm.sim_deep.noise_uv = (uint32_t)cb->noise_uv;
+
+    /* Cache ring/columnar geometry of the fast circuit for injection. */
+    cb->ring_n = fb_population(&cb->fast, "ring", &cb->ring_idx);
+    cb->col_n  = fb_population(&cb->fast, "columnar", &cb->col_idx);
+    cb->col_scratch  = (int32_t *)malloc(sizeof(int32_t) *
+                                         (cb->col_n ? cb->col_n : 1));
+    cb->ring_scratch = (int32_t *)malloc(sizeof(int32_t) *
+                                         (cb->ring_n ? cb->ring_n : 1));
+    if (!cb->col_scratch || !cb->ring_scratch) {
+        fprintf(stderr, "[connectome] [FATAL] scratch alloc failed\n");
+        signal_connectome_shutdown();
+        return false;
+    }
+
+    /* Calibrate the steering axis on both circuits. The descending bus
+     * has a fixed anatomical left/right bias; calibration maps it onto
+     * [-1,1] so the game reads a command, not an artifact. */
+    int settle_steps = (int)(600000 / (cb->dt_us > 0 ? cb->dt_us : 4000));
+    if (settle_steps < 50) settle_steps = 50;
+    int32_t span_fast = fb_sim_calibrate(&cb->swarm.sim_fast,
+                                         cb->tonic_uv, cb->steer_uv,
+                                         settle_steps);
+    int32_t span_deep = 0;
+    if (cb->has_deep)
+        span_deep = fb_sim_calibrate(&cb->swarm.sim_deep,
+                                     cb->tonic_uv, cb->steer_uv,
+                                     settle_steps);
+
+    cb->enabled = 1;
+    cb->stats.fast_neurons = cb->fast.n;
+    cb->stats.deep_neurons = cb->has_deep ? cb->deep.n : 0;
+    cb->stats.has_deep = cb->has_deep;
+
+    printf("[connectome] fly brain online: fast=%u neurons "
+           "(%u in / %u out)\n",
+           cb->fast.n, cb->fast.n_in, cb->fast.n_out);
+    printf("[connectome] steering calibration: fast half-span=%.4f, "
+           "deep half-span=%.4f (Q16 units)\n",
+           span_fast / 65536.0, span_deep / 65536.0);
+    /* A zero half-span means the circuit never ignited at this tonic/dt
+     * pair: the brain is loaded but dead, and every NPC will fail the
+     * arousal gate. Say so loudly rather than shipping motionless NPCs. */
+    if (span_fast == 0)
+        fprintf(stderr, "[connectome] [WARN] fast circuit measured a zero "
+                        "steering span -- it is almost certainly silent at "
+                        "tonic=%d uv / dt=%d us. Raise "
+                        "SIGNAL_CONNECTOME_TONIC_UV.\n",
+                cb->tonic_uv, cb->dt_us);
+    if (cb->has_deep)
+        printf("[connectome] deep circuit: %u neurons\n", cb->deep.n);
+    printf("[connectome] budget %u units/tick, %u deep slot(s), "
+           "promote@%u demote@%u, dt=%d us, awake gate=%.2f Hz\n",
+           cb->budget, cb->deep_slots,
+           cb->promote_stake, cb->demote_stake, cb->dt_us,
+           cb->awake_hz_q16 / 65536.0);
+    return true;
+}
+
+void signal_connectome_shutdown(void)
+{
+    if (!g_cb.has_fast) { memset(&g_cb, 0, sizeof(g_cb)); return; }
+    fb_swarm_free(&g_cb.swarm);
+    fb_circuit_free(&g_cb.fast);
+    if (g_cb.has_deep) fb_circuit_free(&g_cb.deep);
+    free(g_cb.col_scratch);
+    free(g_cb.ring_scratch);
+    memset(&g_cb, 0, sizeof(g_cb));
+}
+
+/* ---------------- drives ---------------- */
+
+/* Largest closing-rock threat nearby, plus low-hull dread. Rocks are
+ * signal's only weapon, so a rock on a closing course is the only
+ * thing in the world with a reason to be feared. */
+static int32_t cb_compute_fear(const world_t *w, const npc_ship_t *npc)
+{
+    const ship_t *s = npc->ship;
+    int32_t fear = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        /* Only moving rocks threaten. thrown_timer_q marks the
+         * deliberately released ones -- a weapon should scare more
+         * than drift, so it gets the wider radius. */
+        float vx = a->vel.x - s->vel.x;
+        float vy = a->vel.y - s->vel.y;
+        float v2 = vx * vx + vy * vy;
+        if (v2 < 400.0f) continue;              /* < 20 u/s relative */
+        float rx = a->pos.x - s->pos.x;
+        float ry = a->pos.y - s->pos.y;
+        float r2 = rx * rx + ry * ry;
+        float radius = (a->thrown_timer_q > 0) ? 900.0f : 500.0f;
+        if (r2 > radius * radius) continue;
+        float closing = -(rx * vx + ry * vy);   /* >0 = approaching */
+        if (closing <= 0.0f) continue;
+        float d = sqrtf(r2);
+        float prox = 1.0f - d / radius;          /* 0..1 */
+        float menace = cb_clampf(sqrtf(v2) / 250.0f, 0.0f, 1.0f);
+        int32_t f = (int32_t)(prox * menace * (float)Q16_ONE);
+        if (f > fear) fear = f;
+    }
+    float max_hull = npc_max_hull(npc);
+    if (max_hull > 0.0f && s->hull < max_hull * 0.25f) {
+        int32_t dread = Q16_ONE / 2;
+        if (dread > fear) fear = dread;
+    }
+    return fear;
+}
+
+/* Update one fly's drives from world state. Q16 throughout. */
+static void cb_update_drives(const world_t *w, npc_ship_t *npc, int i)
+{
+    cb_agent_state_t *st = &g_cb.agent[i];
+    const ship_t *s = npc->ship;
+
+    int carrying = (int)s->towed_count + (int)s->towed_pod_count +
+                   (s->towed_scaffold >= 0 ? 1 : 0);
+
+    /* LUST: the fly is in love with its ore. Rises while towing,
+     * glows and fades after delivery. */
+    if (carrying > 0)
+        st->lust = st->lust < Q16_ONE - 4096 ? st->lust + 4096 : Q16_ONE;
+    else
+        st->lust -= st->lust >> 6;
+
+    /* HUNGER: foraging drive. Empty-handed working flies get hungry. */
+    if (carrying == 0 && npc->state != NPC_STATE_DOCKED)
+        st->hunger = st->hunger < Q16_ONE - 2048 ? st->hunger + 2048 : Q16_ONE;
+    else
+        st->hunger = 0;
+
+    /* PAIN: hull drop since last tick spikes, then decays (~1 s). */
+    if (st->last_hull > 0.0f && s->hull < st->last_hull - 0.5f)
+        st->pain = Q16_ONE;
+    st->last_hull = s->hull;
+    st->pain -= st->pain >> 6;
+
+    /* FEAR: recomputed from the world each tick. */
+    st->fear = cb_compute_fear(w, npc);
+}
+
+static uint32_t cb_compute_stake(const npc_ship_t *npc, int i)
+{
+    const cb_agent_state_t *st = &g_cb.agent[i];
+    const ship_t *s = npc->ship;
+
+    /* A docked fly sleeps: stake 0, brain-time rented to the swarm. */
+    if (npc->state == NPC_STATE_DOCKED) return 0;
+
+    uint32_t stake = 100;                        /* awake and working */
+    stake += 60u * (uint32_t)s->towed_count;     /* ore in tow */
+    stake += 90u * (uint32_t)s->towed_pod_count; /* cargo in tow */
+    stake += (s->towed_scaffold >= 0) ? 250u : 0u;
+    if (npc->state == NPC_STATE_TRAVEL_TO_DEST && npc->dest_station >= 0)
+        stake += 150u;                           /* contract in flight */
+    stake += (uint32_t)(st->lust >> 10);         /* urgency buys thought */
+    stake += (uint32_t)(st->fear >> 10);
+    return stake;
+}
+
+/* ---------------- injection ---------------- */
+
+/* Push this tick's sensory drive into the fly's current circuit. The
+ * ring neurons are GABAergic: driving the LEFT ring suppresses the
+ * left half of the central complex and the calibrated turn goes RIGHT,
+ * so a desired right turn (u > 0) means more drive on the left ring. */
+static void cb_inject(int i, fb_sim *sim)
+{
+    cb_state_t *cb = &g_cb;
+    cb_agent_state_t *st = &cb->agent[i];
+    if (!sim) return;
+
+    /* Arousal: hunger and lust raise the tonic substrate, pain spikes
+     * it briefly. Max ~+50% over the configured tonic. */
+    int32_t arousal = st->lust + st->hunger;
+    int32_t tonic = cb->tonic_uv +
+        (int32_t)(((int64_t)cb->tonic_uv * arousal) >> 17) +
+        (int32_t)(((int64_t)cb->steer_uv * st->pain) >> 17);
+
+    /* Columnar tonic: the substrate the inhibitory ring sculpts. */
+    if (cb->col_n) {
+        for (uint32_t k = 0; k < cb->col_n; k++)
+            cb->col_scratch[k] = tonic;
+        fb_sim_inject_pop(sim, (uint32_t)i, "columnar", cb->col_scratch);
+    }
+
+    /* Steering: push-pull around the symmetric half point. */
+    if (cb->ring_n) {
+        const fb_circuit *c = sim->c;
+        int32_t u = st->pending_u;               /* Q16 in [-1,1] */
+        int32_t half = cb->steer_uv / 2;
+        int32_t delta = (int32_t)(((int64_t)cb->steer_uv * u) >> 17);
+        int32_t left  = half + delta;
+        int32_t right = half - delta;
+        for (uint32_t k = 0; k < cb->ring_n; k++) {
+            int8_t sd = c->side[cb->ring_idx[k]];
+            cb->ring_scratch[k] = (sd < 0) ? left : (sd > 0) ? right : half;
+        }
+        fb_sim_inject_pop(sim, (uint32_t)i, "ring", cb->ring_scratch);
+    }
+
+    /* FEAR: bilateral drive into the escape/freeze descending channels.
+     * These are the fly's DNp07/DNp10/DNp09 analogues; the flight read
+     * side watches them for a freeze override. */
+    if (st->fear > 0) {
+        int32_t fear_uv = (int32_t)(((int64_t)cb->steer_uv * st->fear) >> 16);
+        int32_t ch[1];
+        ch[0] = fear_uv;
+        fb_sim_inject_pop(sim, (uint32_t)i, "escape_left", ch);
+        fb_sim_inject_pop(sim, (uint32_t)i, "escape_right", ch);
+        fb_sim_inject_pop(sim, (uint32_t)i, "escape2_left", ch);
+        fb_sim_inject_pop(sim, (uint32_t)i, "escape2_right", ch);
+        fb_sim_inject_pop(sim, (uint32_t)i, "brake_left", ch);
+        fb_sim_inject_pop(sim, (uint32_t)i, "brake_right", ch);
+    }
+}
+
+/* ---------------- tick ---------------- */
+
+void signal_connectome_tick(world_t *w)
+{
+    if (!g_cb.enabled || !w) return;
+    cb_state_t *cb = &g_cb;
+
+    uint32_t active = 0, sleeping = 0;
+
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        npc_ship_t *npc = &w->npc_ships[i];
+        if (!npc->active ||
+            npc->brain_mode != SERVER_BRAIN_MODE_CONNECTOME) {
+            fb_swarm_set_stake(&cb->swarm, (uint32_t)i, 0);
+            continue;
+        }
+
+        cb_update_drives(w, npc, i);
+        uint32_t stake = cb_compute_stake(npc, i);
+        fb_swarm_set_stake(&cb->swarm, (uint32_t)i, stake);
+
+        if (stake == 0) {
+            /* Sleeping: membrane frozen, share rented out. */
+            sleeping++;
+            cb->agent[i].pending_u = 0;
+            continue;
+        }
+        active++;
+    }
+
+    /* Brain-time market clears: allocate by stake, step every fly
+     * exactly what it earned (or rented).
+     *
+     * We drive the step loop here rather than calling fb_swarm_tick,
+     * because the sensory drive has to be re-injected for EVERY kernel
+     * step, not once per sim tick. Injection adds current to the
+     * membrane for a single step; a fly that earned twenty steps and got
+     * drive on only the first one spends the other nineteen decaying
+     * with a 20 ms time constant, and the circuit is silent long before
+     * the tick ends. That is not a slow fly, it is a dead one: the
+     * descending bus reads 0 Hz, every NPC fails the arousal gate in
+     * flight_cmd, and thrust is clamped to zero forever. Sustained drive
+     * is also what the circuit was characterised under.
+     *
+     * flyswarm owns the allocation policy; only the stepping moves here,
+     * so stake, renting, promotion and the budget all behave as before. */
+    uint32_t spent32 = fb_swarm_allocate(&cb->swarm);
+    cb->swarm.units_spent += spent32;
+    for (uint32_t i = 0; i < cb->swarm.n_agents; i++) {
+        uint32_t steps = cb->swarm.steps[i];
+        if (!steps) continue;                  /* asleep or unfunded */
+        fb_sim *sim = fb_swarm_sim_for(&cb->swarm, i);
+        if (!sim) continue;
+        for (uint32_t k = 0; k < steps; k++) {
+            cb_inject((int)i, sim);
+            fb_sim_step_agent(sim, i);
+        }
+        cb->swarm.steps_run += steps;
+    }
+    cb->swarm.tick++;
+    uint64_t spent = spent32;
+
+    cb->stats.ticks++;
+    cb->stats.steps = cb->swarm.steps_run;
+    cb->stats.units_spent = cb->swarm.units_spent;
+    /* Units granted while flies slept are what the swarm rented. */
+    if (sleeping > 0) cb->stats.rented_units += spent;
+    cb->stats.promotions = cb->swarm.promotions;
+    cb->stats.demotions = cb->swarm.demotions;
+    cb->stats.active_flies = active;
+    cb->stats.sleeping_flies = sleeping;
+    cb->stats.deep_flies = 0;
+    for (uint32_t i = 0; i < cb->swarm.n_agents; i++)
+        if (cb->swarm.deep_on[i]) cb->stats.deep_flies++;
+}
+
+/* ---------------- flight readout ---------------- */
+
+bool signal_connectome_flight_cmd(const world_t *w,
+                                   int npc_idx,
+                                   npc_ship_t *npc,
+                                   float turn_in,
+                                   float *turn_out,
+                                   float *thrust_out)
+{
+    if (!g_cb.enabled || !npc || !npc->ship || !turn_out || !thrust_out)
+        return false;
+    if (npc_idx < 0 || npc_idx >= MAX_NPC_SHIPS) return false;
+    cb_state_t *cb = &g_cb;
+    cb_agent_state_t *st = &cb->agent[npc_idx];
+
+    /* Record the reflex turn as this tick's sensory drive: what the fly
+     * WANTED is what its ring neurons are asked about next tick. */
+    float u = cb_clampf(turn_in, -1.0f, 1.0f);
+    st->pending_u = (int32_t)(u * (float)Q16_ONE);
+
+    fb_sim *sim = fb_swarm_sim_for(&cb->swarm, (uint32_t)npc_idx);
+    if (!sim) {
+        *turn_out = turn_in;
+        return true;
+    }
+
+    fb_command cmd;
+    fb_sim_command(sim, (uint32_t)npc_idx, &cmd);
+
+    /* Brain turn, deadzone the noise floor. */
+    float brain_turn = (float)cmd.turn / (float)Q16_ONE;
+    if (fabsf(brain_turn) < 0.03f) brain_turn = 0.0f;
+    brain_turn = cb_clampf(brain_turn, -1.0f, 1.0f);
+
+    /* Smooth it. The descending readout is a decayed rate estimate over a
+     * saturated recurrent network and it rattles hard tick to tick; the
+     * EMA is the only thing standing between that and the rudder. */
+    st->turn_ema += ((int32_t)(brain_turn * (float)Q16_ONE) - st->turn_ema) >> 4;
+    float smooth = (float)st->turn_ema / (float)Q16_ONE;
+
+    /* The brain BIASES the reflex; it does not replace it.
+     *
+     * Measured on the real nav blob, the descending turn axis gives a
+     * repeatable answer at full drive -- suppress-left, symmetric and
+     * suppress-right come out deterministically ordered, separated by
+     * about 0.29 -- but every intermediate steering level in between is
+     * chaotic. Removing the membrane noise does not fix it and neither
+     * does averaging over 2000 steps: the response simply is not a
+     * function of the input. That is the extraction artifact the flybrain
+     * README reports as "flat, non-monotone" for this subgraph, and it is
+     * a property of the connectome, not of this adapter.
+     *
+     * So the reflex controller stays authoritative and the fly leans on
+     * it, bounded by turn_gain. That keeps the wiring genuinely in the
+     * loop -- a frightened or lovestruck fly really does push the rudder
+     * differently -- without letting a chaotic axis fly a loaded hauler
+     * into a rock face. Clearance still scales it: near a rock face the
+     * giant-fibre reflex gets the wheel to itself.
+     */
+    const hull_def_t *hull = ship_hull_def(npc->ship);
+    float radius = hull ? hull->ship_radius : 16.0f;
+    float clear = nav_forward_clearance(w, npc->ship->pos, npc->ship->vel,
+                                        radius, npc->ship->angle);
+    float authority = cb_clampf(clear, 0.0f, 1.0f);
+    float gain = (float)cb->turn_gain / (float)Q16_ONE;
+    *turn_out = cb_clampf(turn_in + smooth * authority * gain, -1.0f, 1.0f);
+
+    /* Arousal gate: an unconscious fly cannot push the engine, no
+     * matter what the reflex wants. Lust and pain wake it. */
+    float thrust = *thrust_out;
+    int32_t awake_thr = cb->awake_hz_q16 - (st->lust >> 2) - (st->pain >> 3);
+    if (cmd.drive < awake_thr)
+        thrust = fminf(thrust, 0.0f);
+
+    /* FEAR freeze: a sufficiently frightened fly whose escape/freeze
+     * channels are firing holds position (reverse thrust) instead of
+     * blundering on. Rocks kill; freezing sometimes saves. */
+    if (st->fear >= (Q16_ONE * 3) / 4) {
+        fb_control ctl;
+        fb_sim_control(sim, (uint32_t)npc_idx, &ctl);
+        if (ctl.brake + ctl.escape >= 8192)   /* ~0.125 Hz on the pair */
+            thrust = -1.0f;
+    }
+
+    /* SIGNAL_CONNECTOME_DEBUG=<n>: dump agent 0's decision every n ticks.
+     * This subsystem fails silently -- a dead circuit just produces NPCs
+     * that never thrust -- so there has to be a way to see the numbers. */
+    if (cb->debug_every && npc_idx == 0 &&
+        (w->tick % cb->debug_every) == 0)
+        fprintf(stderr, "[connectome] t=%u drive=%.2fHz turn_brain=%+.3f "
+                        "ema=%+.3f clear=%.2f turn_in=%+.3f -> turn=%+.3f "
+                        "thrust %+.2f -> %+.2f  lust=%.2f fear=%.2f\n",
+                w->tick, cmd.drive / 65536.0, brain_turn, smooth, authority,
+                turn_in, *turn_out, *thrust_out, thrust,
+                st->lust / 65536.0, st->fear / 65536.0);
+
+    *thrust_out = thrust;
+    return true;
+}
+
+/* ---------------- stats / checksum ---------------- */
+
+uint64_t signal_connectome_checksum(void)
+{
+    if (!g_cb.enabled) return 0;
+    return fb_swarm_checksum(&g_cb.swarm);
+}
+
+bool signal_connectome_stats(signal_connectome_stats_t *out)
+{
+    if (!out) return false;
+    if (!g_cb.enabled) return false;
+    *out = g_cb.stats;
+    return true;
+}

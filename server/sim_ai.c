@@ -9,6 +9,7 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "signal_intelligence.h"
+#include "signal_connectome_brain.h"
 #include "sim_ship.h"
 #include "sim_physics.h"
 #include "sim_mining.h"
@@ -1694,7 +1695,11 @@ static void npc_normalize_brain_mode(npc_ship_t *npc) {
     if (npc->role == NPC_ROLE_MINER ||
         npc->role == NPC_ROLE_HAULER ||
         npc->role == NPC_ROLE_TOW) {
-        if (npc->brain_mode == SERVER_BRAIN_MODE_NONE ||
+        if (signal_connectome_enabled()) {
+            /* Fly connectome owns flight control when configured; the
+             * mining/hauling state machines keep running underneath. */
+            npc->brain_mode = SERVER_BRAIN_MODE_CONNECTOME;
+        } else if (npc->brain_mode == SERVER_BRAIN_MODE_NONE ||
             npc->brain_mode == SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS) {
             npc->brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
         }
@@ -1821,7 +1826,9 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->brain_mode = (role == NPC_ROLE_MINER ||
                        role == NPC_ROLE_HAULER ||
                        role == NPC_ROLE_TOW)
-        ? SERVER_BRAIN_MODE_NEURAL_FLIGHT
+        ? (signal_connectome_enabled()
+               ? SERVER_BRAIN_MODE_CONNECTOME
+               : SERVER_BRAIN_MODE_NEURAL_FLIGHT)
         : SERVER_BRAIN_MODE_NONE;
     npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
     npc->ship_asset_id = asset->asset_id;
@@ -5571,6 +5578,14 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
 
     flight_cmd_t cmd = flight_steer_to(w, npc->ship, path, final_target,
                                         0.0f, max_speed, dt);
+    /* Fly connectome: the brain's descending command replaces the
+     * reflex turn in open space; the reflex wins near rock faces. The
+     * speed-control/avoidance thrust stays and is gated by arousal. */
+    if (npc->brain_mode == SERVER_BRAIN_MODE_CONNECTOME &&
+        signal_connectome_enabled()) {
+        (void)signal_connectome_flight_cmd(w, npc_idx, npc, cmd.turn,
+                                           &cmd.turn, &cmd.thrust);
+    }
     cmd.thrust *= thrust_scale;
     npc_apply_flight_cmd(npc, cmd, dt);
 }
@@ -6973,6 +6988,9 @@ void step_npc_ships(world_t *w, float dt) {
         }
         npc_update_manifest_rarity_tint(npc, dt);
     }
+    /* Advance the fly swarm once per tick: drives, stakes, injection,
+     * and the brain-budget market. No-op when the mode is off. */
+    signal_connectome_tick(w);
     if (w->tick % NPC_CONTACT_GOSSIP_INTERVAL_TICKS == 0u)
         (void)gossip_ship_contact_exchange(w);
 }
