@@ -647,6 +647,19 @@ TEST(test_persistence_writer_commits_immutable_snapshot) {
     ASSERT(metrics.snapshot_clone_ms >= 0.0);
     ASSERT(metrics.background_write_ms >= 0.0);
     ASSERT(metrics.write_complete);
+
+    /* Consuming a result resets the writer to IDLE, but write_complete stays
+     * set until the next write starts. A caller that keys completion off
+     * write_complete alone sees a stale completion every later tick -- the
+     * bug that flooded production with result=failed. The contract is the
+     * returned state, which must now be IDLE. */
+    persistence_generation_paths_t again = {0};
+    ASSERT_EQ_INT(
+        persistence_writer_wait(writer, &again),
+        PERSISTENCE_WRITER_IDLE);
+    persistence_writer_metrics_t stale = {0};
+    ASSERT(persistence_writer_get_metrics(writer, &stale));
+    ASSERT(stale.write_complete);
     persistence_writer_destroy(writer);
 
     WORLD_HEAP loaded = calloc(1, sizeof(*loaded));
