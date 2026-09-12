@@ -422,6 +422,26 @@ TEST(test_connectome_weighted_pick_is_deterministic) {
                signal_connectome_weighted_pick(mixed, 3, &b));
 }
 
+TEST(test_connectome_bandit_learns_and_is_bounded) {
+    uint32_t values[SIGNAL_CONNECTOME_STRATEGY_COUNT] = {0};
+    signal_connectome_bandit_reward(values, SIGNAL_CONNECTOME_STRATEGY_COUNT, 1, 100);
+    ASSERT(values[1] == 100);
+
+    /* Out-of-range arms are ignored. */
+    signal_connectome_bandit_reward(values, SIGNAL_CONNECTOME_STRATEGY_COUNT, 9, 999);
+    signal_connectome_bandit_reward(values, SIGNAL_CONNECTOME_STRATEGY_COUNT, -1, 999);
+    ASSERT(values[1] == 100);
+
+    signal_connectome_bandit_decay(values, SIGNAL_CONNECTOME_STRATEGY_COUNT);
+    ASSERT(values[1] == 100 - (100 >> 4));
+
+    /* Saturates instead of overflowing under a long reward stream. */
+    for (int i = 0; i < 1000; i++)
+        signal_connectome_bandit_reward(
+            values, SIGNAL_CONNECTOME_STRATEGY_COUNT, 1, 100000);
+    ASSERT(values[1] <= 4096u);
+}
+
 void register_connectome_brain_tests(void);
 void register_connectome_brain_tests(void) {
     RUN(test_connectome_blob_loader_rejects_garbage);
@@ -436,4 +456,5 @@ void register_connectome_brain_tests(void) {
     RUN(test_connectome_adapter_disabled_without_env);
     RUN(test_connectome_strategy_flag_is_off_by_default);
     RUN(test_connectome_weighted_pick_is_deterministic);
+    RUN(test_connectome_bandit_learns_and_is_bounded);
 }

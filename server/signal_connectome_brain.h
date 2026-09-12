@@ -114,4 +114,12 @@ bool signal_connectome_stats(signal_connectome_stats_t *out);
 int signal_connectome_weighted_pick(const uint32_t *weights, int count,
                                     uint64_t *rng);
 
+/* Station-level reward-weighted posture learning (a bandit). values[arm]
+ * is reinforced by the outcome its posture produced and every arm decays
+ * each window, so a station learns what pays off without losing the
+ * ability to switch. Integer-only and bounded. */
+void signal_connectome_bandit_reward(uint32_t *values, int count, int arm,
+                                     uint32_t reward);
+void signal_connectome_bandit_decay(uint32_t *values, int count);
+
 #endif /* SIGNAL_CONNECTOME_BRAIN_H */

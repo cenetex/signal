@@ -123,10 +123,15 @@ different stations diverge.
 The posture is delivered through the existing signal field: the modulation is
 scaled by `signal_strength_at()` at the fly's position. Near the station the
 leash is taut; out past the relay chain it goes slack and the fly falls back
-to its own connectome drives. A station holds a posture for
-`SIGNAL_CONNECTOME_STRATEGY_PERIOD` ticks (default 300) and re-samples it
-with a seeded xorshift keyed on station index and world tick, so the choice
-varies across stations while staying bit-exact under replay.
+to its own connectome drives. A station holds a posture for `SIGNAL_CONNECTOME_STRATEGY_PERIOD` ticks
+(default 300), then re-samples. Sampling uses a seeded xorshift keyed on
+station index and world tick, so it is bit-exact under replay, and it is
+biased by a station-level bandit: when a posture's window ends it is
+reinforced by the number of its flies that stayed productive (mining or
+towing), and every arm decays ~6% per window, so a station learns what works
+without losing the ability to switch. This is reward-weighted online
+learning, not a trained network -- a loaded checkpoint can replace the
+heuristic feature weights later.
 
 The connectome remains the body: postures bias hunger/lust/fear, which drive
 the connectome's arousal gate and steering, but the wiring still flies the
