@@ -71,6 +71,7 @@ jobs:
           python3 scripts/test_check_ci_workflow_contract.py
       - name: Run path and aggregate mutation tests
         run: |
+          python3 scripts/test_compare_connectome_strategy.py
           python3 scripts/test_classify_ci_paths.py
           python3 scripts/test_check_ci_required.py
       - name: Run Node script self-tests

@@ -22,6 +22,7 @@
 #include "connectome/flyswarm.h"
 #include "signal_connectome_brain.h"
 #include "signal_connectome_drives.h"
+#include "../../tools/connectome_probe_metrics.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -471,6 +472,62 @@ TEST(test_connectome_posture_preserves_drive_history) {
     ASSERT_EQ_INT(haul.hunger, 0);
 }
 
+TEST(test_connectome_probe_counts_completed_deliveries_and_slot_reuse) {
+    WORLD_DECL;
+    connectome_probe_metrics_t m = {0};
+    delivery_shipment_t *s = &w.delivery_shipments[0];
+    s->active = true;
+    s->shipment_id = 1;
+    s->quantity_delivered = 2;
+    connectome_probe_sample(&m, &w, true);
+    connectome_probe_sample(&m, &w, false);
+    ASSERT_EQ_INT(m.delivered_units, 0);
+    s->quantity_delivered = 5;
+    connectome_probe_sample(&m, &w, false);
+    connectome_probe_sample(&m, &w, false);
+    ASSERT_EQ_INT(m.delivered_units, 3);
+    s->shipment_id = 2;
+    s->quantity_delivered = 1;
+    connectome_probe_sample(&m, &w, false);
+    ASSERT_EQ_INT(m.delivered_units, 4);
+    s->quantity_delivered = 0; /* pickup alone contributes zero */
+    connectome_probe_sample(&m, &w, false);
+    ASSERT_EQ_INT(m.delivered_units, 4);
+}
+
+TEST(test_connectome_probe_separates_death_and_replacement_motion) {
+    WORLD_DECL;
+    connectome_probe_metrics_t m = {0};
+    npc_ship_t *n = &w.npc_ships[0];
+    n->active = true;
+    n->ship = &w.ships[0].component;
+    n->ship_asset_id = 1;
+    n->ship->hull = 100;
+    n->ship->towed_scaffold = -1;
+    n->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+    w.ship_assets[0].active = true;
+    w.ship_assets[0].asset_id = 1;
+    connectome_probe_sample(&m, &w, true);
+    n->ship->pos = v2(3, 4);
+    n->ship->hull = 90;
+    connectome_probe_sample(&m, &w, false);
+    ASSERT(m.distance == 5.0);
+    ASSERT(m.observed_hull_loss == 10.0);
+    n->active = false;
+    w.ship_assets[0].destroyed = true;
+    connectome_probe_sample(&m, &w, false);
+    connectome_probe_sample(&m, &w, false);
+    ASSERT_EQ_INT(m.destroyed_ships, 1);
+    ASSERT(m.observed_hull_loss == 100.0);
+    n->active = true;
+    n->ship_asset_id = 2;
+    n->ship->pos = v2(10000, 0);
+    n->ship->hull = 100;
+    connectome_probe_sample(&m, &w, false);
+    ASSERT(m.distance == 5.0);
+    ASSERT(m.observed_hull_loss == 100.0);
+}
+
 void register_connectome_brain_tests(void);
 void register_connectome_brain_tests(void) {
     RUN(test_connectome_blob_loader_rejects_garbage);
@@ -487,4 +544,6 @@ void register_connectome_brain_tests(void) {
     RUN(test_connectome_weighted_pick_is_deterministic);
     RUN(test_connectome_bandit_learns_and_is_bounded);
     RUN(test_connectome_posture_preserves_drive_history);
+    RUN(test_connectome_probe_counts_completed_deliveries_and_slot_reuse);
+    RUN(test_connectome_probe_separates_death_and_replacement_motion);
 }

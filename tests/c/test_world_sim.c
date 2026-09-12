@@ -3720,6 +3720,12 @@ TEST(test_dead_neural_worker_auto_respawns) {
      * directly to skip the npc-side mirror lag. */
     ship_t *s = world_npc_ship_for(w, target_slot);
     ASSERT(s != NULL);
+    /* Hold the other workers at dock so this fixture has one roster gap. */
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active || n == target_slot) continue;
+        w->npc_ships[n].state = NPC_STATE_DOCKED;
+        w->npc_ships[n].state_timer = 1000.0f;
+    }
     s->hull = 0.0f;
     /* One sim step lets the despawn check at top of step_npc_ships
      * notice and free the slot. */
@@ -3747,7 +3753,16 @@ TEST(test_dead_neural_worker_auto_respawns) {
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_TRACTOR_MODULE), 0);
 
-    for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
+    /* Observe the birth before the working ship leaves and faces hazards. */
+    for (int i = 0; i < 4000; i++) {
+        world_sim_step(w, SIM_DT);
+        bool spawned = false;
+        for (int n = 0; n < MAX_NPC_SHIPS; n++)
+            if (w->npc_ships[n].active &&
+                w->npc_ships[n].home_station == 1)
+                spawned = true;
+        if (spawned) break;
+    }
 
     int kepler_workers_after = 0;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -4139,6 +4154,12 @@ TEST(test_station_roster_uses_shipyard_contract_for_resident_worker_hulls) {
     ASSERT(target_slot >= 0);
     ship_t *s = world_npc_ship_for(w, target_slot);
     ASSERT(s != NULL);
+    /* Hold the other workers at dock so this fixture has one roster gap. */
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active || n == target_slot) continue;
+        w->npc_ships[n].state = NPC_STATE_DOCKED;
+        w->npc_ships[n].state_timer = 1000.0f;
+    }
     s->hull = 0.0f;
     world_sim_step(w, SIM_DT);
 
@@ -4161,7 +4182,17 @@ TEST(test_station_roster_uses_shipyard_contract_for_resident_worker_hulls) {
         &helios->pending_ship_builds[0].owner_principal,
         &helios_owner));
 
-    for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
+    /* Observe the birth before the working ship leaves and faces hazards. */
+    for (int i = 0; i < 4000; i++) {
+        world_sim_step(w, SIM_DT);
+        bool spawned = false;
+        for (int n = 0; n < MAX_NPC_SHIPS; n++)
+            if (w->npc_ships[n].active &&
+                w->npc_ships[n].home_station == 2 &&
+                w->npc_ships[n].role == NPC_ROLE_MINER)
+                spawned = true;
+        if (spawned) break;
+    }
 
     int helios_miners_after = 0;
     int helios_tows_after = 0;
@@ -8165,7 +8196,7 @@ TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
-    npc->state_timer = 0.0f;
+    npc->state_timer = 1.5f * SIM_DT;
     memset(&npc->ship->knowledge, 0, sizeof(npc->ship->knowledge));
     knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
     ship_t *ship = world_npc_ship_for(&w, slot);
@@ -8184,6 +8215,10 @@ TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
     ASSERT(knowledge_item_from_market_memory(&supply, &item));
     knowledge_view_insert(&npc->ship->knowledge, &item);
 
+    /* The assignment gets its turn as the dock timer expires. */
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_REPAIR_KIT), before_kits);
     step_npc_ships(&w, SIM_DT);
 
     ASSERT(ship->hull > npc_max_hull(npc) - 12.0f);

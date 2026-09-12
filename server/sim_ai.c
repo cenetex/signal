@@ -5377,12 +5377,14 @@ static void npc_begin_repair_offer(world_t *w,
     npc->state_timer = HAULER_DOCK_TIME;
 }
 
-static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc) {
+static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc, float dt) {
     ship_t *ship = world_npc_ship_for(w, npc_slot);
     if (!npc_can_reassign(npc)) return;
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return;
+    /* Give the planner the expiry tick before role logic consumes it and
+     * resets the timer or starts another trip. */
     if ((npc->state == NPC_STATE_DOCKED || npc->state == NPC_STATE_IDLE) &&
-        npc->state_timer > 0.0f) {
+        npc->state_timer > dt) {
         return;
     }
 
@@ -6654,7 +6656,7 @@ void step_npc_ships(world_t *w, float dt) {
         npc_enforce_role_hull(w, n, npc);
         refresh_npc_character_registration(w, n);
         npc_validate_stations(w, npc);
-        npc_choose_assignment(w, n, npc);
+        npc_choose_assignment(w, n, npc, dt);
 
         /* Holographic pilots own their flight controller outside the
          * role-specific state machines. Neural checkpoint pilots keep
