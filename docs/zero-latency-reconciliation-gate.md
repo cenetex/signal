@@ -49,7 +49,7 @@ The first numeric divergence retains:
 - input, semantic, and transport-recovery cause masks;
 - entity and first divergent field;
 - exact IEEE-754 bits for the full predicted and authoritative poses;
-- the canonical `signal.authoritative_state.v3` root.
+- the canonical `signal.authoritative_state.v4` root.
 
 `signal_zero_latency_gate_report_json()` exposes the deterministic scenario
 coverage and embeds the first-drift artifact. The first failure is also

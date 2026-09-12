@@ -1169,6 +1169,98 @@ TEST(test_player_load_prefers_owned_asset_over_provisional_loaner) {
     saved.ship = NULL;
 }
 
+TEST(test_borrowed_ship_save_reserves_exact_hull_across_slot_reuse) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *alice = &w.players[0];
+    alice->id = 0;
+    alice->connected = true;
+    player_init_ship(alice, &w);
+    test_save_set_verified_identity(alice, 0x45);
+    ASSERT(server_finalize_pubkey_identity(&w, 0));
+    uint8_t alice_pubkey[32];
+    memcpy(alice_pubkey, alice->pubkey, 32);
+    uint32_t loan_id = alice->ship_asset_id;
+    alice->ship->hold_level = 2;
+    alice->ship->cargo[COMMODITY_FERRITE_ORE] = 7.0f;
+    ASSERT(player_save(alice, test_tmp_dir(), 0));
+    ASSERT(world_save(&w, TMP("borrowed-world.sav")));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, TMP("borrowed-world.sav")));
+    ship_asset_t *loan = world_ship_asset_by_id(loaded, loan_id);
+    ASSERT(loan != NULL);
+    ASSERT_EQ_INT(loan->owner_principal.kind, ACTOR_PRINCIPAL_STATION);
+    ASSERT_EQ_INT(loan->borrower_principal.kind, ACTOR_PRINCIPAL_PLAYER);
+    ASSERT(memcmp(loan->borrower_principal.id, alice_pubkey, 32) == 0);
+
+    server_player_t *bob = &loaded->players[0];
+    bob->id = 0;
+    bob->connected = true;
+    player_init_ship(bob, loaded);
+    test_save_set_verified_identity(bob, 0x46);
+    ASSERT(server_finalize_pubkey_identity(loaded, 0));
+    ASSERT(bob->ship_asset_id != loan_id);
+    uint8_t before[32], after[32];
+    signal_authoritative_state_digest(loaded, before);
+    ASSERT(!player_load_by_pubkey(bob, loaded, test_tmp_dir(), alice_pubkey));
+    signal_authoritative_state_digest(loaded, after);
+    ASSERT(memcmp(before, after, sizeof(before)) == 0);
+
+    alice = &loaded->players[1];
+    alice->id = 1;
+    alice->connected = true;
+    player_init_ship(alice, loaded);
+    uint32_t bootstrap_id = alice->ship_asset_id;
+    test_save_set_verified_identity(alice, 0x45);
+    ASSERT(server_finalize_pubkey_identity(loaded, 1));
+    int hulls_before = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) hulls_before += loaded->ship_assets[i].active;
+    ASSERT(player_load_by_pubkey(alice, loaded, test_tmp_dir(), alice_pubkey));
+    ASSERT_EQ_INT(alice->ship_asset_id, loan_id);
+    ASSERT_EQ_INT(alice->ship->hold_level, 2);
+    ASSERT_EQ_FLOAT(alice->ship->cargo[COMMODITY_FERRITE_ORE], 7.0f, 0.01f);
+    ASSERT_EQ_INT(loan->owner_principal.kind, ACTOR_PRINCIPAL_STATION);
+    ASSERT_EQ_INT(loan->operator_slot, 1);
+    int hulls_after = 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) hulls_after += loaded->ship_assets[i].active;
+    ASSERT_EQ_INT(hulls_after, hulls_before);
+    ship_asset_t *bootstrap = world_ship_asset_by_id(loaded, bootstrap_id);
+    ASSERT(bootstrap != NULL);
+    ASSERT_EQ_INT(bootstrap->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(bootstrap->borrower_principal.kind, ACTOR_PRINCIPAL_NONE);
+    ASSERT(bootstrap->ship == &bootstrap->stored_ship);
+    ASSERT_EQ_FLOAT(bootstrap->ship->cargo[COMMODITY_FERRITE_ORE], 0.0f, 0.01f);
+
+    ASSERT(player_save(alice, test_tmp_dir(), 1));
+    ASSERT(world_save(loaded, TMP("borrowed-world.sav")));
+    world_reset(&w);
+    ASSERT(world_load(&w, TMP("borrowed-world.sav")));
+    alice = &w.players[2];
+    alice->id = 2;
+    alice->connected = true;
+    player_init_ship(alice, &w);
+    test_save_set_verified_identity(alice, 0x45);
+    ASSERT(server_finalize_pubkey_identity(&w, 2));
+    ASSERT(player_load_by_pubkey(alice, &w, test_tmp_dir(), alice_pubkey));
+    ASSERT_EQ_INT(alice->ship_asset_id, loan_id);
+    ASSERT_EQ_INT(alice->ship->hold_level, 2);
+    ASSERT_EQ_FLOAT(alice->ship->cargo[COMMODITY_FERRITE_ORE], 7.0f, 0.01f);
+}
+
+TEST(test_world_v84_upgrade_starts_with_unreserved_loans) {
+    WORLD_DECL;
+    world_reset(&w);
+    ASSERT(world_save_legacy_v84_for_test(&w, TMP("world-v84.sav")));
+    ASSERT(world_load(&w, TMP("world-v84.sav")));
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++)
+        ASSERT_EQ_INT(w.ship_assets[i].borrower_principal.kind, ACTOR_PRINCIPAL_NONE);
+    ASSERT(world_save(&w, TMP("world-v85.sav")));
+    ASSERT(world_load(&w, TMP("world-v85.sav")));
+    ASSERT_EQ_INT(w.stations[0].id, 1);
+}
+
 TEST(test_player_load_reuses_same_station_loaner_without_minting) {
     WORLD_DECL;
     world_reset(&w);
@@ -2617,6 +2709,7 @@ TEST(test_cargo_pod_owner_survives_restart_and_slot_reuse) {
     owner->id = 0;
     owner->connected = true;
     test_save_set_verified_identity(owner, 0x72);
+    ASSERT(server_finalize_pubkey_identity(w, 0));
     owner->current_station = 0;
     owner->ship->pos = v2(120.0f, -30.0f);
     owner->ship->angle = 0.5f;
@@ -2629,6 +2722,7 @@ TEST(test_cargo_pod_owner_survives_restart_and_slot_reuse) {
     other->id = 1;
     other->connected = true;
     test_save_set_verified_identity(other, 0x33);
+    ASSERT(server_finalize_pubkey_identity(w, 1));
     uint8_t other_pubkey[32];
     memcpy(other_pubkey, other->pubkey,
            sizeof(other_pubkey));
@@ -3097,7 +3191,8 @@ TEST(test_v81_cargo_pod_player_slot_migrates_to_bound_quarantine) {
              * with a 33-byte principal plus 8-byte quarantine binding.
              * Fresh worlds have two starter pods, so +80 bytes.
              * v84: +4B empty durable payout-journal count. */
-#define EXPECTED_SAVE_SIZE 846458
+/* v85 adds a 33-byte borrower principal per durable hull. */
+#define EXPECTED_SAVE_SIZE 850682
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -3134,7 +3229,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 84);
+    ASSERT_EQ_INT((int)version, 85);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -4337,6 +4432,8 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_prefers_existing_bound_ship_asset);
     RUN(test_player_load_prefers_owned_asset_over_provisional_loaner);
     RUN(test_player_load_reuses_same_station_loaner_without_minting);
+    RUN(test_borrowed_ship_save_reserves_exact_hull_across_slot_reuse);
+    RUN(test_world_v84_upgrade_starts_with_unreserved_loans);
     RUN(test_world_load_stores_orphaned_player_ship_asset_for_reclaim);
     RUN(test_world_load_repairs_stale_npc_ship_asset_binding);
     RUN(test_player_save_uses_temp_then_atomic_rename);

@@ -1,7 +1,7 @@
 # Crash-consistent save generations
 
-Issue #666 Phase 1 replaces the dedicated server's independently published
-world, catalog, and player files with one committed snapshot envelope.
+Dedicated servers and local worlds publish the world, catalog, and player
+files as one committed save generation.
 
 ## Commit protocol
 
@@ -52,12 +52,21 @@ legacy layout or an immutable generation. A failed attempt leaves `CURRENT`
 and the runtime reconnect path on the prior generation and retries at a
 bounded cadence.
 
-## Deliberately remaining #666 work
+## Background writes and retention
 
-This phase is synchronous. Catalog, world, player, manifest, and directory
-fsync work still runs on the simulation thread; it does **not** claim the
-bounded asynchronous writer, dirty-only serialization, tick-latency proof, or
-shutdown writer-drain acceptance criteria.
+The native writer copies an immutable world snapshot, then writes on one
+background thread. The simulation polls completion and adopts the published
+paths after success. The writer records snapshot-copy and background-write
+timing. Shutdown drains the outstanding writer.
+
+Successful publication prunes unreferenced generations. The current and
+authenticated previous generations stay available. Local browser worlds use
+the same generation format with an IndexedDB transaction for durable storage.
+
+## Remaining #666 acceptance work
+
+Qualification still needs slow-disk timing, a bounded shutdown policy, and
+measurements that guide any later work on dirty-only serialization.
 
 Chain logs remain outside the generation envelope. The world snapshot contains
 its persisted chain heads, but Phase 1 does not introduce a WAL or atomically
@@ -67,7 +76,3 @@ If a verified chain is ahead of the selected snapshot, startup now preserves
 the snapshot head, reports `CHAIN_HEALTH_MISMATCH`, and blocks further appends
 instead of adopting event history whose gameplay mutation may be absent. This
 is a fail-closed safety boundary, not a substitute for WAL replay or rollback.
-
-Generation garbage collection is also deferred. Old complete generations and
-unpublished crash debris are retained; at minimum the published current and
-previous generations must remain available when cleanup is added.

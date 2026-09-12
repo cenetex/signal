@@ -423,12 +423,20 @@ static bool start_local_loopback_authority(const NetCallbacks *cbs) {
     return true;
 }
 
-static bool start_fresh_local_authority(const NetCallbacks *cbs) {
+static bool start_local_authority(const NetCallbacks *cbs, bool resume) {
     net_shutdown();
     g.net_authority_enabled = false;
     g.local_player_slot = 0;
     local_server_shutdown(&g.local_server);
-    if (!local_server_init(&g.local_server, 0)) return false;
+    if (resume) {
+        char scope[65], name[80], root[512];
+        if (!g.identity_ready ||
+            !client_progress_scope_key(scope, g.identity.pubkey, NULL)) return false;
+        snprintf(name, sizeof(name), "local-%s", scope);
+        if (!identity_data_path(root, sizeof(root), name) ||
+            !local_server_init_persistent(&g.local_server, 0, root,
+                                          g.identity.pubkey)) return false;
+    } else if (!local_server_init(&g.local_server, 0)) return false;
     neural_singleplayer_init();
     if (start_local_loopback_authority(cbs)) {
         g.net_authority_enabled = true;
@@ -2021,6 +2029,7 @@ static void init(void) {
 #endif
         client_progress_select(g.identity_ready ? g.identity.pubkey : NULL,
                                server_url);
+        client_progress_defer_writes(!(server_url && server_url[0]));
         onboarding_load();
         story_runtime_load();
         signal_intelligence_holographic_init();
@@ -2049,10 +2058,14 @@ static void init(void) {
             }
             if (!remote_requested) {
                 g.net_authority_enabled =
-                    start_fresh_local_authority(&cbs);
+                    start_local_authority(&cbs, true);
                 if (!g.net_authority_enabled) {
+                    g.net_authority_enabled = true;
                     set_notice(
-                        "Local authority unavailable (out of memory).");
+                        "Local save recovery required. Check the client log, then reload.");
+                } else {
+                    onboarding_load();
+                    story_runtime_load();
                 }
             }
         }
@@ -5234,6 +5247,20 @@ static void frame(void) {
     if (!isfinite(frame_dt) || frame_dt < 0.0f)
         frame_dt = 0.0f;
     g.net_time += frame_dt;
+    if (g.local_server.active) {
+        static uint32_t checkpoint_progress;
+        bool failed_before = local_save_failed(g.local_server.save);
+        local_save_update(g.local_server.save,
+                           local_server_world(&g.local_server), frame_dt);
+        uint32_t progress = client_progress_pack_local();
+        if (checkpoint_progress != progress &&
+            !local_save_failed(g.local_server.save) &&
+            local_save_request(g.local_server.save,
+                local_server_world(&g.local_server), false))
+            checkpoint_progress = progress;
+        if (!failed_before && local_save_failed(g.local_server.save))
+            set_notice("Local save needs a retry. Check available storage.");
+    }
 
     /* --- Network authority: poll incoming and send input before sim. --- */
     if (g.net_authority_enabled) {
@@ -6083,8 +6110,36 @@ int signal_debug_player_progress(void) {
         ((int)client_progress_current().guide << 8);
 }
 
+EMSCRIPTEN_KEEPALIVE
+int signal_save_local_world(void) {
+    if (!g.local_server.active) return 0;
+    return local_save_request(g.local_server.save,
+        local_server_world(&g.local_server), false) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+double signal_debug_local_save_generation(void) {
+    return (double)local_save_generation(g.local_server.save);
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_debug_local_save_summary(void) {
+    static char summary[256];
+    const world_t *world = local_server_world_const(&g.local_server);
+    if (!world || !g.local_server.active) return "{}";
+    const server_player_t *player = &world->players[0];
+    int station = player->current_station;
+    float credits = station >= 0 && station < MAX_STATIONS
+        ? ledger_balance_by_pubkey(&world->stations[station], player->pubkey) : 0.0f;
+    snprintf(summary, sizeof(summary),
+             "{\"seed\":%u,\"time\":%.3f,\"ship\":%u,\"credits\":%.3f,\"stations\":%d}",
+             world->belt_seed, (double)world->time, player->ship_asset_id,
+             (double)credits, world->station_count);
+    return summary;
+}
+
 int signal_debug_auth_available(void) {
-    return (g.identity_ready && g.net_authority_enabled) ? 1 : 0;
+    return (g.identity_ready && net_is_gameplay_ready()) ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -6149,7 +6204,7 @@ EMSCRIPTEN_KEEPALIVE
 int signal_debug_restart_local_authority(void) {
     NetCallbacks cbs;
     configure_net_callbacks(&cbs);
-    return start_fresh_local_authority(&cbs) ? 1 : 0;
+    return start_local_authority(&cbs, false) ? 1 : 0;
 }
 #endif
 

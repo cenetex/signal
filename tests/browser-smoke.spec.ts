@@ -1977,16 +1977,16 @@ test.describe('Browser smoke tests', () => {
     await hold(page, 'W', 250);
     const before = await wasmNumber(page, 'signal_debug_player_progress');
     expect(before & (1 << 8)).toBe(1 << 8);
+    await expect.poll(() => wasmNumber(page, 'signal_save_local_world')).toBe(1);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
     await page.reload();
     await waitForRenderedGame(page, page.locator('canvas'), false);
     expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(before);
 
     await page.evaluate(() => {
-      const original = Storage.prototype.setItem;
-      Storage.prototype.setItem = function (key, value) {
-        if (key.startsWith('signal_progress_v2:'))
-          throw new DOMException('injected storage full', 'QuotaExceededError');
-        original.call(this, key, value);
+      const storage = (window as any).Module.signalLocalPersistence;
+      storage.flush = function () {
+        storage.state = -1;
       };
     });
     await page.locator('canvas').click();
@@ -1997,6 +1997,49 @@ test.describe('Browser smoke tests', () => {
     await waitForRenderedGame(page, page.locator('canvas'), false);
     expect(await wasmNumber(page, 'signal_debug_player_progress')).toBe(before);
     expectNoFatalErrors(logs);
+  });
+
+  test('local world checkpoints survive reload with the same ship and station balance', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'local save test uses isolated browser storage');
+    const logs = installFatalCollectors(page);
+    const summary = () => page.evaluate(() => {
+      const mod = (window as any).Module;
+      return JSON.parse(mod.ccall('signal_debug_local_save_summary', 'string', [], []));
+    });
+    const canvas = await loadGame(page, false);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    await canvas.click();
+    await tap(page, 'E');
+    await hold(page, 'W', 1200);
+    const before = await summary();
+    expect(before.time).toBeGreaterThan(1);
+    expect(before.ship).toBeGreaterThan(0);
+    await expect.poll(() => wasmNumber(page, 'signal_save_local_world')).toBe(1);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    await page.reload();
+    await waitForRenderedGame(page, page.locator('canvas'), false);
+    const after = await summary();
+    expect(after.seed).toBe(before.seed);
+    expect(after.time).toBeGreaterThanOrEqual(before.time);
+    expect(after.ship).toBe(before.ship);
+    expect(after.credits).toBe(before.credits);
+    expect(after.stations).toBe(before.stations);
+    expectNoFatalErrors(logs);
+  });
+
+  test('local world storage has one active browser owner', async ({ page, context }) => {
+    test.skip(usesLiveSmokeUrl(), 'local save lock test uses isolated browser storage');
+    await loadGame(page, false);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    const second = await context.newPage();
+    await second.goto('/play.html?singleplayer=1&smoke=1');
+    await expect(second.locator('#loading')).toHaveText(
+      'Local world is open in another tab. Close that tab, then reload.');
+    await page.close();
+    await second.reload();
+    await waitForRenderedGame(second, second.locator('canvas'), false);
+    await expect.poll(() => wasmNumber(second, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    await second.close();
   });
 
   test('WebCrypto failure leaves identity and authentication unpersisted', async ({ page }) => {
@@ -2346,7 +2389,7 @@ test.describe('Browser smoke tests', () => {
     expect(perturbed.first_drift.semantic_cause_mask).toBe(0);
     expect(perturbed.first_drift.transport_cause_mask).toBe(0);
     expect(perturbed.first_drift.root_schema)
-      .toBe('signal.authoritative_state.v3');
+      .toBe('signal.authoritative_state.v4');
     expect(perturbed.first_drift.authoritative_root)
       .toMatch(/^[0-9a-f]{64}$/);
 
@@ -2386,7 +2429,7 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
-  test('fresh and mature play produce attributed jank reports and smooth accelerated rocks', async ({ page }) => {
+  test('fresh play and fracture rendering produce attributed jank reports and smooth accelerated rocks', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'requires the local singleplayer authority');
     const seconds = Number(process.env.SIGNAL_JANK_PROFILE_SECONDS || '2');
     test.setTimeout(Math.max(45_000, seconds * 2_000 + 30_000));
@@ -2416,18 +2459,20 @@ test.describe('Browser smoke tests', () => {
     expect(fresh.slow_frames.unexplained)
       .toBeLessThanOrEqual(fresh.slow_frames.over_16_6);
 
+    // The fracture fixture pauses the local server to hold its render scene.
+    // Reset after applying it so the second sample measures that scene alone.
+    await setSmokeLoopState(page, smokeLoopState.fractureTableau);
     await page.evaluate(() => {
       const mod = (window as unknown as {
         Module?: { ccall?: (name: string, returnType: null, argTypes: unknown[], args: unknown[]) => void };
       }).Module;
       mod?.ccall?.('signal_jank_profile_reset', null, [], []);
     });
-    await setSmokeLoopState(page, smokeLoopState.fractureTableau);
     await page.waitForTimeout(seconds * 1_000);
     const mature = await jankProfileReport(page);
     expect(mature.frames).toBeGreaterThan(30);
     expect(mature.frame_ms.p99).toBeGreaterThan(0);
-    expect(mature.snapshots.packets).toBeGreaterThan(0);
+    expect(mature.snapshots.packets).toBe(0);
     for (const entity of [
       'asteroid', 'cargo_pod', 'scaffold', 'npc', 'remote_player',
     ]) {

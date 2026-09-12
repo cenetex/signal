@@ -12,6 +12,7 @@
  */
 
 #include "test_harness.h"
+#include "persistence_io.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -165,10 +166,12 @@ TEST(test_save_keyed_by_pubkey_roundtrip) {
     sp->pubkey_proof_ok = true;
     sp->pubkey_challenge_consumed = true;
     sp->last_signed_nonce = 12345;
+    ASSERT(server_finalize_pubkey_identity(w, 0));
     /* Stamp something on the ship so we know we loaded the right file. */
     sp->ship->cargo[COMMODITY_FERRITE_ORE] = 7.0f;
 
     ASSERT(player_save(sp, dir, 0));
+    ASSERT(world_save(w, TMP("pubkey-roundtrip-world.sav")));
 
     /* Confirm the file landed under pubkey/. */
     char b58[64];
@@ -177,23 +180,29 @@ TEST(test_save_keyed_by_pubkey_roundtrip) {
     snprintf(path, sizeof(path), "%s/pubkey/%s.sav", dir, b58);
     ASSERT(file_exists(path));
 
-    /* Fresh world, fresh slot, reload by pubkey. */
+    /* Restore the matching world and then authenticate a fresh session. */
     WORLD_HEAP w2 = calloc(1, sizeof(world_t));
     ASSERT(w2 != NULL);
     world_reset(w2);
+    ASSERT(world_load(w2, TMP("pubkey-roundtrip-world.sav")));
     server_player_t *sp2 = &w2->players[0];
+    player_init_ship(sp2, w2);
     sp2->connected = true;
     sp2->id = 0;
     memcpy(sp2->pubkey, pk, 32);
     sp2->pubkey_set = true;
     sp2->pubkey_proof_ok = true;
     sp2->pubkey_challenge_consumed = true;
+    sp2->session_ready = true;
+    fill_token(sp2->session_token, 2);
+    ASSERT(server_finalize_pubkey_identity(w2, 0));
     ASSERT(player_load_by_pubkey(sp2, w2, dir, pk));
     ASSERT_EQ_FLOAT(sp2->ship->cargo[COMMODITY_FERRITE_ORE], 7.0f, 0.001f);
     ASSERT(sp2->last_signed_nonce == 12345);
 
     /* Cleanup */
     remove(path);
+    remove(TMP("pubkey-roundtrip-world.sav"));
 }
 
 TEST(test_save_legacy_claim_wire_value_is_semantically_disabled) {
@@ -540,6 +549,13 @@ static bool recovery_rewrite_current_save_as(
         return false;
     }
     memcpy(bytes, &magic, sizeof(magic));
+    if (magic == 0x504C5937u) {
+        if (output_size < 8u) { free(bytes); return false; }
+        uint32_t crc_magic = 0x43524332u;
+        uint32_t crc = persistence_crc32_update(0, bytes, output_size - 8u);
+        memcpy(bytes + output_size - 8u, &crc_magic, sizeof(crc_magic));
+        memcpy(bytes + output_size - 4u, &crc, sizeof(crc));
+    }
     FILE *output = fopen(path, "wb");
     if (!output) {
         free(bytes);
@@ -1036,7 +1052,10 @@ TEST(test_legacy_recovery_success_publishes_atomic_pubkey_save) {
     WORLD_HEAP loaded = calloc(1, sizeof(*loaded));
     ASSERT(loaded != NULL);
     world_reset(loaded);
+    ASSERT(station_catalog_load_all(loaded->stations, MAX_STATIONS, selected.catalog_dir) >= 0);
+    ASSERT(world_load(loaded, selected.world_path));
     server_player_t *loaded_player = &loaded->players[0];
+    player_init_ship(loaded_player, loaded);
     loaded_player->connected = true;
     loaded_player->session_ready = true;
     memcpy(loaded_player->session_token, token_a, 8);
@@ -1044,6 +1063,7 @@ TEST(test_legacy_recovery_success_publishes_atomic_pubkey_save) {
     loaded_player->pubkey_set = true;
     loaded_player->pubkey_proof_ok = true;
     loaded_player->pubkey_challenge_consumed = true;
+    ASSERT(server_finalize_pubkey_identity(loaded, 0));
     ASSERT(player_load_by_pubkey(
         loaded_player, loaded, selected.player_dir, pubkey));
     ASSERT_EQ_FLOAT(loaded_player->ship->hull, 71.0f, 0.001f);
@@ -1126,25 +1146,26 @@ TEST(test_legacy_recovery_consumption_fences_source_bearing_fallback) {
     ASSERT(restarted->players[0].last_signed_nonce == 0);
 }
 
-TEST(test_legacy_recovery_accepts_bounded_ply4_through_ply6) {
+TEST(test_legacy_recovery_accepts_bounded_ply4_through_ply7) {
     static const struct {
         uint32_t magic;
         size_t trim_bytes;
         uint64_t expected_nonce;
     } versions[] = {
-        {0x504C5936u, 8u, 40u},  /* PLY6: remove PLY7 CRC. */
-        {0x504C5935u, 16u, 30u}, /* PLY5: also remove nonce. */
-        {0x504C5934u, 18u, 30u}, /* PLY4: also remove manifest count. */
+        {0x504C5937u, 8u, 40u},  /* PLY7: remove PLY8 asset and hints; refresh CRC. */
+        {0x504C5936u, 16u, 40u}, /* PLY6: remove PLY8 asset, hints, and CRC. */
+        {0x504C5935u, 24u, 30u}, /* PLY5: also remove nonce. */
+        {0x504C5934u, 26u, 30u}, /* PLY4: also remove manifest count. */
     };
     for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); i++) {
         char players_name[64];
         char root_name[64];
         snprintf(players_name, sizeof(players_name),
                  "legacy_recovery_ply%u_players",
-                 (unsigned)(6u - i));
+                 (unsigned)(7u - i));
         snprintf(root_name, sizeof(root_name),
                  "legacy_recovery_ply%u_root",
-                 (unsigned)(6u - i));
+                 (unsigned)(7u - i));
         const char *players = TMP(players_name);
         const char *root = TMP(root_name);
         uint8_t token[8];
@@ -1748,7 +1769,7 @@ void register_save_keyed_by_pubkey_tests(void) {
     RUN(test_legacy_recovery_offer_entropy_failure_clears_state);
     RUN(test_legacy_recovery_success_publishes_atomic_pubkey_save);
     RUN(test_legacy_recovery_consumption_fences_source_bearing_fallback);
-    RUN(test_legacy_recovery_accepts_bounded_ply4_through_ply6);
+    RUN(test_legacy_recovery_accepts_bounded_ply4_through_ply7);
     RUN(test_legacy_recovery_rejects_unbounded_ply1_through_ply3);
     RUN(test_legacy_recovery_destination_conflict_and_corruption_are_inert);
 #ifndef _WIN32

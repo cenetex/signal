@@ -1,8 +1,12 @@
 # Authoritative state digest
 
-`signal.authoritative_state.v3` is the canonical SHA-256 commitment for a
+`signal.authoritative_state.v4` is the canonical SHA-256 commitment for a
 post-tick Signal simulation state. Peers may compare the root only when they
 are at the same committed tick and the same ordered-input frontier.
+
+Version 4 includes each hull's verified borrower. Local guide and story
+annotations in the player save are presentation metadata and stay outside
+the authority digest.
 
 The implementation is `signal_authoritative_state_digest()` in
 `server/state_digest.c`. It packs every included value explicitly in

@@ -9,9 +9,11 @@
 
 #include "game_sim.h"
 #include "local_authority.h"
+#include "local_save.h"
 
 typedef struct {
     local_authority_t authority;
+    local_save_t *save;
     bool active;
     bool station_snapshot_dirty;
     bool station_econ_snapshot_dirty;
@@ -32,6 +34,8 @@ typedef struct {
  * object must be zero-initialized before its first call.  Reinitialization is
  * safe and releases the previous world first. */
 bool local_server_init(local_server_t *ls, uint32_t seed);
+bool local_server_init_persistent(local_server_t *ls, uint32_t seed,
+                                   const char *root, const uint8_t pubkey[32]);
 /* Stop and release the owned world.  Safe after failed init and when repeated. */
 void local_server_shutdown(local_server_t *ls);
 world_t *local_server_world(local_server_t *ls);

@@ -15,6 +15,7 @@
 static char selected_key[65];
 static client_progress_t current;
 static bool save_warning_shown;
+static bool writes_deferred;
 
 bool client_progress_scope_key(char out[65], const uint8_t pubkey[32],
                                const char *authority)
@@ -172,6 +173,7 @@ void client_progress_select(const uint8_t pubkey[32], const char *authority)
 {
     memset(&current, 0, sizeof(current));
     save_warning_shown = false;
+    writes_deferred = false;
     if (!client_progress_scope_key(selected_key, pubkey, authority)) return;
 #ifdef __EMSCRIPTEN__
     char text[12] = {0};
@@ -191,7 +193,7 @@ client_progress_t client_progress_current(void)
 
 static void progress_save(void)
 {
-    if (!selected_key[0]) return;
+    if (!selected_key[0] || writes_deferred) return;
     bool ok;
 #ifdef __EMSCRIPTEN__
     char text[12];
@@ -218,4 +220,26 @@ void client_progress_save_guide(uint16_t flags)
 {
     current.guide = flags;
     progress_save();
+}
+
+void client_progress_defer_writes(bool deferred)
+{
+    writes_deferred = deferred;
+}
+
+uint32_t client_progress_pack_local(void)
+{
+    return progress_valid(&current)
+        ? 0x80000000u | ((uint32_t)current.story << 16) | current.guide : 0;
+}
+
+void client_progress_restore_local(uint32_t flags)
+{
+    client_progress_t saved = {
+        .story = (uint16_t)((flags >> 16) & 255u),
+        .guide = (uint16_t)(flags & 1023u),
+    };
+    if ((flags & 0xff00fc00u) == 0x80000000u && progress_valid(&saved))
+        current = saved;
+    else memset(&current, 0, sizeof(current));
 }
