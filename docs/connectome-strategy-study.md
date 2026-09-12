@@ -4,6 +4,65 @@ This study compares the complete `SIGNAL_CONNECTOME_STRATEGY` switch: station
 postures, reward learning, and worker job reassignment. Both settings use the
 same connectome, its fixed seed of 42, and the drive-history fix in PR #736.
 
+## Results: 12 September 2026
+
+The result is mixed. Strategy raised total smelt output by **37.1%** and one
+world had fewer ship losses. Across seeds, output improved twice, declined twice,
+and tied once. The median output difference was zero.
+
+| World seed | Smelt units: off | Smelt units: on | Difference | Ships lost: off / on |
+|---|---:|---:|---:|---:|
+| 2037 | 88 | 110 | +22 | 0 / 0 |
+| 2141 | 0 | 64 | +64 | 0 / 0 |
+| 3253 | 0 | 0 | +0 | 0 / 0 |
+| 4363 | 23 | 22 | -1 | 1 / 0 |
+| 5471 | 32 | 0 | -32 | 0 / 0 |
+| **Total** | **143** | **196** | **+53** | **1 / 0** |
+
+The largest gain was 64 units in seed 2141. The other four seeds together produced
+143 units with strategy off and 132 with it on. This makes the aggregate increase
+sensitive to the starting world.
+
+| Other outcome, summed over the five worlds | Strategy off | Strategy on |
+|---|---:|---:|
+| Freight units delivered | 0 | 0 |
+| NPC contracts completed | 0 | 0 |
+| Craft events | 0 | 0 |
+| Construction contributions | 0 | 0 |
+| Observed hull loss | 182.59 | 103.00 |
+| Travel time, NPC-seconds | 3,244.93 | 3,052.95 |
+| Towing time, NPC-seconds | 351.70 | 314.51 |
+| Distance, world units | 336,343.79 | 345,358.52 |
+
+The damage reduction is concentrated in seed 4363, which lost one ship with
+strategy off. Freight, contracts, crafting, and construction remained at zero
+throughout these fresh-world episodes. Their effectiveness remains unresolved at
+this horizon. Each episode began with five NPCs, using the normal seeded roster.
+
+**Recommendation:** keep the strategy classified as experimental. A useful next
+comparison would put the current time-based reward beside a completion-based
+reward in a world with an active freight route. The current comparison measures
+the whole strategy switch; a separate control is needed to isolate reward learning
+from job reassignment and posture modulation.
+
+Both full-horizon repeat runs matched every JSON fact, including the connectome
+checksum. The uncompressed signed chain files also matched byte for byte. All
+station histories passed verification. Every event buffer stayed below capacity.
+
+Measured source: `afe6f23006126e3f7cd14b5151ba09482468e4fb`, which includes the
+drive fix `41978b061df22476d537740f6efae0647e38469e`. Build: Release, macOS ARM64.
+Sixteen connectome tests and four comparison tests passed. The parser, workflow,
+path classification, banned API, and deterministic math checks passed.
+
+Evidence: [manifest and artifact hashes](evidence/connectome-strategy-2026-09-12/manifest.json),
+[all paired facts and summaries](evidence/connectome-strategy-2026-09-12/comparison.json),
+and [numeric episode reports](evidence/connectome-strategy-2026-09-12/).
+Raw episode logs and signed chain archives remain in the local study output
+directory. The manifest lists the complete original artifact set; the repository
+contains its numeric reports and hashes.
+Archives retain their original filesystem metadata, so their compressed hashes
+can differ between repeat runs while the contained chain bytes match.
+
 ## Fixed design
 
 - Fresh server genesis, including cargo origin records; zero connected players.
