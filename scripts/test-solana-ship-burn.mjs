@@ -60,3 +60,14 @@ test('accepts an exact finalized burn bound to the purchase', () => {
 test('preserves integer precision above the safe Number limit', () => {
   assert.equal(verifyShipBurn(fixture('9007199254740993')).amount, '9007199254740993');
 });
+
+test('accepts Token-2022 with its exact program on the instruction and balances', async () => {
+  const { TOKEN_2022_PROGRAM } = await import('./solana-ship-burn.mjs');
+  const f = fixture(); f.purchase.tokenProgram = TOKEN_2022_PROGRAM;
+  f.transaction.transaction.message.instructions[1].programId = TOKEN_2022_PROGRAM;
+  f.transaction.meta.preTokenBalances[0].programId = TOKEN_2022_PROGRAM;
+  f.transaction.meta.postTokenBalances[0].programId = TOKEN_2022_PROGRAM;
+  assert.equal(verifyShipBurn(f).purchaseId, f.purchase.id);
+  f.transaction.meta.postTokenBalances[0].programId = TOKEN_PROGRAM;
+  assert.throws(() => verifyShipBurn(f));
+});

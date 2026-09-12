@@ -1269,6 +1269,19 @@ void signal_authoritative_state_digest(
         digest_u8(&ctx, receipt->authority_generation);
     }
 
+    /* Keep worlds with zero purchases compatible with earlier replay digests. */
+    if (world->fly_purchase_count > 0 && world->fly_purchase_count <= MAX_FLY_PURCHASES) {
+        digest_u32(&ctx, 0x464c5931u); /* FLY1 purchase domain */
+        digest_u32(&ctx, world->fly_purchase_count);
+        for (uint32_t i = 0; i < world->fly_purchase_count; i++) {
+            const fly_purchase_t *p = &world->fly_purchases[i];
+            digest_bytes(&ctx, p->purchase_id, 32);
+            digest_bytes(&ctx, p->wallet, 32);
+            digest_bytes(&ctx, p->burn_signature, 64);
+            digest_u32(&ctx, p->asset_id);
+            digest_u8(&ctx, p->station);
+        }
+    }
     digest_ownership_quarantine(&ctx, &world->ownership_quarantine);
     digest_signal_channel(&ctx, &world->signal_channel);
 

@@ -2,6 +2,7 @@
  * The caller owns authenticated quotes, RPC trust, and atomic redemption.
  */
 export const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+export const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 export const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 
 function requireFact(ok, code) {
@@ -26,7 +27,7 @@ export function purchaseMemo(purchaseId) {
 export function verifyShipBurn({ purchase, signature, status, transaction }) {
   requireFact(purchase && typeof purchase.wallet === 'string' && purchase.wallet.length > 0 &&
     typeof purchase.mint === 'string' && purchase.mint.length > 0, 'invalid_purchase');
-  requireFact(purchase.tokenProgram === TOKEN_PROGRAM, 'unsupported_token_program');
+  requireFact([TOKEN_PROGRAM, TOKEN_2022_PROGRAM].includes(purchase.tokenProgram), 'unsupported_token_program');
   requireFact(Number.isInteger(purchase.decimals) && purchase.decimals >= 0 && purchase.decimals <= 255,
     'invalid_decimals');
   const amount = rawAmount(purchase.amount);
@@ -44,7 +45,7 @@ export function verifyShipBurn({ purchase, signature, status, transaction }) {
     'buyer_not_signer');
   const memos = message.instructions.filter(ix => ix.programId === MEMO_PROGRAM);
   requireFact(memos.length === 1 && memos[0].parsed === memo, 'purchase_memo_mismatch');
-  const burns = message.instructions.filter(ix => ix.programId === TOKEN_PROGRAM &&
+  const burns = message.instructions.filter(ix => ix.programId === purchase.tokenProgram &&
     (ix.parsed?.type === 'burn' || ix.parsed?.type === 'burnChecked'));
   requireFact(burns.length === 1 && burns[0].parsed.type === 'burnChecked', 'expected_one_checked_burn');
   const info = burns[0].parsed.info;
@@ -58,7 +59,7 @@ export function verifyShipBurn({ purchase, signature, status, transaction }) {
     const matches = rows.filter(row => row.accountIndex === accountIndex);
     requireFact(matches.length === 1, 'token_balance_missing_or_duplicate');
     const row = matches[0];
-    requireFact(row.mint === purchase.mint && row.owner === purchase.wallet && row.programId === TOKEN_PROGRAM,
+    requireFact(row.mint === purchase.mint && row.owner === purchase.wallet && row.programId === purchase.tokenProgram,
       'token_balance_identity_mismatch');
     requireFact(row.uiTokenAmount?.decimals === purchase.decimals, 'token_balance_decimals_mismatch');
     return rawAmount(row.uiTokenAmount.amount);

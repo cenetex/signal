@@ -193,6 +193,7 @@ set(SIGNAL_SIM_SOURCES
     server/cargo_smelt_provenance.c
     server/ship_birth_reservation.c
     server/sim_ai.c
+    server/fly_shop.c
     server/gossip.c
     server/sim_autopilot.c
     server/signal_brain.c

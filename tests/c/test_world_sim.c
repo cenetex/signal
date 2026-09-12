@@ -3682,6 +3682,50 @@ TEST(test_hail_reports_no_station_in_range) {
     ASSERT(sp->hail_decision_source_id == 0ull);
 }
 
+TEST(test_fly_purchase_grant_is_durable_and_once_only) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    world_reset(w);
+    uint8_t wallet[32] = {41}, id[32] = {42}, signature[64] = {43};
+    const fly_purchase_t *purchase = world_fly_purchase_grant(w, id, wallet, signature, 2);
+    ASSERT(purchase != NULL);
+    uint32_t asset_id = purchase->asset_id;
+    ship_asset_t *asset = world_ship_asset_by_id(w, asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->owner_principal.kind, ACTOR_PRINCIPAL_PLAYER);
+    ASSERT(memcmp(asset->owner_principal.id, wallet, 32) == 0);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
+    ASSERT_EQ_INT(world_ship_asset_state(w, asset)->mining_level, 2);
+    ASSERT(world_fly_purchase_grant(w, id, wallet, signature, 2) != NULL);
+    ASSERT_EQ_INT(w->fly_purchase_count, 1);
+    id[0]++;
+    ASSERT(world_fly_purchase_grant(w, id, wallet, signature, 2) == NULL);
+    id[0]--;
+    wallet[0]++;
+    ASSERT(world_fly_purchase_grant(w, id, wallet, signature, 2) == NULL);
+    wallet[0]--;
+    ASSERT(world_fly_purchases_valid(w));
+    ASSERT(world_save(w, TMP("fly-purchase.sav")));
+    ASSERT(world_load(loaded, TMP("fly-purchase.sav")));
+    ASSERT(world_fly_purchases_valid(loaded));
+    purchase = world_fly_purchase_grant(loaded, id, wallet, signature, 2);
+    ASSERT(purchase != NULL);
+    ASSERT_EQ_INT(purchase->asset_id, asset_id);
+    ASSERT_EQ_INT(loaded->fly_purchase_count, 1);
+    asset = world_ship_asset_by_id(loaded, asset_id);
+    world_ship_asset_state(loaded, asset)->hull = 0.0f;
+    step_npc_ships(loaded, SIM_DT);
+    ASSERT(asset->destroyed);
+    purchase = world_fly_purchase_grant(loaded, id, wallet, signature, 2);
+    ASSERT(purchase != NULL);
+    ASSERT_EQ_INT(purchase->asset_id, asset_id);
+    ASSERT(asset->destroyed);
+    ASSERT(world_save(loaded, TMP("fly-purchase-lost.sav")));
+    loaded->fly_purchases[0].wallet[0]++;
+    ASSERT(!world_fly_purchases_valid(loaded));
+    ASSERT(!world_save(loaded, TMP("fly-purchase-invalid.sav")));
+}
+
 TEST(test_dead_neural_worker_auto_respawns) {
     /* Contract-origin hulls mean a dead worker is not replaced by a
      * free spawn. With yard materials available, replenishment first
@@ -12552,6 +12596,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hail_responds_to_station_signal_outside_ship_comm_range);
     RUN(test_hail_responds_at_helios_dock_even_with_short_ship_comm);
     RUN(test_hail_reports_no_station_in_range);
+    RUN(test_fly_purchase_grant_is_durable_and_once_only);
     RUN(test_dead_neural_worker_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);
     RUN(test_black_market_contract_accepts_npc_module_delivery);

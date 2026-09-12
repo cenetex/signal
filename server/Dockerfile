@@ -24,7 +24,7 @@ RUN emcmake cmake -S . -B build-web \
     && if [ -d build-web/anime ]; then cp -R build-web/anime public/; fi \
     && if [ -d build-web/music ]; then cp -R build-web/music public/; fi \
     && cp web/index.html web/mine.html web/ost.html web/ost-manifest.json \
-          web/ost-cover.jpg public/
+          web/ost-cover.jpg web/workers.html web/workers.mjs web/fly-codec.mjs public/
 
 FROM alpine:3.19 AS builder
 
@@ -60,7 +60,8 @@ RUN npm ci --omit=dev \
 
 COPY --from=builder /src/build/signal_server ./signal-server
 COPY --from=web-builder /src/public ./public
-COPY scripts/webrtc-gateway.mjs ./scripts/webrtc-gateway.mjs
+COPY scripts/webrtc-gateway.mjs scripts/fly-shop-*.mjs scripts/solana-ship-burn.mjs ./scripts/
+COPY web/fly-codec.mjs ./web/fly-codec.mjs
 COPY scripts/fly-webrtc-entrypoint.sh ./scripts/fly-webrtc-entrypoint.sh
 COPY scripts/lightsail-webrtc-entrypoint.sh ./scripts/lightsail-webrtc-entrypoint.sh
 

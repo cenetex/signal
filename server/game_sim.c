@@ -2805,7 +2805,8 @@ static ship_asset_t *world_ship_asset_free_slot(world_t *w) {
     }
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         ship_asset_t *asset = &w->ship_assets[i];
-        if (!asset->destroyed ||
+        if (asset->provenance == SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
+            !asset->destroyed ||
             asset->status != SHIP_ASSET_STATUS_DESTROYED ||
             asset->operator_kind != SHIP_ASSET_OPERATOR_NONE) {
             continue;
@@ -3285,7 +3286,8 @@ static bool ship_asset_player_can_reclaim_bound(const world_t *w,
 
 static bool ship_asset_assign_to_player(world_t *w, int player_slot,
                                         ship_asset_t *asset, int station_idx) {
-    if (!w || !asset || player_slot < 0 || player_slot >= MAX_PLAYERS)
+    if (!w || !asset || asset->provenance == SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
+        player_slot < 0 || player_slot >= MAX_PLAYERS)
         return false;
     server_player_t *sp = &w->players[player_slot];
     if (asset->destroyed || asset->status == SHIP_ASSET_STATUS_DESTROYED)

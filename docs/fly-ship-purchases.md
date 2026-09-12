@@ -1,62 +1,70 @@
-# Fly ship purchases
+# FLY workers
 
-The planned shop serves Prospect Refinery, Kepler Yard, and Helios Works. The
-requested price points are 50, 100, and 200. The token mint, price unit, and ship
-ownership mode are awaiting the owner's choice.
+The live shop at `/workers.html` sells one autonomous worker per finalized burn.
+The wallet owner gets a live local map, launch state, hull condition and purchase
+history. Workers join the existing station fleet and can be damaged or lost.
 
-## Player flow
+| Station | Worker | FLY burned |
+| --- | --- | ---: |
+| Prospect Refinery | Miner | 50 |
+| Kepler Yard | Tug | 100 |
+| Helios Works | Miner with level-two laser | 200 |
 
-1. Choose a ship at a station.
-2. Connect a Solana wallet and sign the link to the authenticated game identity.
-3. Review the token amount and ship details. The wallet approves one burn with
-   a memo tied to the saved purchase.
-4. The server checks finalization and saves the ship grant.
-5. Show the ship and receipt. The player can recover a purchase after reconnecting.
+The fixed mainnet mint is `FLY3ytMF4wyGQcVPo2RZ5FTFsf7JEBj4DrtucnRqrFLY`.
+It uses Token-2022 and nine decimals. The server checks the mainnet genesis,
+mint identity, decimals, cleared mint and freeze authorities, and metadata-only
+extension set before preparing or accepting a burn. Prices use integer base units.
 
-## Implemented receipt check
+## Purchase and recovery
 
-`scripts/solana-ship-burn.mjs` checks a parsed transaction and signature status
-against an immutable server-owned purchase. It requires finalized success, matching
-slot and transaction signature, a buyer signature, one purchase memo, one SPL Token
-BurnChecked instruction, the expected mint and authority, exact integer amount and
-decimals, and matching token-account owner and balance reduction.
+Wallet Standard provides wallet discovery and Ed25519 sign-in. Each challenge
+binds the site origin, wallet, nonce and five-minute expiry. The session uses a
+Secure, HttpOnly, SameSite cookie. POST requests require the configured origin.
 
-The first implementation targets the original SPL Token program. Token-2022
-support requires a separate review once the payment mint is chosen. All token
-amounts are strings in raw token units and use integer arithmetic.
+A saved quote binds a random purchase ID, wallet, station, mint and amount.
+The wallet signs an exact Token-2022 `BurnChecked` transaction with a purchase
+memo. The gateway checks the signature and full message. It saves the signed
+transaction and signature before broadcasting. Retries broadcast the same bytes.
+It fetches finalized transaction and signature status from its own RPC endpoint.
+The verifier checks the signer, instruction, memo and exact token balance change.
 
-Run the receipt tests with:
+The gateway stores quotes and receipts in `fly-shop.json` with atomic rename and
+file and directory sync. Paid orders retry every 15 seconds. An expired signed
+transaction can be replaced after finalized block height passes its validity
+window and RPC confirms its receipt is absent or finalized with an error.
 
-```sh
-node --test scripts/test-solana-ship-burn.mjs
-```
+The world stores the purchase ID, wallet, burn signature and asset ID in save
+version 85. The private grant endpoint acknowledges after a complete persistence
+generation is saved. Receipt retries return the same asset, including after ship
+loss. FLY assets retain their wallet owner and are reserved for autonomous use.
+They carry explicit external purchase provenance. Stored hulls launch as fleet
+slots become available.
 
-## Integration work
+The initial rollout has 80 lifetime worker spaces. Open quotes reserve spaces
+and remain recoverable. A wallet can hold one open order. This small launch cap
+also bounds saved receipts and retained lost ships. Raising it requires a save
+format and capacity review. Workers use the deployed fly navigation circuit and
+trained worker policy. The owner map reads the authoritative world every three
+seconds while visible.
 
-- Save quotes bound to a random 32-byte purchase ID, authenticated player, wallet,
-  mint, amount, token decimals, station, ship product, and expected Solana cluster.
-- Authenticate wallet linking using both the game identity and wallet signatures,
-  with an expiring, single-use challenge tied to the site origin.
-- Fetch transaction and status from a configured server-side RPC. Check the cluster
-  genesis hash. Request `getTransaction` with finalized commitment and jsonParsed
-  encoding, and `getSignatureStatuses` with transaction-history lookup.
-- Pass only those server-fetched results to the receipt checker.
-- Save purchase consumption and the resulting ship asset in one durable operation.
-  Use unique purchase and transaction keys across all stations and restarts. A
-  retry returns the same grant. Recovery completes a saved pending fulfillment.
-- Build wallet checkout and the station UI once token pricing and ownership mode
-  are selected. Reserve available ship capacity before asking the buyer to burn.
-- Test reconnect, duplicate submission, simultaneous claims, RPC failure,
-  finalization delay, restart, and the purchase-to-ship flow on a test cluster.
-- Verify the selected mint and decimals on the chosen cluster before enabling
-  production checkout.
+## Deployment
 
-This draft contains receipt validation and tests. The live checkout and ship grant
-remain integration work. Current deployments continue to use the existing game UI.
+`SIGNAL_FLY_SHOP_ENABLED=1` enables the gateway. The entrypoint generates a fresh
+private bridge key shared by the gateway and world process. The public gateway
+blocks the private grant and view routes. `SIGNAL_ALLOWED_ORIGIN` pins the site.
+`SIGNAL_SOLANA_RPC_URL` can select a trusted HTTPS mainnet RPC; the default is the
+public mainnet endpoint. The persistent volume holds the shop and world saves.
 
-## Sources
+## Checks
 
-- [Solana token burns](https://solana.com/docs/tokens/basics/burn-tokens)
-- [Transaction lookup](https://solana.com/docs/rpc/http/gettransaction)
-- [Signature status lookup](https://solana.com/docs/rpc/http/getsignaturestatuses)
-- [RPC transaction structures](https://solana.com/docs/rpc/json-structures)
+`node --test scripts/test-solana-ship-burn.mjs scripts/test-fly-shop.mjs` exercises
+burn validation, Token-2022 identity, transaction bytes, wallet login, origin
+binding, durable broadcast, repeated confirmation and recovery after restart.
+The C `fly_purchase` regression covers ownership, launch, save/load, receipt
+replay, ship loss and invalid ownership data. The complete C suite also checks
+save migration and existing simulation behavior.
+
+References: [Solana burns](https://solana.com/docs/tokens/basics/burn-tokens),
+[transaction RPC](https://solana.com/docs/rpc/http/gettransaction),
+[signature status RPC](https://solana.com/docs/rpc/http/getsignaturestatuses),
+[account RPC](https://solana.com/docs/rpc/http/getaccountinfo).
