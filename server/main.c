@@ -8442,8 +8442,16 @@ static void apply_persistence_writer_result(
     uint64_t now,
     uint64_t *last_save
 ) {
+    /* Only a real completion is a completion. persistence_writer_wait()
+     * consumes SUCCEEDED/FAILED and resets the writer to IDLE, while
+     * metrics.write_complete stays true until the next write starts. Keying
+     * the observability line off write_complete alone mislabels every later
+     * tick as a failure on stale metrics, which is what flooded production
+     * logs with result=failed after an entirely successful save. */
+    bool completed = state == PERSISTENCE_WRITER_SUCCEEDED ||
+                     state == PERSISTENCE_WRITER_FAILED;
     persistence_writer_metrics_t save_metrics = {0};
-    if (persistence_writer &&
+    if (completed && persistence_writer &&
         persistence_writer_get_metrics(
             persistence_writer, &save_metrics) &&
         save_metrics.write_complete) {
