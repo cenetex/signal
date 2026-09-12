@@ -4,7 +4,84 @@ This study compares the complete `SIGNAL_CONNECTOME_STRATEGY` switch: station
 postures, reward learning, and worker job reassignment. Both settings use the
 same connectome, its fixed seed of 42, and the drive-history fix in PR #736.
 
-## Results: 12 September 2026
+## Thirty-minute follow-up
+
+The longer run shows an output and survival tradeoff. Strategy produced **260
+smelted units versus 236** with it off, a **10.2%** increase. Ship losses were
+**four versus one**. Per-world output improved twice and declined three times;
+the median difference was minus one unit.
+
+The same five seeds ran for 216,000 ticks each, or 30 simulated minutes. Both
+settings for seed 2037 repeated for the full horizon. Four local processes ran
+at once. The executable, circuit, runner, and brain settings matched the earlier
+study exactly. Every first-five-minute smelt count also matched the earlier run.
+
+| World seed | Smelt units: off | Smelt units: on | Difference | Ships lost: off / on |
+|---|---:|---:|---:|---:|
+| 2037 | 88 | 139 | +51 | 0 / 3 |
+| 2141 | 28 | 64 | +36 | 0 / 0 |
+| 3253 | 44 | 14 | -30 | 0 / 0 |
+| 4363 | 44 | 43 | -1 | 1 / 1 |
+| 5471 | 32 | 0 | -32 | 0 / 0 |
+| **Total** | **236** | **260** | **+24** | **1 / 4** |
+
+The three additional strategy-on losses were all in seed 2037. Its active fleet
+ended at two ships, versus five with strategy off. Across all worlds, observed
+hull loss was 247.47 off and 353.60 on; four seeds had lower observed damage with
+strategy, while seed 2037 had substantially more. This is a concentrated risk.
+
+### Output over time
+
+The table counts newly produced units within each interval, summed across the
+five worlds. Interval boundaries use simulation ticks from verified SMELT records.
+
+| Simulated minutes | Strategy off | Strategy on |
+|---|---:|---:|
+| 0–5 | 143 | 196 |
+| 5–10 | 45 | 64 |
+| 10–15 | 48 | 0 |
+| 15–20 | 0 | 0 |
+| 20–25 | 0 | 0 |
+| 25–30 | 0 | 0 |
+
+Strategy produced 64 additional units after minute five; the off runs produced
+93. Its aggregate lead narrowed from 53 units at five minutes to 24 at thirty.
+Both settings produced zero units in the final fifteen minutes. Freight delivery,
+NPC contract completion, craft events, and construction contributions stayed at
+zero throughout all ten primary episodes.
+
+**Take:** strategy can improve early output in some worlds, with a survival cost
+in one of these longer runs. The next question is why fresh-world production
+ends in both settings. The current evidence establishes the timing and outcomes;
+resource supply, cargo movement, and worker behavior need inspection to explain
+that limit. A later reward comparison should track completed work and ship losses
+alongside an active freight scenario.
+
+Both repeat runs matched every JSON fact and the uncompressed signed chain bytes.
+All history checks passed and event buffers stayed below capacity. Measured source:
+`b8169101b914798bb32625e591745dc642f91bdf`. The interval analyzer is recorded by its
+own source hash in `production-windows.json`; its parser and archive checks bring
+the comparison test suite to eight passing tests.
+
+Evidence: [manifest](evidence/connectome-strategy-2026-09-12-30min/manifest.json),
+[paired outcomes](evidence/connectome-strategy-2026-09-12-30min/comparison.json), and
+[five-minute production windows](evidence/connectome-strategy-2026-09-12-30min/production-windows.json).
+The repository contains numeric evidence and hashes. Raw logs and signed chain
+archives remain in the local study output directory.
+
+Reproduce the longer run from a clean committed checkout with the probe built:
+
+```sh
+python3 scripts/compare_connectome_strategy.py \
+  --probe build-study/connectome_swarm_probe \
+  --output /tmp/signal-strategy-long \
+  --ticks 216000 --workers 4 --timeout 3600
+python3 scripts/analyze_connectome_windows.py \
+  --study /tmp/signal-strategy-long \
+  --output /tmp/signal-strategy-long-windows.json
+```
+
+## Original five-minute results: 12 September 2026
 
 The result is mixed. Strategy raised total smelt output by **37.1%** and one
 world had fewer ship losses. Across seeds, output improved twice, declined twice,
