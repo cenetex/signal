@@ -53,6 +53,17 @@
 #define CB_MAX_AGENTS MAX_NPC_SHIPS
 #define Q16_ONE 65536
 
+/* Strategic postures for the hybrid brain. The sampler's weight array is
+ * indexed by this, so order is load-bearing. */
+typedef enum {
+    CB_STRAT_FORAGE = 0,   /* mine, hunger-led */
+    CB_STRAT_PROSPECT,     /* bolder, farther ore */
+    CB_STRAT_CAUTION,      /* threat-averse */
+    CB_STRAT_HAUL,         /* cargo-led */
+    CB_STRAT_REGROUP,      /* hurt or idle: go home */
+    CB_STRAT_COUNT
+} cb_strategy_t;
+
 /* ---------------- per-agent drive state (runtime only) ---------------- */
 
 typedef struct {
@@ -88,6 +99,17 @@ typedef struct {
     uint32_t demote_stake;
     int32_t  awake_hz_q16;
     uint64_t seed;
+
+    /* Strategic policy (hybrid brain): each station is the planner and
+     * broadcasts one posture to the flies that call it home, attenuated
+     * by the signal those flies can actually hear. A station learns which
+     * posture pays off (station_value). Runtime-only. */
+    uint32_t strategy_period;  /* ticks between re-samples, 0 = disabled */
+    uint8_t  station_strategy[MAX_STATIONS];
+    uint32_t station_ttl[MAX_STATIONS];
+    uint8_t  station_has_strategy[MAX_STATIONS];
+    uint32_t station_reward[MAX_STATIONS];                   /* run reward */
+    uint32_t station_value[MAX_STATIONS][CB_STRAT_COUNT];    /* learned value */
 
     /* cached populations of the fast circuit, for injection */
     const uint32_t *ring_idx;   uint32_t ring_n;
@@ -136,6 +158,17 @@ bool signal_connectome_enabled(void)
     return g_cb.enabled != 0;
 }
 
+bool signal_connectome_strategy_requested(void)
+{
+    const char *v = getenv("SIGNAL_CONNECTOME_STRATEGY");
+    return v && v[0] && v[0] != '0';
+}
+
+bool signal_connectome_strategy_enabled(void)
+{
+    return g_cb.enabled && signal_connectome_strategy_requested();
+}
+
 bool signal_connectome_init(void)
 {
     if (g_cb.init_attempted) return g_cb.enabled != 0;
@@ -174,6 +207,10 @@ bool signal_connectome_init(void)
         cb_env_int("SIGNAL_CONNECTOME_AWAKE_HZ_X100", 10));
     cb->seed          = (uint64_t)cb_env_int("SIGNAL_CONNECTOME_SEED", 42);
     cb->debug_every   = (uint32_t)cb_env_int("SIGNAL_CONNECTOME_DEBUG", 0);
+    if (signal_connectome_strategy_requested()) {
+        int32_t period = cb_env_int("SIGNAL_CONNECTOME_STRATEGY_PERIOD", 300);
+        cb->strategy_period = period > 0 ? (uint32_t)period : 300u;
+    }
 
     if (fb_circuit_load(&cb->fast, fast_path) != 0) {
         fprintf(stderr, "[connectome] [FATAL] cannot load "
@@ -267,6 +304,9 @@ bool signal_connectome_init(void)
            cb->budget, cb->deep_slots,
            cb->promote_stake, cb->demote_stake, cb->dt_us,
            cb->awake_hz_q16 / 65536.0);
+    if (signal_connectome_strategy_requested())
+        printf("[connectome] combined brain: connectome flight + strategic "
+               "planner (period %u ticks)\n", cb->strategy_period);
     return true;
 }
 
@@ -319,6 +359,142 @@ static int32_t cb_compute_fear(const world_t *w, const npc_ship_t *npc)
         if (dread > fear) fear = dread;
     }
     return fear;
+}
+
+/* ---- strategic policy (hybrid brain) ---------------------------------- */
+
+int signal_connectome_weighted_pick(const uint32_t *weights, int count,
+                                    uint64_t *rng)
+{
+    if (!weights || !rng || count <= 0) return -1;
+    uint64_t total = 0;
+    for (int i = 0; i < count; i++) total += weights[i];
+    if (total == 0) return -1;
+    uint64_t x = *rng;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *rng = x;
+    uint64_t pick = x % total;
+    for (int i = 0; i < count; i++) {
+        if (pick < weights[i]) return i;
+        pick -= weights[i];
+    }
+    return count - 1;
+}
+
+typedef struct {
+    uint64_t hunger, lust, fear;  /* summed Q16 drives of the station's awake flies */
+    uint32_t count;
+    uint32_t productive;          /* flies mining or towing this tick */
+} cb_station_agg_t;
+
+#define CB_BANDIT_MAX 4096u
+
+void signal_connectome_bandit_reward(uint32_t *values, int count, int arm,
+                                     uint32_t reward)
+{
+    if (!values || count <= 0 || arm < 0 || arm >= count) return;
+    uint64_t v = (uint64_t)values[arm] + reward;
+    values[arm] = v > CB_BANDIT_MAX ? CB_BANDIT_MAX : (uint32_t)v;
+}
+
+void signal_connectome_bandit_decay(uint32_t *values, int count)
+{
+    if (!values || count <= 0) return;
+    for (int i = 0; i < count; i++)
+        values[i] -= values[i] >> 4;   /* ~6% per window */
+}
+
+static uint64_t cb_station_seed(int station, uint32_t tick)
+{
+    uint64_t h = 1469598103934665603ULL;
+    h ^= (uint64_t)(station + 1); h *= 1099511628211ULL;
+    h ^= tick;                    h *= 1099511628211ULL;
+    return h ? h : 1u;
+}
+
+/* Posture weights from the station's own swarm -- what its flies, on
+ * average, are feeling -- plus what the station has learned is working.
+ * Every posture keeps a floor so exploration never dies. */
+static void cb_station_weights(const cb_station_agg_t *a,
+                               const uint32_t *value, uint32_t *w)
+{
+    uint32_t n = a->count ? a->count : 1u;
+    uint32_t hunger = (uint32_t)((a->hunger / n) >> 12);  /* 0..16 */
+    uint32_t lust   = (uint32_t)((a->lust / n) >> 12);
+    uint32_t fear   = (uint32_t)((a->fear / n) >> 12);
+    uint32_t learned[CB_STRAT_COUNT];
+    for (int k = 0; k < CB_STRAT_COUNT; k++)
+        learned[k] = value ? value[k] >> 3 : 0u;   /* scale so the floor still matters */
+    w[CB_STRAT_FORAGE]   = 8u + hunger + learned[CB_STRAT_FORAGE];
+    w[CB_STRAT_PROSPECT] = 4u + hunger + learned[CB_STRAT_PROSPECT];
+    w[CB_STRAT_CAUTION]  = 4u + fear * 2u + learned[CB_STRAT_CAUTION];
+    w[CB_STRAT_HAUL]     = 4u + lust * 2u + learned[CB_STRAT_HAUL];
+    w[CB_STRAT_REGROUP]  = 4u + learned[CB_STRAT_REGROUP];
+}
+
+/* Each station is the planner. It samples one posture for its own swarm
+ * and holds it for strategy_period ticks; different stations diverge. */
+static void cb_station_strategy_advance(const world_t *w,
+                                        const cb_station_agg_t *agg)
+{
+    cb_state_t *cb = &g_cb;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (agg[s].count == 0) { cb->station_ttl[s] = 0; continue; }
+        /* Reward the posture by how many of the station's flies it kept
+         * productive this window. */
+        cb->station_reward[s] += agg[s].productive;
+        if (cb->station_ttl[s] == 0) {
+            if (cb->station_has_strategy[s]) {
+                signal_connectome_bandit_reward(
+                    cb->station_value[s], CB_STRAT_COUNT,
+                    (int)cb->station_strategy[s], cb->station_reward[s]);
+                signal_connectome_bandit_decay(
+                    cb->station_value[s], CB_STRAT_COUNT);
+            }
+            uint32_t weights[CB_STRAT_COUNT];
+            uint64_t rng = cb_station_seed(s, w->tick);
+            cb_station_weights(&agg[s], cb->station_value[s], weights);
+            int pick = signal_connectome_weighted_pick(weights, CB_STRAT_COUNT, &rng);
+            cb->station_strategy[s] = (uint8_t)(pick < 0 ? CB_STRAT_FORAGE : pick);
+            cb->station_has_strategy[s] = 1;
+            cb->station_ttl[s] = cb->strategy_period;
+            cb->station_reward[s] = 0;
+            cb->stats.strategy_changes++;
+        } else {
+            cb->station_ttl[s]--;
+        }
+        cb->stats.strategy_counts[cb->station_strategy[s]] += agg[s].count;
+    }
+}
+
+static int32_t cb_strategy_blend(int32_t v, float delta, float authority)
+{
+    float nv = (float)v + (float)v * delta * authority;
+    if (nv < 0.0f) nv = 0.0f;
+    if (nv > (float)Q16_ONE) nv = (float)Q16_ONE;
+    return (int32_t)nv;
+}
+
+/* Apply the station's posture, scaled by how much of its signal the fly
+ * can actually hear. Out of range the leash goes slack and the fly falls
+ * back to its own connectome drives. */
+static void cb_strategy_modulate(cb_agent_state_t *st, int strat,
+                                 float authority)
+{
+    float dh = 0.0f, dl = 0.0f, df = 0.0f;
+    switch (strat) {
+    case CB_STRAT_FORAGE:   dh =  0.25f;  break;
+    case CB_STRAT_PROSPECT: dh =  0.125f; break;
+    case CB_STRAT_CAUTION:  df =  0.5f;   break;
+    case CB_STRAT_HAUL:     dl =  0.25f;  break;
+    case CB_STRAT_REGROUP:  dh = -0.25f;  break;
+    default: return;
+    }
+    st->hunger = cb_strategy_blend(st->hunger, dh, authority);
+    st->lust   = cb_strategy_blend(st->lust,   dl, authority);
+    st->fear   = cb_strategy_blend(st->fear,   df, authority);
 }
 
 /* Update one fly's drives from world state. Q16 throughout. */
@@ -437,7 +613,11 @@ void signal_connectome_tick(world_t *w)
     cb_state_t *cb = &g_cb;
 
     uint32_t active = 0, sleeping = 0;
+    cb_station_agg_t agg[MAX_STATIONS];
+    memset(agg, 0, sizeof(agg));
 
+    /* Pass 1: sense. Update each fly's drives and fold them into its
+     * station's aggregate, which is the input to that station's policy. */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         npc_ship_t *npc = &w->npc_ships[i];
         if (!npc->active ||
@@ -445,11 +625,43 @@ void signal_connectome_tick(world_t *w)
             fb_swarm_set_stake(&cb->swarm, (uint32_t)i, 0);
             continue;
         }
-
         cb_update_drives(w, npc, i);
+        int hs = npc->home_station;
+        if (hs >= 0 && hs < MAX_STATIONS) {
+            cb_agent_state_t *st = &cb->agent[i];
+            agg[hs].hunger += (uint64_t)st->hunger;
+            agg[hs].lust   += (uint64_t)st->lust;
+            agg[hs].fear   += (uint64_t)st->fear;
+            agg[hs].count++;
+            if (npc->state == NPC_STATE_MINING ||
+                npc->ship->towed_count > 0 ||
+                npc->ship->towed_pod_count > 0 ||
+                npc->ship->towed_scaffold >= 0)
+                agg[hs].productive++;
+        }
+    }
+
+    /* The stations are the planners: each samples a posture for its own
+     * swarm and broadcasts it. */
+    if (cb->strategy_period) cb_station_strategy_advance(w, agg);
+
+    /* Pass 2: act. Apply the heard station posture, then publish stake. */
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        npc_ship_t *npc = &w->npc_ships[i];
+        if (!npc->active ||
+            npc->brain_mode != SERVER_BRAIN_MODE_CONNECTOME) continue;
+        if (cb->strategy_period) {
+            int hs = npc->home_station;
+            if (hs >= 0 && hs < MAX_STATIONS) {
+                float authority = cb_clampf(
+                    signal_strength_at(w, npc->ship->pos), 0.0f, 1.0f);
+                cb_strategy_modulate(&cb->agent[i],
+                                     (int)cb->station_strategy[hs],
+                                     authority);
+            }
+        }
         uint32_t stake = cb_compute_stake(npc, i);
         fb_swarm_set_stake(&cb->swarm, (uint32_t)i, stake);
-
         if (stake == 0) {
             /* Sleeping: membrane frozen, share rented out. */
             sleeping++;

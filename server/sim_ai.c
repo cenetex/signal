@@ -4605,7 +4605,14 @@ static bool npc_worker_score_assignment(world_t *w,
 
 static bool npc_can_reassign(const npc_ship_t *npc) {
     if (!npc || !npc->active) return false;
-    if (npc->brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT) return false;
+    /* Combined brain: a connectome fly cannot be flown by a second
+     * controller, but it CAN still be re-assigned -- the strategic
+     * planner picks the job and the connectome executes the flight.
+     * Off unless SIGNAL_CONNECTOME_STRATEGY=1 and the adapter loaded. */
+    if (npc->brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT &&
+        !(npc->brain_mode == SERVER_BRAIN_MODE_CONNECTOME &&
+          signal_connectome_strategy_enabled()))
+        return false;
     if (npc->role != NPC_ROLE_MINER &&
         npc->role != NPC_ROLE_HAULER &&
         npc->role != NPC_ROLE_TOW) return false;
