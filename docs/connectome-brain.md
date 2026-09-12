@@ -112,25 +112,34 @@ Per NPC, recomputed each tick from world state, all Q16:
   rocks get a wider radius than drift) plus low-hull dread.
 - **PAIN** — hull loss since last tick, spikes then decays over ~1 s.
 
-## Combined brain: connectome flight + strategic planner
+## Combined brain: stations plan, connectomes fly
 
-By default a connectome fly is also its own planner: the role state machine
-picks the job and the connectome biases the flight. `SIGNAL_CONNECTOME_STRATEGY=1`
-splits those roles. Connectome NPCs are then handed to the strategic worker
-planner in `server/sim_ai.c`, which scores the legal high-level options
-(mine, haul, courier, refit, supply, escort, patrol, risky profit) and
-reassigns the fly. The connectome still flies it -- the planner never
-touches the rudder.
+`SIGNAL_CONNECTOME_STRATEGY=1` makes the **station** the strategist. Each
+station samples one *posture* for its own swarm -- forage, prospect, caution,
+haul, or regroup -- and broadcasts it. Every connectome fly applies the
+posture of its `home_station`, so the flies at one station act as a hive and
+different stations diverge.
 
-This is the "learned strategy, fixed reflex" split: the planner is the
-`signal-npc-worker-v2` model when a checkpoint is loaded
-(`SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT`), and falls back to teacher
-scores otherwise. With no strategic checkpoint the split still runs, using
-the heuristic option scores; it is inert only when the adapter itself did
-not load.
+The posture is delivered through the existing signal field: the modulation is
+scaled by `signal_strength_at()` at the fly's position. Near the station the
+leash is taut; out past the relay chain it goes slack and the fly falls back
+to its own connectome drives. A station holds a posture for
+`SIGNAL_CONNECTOME_STRATEGY_PERIOD` ticks (default 300) and re-samples it
+with a seeded xorshift keyed on station index and world tick, so the choice
+varies across stations while staying bit-exact under replay.
 
-Off by default. With the flag unset, or the adapter not loaded,
-`npc_can_reassign` keeps its original behaviour and nothing changes.
+The connectome remains the body: postures bias hunger/lust/fear, which drive
+the connectome's arousal gate and steering, but the wiring still flies the
+ship, and the giant-fibre reflex still owns the wheel at a rock face.
+
+Connectome flies also become eligible for the strategic worker planner's job
+re-assignment (`npc_can_reassign`), so a station can re-task a jobless fly.
+That planner uses the `signal-npc-worker-v2` model when a checkpoint is
+loaded (`SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT`) and teacher scores
+otherwise.
+
+Off by default. With the flag unset, or the adapter not loaded, the sim is
+bit-identical to before.
 
 ## Brain-time as an economy
 
@@ -187,7 +196,8 @@ dumps agent 0's drive, turn and thrust every *n* ticks.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SIGNAL_CONNECTOME_FAST` | — | nav `.cnx` path; **required to enable** |
-| `SIGNAL_CONNECTOME_STRATEGY` | 0 | also run the strategic worker planner for connectome flies |
+| `SIGNAL_CONNECTOME_STRATEGY` | 0 | station-level postures broadcast to their flies (hybrid brain) |
+| `SIGNAL_CONNECTOME_STRATEGY_PERIOD` | 300 | ticks a station holds a posture before re-sampling |
 | `SIGNAL_CONNECTOME_DEEP` | — | full-brain `.cnx` for deliberation slots |
 | `SIGNAL_CONNECTOME_DT_US` | 4000 | kernel step; changing this invalidates the tonic |
 | `SIGNAL_CONNECTOME_TONIC_UV` | 2200 | columnar arousal; must clear the ignition cliff |

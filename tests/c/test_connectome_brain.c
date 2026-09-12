@@ -403,6 +403,25 @@ TEST(test_connectome_strategy_flag_is_off_by_default) {
     unsetenv("SIGNAL_CONNECTOME_STRATEGY");
 }
 
+TEST(test_connectome_weighted_pick_is_deterministic) {
+    uint32_t weights[3] = {0, 0, 0};
+    uint64_t rng = 12345;
+    ASSERT(signal_connectome_weighted_pick(weights, 3, &rng) == -1);
+    ASSERT(signal_connectome_weighted_pick(NULL, 3, &rng) == -1);
+
+    /* Only one non-zero weight: that index wins every time. */
+    weights[1] = 7;
+    for (int i = 0; i < 64; i++)
+        ASSERT(signal_connectome_weighted_pick(weights, 3, &rng) == 1);
+
+    /* Same seed replays the same sequence (the replay gate). */
+    uint32_t mixed[3] = {3, 2, 1};
+    uint64_t a = 42, b = 42;
+    for (int i = 0; i < 64; i++)
+        ASSERT(signal_connectome_weighted_pick(mixed, 3, &a) ==
+               signal_connectome_weighted_pick(mixed, 3, &b));
+}
+
 void register_connectome_brain_tests(void);
 void register_connectome_brain_tests(void) {
     RUN(test_connectome_blob_loader_rejects_garbage);
@@ -416,4 +435,5 @@ void register_connectome_brain_tests(void) {
     RUN(test_connectome_swarm_checksum_deterministic);
     RUN(test_connectome_adapter_disabled_without_env);
     RUN(test_connectome_strategy_flag_is_off_by_default);
+    RUN(test_connectome_weighted_pick_is_deterministic);
 }

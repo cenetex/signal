@@ -138,6 +138,15 @@ int main(int argc, char **argv)
                st.active_flies, st.sleeping_flies, st.deep_flies, st.promotions);
         printf("            rented while asleep: %llu units\n",
                (unsigned long long)st.rented_units);
+        if (st.strategy_changes) {
+            static const char *names[SIGNAL_CONNECTOME_STRATEGY_COUNT] =
+                { "forage", "prospect", "caution", "haul", "regroup" };
+            printf("            strategy re-samples=%u  postures:",
+                   st.strategy_changes);
+            for (int k = 0; k < SIGNAL_CONNECTOME_STRATEGY_COUNT; k++)
+                printf(" %s=%u", names[k], st.strategy_counts[k]);
+            printf("\n");
+        }
         printf("            checksum: %016llx\n",
                (unsigned long long)signal_connectome_checksum());
     }

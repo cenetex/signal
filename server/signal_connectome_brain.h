@@ -42,6 +42,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Number of strategic postures the hybrid brain samples between. Must
+ * match the posture enum in signal_connectome_brain.c. */
+#define SIGNAL_CONNECTOME_STRATEGY_COUNT 5
+
 /* Idempotent. Reads env on first call; returns true when the connectome
  * brain is loaded and ready to fly NPCs. Prints one status block. */
 bool signal_connectome_init(void);
@@ -89,6 +93,8 @@ typedef struct {
     uint64_t steps;        /* kernel steps taken (fast + deep) */
     uint64_t units_spent;  /* budget units consumed */
     uint64_t rented_units; /* pool units granted while flies slept */
+    uint32_t strategy_counts[SIGNAL_CONNECTOME_STRATEGY_COUNT];
+    uint32_t strategy_changes; /* posture re-samples this session */
     uint32_t promotions;   /* flies promoted to the deep circuit */
     uint32_t demotions;
     uint32_t active_flies;   /* connectome NPCs awake this tick */
@@ -100,5 +106,12 @@ typedef struct {
 } signal_connectome_stats_t;
 
 bool signal_connectome_stats(signal_connectome_stats_t *out);
+
+/* Deterministic weighted pick: weights[i] >= 0. Returns the chosen index,
+ * or -1 when count <= 0 or every weight is zero. Advances *rng with one
+ * xorshift64 step. Integer-only, so the strategic layer stays inside the
+ * lockstep replay determinism gate. */
+int signal_connectome_weighted_pick(const uint32_t *weights, int count,
+                                    uint64_t *rng);
 
 #endif /* SIGNAL_CONNECTOME_BRAIN_H */
