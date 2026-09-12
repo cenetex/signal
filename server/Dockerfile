@@ -68,6 +68,11 @@ COPY scripts/lightsail-webrtc-entrypoint.sh ./scripts/lightsail-webrtc-entrypoin
 # fly.toml points here). See docs/connectome-brain.md.
 COPY assets/connectome/nav.cnx ./nav.cnx
 
+# Trained NPC worker-option policy (SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT
+# in fly.toml points here). Regenerate with the crlplrimes
+# `signal-npc-worker-economy` target; see assets/models/README.md.
+COPY assets/models/signal_npc_worker.nnckpt ./signal_npc_worker.nnckpt
+
 ENV PORT=8080
 ENV SIGNAL_SERVER_PORT=9091
 ENV SIGNAL_DATA_DIR=/app/data
