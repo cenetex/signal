@@ -60,7 +60,7 @@ static void syn_pop(FILE *f, const char *name, uint32_t count,
 {
     char nb[16];
     memset(nb, 0, sizeof(nb));
-    strncpy(nb, name, 15);
+    snprintf(nb, sizeof(nb), "%s", name);
     fwrite(nb, 1, 16, f);
     syn_put32(f, count);
     for (uint32_t i = 0; i < count; i++) syn_put32(f, idx[i]);

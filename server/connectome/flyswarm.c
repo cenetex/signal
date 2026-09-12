@@ -145,26 +145,30 @@ uint32_t fb_swarm_allocate(fb_swarm *sw)
     if (pool && total_stake) {
         uint64_t given = 0;
         uint32_t *rem = (uint32_t *)calloc(n, sizeof(uint32_t));
-        for (uint32_t i = 0; i < n; i++) {
-            uint64_t exact = (uint64_t)sw->stake[i] * pool;
-            uint32_t whole = (uint32_t)(exact / total_stake);
-            rem[i] = (uint32_t)(exact % total_stake);
-            sw->units[i] += whole;
-            given += whole;
-        }
-        uint64_t leftover = pool - given;
-        while (leftover--) {
-            uint32_t best = 0; int found = 0;
+        if (rem) {
             for (uint32_t i = 0; i < n; i++) {
-                if (!sw->stake[i]) continue;   /* sleeping flies rent out, */
-                if (!found || rem[i] > rem[best]) { best = i; found = 1; }
-                                             /* they don't get handouts  */
+                uint64_t exact = (uint64_t)sw->stake[i] * pool;
+                uint32_t whole = (uint32_t)(exact / total_stake);
+                rem[i] = (uint32_t)(exact % total_stake);
+                sw->units[i] += whole;
+                given += whole;
             }
-            if (!found) break;
-            sw->units[best]++;
-            rem[best] = 0;
+            uint64_t leftover = pool - given;
+            while (leftover--) {
+                uint32_t best = 0; int found = 0;
+                for (uint32_t i = 0; i < n; i++) {
+                    if (!sw->stake[i]) continue;   /* sleeping flies rent out, */
+                    if (!found || rem[i] > rem[best]) { best = i; found = 1; }
+                                                 /* they don't get handouts  */
+                }
+                if (!found) break;
+                sw->units[best]++;
+                rem[best] = 0;
+            }
+            free(rem);
         }
-        free(rem);
+        /* On allocation failure the floor share stands and the pool goes
+         * unspent; the cap/bank pass below still runs. */
     }
 
     /* Cap, so a single winner cannot starve the swarm. Reclaimed units are not

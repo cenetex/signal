@@ -22,6 +22,7 @@
 #include "game_sim.h"
 #include "signal_connectome_brain.h"
 
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,8 +46,18 @@ static world_t g_world;
 
 int main(int argc, char **argv)
 {
-    int ticks = (argc > 1) ? atoi(argv[1]) : 3600;
-    if (ticks <= 0) ticks = 3600;
+    int ticks = 3600;
+    if (argc > 1) {
+        char *end = NULL;
+        errno = 0;
+        long parsed = strtol(argv[1], &end, 10);
+        if (errno != 0 || end == argv[1] || *end != '\0' ||
+            parsed < 1 || parsed > 1000000) {
+            fprintf(stderr, "usage: %s [ticks]\n", argv[0]);
+            return 2;
+        }
+        ticks = (int)parsed;
+    }
 
     /* Must run before world_reset so NPC spawn stamps the brain mode. */
     bool on = signal_connectome_init();
@@ -63,7 +74,7 @@ int main(int argc, char **argv)
     vec2 prev[MAX_NPC_SHIPS];
     double travelled[MAX_NPC_SHIPS];
     int    transitions[MAX_NPC_SHIPS];
-    int    last_state[MAX_NPC_SHIPS];
+    npc_state_t last_state[MAX_NPC_SHIPS];
     int    tow_ticks[MAX_NPC_SHIPS];
     long   state_hist[8];
     memset(travelled, 0, sizeof(travelled));

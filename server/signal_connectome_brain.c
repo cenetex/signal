@@ -298,8 +298,8 @@ static int32_t cb_compute_fear(const world_t *w, const npc_ship_t *npc)
          * than drift, so it gets the wider radius. */
         float vx = a->vel.x - s->vel.x;
         float vy = a->vel.y - s->vel.y;
-        float v2 = vx * vx + vy * vy;
-        if (v2 < 400.0f) continue;              /* < 20 u/s relative */
+        float rel_sq = vx * vx + vy * vy;
+        if (rel_sq < 400.0f) continue;          /* < 20 u/s relative */
         float rx = a->pos.x - s->pos.x;
         float ry = a->pos.y - s->pos.y;
         float r2 = rx * rx + ry * ry;
@@ -307,9 +307,9 @@ static int32_t cb_compute_fear(const world_t *w, const npc_ship_t *npc)
         if (r2 > radius * radius) continue;
         float closing = -(rx * vx + ry * vy);   /* >0 = approaching */
         if (closing <= 0.0f) continue;
-        float d = sqrtf(r2);
+        float d = v2_len(v2(rx, ry));
         float prox = 1.0f - d / radius;          /* 0..1 */
-        float menace = cb_clampf(sqrtf(v2) / 250.0f, 0.0f, 1.0f);
+        float menace = cb_clampf(v2_len(v2(vx, vy)) / 250.0f, 0.0f, 1.0f);
         int32_t f = (int32_t)(prox * menace * (float)Q16_ONE);
         if (f > fear) fear = f;
     }

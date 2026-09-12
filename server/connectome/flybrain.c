@@ -338,7 +338,7 @@ int32_t fb_sim_turn_raw(const fb_sim *s, uint32_t agent)
         r = rate_to_hz_q16(rs, rc);
     }
     int64_t tot = (int64_t)l + r;
-    return tot ? (int32_t)((((int64_t)r - l) << 16) / tot) : 0;
+    return tot ? (int32_t)((((int64_t)r - l) * 65536) / tot) : 0;
 }
 
 /* Measure turn_bias and turn_span by driving agent 0 three ways:
@@ -414,9 +414,9 @@ void fb_sim_command(const fb_sim *s, uint32_t agent, fb_command *out)
     out->drive = (int32_t)(((int64_t)l + r) / 2);
     int64_t tot = (int64_t)l + r;
     /* Mean-normalised, so unequal population sizes cannot fake a turn. */
-    int32_t raw = tot ? (int32_t)((((int64_t)r - l) << 16) / tot) : 0;
+    int32_t raw = tot ? (int32_t)((((int64_t)r - l) * 65536) / tot) : 0;
     if (s->turn_span > 0) {
-        int64_t t = ((int64_t)(raw - s->turn_bias) << 16) / s->turn_span;
+        int64_t t = ((int64_t)(raw - s->turn_bias) * 65536) / s->turn_span;
         if (t > 65536) t = 65536;
         if (t < -65536) t = -65536;
         out->turn = (int32_t)t;
@@ -437,7 +437,7 @@ static int32_t asym(const fb_sim *s, uint32_t agent, const char *l, const char *
     int32_t a = fb_sim_pop_rate(s, agent, l);
     int32_t b = fb_sim_pop_rate(s, agent, r);
     int64_t tot = (int64_t)a + b;
-    return tot ? (int32_t)((((int64_t)b - a) << 16) / tot) : 0;
+    return tot ? (int32_t)((((int64_t)b - a) * 65536) / tot) : 0;
 }
 
 static int32_t pair_mean(const fb_sim *s, uint32_t agent, const char *l, const char *r)

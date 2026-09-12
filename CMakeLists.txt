@@ -681,6 +681,11 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
     signal_apply_sim_profile(connectome_swarm_probe)
     if(NOT MSVC)
         target_link_libraries(connectome_swarm_probe PRIVATE m)
+        target_compile_options(connectome_swarm_probe PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(connectome_swarm_probe PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(connectome_swarm_probe PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
     add_executable(signal_replay

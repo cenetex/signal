@@ -153,7 +153,7 @@ bool scent_gradient(const world_t *w,
                                      v2(pos.x, pos.y - step), kind, 1);
 
     vec2 g = v2(east - west, north - south);
-    float mag = sqrtf(g.x * g.x + g.y * g.y);
+    float mag = v2_len(g);
     /* Below this the field is flat to within its own quantisation and any
      * "direction" would be an artifact of cell boundaries. */
     if (mag < 1e-4f) return false;
