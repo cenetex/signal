@@ -91,3 +91,20 @@ const fly_purchase_t *world_fly_purchase_grant(world_t *w,
     if (!signature || !any_bytes(signature, 64)) return NULL;
     return fly_purchase_apply(w, id, wallet, signature, station);
 }
+
+/* Read the active worker's own station ledgers without creating accounts. */
+bool world_fly_worker_credits(const world_t *w, uint32_t asset_id, double *out) {
+    if (!w || !out) return false;
+    const ship_asset_t *asset = world_ship_asset_by_id_const(w, asset_id);
+    if (!asset || asset->provenance != SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
+        asset->operator_kind != SHIP_ASSET_OPERATOR_NPC ||
+        asset->operator_slot < 0 || asset->operator_slot >= MAX_NPC_SHIPS)
+        return false;
+    const npc_ship_t *npc = &w->npc_ships[asset->operator_slot];
+    if (!npc->active || npc->ship_asset_id != asset_id) return false;
+    double total = 0.0;
+    for (int i = 0; i < MAX_STATIONS; i++)
+        total += ledger_balance(&w->stations[i], npc->session_token);
+    *out = total;
+    return true;
+}

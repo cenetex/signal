@@ -148,6 +148,9 @@ async function refresh() {
       const canvas = document.createElement('canvas'); canvas.setAttribute('aria-label', 'Live map centered on your worker'); card.append(canvas);
       const job = worker.lost ? 'Ship lost' : !worker.launched ? 'Launch queued' : worker.towing ? 'Towing cargo' : ['Choosing a job', 'Flying to the rock field', 'Mining', 'Returning to station', 'Docked', 'Flying to destination', 'Unloading'][worker.state] || 'Working autonomously';
       card.append(element('div', job, 'job'), element('small', `Hull ${Math.max(0, Math.round(worker.hull))} / ${Math.round(worker.maxHull)}`));
+      card.append(element('div', Number.isFinite(worker.credits)
+        ? `${worker.credits.toLocaleString(undefined, { maximumFractionDigits: 2 })} game credits`
+        : 'Credit balance unavailable', 'job'), element('small', 'Total held across stations'));
       $('workers').append(card); drawMap(canvas, worker, me.stations);
     }
     // Keep recovery fields stable while the owner enters a receipt.
