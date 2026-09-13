@@ -2,7 +2,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import path from 'node:path';
 import { FlyShopStore } from './fly-shop-store.mjs';
 import { decode58, encode58 } from '../web/fly-codec.mjs';
-import { FLY_MINT, OFFERS, makeRpc, prepareFlyBurn, checkFlyBurn } from './fly-shop-chain.mjs';
+import { FLY_MINT, OFFERS, makeRpc, prepareFlyBurn, checkFlyBurn, matchesPreparedBurn } from './fly-shop-chain.mjs';
 import { TOKEN_2022_PROGRAM } from './solana-ship-burn.mjs';
 const now = () => Date.now();
 const fail = (code, status = 400) => Object.assign(new Error(code), { status });
@@ -212,8 +212,7 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
             if (typeof data.transaction !== 'string' || data.transaction.length > 2000) throw fail('invalid_signature');
             const signed = Buffer.from(data.transaction, 'base64');
             const prepared = Buffer.from(q.prepared || '', 'base64');
-            if (signed.length !== prepared.length || signed[0] !== 1 ||
-                !signed.subarray(65).equals(prepared.subarray(65)) ||
+            if (signed[0] !== 1 || !matchesPreparedBurn(signed, prepared) ||
                 !verify(null, signed.subarray(65), pubkey(wallet), signed.subarray(1, 65))) throw fail('invalid_signature');
             const signature = encode58(signed.subarray(1, 65));
             if (q.signature && q.signature !== signature) throw fail('purchase_already_paid', 409);
