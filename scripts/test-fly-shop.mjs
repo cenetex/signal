@@ -277,10 +277,10 @@ function guardedVariant(encoded, mutate = () => {}) {
     parts.keys.push(Buffer.from(decode58(LIGHTHOUSE, 32)));
     // Synthetic account-state checks with the same opcodes and placement as
     // Solflare's wallet guards. Keep user transactions out of the fixtures.
-    const info = { program: 6, accounts: [2], data: Buffer.from('060401030100', 'hex') };
+    const info = { program: 6, accounts: [2], data: Buffer.from('060401070000', 'hex') };
     parts.instructions.splice(2, 0, info, { ...info, accounts: [1] });
     parts.instructions.push({ ...info, accounts: [0] },
-      { program: 6, accounts: [2], data: Buffer.from('0a04010000743ba40b00000000', 'hex') });
+      { program: 6, accounts: [2], data: Buffer.from('0a04010200743ba40b00000000', 'hex') });
     mutate(parts);
   } });
 }
