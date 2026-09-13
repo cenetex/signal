@@ -1915,7 +1915,14 @@ int ship_asset_launch_fly_worker(world_t *w, ship_asset_t *asset, int station) {
     }
     if (!paid) return -1;
     npc_role_t role = station == 1 ? NPC_ROLE_TOW : NPC_ROLE_MINER;
-    return npc_claim_selected_asset(w, station, role, asset, NULL);
+    /* A rebuild keeps the worker's persisted ledger token so the rebuild debt
+     * is repaid by the same account its work credits. */
+    bool reuse = asset->worker_token[0] != 0;
+    int slot = npc_claim_selected_asset(w, station, role, asset,
+                                        reuse ? asset->worker_token : NULL);
+    if (slot >= 0)
+        memcpy(asset->worker_token, w->npc_ships[slot].session_token, 8);
+    return slot;
 }
 
 /* Test/bootstrap shim. Production roster replenishment claims existing
@@ -6700,6 +6707,9 @@ void step_npc_ships(world_t *w, float dt) {
                     asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
                     asset->operator_slot = -1;
                     asset->stored_ship.hull = hull_max_for_class(asset->hull_class);
+                    /* Persist the ledger identity so even a deferred rebuild
+                     * (or one after a restart) carries the debt. */
+                    memcpy(asset->worker_token, npc->session_token, 8);
                     if (rebuild_count < (int)(sizeof(rebuild_assets) /
                                               sizeof(rebuild_assets[0]))) {
                         rebuild_assets[rebuild_count] = asset->asset_id;

@@ -3750,6 +3750,44 @@ TEST(test_fly_purchase_grant_is_durable_and_once_only) {
     ASSERT(!world_save(loaded, TMP("fly-purchase-invalid.sav")));
 }
 
+TEST(test_fly_worker_ledger_token_survives_restart_for_rebuild) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    world_reset(w);
+    uint8_t wallet[32] = {71}, id[32] = {72}, signature[64] = {73};
+    const fly_purchase_t *p =
+        world_fly_purchase_grant(w, id, wallet, signature, 0);
+    ASSERT(p != NULL);
+    uint32_t asset_id = p->asset_id;
+    ship_asset_t *asset = world_ship_asset_by_id(w, asset_id);
+    ASSERT(asset != NULL);
+    uint8_t token[8];
+    memcpy(token, asset->worker_token, 8);
+    ASSERT(token[0] != 0);
+
+    /* The ledger identity must survive a restart so a deferred rebuild can
+     * still put the debt on the account the worker earns into. */
+    ASSERT(world_save(w, TMP("fly-worker-token.sav")));
+    ASSERT(world_load(loaded, TMP("fly-worker-token.sav")));
+    ship_asset_t *lasset = world_ship_asset_by_id(loaded, asset_id);
+    ASSERT(lasset != NULL);
+    ASSERT(memcmp(lasset->worker_token, token, 8) == 0);
+
+    /* Deferred rebuild: stored and unoperated, then relaunched. The new NPC
+     * must reuse the persisted token rather than mint a fresh one. */
+    lasset->destroyed = false;
+    lasset->status = SHIP_ASSET_STATUS_STORED;
+    lasset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+    lasset->operator_slot = -1;
+    lasset->stored_ship.hull = hull_max_for_class(lasset->hull_class);
+    ASSERT(ship_asset_launch_fly_worker(loaded, lasset, 0) >= 0);
+    ASSERT(lasset->operator_slot >= 0 &&
+           lasset->operator_slot < MAX_NPC_SHIPS);
+    const npc_ship_t *worker = &loaded->npc_ships[lasset->operator_slot];
+    ASSERT(worker->active);
+    ASSERT(memcmp(worker->session_token, token, 8) == 0);
+}
+
 TEST(test_fly_worker_credits_follow_worker_ledgers) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
@@ -12667,6 +12705,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hail_responds_at_helios_dock_even_with_short_ship_comm);
     RUN(test_hail_reports_no_station_in_range);
     RUN(test_fly_purchase_grant_is_durable_and_once_only);
+    RUN(test_fly_worker_ledger_token_survives_restart_for_rebuild);
     RUN(test_fly_purchase_reserved_hull_survives_full_inventory);
     RUN(test_fly_worker_credits_follow_worker_ledgers);
     RUN(test_dead_neural_worker_auto_respawns);

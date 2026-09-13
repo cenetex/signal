@@ -608,6 +608,11 @@ typedef struct {
     int16_t build_station;
     bool loaner;
     bool destroyed;
+    /* Sponsored fly workers: the NPC session token its station ledger is keyed
+     * by. Persisted so a rebuild (including across a restart) relaunches the
+     * worker on the same account, and its own earnings repay the rebuild
+     * debt. Zero for non-sponsored assets. */
+    uint8_t worker_token[8];
     uint8_t birth_proof_version;
     uint8_t birth_fragment_grades[SHIP_BIRTH_PROOF_FRAGMENT_COUNT];
     uint8_t birth_soul_pub[32];

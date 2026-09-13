@@ -90,7 +90,9 @@
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
 #define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
-#define SAVE_VERSION 85  /* v85: append wallet-owned FLY purchase receipts.
+#define SAVE_VERSION 86  /* v86: persist the sponsored worker's ledger token
+                          * so a rebuild keeps its debt identity.
+                          * v85: append wallet-owned FLY purchase receipts.
                           * v84: append the durable station payout journal so
                           * a source/action identity cannot credit twice across
                           * retries, reconnects, or save/load.
@@ -1985,6 +1987,12 @@ static bool write_ship_asset(FILE *f, const ship_asset_t *asset,
                sizeof(asset->birth_fragment_pubs), 1, f) != 1) {
         return false;
     }
+    if (g_writing_save_version >= 86) {
+        if (fwrite(asset->worker_token,
+                   sizeof(asset->worker_token), 1, f) != 1) {
+            return false;
+        }
+    }
     const ship_t *ship = live_ship ? live_ship : &asset->stored_ship;
     return write_asset_ship_payload(f, asset->active ? ship : NULL);
 }
@@ -2022,6 +2030,11 @@ static bool read_ship_asset(
                   sizeof(asset->birth_material_root), 1, f) != 1 ||
             fread(asset->birth_fragment_pubs,
                   sizeof(asset->birth_fragment_pubs), 1, f) != 1) {
+            return false;
+        }
+        if (g_loaded_save_version >= 86 &&
+            fread(asset->worker_token,
+                  sizeof(asset->worker_token), 1, f) != 1) {
             return false;
         }
     } else {
