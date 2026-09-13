@@ -28,6 +28,7 @@ export function buildBurnTransaction(purchase, tokenAccount, blockhash) {
 // compute fees. Keep the quoted blockhash so expiry recovery stays exact.
 export function matchesPreparedBurn(signed, prepared) {
   const budget = 'ComputeBudget111111111111111111111111111111';
+  const lighthouse = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
   function parse(bytes) {
     let offset = 0;
     const take = n => {
@@ -74,6 +75,16 @@ export function matchesPreparedBurn(signed, prepared) {
     let limit = 1400000n, price = 0n;
     const seen = new Set();
     actual.instructions = actual.instructions.filter(ix => {
+      if (ix.program.address === lighthouse) {
+        // Lighthouse 4c579479, instruction.rs: 6 = AssertAccountInfoMulti,
+        // 10 = AssertTokenAccountMulti. Both only evaluate account state.
+        // https://github.com/Jac0xb/lighthouse/tree/4c579479c98635e419b1b167f08be02a71604a71/programs/lighthouse/src
+        const op = Buffer.from(ix.data, 'hex')[0];
+        if (![6, 10].includes(op) || ix.program.signer || ix.program.writable ||
+            ix.accounts.length !== 1 || !expected.keys.slice(0, 3).some(k =>
+              JSON.stringify(k) === JSON.stringify(ix.accounts[0]))) throw Error('invalid_wallet_guard');
+        return false;
+      }
       if (ix.program.address !== budget) return true;
       const data = Buffer.from(ix.data, 'hex'), op = data[0];
       if (ix.accounts.length || ix.program.signer || ix.program.writable || seen.has(op)) throw Error('invalid_fee');
@@ -87,7 +98,7 @@ export function matchesPreparedBurn(signed, prepared) {
     });
     // Bound wallet-added priority fees to 0.001 SOL.
     if ((limit * price + 999999n) / 1000000n > 1000000n) return false;
-    const keys = value => value.keys.filter(k => k.address !== budget).sort((a, b) => a.address.localeCompare(b.address));
+    const keys = value => value.keys.filter(k => k.address !== budget && k.address !== lighthouse).sort((a, b) => a.address.localeCompare(b.address));
     return JSON.stringify(keys(actual)) === JSON.stringify(keys(expected)) &&
       JSON.stringify(actual.instructions) === JSON.stringify(expected.instructions);
   } catch { return false; }

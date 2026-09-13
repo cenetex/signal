@@ -212,8 +212,8 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
             if (typeof data.transaction !== 'string' || data.transaction.length > 2000) throw fail('invalid_signature');
             const signed = Buffer.from(data.transaction, 'base64');
             const prepared = Buffer.from(q.prepared || '', 'base64');
-            if (signed[0] !== 1 || !matchesPreparedBurn(signed, prepared) ||
-                !verify(null, signed.subarray(65), pubkey(wallet), signed.subarray(1, 65))) throw fail('invalid_signature');
+            if (signed[0] !== 1 || !matchesPreparedBurn(signed, prepared)) throw fail('transaction_changed');
+            if (!verify(null, signed.subarray(65), pubkey(wallet), signed.subarray(1, 65))) throw fail('invalid_signature');
             const signature = encode58(signed.subarray(1, 65));
             if (q.signature && q.signature !== signature) throw fail('purchase_already_paid', 409);
             // Persist the signed receipt before the first network broadcast.
@@ -244,7 +244,7 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
         }
         throw fail('route_not_found', 404);
       } catch (error) {
-        const known = new Set(['invalid_address', 'invalid_station', 'invalid_signature', 'burn_not_finalized',
+        const known = new Set(['invalid_address', 'invalid_station', 'invalid_signature', 'transaction_changed', 'burn_not_finalized',
           'signature_mismatch', 'burn_amount_mismatch', 'burn_identity_mismatch', 'purchase_memo_mismatch',
           'insufficient_fly', 'connect_wallet', 'wallet_signature_failed', 'purchase_not_found',
           'purchase_already_paid', 'receipt_used', 'finish_existing_purchase', 'shop_full', 'slow_down',

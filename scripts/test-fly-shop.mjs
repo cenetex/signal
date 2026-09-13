@@ -231,7 +231,7 @@ for (const [name, mutate] of Object.entries({
   const f = await setup(t); await f.login(); const q = (await f.quote()).data;
   const bytes = walletVariant(q.transaction, { mutate });
   sign(null, bytes.subarray(65), f.buyer.privateKey).copy(bytes, 1);
-  assert.equal((await f.request('submit', { id: q.id, transaction: bytes.toString('base64') })).data.error, 'invalid_signature');
+  assert.equal((await f.request('submit', { id: q.id, transaction: bytes.toString('base64') })).data.error, 'transaction_changed');
   assert.equal(f.sent, 0);
 });
 test('wire parser rejects truncation, trailing data and address lookups', () => {
@@ -269,4 +269,53 @@ test('accepted server receipt wins over stale local cache on recovery', async ()
     assert.equal(route, 'confirm'); assert.equal(data.signature, 'accepted'); return { state: 'fulfilled' };
   }, [['signal-fly:q:signed', 'old-tx']]);
   await h.confirm('q', 'old-sig'); assert.deepEqual(routes, ['me', 'confirm']); assert.equal(h.cache.size, 0);
+});
+
+const LIGHTHOUSE = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
+function guardedVariant(encoded, mutate = () => {}) {
+  return walletVariant(encoded, { mutate: parts => {
+    parts.keys.push(Buffer.from(decode58(LIGHTHOUSE, 32)));
+    // Synthetic account-state checks with the same opcodes and placement as
+    // Solflare's wallet guards. Keep user transactions out of the fixtures.
+    const info = { program: 6, accounts: [2], data: Buffer.from('060401030100', 'hex') };
+    parts.instructions.splice(2, 0, info, { ...info, accounts: [1] });
+    parts.instructions.push({ ...info, accounts: [0] },
+      { program: 6, accounts: [2], data: Buffer.from('0a04010000743ba40b00000000', 'hex') });
+    mutate(parts);
+  } });
+}
+test('signed wallet state guards around the burn retain a valid receipt', async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  const bytes = guardedVariant(q.transaction);
+  sign(null, bytes.subarray(65), f.buyer.privateKey).copy(bytes, 1);
+  const result = await f.request('submit', { id: q.id, transaction: bytes.toString('base64') });
+  assert.equal(result.status, 200); assert.equal(f.sent, 1);
+  f.setFinal(true);
+  assert.equal((await f.request('confirm', { id: q.id, signature: result.data.signature })).data.state, 'fulfilled');
+});
+for (const [name, mutate] of Object.entries({
+  memoryWrite: ({ instructions }) => { instructions[2].data[0] = 0; },
+  memoryClose: ({ instructions }) => { instructions[2].data[0] = 1; },
+  unknownGuard: ({ instructions }) => { instructions[2].data[0] = 255; },
+  extraAccount: ({ instructions }) => { instructions[2].accounts.push(0); },
+  programAccount: ({ instructions }) => { instructions[2].accounts = [3]; },
+  otherProgram: ({ keys }) => { keys[6] = Buffer.alloc(32, 55); },
+  changedBurn: ({ instructions }) => { instructions[4].data[1] ^= 1; },
+})) test(`wallet guard rejects ${name}`, () => {
+  const q = { id: 'a'.repeat(64), wallet: key().address, mint: FLY_MINT, tokenProgram: TOKEN_2022_PROGRAM, decimals: 9, amount: '50000000000' };
+  const prepared = buildBurnTransaction(q, key().address, key().address);
+  assert.equal(matchesPreparedBurn(guardedVariant(prepared.toString('base64'), mutate), prepared), false);
+});
+test('valid transaction with a damaged signature reports signature failure', async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  const bytes = Buffer.from(f.signed(q), 'base64'); bytes[1] ^= 1;
+  assert.equal((await f.request('submit', { id: q.id, transaction: bytes.toString('base64') })).data.error, 'invalid_signature');
+  assert.equal(f.sent, 0);
+});
+test('a changed transaction clears the rejected cache for a fresh quote', async () => {
+  const h = await recoveryHarness(async route => {
+    if (route === 'submit') throw Error('transaction_changed');
+    return { purchases: [{ id: 'q', state: 'quoted', signature: null }] };
+  }, [['signal-fly:q', 'sig'], ['signal-fly:q:signed', 'tx']]);
+  await assert.rejects(h.submit('q', 'tx'), /transaction_changed/); assert.equal(h.cache.size, 0);
 });

@@ -5,6 +5,7 @@ const say = message => { $('status').textContent = message; };
 const messages = { connect_wallet: 'Connect your wallet to continue.', insufficient_fly: 'This wallet needs more FLY for this worker.',
   burn_not_finalized: 'Waiting for Solana to finalize your burn…', shop_full: 'Worker spaces are reserved. Please check back later.',
   finish_existing_purchase: 'Finish your open purchase in the history below.', service_unavailable: 'The world is reconnecting. Your saved purchase will resume here.',
+  transaction_changed: 'Please choose your worker again for a fresh purchase request.',
   invalid_signature: 'Please choose your worker again for a fresh wallet request.',
   wallet_signature_failed: 'The wallet signature could not be checked. Please connect again.' };
 async function api(route, data) {
@@ -59,7 +60,7 @@ const storageKey = id => `signal-fly:${id}`;
 async function submitSaved(id, transaction) {
   try { return await api('submit', { id, transaction }); }
   catch (error) {
-    if (error.message === 'invalid_signature') {
+    if (['invalid_signature', 'transaction_changed'].includes(error.message)) {
       // A validation rejection happens before broadcast. Only clear this local
       // attempt after checking that the server has no accepted payment.
       const me = await api('me');
