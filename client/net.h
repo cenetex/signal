@@ -107,7 +107,7 @@ typedef struct {
     int target_asteroid;    /* mining target (-1 for none) */
     int towed_fragment;     /* towed fragment (-1 for none) */
     uint8_t tint_r, tint_g, tint_b; /* manifest rarity display tint */
-    uint8_t _legacy_identity_reserved[8]; /* always zero; never identity */
+    uint64_t worker_id; /* public fly-worker asset id; 0 = not a purchased worker */
     uint8_t home_station;           /* 0xFF = unknown */
 } NetNpcState;
 

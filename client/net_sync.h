@@ -73,6 +73,10 @@ void apply_remote_asteroid_motion(const NetAsteroidMotionState* asteroids,
 void apply_remote_asteroid_state_q(const NetAsteroidStateQ* asteroids,
                                    int count);
 void apply_remote_npcs(const NetNpcState* npcs, int count);
+
+/* Public fly-worker asset id for a replicated NPC slot, 0 when the NPC is
+ * not a purchased worker. Presentation only. */
+uint64_t client_npc_worker_id(int slot);
 void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count);
 void apply_remote_npc_pos(const NetNpcPosState* npcs, int count);
 void apply_remote_npc_pose(const NetNpcPoseState* npcs, int count);

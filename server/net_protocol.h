@@ -3710,8 +3710,29 @@ static inline bool serialize_relevance_in_player_view(vec2 pos,
     return v2_dist_sq(pos, player_pos) <= ASTEROID_VIEW_RADIUS_SQ;
 }
 
+/* Public worker identity: the asset id of an NPC granted by the fly shop,
+ * or 0 for every other NPC. Slot index is not identity. This is the same
+ * non-bearer #id the workers page shows, not token-derived custody. */
+static inline uint64_t npc_worker_id(const world_t *w, const npc_ship_t *n) {
+    if (!w || !n || n->ship_asset_id == 0) return 0;
+    const ship_asset_t *asset =
+        world_ship_asset_by_id_const(w, n->ship_asset_id);
+    if (!asset || asset->provenance != SHIP_ASSET_PROVENANCE_FLY_PURCHASE)
+        return 0;
+    return (uint64_t)asset->asset_id;
+}
+
+/* A purchased worker always streams, so its owner can find it anywhere;
+ * everything else keeps the existing relevance cull. */
+static inline bool npc_in_player_view(const world_t *w, const npc_ship_t *n,
+                                      vec2 player_pos) {
+    if (npc_worker_id(w, n) != 0) return true;
+    return serialize_relevance_in_player_view(n->ship->pos, player_pos);
+}
+
 static inline void serialize_one_npc(uint8_t *p, int index,
-                                     const npc_ship_t *n) {
+                                     const npc_ship_t *n,
+                                     uint64_t worker_id) {
     p[0] = (uint8_t)index;
     p[1] = 1; /* active */
     p[1] |= (((uint8_t)n->role & 0x3) << 1);
@@ -3731,13 +3752,8 @@ static inline void serialize_one_npc(uint8_t *p, int index,
     p[26] = (uint8_t)(n->tint_r * 255.0f);
     p[27] = (uint8_t)(n->tint_g * 255.0f);
     p[28] = (uint8_t)(n->tint_b * 255.0f);
-    /*
-     * Bytes 29..36 carried a token-derived NPC custody identity before
-     * protocol v6. It is a bearer/offline-verifier surface, so preserve the
-     * record width for compatibility but emit zeros unconditionally.
-     */
-    memset(&p[NPC_RECORD_RESERVED_IDENTITY_OFFSET], 0,
-           NPC_RECORD_RESERVED_IDENTITY_SIZE);
+    /* Bytes 29..36: public worker asset id, 0 for non-purchased NPCs. */
+    write_u64_le(&p[NPC_RECORD_WORKER_ID_OFFSET], worker_id);
     p[NPC_RECORD_HOME_STATION_OFFSET] =
         (uint8_t)(n->home_station & 0xFF);
 }
@@ -3746,7 +3762,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     int count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        serialize_one_npc(&buf[2 + count * NPC_RECORD_SIZE], i, &npcs[i]);
+        serialize_one_npc(&buf[2 + count * NPC_RECORD_SIZE], i, &npcs[i], 0);
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPCS;
@@ -3754,15 +3770,17 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     return 2 + count * NPC_RECORD_SIZE;
 }
 
-static inline int serialize_npcs_for_player(uint8_t *buf,
+static inline int serialize_npcs_for_player(const world_t *w,
+                                            uint8_t *buf,
                                             const npc_ship_t *npcs,
                                             vec2 player_pos) {
     int count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
+        if (!npc_in_player_view(w, &npcs[i], player_pos))
             continue;
-        serialize_one_npc(&buf[2 + count * NPC_RECORD_SIZE], i, &npcs[i]);
+        serialize_one_npc(&buf[2 + count * NPC_RECORD_SIZE], i, &npcs[i],
+                          npc_worker_id(w, &npcs[i]));
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPCS;
@@ -3770,14 +3788,14 @@ static inline int serialize_npcs_for_player(uint8_t *buf,
     return 2 + count * NPC_RECORD_SIZE;
 }
 
-static inline int serialize_npc_motion_for_player(uint8_t *buf,
+static inline int serialize_npc_motion_for_player(const world_t *w, uint8_t *buf,
                                                   const npc_ship_t *npcs,
                                                   vec2 player_pos) {
     int count = 0;
     if (!buf || !npcs) return 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
+        if (!npc_in_player_view(w, &npcs[i], player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_MOTION_MSG_HEADER +
@@ -3823,14 +3841,14 @@ static inline int8_t npc_motion8_q_encode_vel(float value) {
     return (int8_t)((q >= 0.0f) ? (q + 0.5f) : (q - 0.5f));
 }
 
-static inline int serialize_npc_motion_q_for_player(uint8_t *buf,
+static inline int serialize_npc_motion_q_for_player(const world_t *w, uint8_t *buf,
                                                     const npc_ship_t *npcs,
                                                     vec2 player_pos) {
     int count = 0;
     if (!buf || !npcs) return 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
+        if (!npc_in_player_view(w, &npcs[i], player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_MOTION_Q_MSG_HEADER +
@@ -3858,14 +3876,14 @@ static inline int serialize_npc_motion_q_for_player(uint8_t *buf,
     return NPC_MOTION_Q_MSG_HEADER + count * NPC_MOTION_Q_RECORD_SIZE;
 }
 
-static inline int serialize_npc_motion8_q_for_player(uint8_t *buf,
+static inline int serialize_npc_motion8_q_for_player(const world_t *w, uint8_t *buf,
                                                      const npc_ship_t *npcs,
                                                      vec2 player_pos) {
     int count = 0;
     if (!buf || !npcs) return 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
+        if (!npc_in_player_view(w, &npcs[i], player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_MOTION8_Q_MSG_HEADER +
@@ -4042,14 +4060,14 @@ static inline void npc_motion_note_sent(server_player_t *sp,
     sp->replication->npc_motion_sent_angle[index] = angle;
 }
 
-static inline int serialize_npc_status_for_player(uint8_t *buf,
+static inline int serialize_npc_status_for_player(const world_t *w, uint8_t *buf,
                                                   const npc_ship_t *npcs,
                                                   vec2 player_pos) {
     int count = 0;
     if (!buf || !npcs) return 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
+        if (!npc_in_player_view(w, &npcs[i], player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_STATUS_MSG_HEADER +
@@ -4082,14 +4100,14 @@ static inline bool npc_status8_ref_representable(int index) {
     return index < 0 || index < 255;
 }
 
-static inline int serialize_npc_status8_for_player(uint8_t *buf,
+static inline int serialize_npc_status8_for_player(const world_t *w, uint8_t *buf,
                                                    const npc_ship_t *npcs,
                                                    vec2 player_pos) {
     if (!buf || !npcs) return 0;
     int count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
+        if (!npc_in_player_view(w, &npcs[i], player_pos))
             continue;
         int target =
             (npcs[i].target_asteroid >= 0 &&
@@ -4107,7 +4125,7 @@ static inline int serialize_npc_status8_for_player(uint8_t *buf,
     count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
-        if (!serialize_relevance_in_player_view(npcs[i].ship->pos, player_pos))
+        if (!npc_in_player_view(w, &npcs[i], player_pos))
             continue;
 
         uint8_t *p = &buf[NPC_STATUS8_MSG_HEADER +
@@ -6322,20 +6340,20 @@ static inline void server_emit_world_snapshot_for_player(
     }
 
     int nlen = serialize_npcs_for_player(
-        scratch->npcs, w->npc_ships, sp->ship->pos);
+        w, scratch->npcs, w->npc_ships, sp->ship->pos);
     send(send_user, scratch->npcs, nlen);
     if (emit_live_world_drift) {
         int nmotion8_q_len = serialize_npc_motion8_q_for_player(
-            scratch->npc_motion8_q, w->npc_ships, sp->ship->pos);
+            w, scratch->npc_motion8_q, w->npc_ships, sp->ship->pos);
         if (nmotion8_q_len > NPC_MOTION8_Q_MSG_HEADER)
             send(send_user, scratch->npc_motion8_q, nmotion8_q_len);
         int nstatus8_len = serialize_npc_status8_for_player(
-            scratch->npc_status8, w->npc_ships, sp->ship->pos);
+            w, scratch->npc_status8, w->npc_ships, sp->ship->pos);
         if (nstatus8_len > NPC_STATUS8_MSG_HEADER) {
             send(send_user, scratch->npc_status8, nstatus8_len);
         } else {
             int nstatus_len = serialize_npc_status_for_player(
-                scratch->npc_status, w->npc_ships, sp->ship->pos);
+                w, scratch->npc_status, w->npc_ships, sp->ship->pos);
             if (nstatus_len > NPC_STATUS_MSG_HEADER)
                 send(send_user, scratch->npc_status, nstatus_len);
         }
