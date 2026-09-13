@@ -2,7 +2,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import path from 'node:path';
 import { FlyShopStore } from './fly-shop-store.mjs';
 import { decode58, encode58 } from '../web/fly-codec.mjs';
-import { FLY_MINT, OFFERS, makeRpc, prepareFlyBurn, checkFlyBurn, matchesPreparedBurn } from './fly-shop-chain.mjs';
+import { FLY_MINT, OFFERS, makeRpc, prepareFlyBurn, checkFlyBurn, matchesPreparedBurn, burnTransactionBlockhash } from './fly-shop-chain.mjs';
 import { TOKEN_2022_PROGRAM } from './solana-ship-burn.mjs';
 const now = () => Date.now();
 const fail = (code, status = 400) => Object.assign(new Error(code), { status });
@@ -212,12 +212,24 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
             if (typeof data.transaction !== 'string' || data.transaction.length > 2000) throw fail('invalid_signature');
             const signed = Buffer.from(data.transaction, 'base64');
             const prepared = Buffer.from(q.prepared || '', 'base64');
-            if (signed[0] !== 1 || !matchesPreparedBurn(signed, prepared) ||
-                !verify(null, signed.subarray(65), pubkey(wallet), signed.subarray(1, 65))) throw fail('invalid_signature');
+            if (q.signature && q.signed === data.transaction) return publicQuote(q);
+            if (signed[0] !== 1 || !matchesPreparedBurn(signed, prepared, { allowBlockhashChange: true })) throw fail('transaction_changed');
+            if (!verify(null, signed.subarray(65), pubkey(wallet), signed.subarray(1, 65))) throw fail('invalid_signature');
             const signature = encode58(signed.subarray(1, 65));
             if (q.signature && q.signature !== signature) throw fail('purchase_already_paid', 409);
-            // Persist the signed receipt before the first network broadcast.
-            if (!q.signature) await commit(() => { q.signature = signature; q.signed = data.transaction; });
+            let lastValidBlockHeight = q.lastValidBlockHeight;
+            if (burnTransactionBlockhash(signed) !== burnTransactionBlockhash(prepared)) {
+              const valid = await rpc('isBlockhashValid', [burnTransactionBlockhash(signed), { commitment: 'confirmed' }]);
+              if (valid?.value !== true) throw fail('transaction_changed');
+              if (!Number.isSafeInteger(valid.context?.slot)) throw fail('service_unavailable', 503);
+              // A newer hash's expiry is a conservative bound for this already
+              // valid hash. Finalized height must pass it before retry recovery.
+              const latest = await rpc('getLatestBlockhash', [{ commitment: 'confirmed', minContextSlot: valid.context.slot }]);
+              lastValidBlockHeight = latest?.value?.lastValidBlockHeight;
+              if (!Number.isSafeInteger(lastValidBlockHeight)) throw fail('service_unavailable', 503);
+            }
+            // Persist the signed receipt and its expiry before the first broadcast.
+            if (!q.signature) await commit(() => { q.signature = signature; q.signed = data.transaction; q.lastValidBlockHeight = lastValidBlockHeight; });
             if (q.state === 'quoted') {
               try { await broadcast(q); }
               catch { /* Confirmation and retry use the saved signature and identical bytes. */ }
@@ -244,7 +256,7 @@ export async function createFlyShop({ dataDir, origin, coreUrl, coreKey, rpc,
         }
         throw fail('route_not_found', 404);
       } catch (error) {
-        const known = new Set(['invalid_address', 'invalid_station', 'invalid_signature', 'burn_not_finalized',
+        const known = new Set(['invalid_address', 'invalid_station', 'invalid_signature', 'transaction_changed', 'burn_not_finalized',
           'signature_mismatch', 'burn_amount_mismatch', 'burn_identity_mismatch', 'purchase_memo_mismatch',
           'insufficient_fly', 'connect_wallet', 'wallet_signature_failed', 'purchase_not_found',
           'purchase_already_paid', 'receipt_used', 'finish_existing_purchase', 'shop_full', 'slow_down',

@@ -25,14 +25,15 @@ function finalized(q, signature) {
 async function setup(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'signal-fly-test-'));
   const buyer = key(), token = key().address, hash = key().address;
-  let shop, origin, grantCalls = 0, coreAvailable = true, chainFinal = false, currentQuote, lastSignature, sent = 0, height = 500, chainError = false;
+  let shop, origin, grantCalls = 0, coreAvailable = true, chainFinal = false, currentQuote, lastSignature, sent = 0, height = 500, chainError = false, hashValid = true, lastValidHeight = 999;
   const grants = new Map(), reservations = new Map();
   const rpc = async (method, params) => {
     switch (method) {
       case 'getGenesisHash': return MAINNET_GENESIS;
       case 'getAccountInfo': return mintAccount();
       case 'getTokenAccountsByOwner': return { value: [{ pubkey: token, account: { owner: TOKEN_2022_PROGRAM, data: { parsed: { info: { owner: params[0], mint: FLY_MINT, state: 'initialized', tokenAmount: { amount: '1000000000000', decimals: 9 } } } } } }] };
-      case 'getLatestBlockhash': return { value: { blockhash: hash, lastValidBlockHeight: 999 } };
+      case 'getLatestBlockhash': return { value: { blockhash: hash, lastValidBlockHeight: lastValidHeight } };
+      case 'isBlockhashValid': return { context: { slot: 100 }, value: hashValid };
       case 'getBlockHeight': return height;
       case 'sendTransaction': {
         const saved = JSON.parse(await readFile(path.join(dir, 'fly-shop.json'), 'utf8')).quotes;
@@ -83,6 +84,7 @@ async function setup(t) {
     const bytes = Buffer.from(q.transaction, 'base64'); sign(null, bytes.subarray(65), buyer.privateKey).copy(bytes, 1); return bytes.toString('base64');
   }
   return { request, login, quote, signed, buyer, rpc, dir, grants,
+    setHashValid(value) { hashValid = value; }, setExpiry(value) { lastValidHeight = value; },
     setFinal(value) { chainFinal = value; }, setHeight(value) { height = value; }, setChainError(value) { chainError = value; },
     retry() { return shop.retryPending(); }, setCore(value) { coreAvailable = value; },
     async restart() { shop.close(); shop = await start(); cookie = ''; },
@@ -221,7 +223,7 @@ for (const [name, mutate] of Object.entries({
   authority: ({ instructions }) => { instructions[2].accounts[2] = 1; },
   source: ({ keys }) => { keys[2] = Buffer.alloc(32, 44); },
   mint: ({ keys }) => { keys[1] = Buffer.alloc(32, 45); },
-  blockhash: ({ hash }) => { hash[0] ^= 1; },
+
   extraBurn: ({ instructions }) => { instructions.push(instructions[2]); },
   feeAccounts: ({ instructions }) => { instructions[0].accounts = [0]; },
   duplicateFee: ({ instructions }) => { instructions.push(instructions[0]); },
@@ -231,7 +233,7 @@ for (const [name, mutate] of Object.entries({
   const f = await setup(t); await f.login(); const q = (await f.quote()).data;
   const bytes = walletVariant(q.transaction, { mutate });
   sign(null, bytes.subarray(65), f.buyer.privateKey).copy(bytes, 1);
-  assert.equal((await f.request('submit', { id: q.id, transaction: bytes.toString('base64') })).data.error, 'invalid_signature');
+  assert.equal((await f.request('submit', { id: q.id, transaction: bytes.toString('base64') })).data.error, 'transaction_changed');
   assert.equal(f.sent, 0);
 });
 test('wire parser rejects truncation, trailing data and address lookups', () => {
@@ -269,4 +271,76 @@ test('accepted server receipt wins over stale local cache on recovery', async ()
     assert.equal(route, 'confirm'); assert.equal(data.signature, 'accepted'); return { state: 'fulfilled' };
   }, [['signal-fly:q:signed', 'old-tx']]);
   await h.confirm('q', 'old-sig'); assert.deepEqual(routes, ['me', 'confirm']); assert.equal(h.cache.size, 0);
+});
+
+const LIGHTHOUSE = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
+function guardedVariant(encoded, mutate = () => {}) {
+  return walletVariant(encoded, { mutate: parts => {
+    parts.keys.push(Buffer.from(decode58(LIGHTHOUSE, 32)));
+    // Synthetic account-state checks with the same opcodes and placement as
+    // Solflare's wallet guards. Keep user transactions out of the fixtures.
+    const info = { program: 6, accounts: [2], data: Buffer.from('060401070000', 'hex') };
+    parts.instructions.splice(2, 0, info, { ...info, accounts: [1] });
+    parts.instructions.push({ ...info, accounts: [0] },
+      { program: 6, accounts: [2], data: Buffer.from('0a04010200743ba40b00000000', 'hex') });
+    mutate(parts);
+  } });
+}
+test('signed wallet state guards around the burn retain a valid receipt', async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  const bytes = guardedVariant(q.transaction);
+  sign(null, bytes.subarray(65), f.buyer.privateKey).copy(bytes, 1);
+  const result = await f.request('submit', { id: q.id, transaction: bytes.toString('base64') });
+  assert.equal(result.status, 200); assert.equal(f.sent, 1);
+  f.setFinal(true);
+  assert.equal((await f.request('confirm', { id: q.id, signature: result.data.signature })).data.state, 'fulfilled');
+});
+for (const [name, mutate] of Object.entries({
+  memoryWrite: ({ instructions }) => { instructions[2].data[0] = 0; },
+  memoryClose: ({ instructions }) => { instructions[2].data[0] = 1; },
+  unknownGuard: ({ instructions }) => { instructions[2].data[0] = 255; },
+  extraAccount: ({ instructions }) => { instructions[2].accounts.push(0); },
+  programAccount: ({ instructions }) => { instructions[2].accounts = [3]; },
+  otherProgram: ({ keys }) => { keys[6] = Buffer.alloc(32, 55); },
+  changedBurn: ({ instructions }) => { instructions[4].data[1] ^= 1; },
+})) test(`wallet guard rejects ${name}`, () => {
+  const q = { id: 'a'.repeat(64), wallet: key().address, mint: FLY_MINT, tokenProgram: TOKEN_2022_PROGRAM, decimals: 9, amount: '50000000000' };
+  const prepared = buildBurnTransaction(q, key().address, key().address);
+  assert.equal(matchesPreparedBurn(guardedVariant(prepared.toString('base64'), mutate), prepared), false);
+});
+test('valid transaction with a damaged signature reports signature failure', async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  const bytes = Buffer.from(f.signed(q), 'base64'); bytes[1] ^= 1;
+  assert.equal((await f.request('submit', { id: q.id, transaction: bytes.toString('base64') })).data.error, 'invalid_signature');
+  assert.equal(f.sent, 0);
+});
+test('a changed transaction clears the rejected cache for a fresh quote', async () => {
+  const h = await recoveryHarness(async route => {
+    if (route === 'submit') throw Error('transaction_changed');
+    return { purchases: [{ id: 'q', state: 'quoted', signature: null }] };
+  }, [['signal-fly:q', 'sig'], ['signal-fly:q:signed', 'tx']]);
+  await assert.rejects(h.submit('q', 'tx'), /transaction_changed/); assert.equal(h.cache.size, 0);
+});
+
+test('wallet-refreshed blockhash uses a new expiry bound through restart', async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  const bytes = guardedVariant(q.transaction, ({ hash }) => { hash[0] ^= 1; });
+  sign(null, bytes.subarray(65), f.buyer.privateKey).copy(bytes, 1);
+  f.setExpiry(1200);
+  const request = { id: q.id, transaction: bytes.toString('base64') };
+  const sent = await f.request('submit', request); assert.equal(sent.status, 200);
+  assert.equal(JSON.parse(await readFile(path.join(f.dir, 'fly-shop.json'), 'utf8')).quotes[0].lastValidBlockHeight, 1200);
+  await f.restart(); await f.login(); f.setHeight(1000);
+  await f.retry(); assert.equal((await f.request('me')).data.purchases[0].signature, sent.data.signature);
+  f.setHashValid(false); assert.equal((await f.request('submit', request)).status, 200);
+  f.setHeight(1201); await f.retry();
+  assert.equal((await f.request('me')).data.purchases[0].signature, null);
+});
+test('unrecognized wallet blockhash is rejected before broadcast', async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  const bytes = guardedVariant(q.transaction, ({ hash }) => { hash[0] ^= 1; });
+  sign(null, bytes.subarray(65), f.buyer.privateKey).copy(bytes, 1);
+  f.setHashValid(false);
+  assert.equal((await f.request('submit', { id: q.id, transaction: bytes.toString('base64') })).data.error, 'transaction_changed');
+  assert.equal(f.sent, 0);
 });
