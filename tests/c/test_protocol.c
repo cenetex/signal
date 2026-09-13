@@ -4533,13 +4533,20 @@ TEST(test_roundtrip_npcs) {
     ASSERT_EQ_INT(read_u16_le(&p[22]), 512);       /* target_asteroid */
     ASSERT_EQ_INT(read_u16_le(&p[24]), 1024);      /* towed_fragment */
     ASSERT_EQ_INT(p[26], (int)(0.55f * 255.0f));
-    const uint8_t zero_identity[NPC_RECORD_RESERVED_IDENTITY_SIZE] = {0};
-    ASSERT(memcmp(&p[NPC_RECORD_RESERVED_IDENTITY_OFFSET],
+    const uint8_t zero_identity[NPC_RECORD_WORKER_ID_SIZE] = {0};
+    ASSERT(memcmp(&p[NPC_RECORD_WORKER_ID_OFFSET],
                   zero_identity, sizeof(zero_identity)) == 0);
-    ASSERT(memcmp(&p[NPC_RECORD_RESERVED_IDENTITY_OFFSET],
+    ASSERT(memcmp(&p[NPC_RECORD_WORKER_ID_OFFSET],
                   npcs[0].session_token,
                   sizeof(npcs[0].session_token)) != 0);
     ASSERT_EQ_INT(p[NPC_RECORD_HOME_STATION_OFFSET], 2);
+
+    /* A purchased worker carries its public asset id, not slot identity. */
+    uint8_t wbuf[NPC_RECORD_SIZE];
+    serialize_one_npc(wbuf, 7, &npcs[0], 4242u);
+    ASSERT_EQ_INT(wbuf[0], 7);
+    ASSERT_EQ_INT(read_u64_le(&wbuf[NPC_RECORD_WORKER_ID_OFFSET]), 4242);
+    ASSERT_EQ_INT(wbuf[NPC_RECORD_HOME_STATION_OFFSET], 2);
 }
 
 TEST(test_npc_snapshot_serializes_embedded_ship_tow_slot) {
@@ -4665,10 +4672,10 @@ TEST(test_world_npc_status_semantic_hash_ignores_thrust_only) {
               MAX_NPC_SHIPS * NPC_STATUS_RECORD_SIZE];
     uint8_t b[NPC_STATUS_MSG_HEADER +
               MAX_NPC_SHIPS * NPC_STATUS_RECORD_SIZE];
-    int alen = serialize_npc_status_for_player(a, npcs, player_pos);
+    int alen = serialize_npc_status_for_player(NULL, a, npcs, player_pos);
 
     npcs[1].thrusting = false;
-    int blen = serialize_npc_status_for_player(b, npcs, player_pos);
+    int blen = serialize_npc_status_for_player(NULL, b, npcs, player_pos);
 
     ASSERT_EQ_INT(alen, blen);
     uint64_t ahash = net_world_npc_status_semantic_hash(a, alen);
@@ -4676,19 +4683,19 @@ TEST(test_world_npc_status_semantic_hash_ignores_thrust_only) {
     ASSERT(ahash == bhash);
 
     npcs[1].state = NPC_STATE_UNLOADING;
-    blen = serialize_npc_status_for_player(b, npcs, player_pos);
+    blen = serialize_npc_status_for_player(NULL, b, npcs, player_pos);
     bhash = net_world_npc_status_semantic_hash(b, blen);
     ASSERT(ahash != bhash);
 
     npcs[1].state = NPC_STATE_TRAVEL_TO_DEST;
     npcs[1].target_asteroid = 45;
-    blen = serialize_npc_status_for_player(b, npcs, player_pos);
+    blen = serialize_npc_status_for_player(NULL, b, npcs, player_pos);
     bhash = net_world_npc_status_semantic_hash(b, blen);
     ASSERT(ahash != bhash);
 
     npcs[1].target_asteroid = 44;
     npc_set_towed_fragment_index(&npcs[1], 13);
-    blen = serialize_npc_status_for_player(b, npcs, player_pos);
+    blen = serialize_npc_status_for_player(NULL, b, npcs, player_pos);
     bhash = net_world_npc_status_semantic_hash(b, blen);
     ASSERT(ahash != bhash);
 }
@@ -4707,9 +4714,9 @@ TEST(test_world_npc_status8_semantic_hash_ignores_thrust_only) {
               MAX_NPC_SHIPS * NPC_STATUS8_RECORD_SIZE];
     uint8_t b[NPC_STATUS8_MSG_HEADER +
               MAX_NPC_SHIPS * NPC_STATUS8_RECORD_SIZE];
-    int alen = serialize_npc_status8_for_player(a, npcs, player_pos);
+    int alen = serialize_npc_status8_for_player(NULL, a, npcs, player_pos);
     npcs[1].thrusting = true;
-    int blen = serialize_npc_status8_for_player(b, npcs, player_pos);
+    int blen = serialize_npc_status8_for_player(NULL, b, npcs, player_pos);
 
     ASSERT_EQ_INT(alen, NPC_STATUS8_MSG_HEADER + NPC_STATUS8_RECORD_SIZE);
     ASSERT_EQ_INT(blen, NPC_STATUS8_MSG_HEADER + NPC_STATUS8_RECORD_SIZE);
@@ -4718,7 +4725,7 @@ TEST(test_world_npc_status8_semantic_hash_ignores_thrust_only) {
     ASSERT(ahash == bhash);
 
     npcs[1].target_asteroid = 45;
-    blen = serialize_npc_status8_for_player(b, npcs, player_pos);
+    blen = serialize_npc_status8_for_player(NULL, b, npcs, player_pos);
     bhash = net_world_npc_status_semantic_hash(b, blen);
     ASSERT(ahash != bhash);
 }
@@ -4737,7 +4744,7 @@ TEST(test_npc_motion_stream_uses_relevance_filter) {
 
     uint8_t buf[NPC_MOTION_MSG_HEADER +
                 MAX_NPC_SHIPS * NPC_MOTION_RECORD_SIZE];
-    int len = serialize_npc_motion_for_player(buf, npcs, player_pos);
+    int len = serialize_npc_motion_for_player(NULL, buf, npcs, player_pos);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_NPC_MOTION);
     ASSERT_EQ_INT(buf[1], 1);
@@ -4767,7 +4774,7 @@ TEST(test_npc_motion_q_stream_quantizes_pose) {
 
     uint8_t buf[NPC_MOTION_Q_MSG_HEADER +
                 MAX_NPC_SHIPS * NPC_MOTION_Q_RECORD_SIZE];
-    int len = serialize_npc_motion_q_for_player(buf, npcs, player_pos);
+    int len = serialize_npc_motion_q_for_player(NULL, buf, npcs, player_pos);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_NPC_MOTION_Q);
     ASSERT_EQ_INT(buf[1], 1);
@@ -4803,7 +4810,7 @@ TEST(test_npc_motion8_q_stream_uses_byte_velocity_and_angle) {
 
     uint8_t buf[NPC_MOTION8_Q_MSG_HEADER +
                 MAX_NPC_SHIPS * NPC_MOTION8_Q_RECORD_SIZE];
-    int len = serialize_npc_motion8_q_for_player(buf, npcs, player_pos);
+    int len = serialize_npc_motion8_q_for_player(NULL, buf, npcs, player_pos);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_NPC_MOTION8_Q);
     ASSERT_EQ_INT(buf[1], 1);
@@ -5114,7 +5121,7 @@ TEST(test_npc_status_stream_serializes_visual_status) {
 
     uint8_t buf[NPC_STATUS_MSG_HEADER +
                 MAX_NPC_SHIPS * NPC_STATUS_RECORD_SIZE];
-    int len = serialize_npc_status_for_player(buf, npcs, player_pos);
+    int len = serialize_npc_status_for_player(NULL, buf, npcs, player_pos);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_NPC_STATUS);
     ASSERT_EQ_INT(buf[1], 1);
@@ -5146,7 +5153,7 @@ TEST(test_npc_status8_stream_serializes_low_refs_and_rejects_high_refs) {
 
     uint8_t buf[NPC_STATUS8_MSG_HEADER +
                 MAX_NPC_SHIPS * NPC_STATUS8_RECORD_SIZE];
-    int len = serialize_npc_status8_for_player(buf, npcs, player_pos);
+    int len = serialize_npc_status8_for_player(NULL, buf, npcs, player_pos);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_NPC_STATUS8_Q);
     ASSERT_EQ_INT(buf[1], 1);
@@ -5161,7 +5168,7 @@ TEST(test_npc_status8_stream_serializes_low_refs_and_rejects_high_refs) {
     ASSERT_EQ_INT(p[3], 77);
 
     npcs[1].target_asteroid = 255;
-    len = serialize_npc_status8_for_player(buf, npcs, player_pos);
+    len = serialize_npc_status8_for_player(NULL, buf, npcs, player_pos);
     ASSERT_EQ_INT(len, 0);
 }
 
@@ -5177,7 +5184,7 @@ TEST(test_relevance_filtered_world_snapshots) {
     npcs[2].ship->pos = v2(4000.0f, 0.0f);
 
     uint8_t npc_buf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
-    int npc_len = serialize_npcs_for_player(npc_buf, npcs, player_pos);
+    int npc_len = serialize_npcs_for_player(NULL, npc_buf, npcs, player_pos);
     ASSERT_EQ_INT(npc_buf[0], NET_MSG_WORLD_NPCS);
     ASSERT_EQ_INT(npc_buf[1], 1);
     ASSERT_EQ_INT(npc_len, 2 + NPC_RECORD_SIZE);

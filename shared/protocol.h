@@ -1707,16 +1707,18 @@ enum {
  * [home_station:1], 0xFFFF = none.
  *
  * Protocol v6 retires the token-derived NPC identity tail. Bytes 29..36 are
- * pinned to zero and must be ignored by clients; slot/role/home station are
- * presentation and routing metadata, never public identity. */
+ * carries a public worker asset id (little-endian u64) for NPCs granted by
+ * the fly shop, and is zero for every other NPC. It is not bearer material:
+ * it is the same public asset id the workers page shows as #NNN. slot/role/
+ * home station remain presentation/routing metadata. */
 #define NPC_RECORD_SIZE 38
-#define NPC_RECORD_RESERVED_IDENTITY_OFFSET 29
-#define NPC_RECORD_RESERVED_IDENTITY_SIZE 8
+#define NPC_RECORD_WORKER_ID_OFFSET 29
+#define NPC_RECORD_WORKER_ID_SIZE 8
 #define NPC_RECORD_HOME_STATION_OFFSET 37
-_Static_assert(NPC_RECORD_RESERVED_IDENTITY_OFFSET +
-                   NPC_RECORD_RESERVED_IDENTITY_SIZE ==
+_Static_assert(NPC_RECORD_WORKER_ID_OFFSET +
+                   NPC_RECORD_WORKER_ID_SIZE ==
                NPC_RECORD_HOME_STATION_OFFSET,
-               "NPC reserved-zero field layout drifted");
+               "NPC worker-id field layout drifted");
 _Static_assert(NPC_RECORD_HOME_STATION_OFFSET + 1 == NPC_RECORD_SIZE,
                "NPC record tail layout drifted");
 #define NPC_MOTION_MSG_HEADER 2  /* type + count */

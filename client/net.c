@@ -2320,8 +2320,8 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].tint_r           = p[26];
                     arr[i].tint_g           = p[27];
                     arr[i].tint_b           = p[28];
-                    /* Protocol-v6 bytes 29..36 are legacy-reserved. Ignore
-                     * them even if a peer sends token-looking data. */
+                    arr[i].worker_id        =
+                        read_u64_le(&p[NPC_RECORD_WORKER_ID_OFFSET]);
                     arr[i].home_station     = p[37];
                 }
                 net_state.callbacks.on_npcs(arr, decoded);

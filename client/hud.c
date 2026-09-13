@@ -1864,7 +1864,14 @@ static void hud_npc_label(const npc_ship_t *npc, int idx, char *out, size_t cap)
         snprintf(out, cap, "NPC --");
         return;
     }
-    /* Runtime slot is presentation only; no bearer-derived name is shown. */
+    /* A purchased fly worker carries its public asset id, the same #NN the
+     * workers page shows, so its owner can find it in the shared world. */
+    uint64_t worker_id = client_npc_worker_id(idx);
+    if (worker_id != 0) {
+        snprintf(out, cap, "Worker #%llu", (unsigned long long)worker_id);
+        return;
+    }
+    /* Everything else: runtime slot is presentation only. */
     snprintf(out, cap, "%s %02d", hud_npc_custody_role_label(npc->role), idx);
 }
 
