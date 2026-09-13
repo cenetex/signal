@@ -123,4 +123,12 @@ void signal_connectome_bandit_reward(uint32_t *values, int count, int arm,
                                      uint32_t reward);
 void signal_connectome_bandit_decay(uint32_t *values, int count);
 
+/* Shape model option scores into bounded posture bias. weight_pct (0..100)
+ * scales the per-posture ceiling (0 disables the model entirely), and the
+ * spread tapers when the model's top two scores are close, so a model that
+ * cannot rank confidently does not outvote the drive weights. bias[i] is
+ * always <= 16. Scores come from the worker model as doubles. */
+void signal_connectome_model_bias(const double *scores, int count,
+                                  uint32_t weight_pct, uint32_t *bias);
+
 #endif /* SIGNAL_CONNECTOME_BRAIN_H */
