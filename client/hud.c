@@ -1868,7 +1868,9 @@ static void hud_npc_label(const npc_ship_t *npc, int idx, char *out, size_t cap)
      * workers page shows, so its owner can find it in the shared world. */
     uint64_t worker_id = client_npc_worker_id(idx);
     if (worker_id != 0) {
-        snprintf(out, cap, "Worker #%llu", (unsigned long long)worker_id);
+        /* Asset ids are uint32; %u keeps the worst case ("Worker #4294967295",
+         * 19 bytes) inside the 24-byte label buffers. */
+        snprintf(out, cap, "Worker #%u", (unsigned)worker_id);
         return;
     }
     /* Everything else: runtime slot is presentation only. */
