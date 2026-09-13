@@ -1768,6 +1768,12 @@ void activate_outpost(world_t *w, int station_idx);
 
 /* Hopper/furnace constants — shared between game_sim.c and sim_production.c */
 #define HOPPER_PULL_RANGE 300.0f    /* furnace attracts fragments from this far */
+
+/* Hard ceiling on a fragment's speed. Fracture inheritance, rock-on-rock
+ * collisions and released band energy all compound without one, and a single
+ * rock can end up crossing the whole belt. Set high enough that ordinary
+ * towing and the intentional slingshot keep their feel below it. */
+#define ASTEROID_MAX_SPEED 480.0f
 #define HOPPER_INTAKE_STAGING_RANGE 132.0f /* pod must be at the tagged intake mouth */
 
 /* Cargo-pod module tractor tuning. Economic custody does not create a
