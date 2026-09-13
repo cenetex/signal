@@ -1,4 +1,5 @@
 import test from 'node:test';
+import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { createFlyShop } from './fly-shop-service.mjs';
 import { encode58, decode58 } from '../web/fly-codec.mjs';
-import { MAINNET_GENESIS, FLY_MINT, OFFERS, verifyFlyMint, buildBurnTransaction } from './fly-shop-chain.mjs';
+import { MAINNET_GENESIS, FLY_MINT, OFFERS, verifyFlyMint, buildBurnTransaction, matchesPreparedBurn } from './fly-shop-chain.mjs';
 import { TOKEN_2022_PROGRAM, MEMO_PROGRAM, purchaseMemo } from './solana-ship-burn.mjs';
 const key = () => { const pair = generateKeyPairSync('ed25519'); return { ...pair, address: encode58(pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32)) }; };
 const mintAccount = () => ({ value: { owner: TOKEN_2022_PROGRAM, executable: false, data: { parsed: { type: 'mint', info: {
@@ -178,4 +179,94 @@ test('a failed world reservation prevents payment broadcast', async t => {
   const submitted = await f.request('submit', { id: q.id, transaction: f.signed(q) });
   assert.equal(submitted.data.state, 'quoted'); assert.equal(f.sent, 0);
   f.setCore(true); await f.retry(); assert.equal(f.sent, 1);
+});
+
+// Build wallet variants independently of the production decoder.
+function walletVariant(encoded, { versioned = false, fee = true, mutate = () => {} } = {}) {
+  const wire = Buffer.from(encoded, 'base64');
+  const original = Array.from({ length: 5 }, (_, i) => wire.subarray(69 + i * 32, 101 + i * 32));
+  const keys = [original[0], original[2], original[1], original[4], original[3]];
+  if (fee) keys.push(Buffer.from(decode58('ComputeBudget111111111111111111111111111111', 32)));
+  const offset = 69 + 160 + 32 + 1;
+  const instructions = [
+    { program: 4, accounts: [2, 1, 0], data: Buffer.from(wire.subarray(offset + 6, offset + 16)) },
+    { program: 3, accounts: [0], data: Buffer.from(wire.subarray(offset + 20)) },
+  ];
+  if (fee) {
+    const limit = Buffer.alloc(5); limit[0] = 2; limit.writeUInt32LE(200000, 1);
+    const price = Buffer.alloc(9); price[0] = 3; price.writeBigUInt64LE(10000n, 1);
+    instructions.unshift({ program: 5, accounts: [], data: limit }, { program: 5, accounts: [], data: price });
+  }
+  const hash = Buffer.from(wire.subarray(229, 261));
+  mutate({ keys, instructions, hash });
+  return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), ...(versioned ? [Buffer.from([128])] : []),
+    Buffer.from([1, 0, keys.length - 3, keys.length]), ...keys, hash, Buffer.from([instructions.length]),
+    ...instructions.map(ix => Buffer.concat([Buffer.from([ix.program, ix.accounts.length, ...ix.accounts, ix.data.length]), ix.data])),
+    ...(versioned ? [Buffer.from([0])] : [])]);
+}
+for (const versioned of [false, true]) for (const fee of [false, true])
+  test(`wallet reordered ${versioned ? 'v0' : 'legacy'} transaction with fees=${fee} is accepted`, async t => {
+    const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+    const bytes = walletVariant(q.transaction, { versioned, fee });
+    sign(null, bytes.subarray(65), f.buyer.privateKey).copy(bytes, 1);
+    const result = await f.request('submit', { id: q.id, transaction: bytes.toString('base64') });
+    assert.equal(result.status, 200); assert.equal(f.sent, 1);
+    f.setFinal(true);
+    assert.equal((await f.request('confirm', { id: q.id, signature: result.data.signature })).data.state, 'fulfilled');
+  });
+for (const [name, mutate] of Object.entries({
+  amount: ({ instructions }) => { instructions[2].data[1] ^= 1; },
+  decimals: ({ instructions }) => { instructions[2].data[9] = 8; },
+  memo: ({ instructions }) => { instructions[3].data[20] ^= 1; },
+  authority: ({ instructions }) => { instructions[2].accounts[2] = 1; },
+  source: ({ keys }) => { keys[2] = Buffer.alloc(32, 44); },
+  mint: ({ keys }) => { keys[1] = Buffer.alloc(32, 45); },
+  blockhash: ({ hash }) => { hash[0] ^= 1; },
+  extraBurn: ({ instructions }) => { instructions.push(instructions[2]); },
+  feeAccounts: ({ instructions }) => { instructions[0].accounts = [0]; },
+  duplicateFee: ({ instructions }) => { instructions.push(instructions[0]); },
+  excessiveFee: ({ instructions }) => { instructions[1].data.writeBigUInt64LE(1000000000n, 1); },
+  extraKey: ({ keys }) => { keys.push(Buffer.alloc(32, 46)); },
+})) test(`signed wallet mutation rejects ${name} before broadcast`, async t => {
+  const f = await setup(t); await f.login(); const q = (await f.quote()).data;
+  const bytes = walletVariant(q.transaction, { mutate });
+  sign(null, bytes.subarray(65), f.buyer.privateKey).copy(bytes, 1);
+  assert.equal((await f.request('submit', { id: q.id, transaction: bytes.toString('base64') })).data.error, 'invalid_signature');
+  assert.equal(f.sent, 0);
+});
+test('wire parser rejects truncation, trailing data and address lookups', () => {
+  const q = { id: 'b'.repeat(64), wallet: key().address, mint: FLY_MINT, tokenProgram: TOKEN_2022_PROGRAM, decimals: 9, amount: '50000000000' };
+  const prepared = buildBurnTransaction(q, key().address, key().address);
+  const v0 = walletVariant(prepared.toString('base64'), { versioned: true });
+  for (let n = 0; n < v0.length; n++) assert.equal(matchesPreparedBurn(v0.subarray(0, n), prepared), false);
+  assert.equal(matchesPreparedBurn(Buffer.concat([v0, Buffer.from([0])]), prepared), false);
+  v0[v0.length - 1] = 1; assert.equal(matchesPreparedBurn(v0, prepared), false);
+});
+async function recoveryHarness(api, entries) {
+  const source = await readFile(new URL('../web/workers.mjs', import.meta.url), 'utf8');
+  const cache = new Map(entries);
+  const context = vm.createContext({ api, localStorage: { getItem: k => cache.get(k) || null, removeItem: k => cache.delete(k) },
+    say() {}, refresh: async () => {}, setTimeout });
+  vm.runInContext(source.slice(source.indexOf('const storageKey ='), source.indexOf('async function purchase(')), context);
+  return { cache, submit: (id, tx) => context.submitSaved(id, tx), confirm: (id, sig) => context.confirm(id, sig) };
+}
+test('rejected local payment clears cache after the server confirms awaiting payment', async () => {
+  const h = await recoveryHarness(async route => {
+    if (route === 'submit') throw Error('invalid_signature');
+    return { purchases: [{ id: 'q', state: 'quoted', signature: null }] };
+  }, [['signal-fly:q', 'sig'], ['signal-fly:q:signed', 'tx']]);
+  await assert.rejects(h.submit('q', 'tx'), /invalid_signature/); assert.equal(h.cache.size, 0);
+});
+test('ambiguous submission retains the exact signed transaction', async () => {
+  const h = await recoveryHarness(async () => { throw Error('service_unavailable'); }, [['signal-fly:q:signed', 'tx']]);
+  await assert.rejects(h.submit('q', 'tx'), /service_unavailable/); assert.equal(h.cache.get('signal-fly:q:signed'), 'tx');
+});
+test('accepted server receipt wins over stale local cache on recovery', async () => {
+  const routes = [];
+  const h = await recoveryHarness(async (route, data) => {
+    routes.push(route);
+    if (route === 'me') return { purchases: [{ id: 'q', state: 'paid', signature: 'accepted' }] };
+    assert.equal(route, 'confirm'); assert.equal(data.signature, 'accepted'); return { state: 'fulfilled' };
+  }, [['signal-fly:q:signed', 'old-tx']]);
+  await h.confirm('q', 'old-sig'); assert.deepEqual(routes, ['me', 'confirm']); assert.equal(h.cache.size, 0);
 });

@@ -5,6 +5,7 @@ const say = message => { $('status').textContent = message; };
 const messages = { connect_wallet: 'Connect your wallet to continue.', insufficient_fly: 'This wallet needs more FLY for this worker.',
   burn_not_finalized: 'Waiting for Solana to finalize your burn…', shop_full: 'Worker spaces are reserved. Please check back later.',
   finish_existing_purchase: 'Finish your open purchase in the history below.', service_unavailable: 'The world is reconnecting. Your saved purchase will resume here.',
+  invalid_signature: 'Please choose your worker again for a fresh wallet request.',
   wallet_signature_failed: 'The wallet signature could not be checked. Please connect again.' };
 async function api(route, data) {
   const response = await fetch(`/api/fly-shop/${route}`, { method: data ? 'POST' : 'GET', credentials: 'same-origin',
@@ -55,10 +56,31 @@ async function connect() {
 }
 $('connect').onclick = () => connect().catch(showError);
 const storageKey = id => `signal-fly:${id}`;
+async function submitSaved(id, transaction) {
+  try { return await api('submit', { id, transaction }); }
+  catch (error) {
+    if (error.message === 'invalid_signature') {
+      // A validation rejection happens before broadcast. Only clear this local
+      // attempt after checking that the server has no accepted payment.
+      const me = await api('me');
+      const q = me.purchases.find(q => q.id === id);
+      if (q?.signature) return q;
+      if (q?.state === 'quoted' && localStorage.getItem(`${storageKey(id)}:signed`) === transaction) {
+        localStorage.removeItem(storageKey(id)); localStorage.removeItem(`${storageKey(id)}:signed`);
+      }
+    }
+    throw error;
+  }
+}
 async function confirm(id, signature) {
   say('Waiting for Solana to finalize your burn…');
-  const signed = localStorage.getItem(`${storageKey(id)}:signed`);
-  if (signed) await api('submit', { id, transaction: signed });
+  const me = await api('me');
+  const q = me.purchases.find(q => q.id === id);
+  if (q?.signature) signature = q.signature;
+  else {
+    const signed = localStorage.getItem(`${storageKey(id)}:signed`);
+    if (signed) signature = (await submitSaved(id, signed)).signature;
+  }
   for (let n = 0; n < 24; n++) {
     try {
       const result = await api('confirm', { id, signature });
@@ -94,7 +116,7 @@ async function purchase(station) {
     const encoded = btoa(String.fromCharCode(...signed));
     localStorage.setItem(storageKey(quote.id), signature);
     localStorage.setItem(`${storageKey(quote.id)}:signed`, encoded);
-    await api('submit', { id: quote.id, transaction: encoded });
+    await submitSaved(quote.id, encoded);
     await confirm(quote.id, signature);
   } catch (error) { showError(error); }
   finally { busy = false; drawOffers(); }
