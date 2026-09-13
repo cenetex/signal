@@ -1433,9 +1433,25 @@ void step_furnace_smelting(world_t *w, float dt) {
         }
         laser_apply_effect(&a->smelt_progress, +SMELT_RATE, 1.0f, dt);
 
-        /* Hold fragment in place while smelting — dampen velocity */
-        if (!ship_tow_owns_motion)
+        /* Hold fragment in place while smelting. Player tow is client
+         * predicted, so station forces must stay out of it (see
+         * test_ship_tow_excludes_hidden_station_fragment_forces). NPC tows
+         * are server-authoritative and are the ones that whipped fragments
+         * back and forth against the station's two tractors, so damp those
+         * and untowed fragments. Instrumented: logs an NPC-towed fragment
+         * held in the corridor at most every 2 s. */
+        bool player_tow = asteroid_tractor_player(a) >= 0;
+        if (!player_tow) {
             a->vel = v2_scale(a->vel, 1.0f / (1.0f + 10.0f * dt));
+            if (ship_tow_owns_motion) {
+                static uint32_t last_damp_log_tick = 0;
+                if ((uint32_t)(w->tick - last_damp_log_tick) >= 240u) {
+                    last_damp_log_tick = w->tick;
+                    SIM_LOG("[smelt] damping NPC-towed fragment %d in "
+                            "corridor (tick %u)\n", i, w->tick);
+                }
+            }
+        }
 
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
