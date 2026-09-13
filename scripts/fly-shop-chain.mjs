@@ -24,54 +24,55 @@ export function buildBurnTransaction(purchase, tokenAccount, blockhash) {
     compact(2), ix(3, [1, 2, 0], burn), ix(4, [0], memo)]);
   return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), message]);
 }
+function parseBurnTransaction(bytes) {
+  let offset = 0;
+  const take = n => {
+    if (offset + n > bytes.length) throw Error('truncated_transaction');
+    const value = bytes.subarray(offset, offset + n); offset += n; return value;
+  };
+  const byte = () => take(1)[0];
+  const count = () => {
+    let n = 0;
+    for (let i = 0; i < 3; i++) {
+      const b = byte(); n |= (b & 127) << (7 * i);
+      if (!(b & 128)) {
+        if (n > 65535 || (i && b === 0)) throw Error('invalid_length');
+        return n;
+      }
+    }
+    throw Error('invalid_length');
+  };
+  if (bytes.length > 1232 || count() !== 1) throw Error('invalid_signers');
+  take(64);
+  let required = byte(), versioned = false;
+  if (required === 128) { versioned = true; required = byte(); }
+  const readonlySigned = byte(), readonlyUnsigned = byte(), keyCount = count();
+  if (required !== 1 || readonlySigned !== 0 || keyCount < 1 || readonlyUnsigned >= keyCount) throw Error('invalid_header');
+  const keys = Array.from({ length: keyCount }, (_, i) => ({
+    address: encode58(take(32)), signer: i === 0, writable: i < keyCount - readonlyUnsigned,
+  }));
+  if (new Set(keys.map(k => k.address)).size !== keyCount) throw Error('duplicate_key');
+  const lookup = i => { if (!keys[i]) throw Error('invalid_key'); return keys[i]; };
+  const blockhash = take(32).toString('hex');
+  const instructions = Array.from({ length: count() }, () => {
+    const program = lookup(byte());
+    const accounts = Array.from(take(count()), lookup);
+    const data = take(count()).toString('hex');
+    return { program, accounts, data };
+  });
+  if (versioned && count() !== 0) throw Error('lookup_tables_unsupported');
+  if (offset !== bytes.length) throw Error('trailing_bytes');
+  return { keys, blockhash, instructions };
+}
+export const burnTransactionBlockhash = bytes => encode58(Buffer.from(parseBurnTransaction(bytes).blockhash, 'hex'));
 // Compare the signed instructions, allowing wallets to reorder keys and add
-// compute fees. Keep the quoted blockhash so expiry recovery stays exact.
-export function matchesPreparedBurn(signed, prepared) {
+// compute fees and account guards. The service validates refreshed blockhashes.
+export function matchesPreparedBurn(signed, prepared, { allowBlockhashChange = false } = {}) {
   const budget = 'ComputeBudget111111111111111111111111111111';
   const lighthouse = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
-  function parse(bytes) {
-    let offset = 0;
-    const take = n => {
-      if (offset + n > bytes.length) throw Error('truncated_transaction');
-      const value = bytes.subarray(offset, offset + n); offset += n; return value;
-    };
-    const byte = () => take(1)[0];
-    const count = () => {
-      let n = 0;
-      for (let i = 0; i < 3; i++) {
-        const b = byte(); n |= (b & 127) << (7 * i);
-        if (!(b & 128)) {
-          if (n > 65535 || (i && b === 0)) throw Error('invalid_length');
-          return n;
-        }
-      }
-      throw Error('invalid_length');
-    };
-    if (bytes.length > 1232 || count() !== 1) throw Error('invalid_signers');
-    take(64);
-    let required = byte(), versioned = false;
-    if (required === 128) { versioned = true; required = byte(); }
-    const readonlySigned = byte(), readonlyUnsigned = byte(), keyCount = count();
-    if (required !== 1 || readonlySigned !== 0 || keyCount < 1 || readonlyUnsigned >= keyCount) throw Error('invalid_header');
-    const keys = Array.from({ length: keyCount }, (_, i) => ({
-      address: encode58(take(32)), signer: i === 0, writable: i < keyCount - readonlyUnsigned,
-    }));
-    if (new Set(keys.map(k => k.address)).size !== keyCount) throw Error('duplicate_key');
-    const lookup = i => { if (!keys[i]) throw Error('invalid_key'); return keys[i]; };
-    const blockhash = take(32).toString('hex');
-    const instructions = Array.from({ length: count() }, () => {
-      const program = lookup(byte());
-      const accounts = Array.from(take(count()), lookup);
-      const data = take(count()).toString('hex');
-      return { program, accounts, data };
-    });
-    if (versioned && count() !== 0) throw Error('lookup_tables_unsupported');
-    if (offset !== bytes.length) throw Error('trailing_bytes');
-    return { keys, blockhash, instructions };
-  }
   try {
-    const actual = parse(signed), expected = parse(prepared);
-    if (actual.blockhash !== expected.blockhash) return false;
+    const actual = parseBurnTransaction(signed), expected = parseBurnTransaction(prepared);
+    if (!allowBlockhashChange && actual.blockhash !== expected.blockhash) return false;
     let limit = 1400000n, price = 0n;
     const seen = new Set();
     actual.instructions = actual.instructions.filter(ix => {
