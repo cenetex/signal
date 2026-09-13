@@ -1868,9 +1868,14 @@ static void hud_npc_label(const npc_ship_t *npc, int idx, char *out, size_t cap)
      * workers page shows, so its owner can find it in the shared world. */
     uint64_t worker_id = client_npc_worker_id(idx);
     if (worker_id != 0) {
-        /* Asset ids are uint32; %u keeps the worst case ("Worker #4294967295",
-         * 19 bytes) inside the 24-byte label buffers. */
-        snprintf(out, cap, "Worker #%u", (unsigned)worker_id);
+        /* Same callsign format players get, derived from the worker's stable
+         * asset id, so a sponsored miner is recognizable in-world. */
+        uint8_t seed[MINING_PUBKEY_BYTES];
+        for (size_t i = 0; i < sizeof(seed); i++)
+            seed[i] = (uint8_t)(worker_id >> ((i % 8u) * 8u));
+        char callsign[8];
+        mining_callsign_from_pubkey(seed, callsign);
+        snprintf(out, cap, "%.7s", callsign);
         return;
     }
     /* Everything else: runtime slot is presentation only. */

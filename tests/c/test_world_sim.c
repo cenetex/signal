@@ -3727,12 +3727,24 @@ TEST(test_fly_purchase_grant_is_durable_and_once_only) {
     asset = world_ship_asset_by_id(loaded, asset_id);
     world_ship_asset_state(loaded, asset)->hull = 0.0f;
     step_npc_ships(loaded, SIM_DT);
-    ASSERT(asset->destroyed);
+    /* A sponsored worker is recovered with debt, not lost: the same asset is
+     * relaunched with its ledger identity preserved, and the rebuild fee sits
+     * on the account its work earns into. */
+    ASSERT(!asset->destroyed);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
+    ASSERT(asset->operator_slot >= 0 && asset->operator_slot < MAX_NPC_SHIPS);
+    {
+        const npc_ship_t *worker = &loaded->npc_ships[asset->operator_slot];
+        ASSERT(worker->active);
+        ASSERT_EQ_INT(worker->ship_asset_id, asset_id);
+        ASSERT(ledger_balance(&loaded->stations[2], worker->session_token)
+               < 0.0f);
+    }
     purchase = world_fly_purchase_grant(loaded, id, wallet, signature, 2);
     ASSERT(purchase != NULL);
     ASSERT_EQ_INT(purchase->asset_id, asset_id);
-    ASSERT(asset->destroyed);
-    ASSERT(world_save(loaded, TMP("fly-purchase-lost.sav")));
+    ASSERT(!asset->destroyed);
+    ASSERT(world_save(loaded, TMP("fly-purchase-rebuilt.sav")));
     loaded->fly_purchases[0].wallet[0]++;
     ASSERT(!world_fly_purchases_valid(loaded));
     ASSERT(!world_save(loaded, TMP("fly-purchase-invalid.sav")));

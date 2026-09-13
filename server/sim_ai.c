@@ -1774,7 +1774,8 @@ static ship_asset_t *ship_asset_find_stored_npc_hull(world_t *w,
 }
 
 static int npc_claim_selected_asset(world_t *w, int station_idx,
-                                     npc_role_t role, ship_asset_t *asset) {
+                                     npc_role_t role, ship_asset_t *asset,
+                                     const uint8_t *reuse_token) {
     station_t *st = &w->stations[station_idx];
     hull_class_t hc = npc_resident_hull_class_for_role(role);
     int slot = npc_alloc_free_slot(w);
@@ -1836,16 +1837,23 @@ static int npc_claim_selected_asset(world_t *w, int station_idx,
      *          so respawns of the same role at the same slot get a
      *          fresh ledger identity. The dead token's ledger entry
      *          stays attributed until the 16-slot LRU evicts it. */
-    if (w->next_npc_token == 0) w->next_npc_token = 1;
-    uint16_t tok = w->next_npc_token++;
-    npc->session_token[0] = 'N';
-    npc->session_token[1] = 'P';
-    npc->session_token[2] = 'C';
-    npc->session_token[3] = (uint8_t)station_idx;
-    npc->session_token[4] = (uint8_t)role;
-    npc->session_token[5] = (uint8_t)slot;
-    npc->session_token[6] = (uint8_t)(tok & 0xFF);
-    npc->session_token[7] = (uint8_t)((tok >> 8) & 0xFF);
+    if (reuse_token) {
+        /* Rebuild of a sponsored worker: keep the exact ledger identity so
+         * the rebuild debt charged on death is repaid by its own future
+         * earnings -- the same loop players get from emergency_recover_ship. */
+        memcpy(npc->session_token, reuse_token, 8);
+    } else {
+        if (w->next_npc_token == 0) w->next_npc_token = 1;
+        uint16_t tok = w->next_npc_token++;
+        npc->session_token[0] = 'N';
+        npc->session_token[1] = 'P';
+        npc->session_token[2] = 'C';
+        npc->session_token[3] = (uint8_t)station_idx;
+        npc->session_token[4] = (uint8_t)role;
+        npc->session_token[5] = (uint8_t)slot;
+        npc->session_token[6] = (uint8_t)(tok & 0xFF);
+        npc->session_token[7] = (uint8_t)((tok >> 8) & 0xFF);
+    }
     /* No starter balance — fresh NPCs run on credit and pay it back
      * as they complete deliveries. ledger_force_debit at the dock
      * lets the balance go negative; the chain self-balances over
@@ -1890,7 +1898,7 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
         return -1;
     }
 
-    return npc_claim_selected_asset(w, station_idx, role, asset);
+    return npc_claim_selected_asset(w, station_idx, role, asset, NULL);
 }
 
 int ship_asset_launch_fly_worker(world_t *w, ship_asset_t *asset, int station) {
@@ -1907,7 +1915,7 @@ int ship_asset_launch_fly_worker(world_t *w, ship_asset_t *asset, int station) {
     }
     if (!paid) return -1;
     npc_role_t role = station == 1 ? NPC_ROLE_TOW : NPC_ROLE_MINER;
-    return npc_claim_selected_asset(w, station, role, asset);
+    return npc_claim_selected_asset(w, station, role, asset, NULL);
 }
 
 /* Test/bootstrap shim. Production roster replenishment claims existing
@@ -6647,6 +6655,14 @@ void step_npc_ships(world_t *w, float dt) {
         w->npc_respawn_timer = NPC_RESPAWN_INTERVAL;
         (void)replenish_npc_roster(w);
     }
+
+    /* Sponsored workers destroyed this tick, relaunched after the loop with
+     * their ledger identity preserved. */
+    uint32_t rebuild_assets[8];
+    uint8_t rebuild_tokens[8][8];
+    int16_t rebuild_home[8];
+    int rebuild_count = 0;
+
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active) continue;
@@ -6669,11 +6685,39 @@ void step_npc_ships(world_t *w, float dt) {
             if (npc->ship_asset_id != SHIP_ASSET_ID_NONE) {
                 (void)world_ship_asset_sync_from_npc(w, n);
                 ship_asset_t *asset = world_ship_asset_by_id(w, npc->ship_asset_id);
-                if (asset) {
+                if (asset && asset->provenance == SHIP_ASSET_PROVENANCE_FLY_PURCHASE) {
+                    /* Sponsored worker: recover with debt rather than lose it
+                     * forever, mirroring emergency_recover_ship. Charge the
+                     * rebuild fee to the worker's own ledger and relaunch it
+                     * preserving that identity, so its earnings repay it. */
+                    int home = npc->home_station;
+                    if (home < 0 || home >= MAX_STATIONS) home = 0;
+                    int fee = station_spawn_fee(&w->stations[home]);
+                    ledger_force_debit(&w->stations[home], npc->session_token,
+                                       (float)fee, npc->ship);
+                    asset->destroyed = false;
+                    asset->status = SHIP_ASSET_STATUS_STORED;
+                    asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+                    asset->operator_slot = -1;
+                    asset->stored_ship.hull = hull_max_for_class(asset->hull_class);
+                    if (rebuild_count < (int)(sizeof(rebuild_assets) /
+                                              sizeof(rebuild_assets[0]))) {
+                        rebuild_assets[rebuild_count] = asset->asset_id;
+                        memcpy(rebuild_tokens[rebuild_count],
+                               npc->session_token, 8);
+                        rebuild_home[rebuild_count] = (int16_t)home;
+                        rebuild_count++;
+                    }
+                    SIM_LOG("[npc] %d destroyed asset=%u provenance=fly_purchase "
+                            "rebuild_fee=%d charged as debt\n",
+                            n, asset->asset_id, fee);
+                } else if (asset) {
                     asset->destroyed = true;
                     asset->status = SHIP_ASSET_STATUS_DESTROYED;
                     asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
                     asset->operator_slot = -1;
+                    SIM_LOG("[npc] %d destroyed asset=%u provenance=%u\n",
+                            n, asset->asset_id, (unsigned)asset->provenance);
                 }
                 npc->ship_asset_id = SHIP_ASSET_ID_NONE;
                 world_refresh_station_hull_inventories(w);
@@ -7078,6 +7122,24 @@ void step_npc_ships(world_t *w, float dt) {
         }
         npc_update_manifest_rarity_tint(npc, dt);
     }
+
+    /* Relaunch sponsored workers that died this tick. Doing it after the loop
+     * keeps the NPC iteration stable, and passing the old session token keeps
+     * the rebuild debt on the account the worker earns into. */
+    for (int r = 0; r < rebuild_count; r++) {
+        ship_asset_t *asset = world_ship_asset_by_id(w, rebuild_assets[r]);
+        if (!asset) continue;
+        npc_role_t role = rebuild_home[r] == 1 ? NPC_ROLE_TOW : NPC_ROLE_MINER;
+        if (npc_claim_selected_asset(w, rebuild_home[r], role, asset,
+                                     rebuild_tokens[r]) < 0) {
+            SIM_LOG("[npc] rebuild of asset=%u deferred\n",
+                    rebuild_assets[r]);
+        } else {
+            SIM_LOG("[npc] rebuilt asset=%u at station %d (debt carried)\n",
+                    rebuild_assets[r], rebuild_home[r]);
+        }
+    }
+
     /* Advance the fly swarm once per tick: drives, stakes, injection,
      * and the brain-budget market. No-op when the mode is off. */
     signal_connectome_tick(w);
