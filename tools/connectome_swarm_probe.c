@@ -21,6 +21,7 @@
  */
 #include "game_sim.h"
 #include "signal_connectome_brain.h"
+#include "signal_npc_worker_brain.h"
 #include "signal_intelligence.h"
 #include "holographic_nn_backend.h"
 #include "connectome_probe_metrics.h"
@@ -97,6 +98,19 @@ int main(int argc, char **argv)
 
     /* Must run before world_reset so NPC spawn stamps the brain mode. */
     bool on = signal_connectome_init();
+
+    /* Optional: load the trained worker model so the station policy can be
+     * biased by it (SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT). */
+    {
+        const char *ckpt = getenv("SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT");
+        if (ckpt && ckpt[0]) {
+            char err[256];
+            if (signal_npc_worker_brain_load_checkpoint(ckpt, err, sizeof(err)))
+                printf("worker model: loaded %s\n", ckpt);
+            else
+                fprintf(stderr, "worker model: load failed: %s\n", err);
+        }
+    }
 
     world_t *w = &g_world;
     memset(w, 0, sizeof(*w));
@@ -201,6 +215,8 @@ int main(int argc, char **argv)
                 { "forage", "prospect", "caution", "haul", "regroup" };
             printf("            strategy re-samples=%u  postures:",
                    st.strategy_changes);
+            if (st.strategy_model_scores)
+                printf(" (model-biased=%u)", st.strategy_model_scores);
             for (int k = 0; k < SIGNAL_CONNECTOME_STRATEGY_COUNT; k++)
                 printf(" %s=%u", names[k], st.strategy_counts[k]);
             printf("\n");

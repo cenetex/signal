@@ -95,6 +95,7 @@ typedef struct {
     uint64_t rented_units; /* pool units granted while flies slept */
     uint32_t strategy_counts[SIGNAL_CONNECTOME_STRATEGY_COUNT];
     uint32_t strategy_changes; /* posture re-samples this session */
+    uint32_t strategy_model_scores; /* re-samples biased by the worker model */
     uint32_t promotions;   /* flies promoted to the deep circuit */
     uint32_t demotions;
     uint32_t active_flies;   /* connectome NPCs awake this tick */

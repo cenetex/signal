@@ -45,6 +45,7 @@
 #include "connectome/flybrain.h"
 #include "connectome/flyswarm.h"
 #include "sim_nav.h"
+#include "signal_npc_worker_brain.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -394,6 +395,81 @@ static uint64_t cb_station_seed(int station, uint32_t tick)
 /* Posture weights from the station's own swarm -- what its flies, on
  * average, are feeling -- plus what the station has learned is working.
  * Every posture keeps a floor so exploration never dies. */
+/* ---- station policy: worker-model bridge ------------------------------ */
+
+/* A posture maps onto the worker option the runtime model was trained to
+ * rank. The model's learned option prior then becomes the station's posture
+ * prior; the drive weights and the bandit still act on top of it. */
+typedef struct {
+    signal_npc_worker_option_t option;
+    npc_role_t role;
+    bool travel;
+    bool mine;
+    bool frontier_supply;
+    bool escort;
+    bool patrol;
+    bool risky_profit;
+} cb_posture_map_t;
+
+static const cb_posture_map_t CB_POSTURE_MAP[CB_STRAT_COUNT] = {
+    { SIGNAL_NPC_WORKER_OPTION_MINE_HOME,         NPC_ROLE_MINER,  false, true,  false, false, false, false },
+    { SIGNAL_NPC_WORKER_OPTION_TAKE_RISKY_PROFIT, NPC_ROLE_HAULER, true,  false, false, false, false, true  },
+    { SIGNAL_NPC_WORKER_OPTION_PATROL_ROUTE,      NPC_ROLE_HAULER, true,  false, false, false, true,  false },
+    { SIGNAL_NPC_WORKER_OPTION_HAUL_CONTRACT,     NPC_ROLE_HAULER, true,  false, false, false, false, false },
+    { SIGNAL_NPC_WORKER_OPTION_WAIT,              NPC_ROLE_MINER,  false, false, false, false, false, false },
+};
+
+/* Ask the loaded worker model to rank the postures and return its score
+ * spread as posture bias in [0, 32]. Returns false when no model is loaded,
+ * so an unloaded server keeps exactly the drive+bandit weights. */
+static bool cb_station_model_bias(int station, const cb_station_agg_t *a,
+                                  uint32_t *bias)
+{
+    if (!signal_npc_worker_brain_loaded()) return false;
+    uint32_t n = a->count ? a->count : 1u;
+    float hunger = (float)((a->hunger / n) >> 12) / 16.0f;
+    float fear   = (float)((a->fear / n) >> 12) / 16.0f;
+
+    signal_npc_worker_candidate_t c[CB_STRAT_COUNT];
+    double scores[CB_STRAT_COUNT] = {0.0};
+    for (int p = 0; p < CB_STRAT_COUNT; p++) {
+        const cb_posture_map_t *m = &CB_POSTURE_MAP[p];
+        memset(&c[p], 0, sizeof(c[p]));
+        c[p].option = m->option;
+        c[p].role = m->role;
+        c[p].home_station = station;
+        c[p].legal = true;
+        c[p].travel = m->travel;
+        c[p].mine_pressure = m->mine || hunger > 0.5f;
+        c[p].frontier_supply = m->frontier_supply;
+        c[p].escort = m->escort;
+        c[p].patrol = m->patrol;
+        c[p].risky_profit = m->risky_profit;
+        c[p].frontier_pressure = fear;
+        c[p].route_danger_memory = fear;
+        c[p].best_contract_dest = -1;
+        c[p].persona_risk = 0.5f;
+        c[p].persona_growth = 0.5f;
+        c[p].persona_patience = 0.5f;
+    }
+    (void)signal_npc_worker_brain_choose_with_scores(
+        c, CB_STRAT_COUNT, scores, CB_STRAT_COUNT);
+
+    double lo = scores[0], hi = scores[0];
+    for (int p = 1; p < CB_STRAT_COUNT; p++) {
+        if (scores[p] < lo) lo = scores[p];
+        if (scores[p] > hi) hi = scores[p];
+    }
+    double span = hi - lo;
+    for (int p = 0; p < CB_STRAT_COUNT; p++) {
+        double t = span > 0.0 ? (scores[p] - lo) / span : 0.0;
+        if (t < 0.0) t = 0.0;
+        if (t > 1.0) t = 1.0;
+        bias[p] = (uint32_t)(t * 32.0);
+    }
+    return true;
+}
+
 static void cb_station_weights(const cb_station_agg_t *a,
                                const uint32_t *value, uint32_t *w)
 {
@@ -431,8 +507,14 @@ static void cb_station_strategy_advance(const world_t *w,
                     cb->station_value[s], CB_STRAT_COUNT);
             }
             uint32_t weights[CB_STRAT_COUNT];
+            uint32_t bias[CB_STRAT_COUNT] = {0};
             uint64_t rng = cb_station_seed(s, w->tick);
             cb_station_weights(&agg[s], cb->station_value[s], weights);
+            if (cb_station_model_bias(s, &agg[s], bias)) {
+                for (int k = 0; k < CB_STRAT_COUNT; k++)
+                    weights[k] += bias[k];
+                cb->stats.strategy_model_scores++;
+            }
             int pick = signal_connectome_weighted_pick(weights, CB_STRAT_COUNT, &rng);
             cb->station_strategy[s] = (uint8_t)(pick < 0 ? CB_STRAT_FORAGE : pick);
             cb->station_has_strategy[s] = 1;
