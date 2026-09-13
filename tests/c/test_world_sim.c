@@ -3738,6 +3738,33 @@ TEST(test_fly_purchase_grant_is_durable_and_once_only) {
     ASSERT(!world_save(loaded, TMP("fly-purchase-invalid.sav")));
 }
 
+TEST(test_fly_worker_credits_follow_worker_ledgers) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    world_reset(w);
+    uint8_t wallet[32] = {61}, id[32] = {62}, signature[64] = {63};
+    const fly_purchase_t *p = world_fly_purchase_grant(w, id, wallet, signature, 0);
+    ASSERT(p != NULL);
+    uint32_t asset_id = p->asset_id;
+    ship_asset_t *asset = world_ship_asset_by_id(w, asset_id);
+    ASSERT(asset != NULL);
+    npc_ship_t *npc = &w->npc_ships[asset->operator_slot];
+    double before = 0.0, after = 0.0;
+    ASSERT(world_fly_worker_credits(w, asset_id, &before));
+    ledger_earn(&w->stations[0], npc->session_token, 123.5f);
+    ledger_earn(&w->stations[1], npc->session_token, 45.25f);
+    ledger_earn_by_pubkey(&w->stations[0], wallet, 9000.0f);
+    ASSERT(world_fly_worker_credits(w, asset_id, &after));
+    ASSERT_EQ_FLOAT(after - before, 168.75, 0.001);
+    ASSERT(world_save(w, TMP("fly-credits.sav")));
+    ASSERT(world_load(loaded, TMP("fly-credits.sav")));
+    ASSERT(world_fly_worker_credits(loaded, asset_id, &before));
+    ASSERT_EQ_FLOAT(before, after, 0.001);
+    npc->active = false;
+    ASSERT(!world_fly_worker_credits(w, asset_id, &after));
+    ASSERT(!world_fly_worker_credits(w, 0, &after));
+}
+
 TEST(test_fly_purchase_reserved_hull_survives_full_inventory) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -12629,6 +12656,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hail_reports_no_station_in_range);
     RUN(test_fly_purchase_grant_is_durable_and_once_only);
     RUN(test_fly_purchase_reserved_hull_survives_full_inventory);
+    RUN(test_fly_worker_credits_follow_worker_ledgers);
     RUN(test_dead_neural_worker_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);
     RUN(test_black_market_contract_accepts_npc_module_delivery);

@@ -1533,6 +1533,7 @@ const fly_purchase_t *world_fly_purchase_reserve(world_t*, const uint8_t id[32],
 const fly_purchase_t *world_fly_purchase_grant(world_t *w,
     const uint8_t id[32], const uint8_t wallet[32], const uint8_t signature[64], int station);
 bool world_fly_purchases_valid(const world_t *w);
+bool world_fly_worker_credits(const world_t *w, uint32_t asset_id, double *out);
 bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
                                          hull_class_t hull_class);
 bool world_ship_assets_ensure_legacy_bindings(world_t *w);

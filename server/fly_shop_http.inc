@@ -99,17 +99,21 @@ static void handle_fly_shop(struct mg_connection *c, struct mg_http_message *hm)
             const npc_ship_t *candidate = &world.npc_ships[asset->operator_slot];
             if (candidate->active && candidate->ship_asset_id == asset->asset_id) npc = candidate;
         }
+        double credit_total = 0.0;
+        char credits[48] = "null";
+        if (world_fly_worker_credits(&world, p->asset_id, &credit_total))
+            snprintf(credits, sizeof(credits), "%.2f", credit_total);
         char id[65];
         for (int k = 0; k < 32; k++) snprintf(id + k * 2, 3, "%02x", p->purchase_id[k]);
         vec2 position = ship ? ship->pos : world.stations[p->station].pos;
         BUF_APPEND(pos, out, CAP, "%s{\"id\":\"%s\",\"assetId\":%u,\"station\":%u,"
             "\"lost\":%s,\"launched\":%s,\"state\":%d,\"x\":%.3f,\"y\":%.3f,"
-            "\"angle\":%.4f,\"hull\":%.3f,\"maxHull\":%.3f,\"towing\":%d,\"brain\":%d,\"rocks\":[",
+            "\"angle\":%.4f,\"hull\":%.3f,\"maxHull\":%.3f,\"towing\":%d,\"brain\":%d,\"credits\":%s,\"rocks\":[",
             first ? "" : ",", id, p->asset_id, p->station, asset->destroyed ? "true" : "false",
             npc ? "true" : "false", npc ? (int)npc->state : -1, position.x, position.y,
             ship ? ship->angle : 0.0f, ship ? ship->hull : 0.0f,
             hull_def_for_class(asset->hull_class)->max_hull, ship ? ship->towed_count : 0,
-            npc ? (int)npc->brain_mode : 0);
+            npc ? (int)npc->brain_mode : 0, credits);
         first = false;
         int rocks = 0;
         for (int a = 0; a < MAX_ASTEROIDS && rocks < 36; a++) {
