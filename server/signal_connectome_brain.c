@@ -83,6 +83,7 @@ typedef struct {
      * by the signal those flies can actually hear. A station learns which
      * posture pays off (station_value). Runtime-only. */
     uint32_t strategy_period;  /* ticks between re-samples, 0 = disabled */
+    uint32_t strategy_model_weight; /* 0..100: model bias ceiling, 0 = ignore model */
     uint8_t  station_strategy[MAX_STATIONS];
     uint32_t station_ttl[MAX_STATIONS];
     uint8_t  station_has_strategy[MAX_STATIONS];
@@ -188,6 +189,10 @@ bool signal_connectome_init(void)
     if (signal_connectome_strategy_requested()) {
         int32_t period = cb_env_int("SIGNAL_CONNECTOME_STRATEGY_PERIOD", 300);
         cb->strategy_period = period > 0 ? (uint32_t)period : 300u;
+        int32_t mw = cb_env_int("SIGNAL_CONNECTOME_STRATEGY_MODEL_WEIGHT", 50);
+        if (mw < 0) mw = 0;
+        if (mw > 100) mw = 100;
+        cb->strategy_model_weight = (uint32_t)mw;
     }
 
     if (fb_circuit_load(&cb->fast, fast_path) != 0) {
@@ -284,7 +289,8 @@ bool signal_connectome_init(void)
            cb->awake_hz_q16 / 65536.0);
     if (signal_connectome_strategy_requested())
         printf("[connectome] combined brain: connectome flight + strategic "
-               "planner (period %u ticks)\n", cb->strategy_period);
+               "planner (period %u ticks, model weight %u%%)\n",
+               cb->strategy_period, cb->strategy_model_weight);
     return true;
 }
 
@@ -384,6 +390,41 @@ void signal_connectome_bandit_decay(uint32_t *values, int count)
         values[i] -= values[i] >> 4;   /* ~6% per window */
 }
 
+#define CB_MODEL_BIAS_MAX 16u
+
+void signal_connectome_model_bias(const double *scores, int count,
+                                  uint32_t weight_pct, uint32_t *bias)
+{
+    if (!scores || !bias || count <= 0) return;
+    for (int i = 0; i < count; i++) bias[i] = 0;
+    if (weight_pct == 0) return;
+    if (weight_pct > 100) weight_pct = 100;
+
+    double lo = scores[0], hi = scores[0], second = -1.0e300;
+    for (int i = 1; i < count; i++) {
+        if (scores[i] > hi) { second = hi; hi = scores[i]; }
+        else if (scores[i] > second) second = scores[i];
+        if (scores[i] < lo) lo = scores[i];
+    }
+    double span = hi - lo;
+    if (span <= 0.0) return;
+
+    /* Taper by how separated the best is from the runner-up: a model that
+     * cannot rank confidently should not outvote the drive weights. */
+    double conf = (hi - second) / span;
+    if (conf < 0.0) conf = 0.0;
+    if (conf > 1.0) conf = 1.0;
+    conf = 0.25 + 0.75 * conf;
+
+    uint32_t ceiling = (CB_MODEL_BIAS_MAX * weight_pct) / 100u;
+    for (int i = 0; i < count; i++) {
+        double t = (scores[i] - lo) / span;
+        if (t < 0.0) t = 0.0;
+        if (t > 1.0) t = 1.0;
+        bias[i] = (uint32_t)(t * (double)ceiling * conf);
+    }
+}
+
 static uint64_t cb_station_seed(int station, uint32_t tick)
 {
     uint64_t h = 1469598103934665603ULL;
@@ -426,6 +467,7 @@ static bool cb_station_model_bias(int station, const cb_station_agg_t *a,
                                   uint32_t *bias)
 {
     if (!signal_npc_worker_brain_loaded()) return false;
+    if (g_cb.strategy_model_weight == 0u) return false;   /* model explicitly off */
     uint32_t n = a->count ? a->count : 1u;
     float hunger = (float)((a->hunger / n) >> 12) / 16.0f;
     float fear   = (float)((a->fear / n) >> 12) / 16.0f;
@@ -455,18 +497,8 @@ static bool cb_station_model_bias(int station, const cb_station_agg_t *a,
     (void)signal_npc_worker_brain_choose_with_scores(
         c, CB_STRAT_COUNT, scores, CB_STRAT_COUNT);
 
-    double lo = scores[0], hi = scores[0];
-    for (int p = 1; p < CB_STRAT_COUNT; p++) {
-        if (scores[p] < lo) lo = scores[p];
-        if (scores[p] > hi) hi = scores[p];
-    }
-    double span = hi - lo;
-    for (int p = 0; p < CB_STRAT_COUNT; p++) {
-        double t = span > 0.0 ? (scores[p] - lo) / span : 0.0;
-        if (t < 0.0) t = 0.0;
-        if (t > 1.0) t = 1.0;
-        bias[p] = (uint32_t)(t * 32.0);
-    }
+    signal_connectome_model_bias(scores, CB_STRAT_COUNT,
+                                 g_cb.strategy_model_weight, bias);
     return true;
 }
 

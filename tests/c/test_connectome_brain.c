@@ -528,6 +528,44 @@ TEST(test_connectome_probe_separates_death_and_replacement_motion) {
     ASSERT(m.observed_hull_loss == 100.0);
 }
 
+TEST(test_connectome_model_bias_is_bounded_and_confidence_tapered) {
+    uint32_t bias[SIGNAL_CONNECTOME_STRATEGY_COUNT];
+    double flat[5] = {2.0, 2.0, 2.0, 2.0, 2.0};
+    double spread[5] = {0.0, 1.0, 4.0, 3.0, 2.0};
+
+    /* Zero weight disables the model entirely. */
+    signal_connectome_model_bias(spread, 5, 0, bias);
+    for (int i = 0; i < 5; i++) ASSERT(bias[i] == 0);
+
+    /* A flat model has no opinion. */
+    signal_connectome_model_bias(flat, 5, 100, bias);
+    for (int i = 0; i < 5; i++) ASSERT(bias[i] == 0);
+
+    /* Bounded, and the top posture gets the most. */
+    signal_connectome_model_bias(spread, 5, 100, bias);
+    uint32_t max = 0;
+    int argmax = -1;
+    for (int i = 0; i < 5; i++) {
+        ASSERT(bias[i] <= 16u);
+        if (bias[i] > max) { max = bias[i]; argmax = i; }
+    }
+    ASSERT(argmax == 2);
+    ASSERT(max > 0u);
+
+    /* Half the weight never exceeds the full weight. */
+    uint32_t half[5];
+    signal_connectome_model_bias(spread, 5, 50, half);
+    for (int i = 0; i < 5; i++) ASSERT(half[i] <= bias[i]);
+
+    /* A confident top is favoured over a top that barely beats its runner-up. */
+    double close[5] = {0.0, 1.0, 2.0, 1.9, 1.0};
+    double far[5]   = {0.0, 1.0, 2.0, 0.1, 0.1};
+    uint32_t bc[5], bf[5];
+    signal_connectome_model_bias(close, 5, 100, bc);
+    signal_connectome_model_bias(far, 5, 100, bf);
+    ASSERT(bf[2] >= bc[2]);
+}
+
 void register_connectome_brain_tests(void);
 void register_connectome_brain_tests(void) {
     RUN(test_connectome_blob_loader_rejects_garbage);
@@ -546,4 +584,5 @@ void register_connectome_brain_tests(void) {
     RUN(test_connectome_posture_preserves_drive_history);
     RUN(test_connectome_probe_counts_completed_deliveries_and_slot_reuse);
     RUN(test_connectome_probe_separates_death_and_replacement_motion);
+    RUN(test_connectome_model_bias_is_bounded_and_confidence_tapered);
 }
