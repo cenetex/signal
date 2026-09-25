@@ -1604,7 +1604,10 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
             sp->id, selected, sp->current_station,
             st->scaffold_progress * 100.0f);
     if (st->scaffold_progress >= 1.0f) {
-        activate_outpost(w, sp->current_station);
+        uint8_t deliverer[32] = {0};
+        (void)server_player_copy_verified_pubkey(sp, deliverer);
+        activate_outpost(w, sp->current_station,
+                         OUTPOST_COMPLETION_PLAYER_DELIVERY, deliverer);
     }
 }
 

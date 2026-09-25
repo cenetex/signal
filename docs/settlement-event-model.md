@@ -377,6 +377,30 @@ The root feeds `scripts/build-rati-anchor-batch.mjs
 --settlement-checkpoint-root`, and from there OpenTimestamps and Bitcoin.
 Forge mint seeds commit to it (`atimics/forge`, `docs/SPEC.md`).
 
+### Outpost receipts
+
+When an outpost's scaffold completes, the outpost signs
+`CHAIN_EVT_OUTPOST_COMMISSIONED` into its own log. The payload records the
+founder, whether the founder's key is in the player identity registry, the
+player whose delivery completed the build (if any), and how the build
+completed: a player's delivery, an NPC hauler, or frontier virtual supply.
+Frontier founders are synthetic keys that never register, so the registry
+check separates player founders from NPC ones.
+
+```
+signal_outpost_receipt --checkpoint=<checkpoint.json> chain/<outpost>.log
+```
+
+The tool verifies the outpost's log, proves those exact bytes are the log
+committed in the checkpoint, and reads the commissioning event and the
+`CONSTRUCTION` events before it. The receipt is `play_earned` when a
+registered player founded the outpost, a player's delivery completed it, and
+at least `SCAFFOLD_MATERIAL_NEEDED` distinct manifest units were consumed into
+it. A receipt against a checkpoint taken before the log changed fails.
+
+Forge uses this receipt to decide who may register a token family: play, not
+hash power, grants issuance.
+
 v1 commits to history, not to derived state. A state root over
 settlement-owned state and `SEGMENT_COMMIT` events are later work. A checkpoint
 is as trustworthy as the station signatures under it: one operator today, a

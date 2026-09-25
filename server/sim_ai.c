@@ -380,7 +380,7 @@ static bool frontier_virtual_supply_one(world_t *w) {
         if (!station_exists(st) || st->planned) continue;
         if (st->scaffold && st->scaffold_progress < 1.0f) {
             st->scaffold_progress = 1.0f;
-            activate_outpost(w, s);
+            activate_outpost(w, s, OUTPOST_COMPLETION_VIRTUAL_SUPPLY, NULL);
             w->frontier_virtual_supply_deliveries++;
             SIM_LOG("[frontier] virtual pilots supplied station scaffold at station %d\n", s);
             return true;
@@ -6336,7 +6336,9 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                             w, unload_station, request);
                     if (delivered > 0) {
                         if (dest->scaffold_progress >= 1.0f)
-                            activate_outpost(w, npc->dest_station);
+                            activate_outpost(w, npc->dest_station,
+                                                     OUTPOST_COMPLETION_NPC_DELIVERY,
+                                                     NULL);
                     }
                 }
                 /* Feed the station cargo store directly into scaffolded
