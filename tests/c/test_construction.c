@@ -7294,7 +7294,7 @@ TEST(test_outpost_player_delivery_commissions_a_play_earned_outpost) {
     ASSERT(chain_log_verify(st, &walked, NULL));
 
 #ifndef _WIN32
-    char checkpoint[256];
+    char checkpoint[sizeof(dir) + 32];
     snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
     static char out[1 << 15];
     int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
@@ -7324,7 +7324,7 @@ TEST(test_outpost_virtual_supply_is_not_play_earned) {
 
 #ifndef _WIN32
     /* A checkpoint taken before commissioning. */
-    char early[256];
+    char early[sizeof(dir) + 32];
     snprintf(early, sizeof(early), "%s/early.json", dir);
     static char out[1 << 15];
     int status = outpost_receipt(st, early, true, out, sizeof(out));
@@ -7352,7 +7352,7 @@ TEST(test_outpost_virtual_supply_is_not_play_earned) {
     if (tools) {
         /* The log grew, so the earlier checkpoint no longer covers it. */
         ASSERT_EQ_INT(outpost_receipt(st, early, false, out, sizeof(out)), 1);
-        char current[256];
+        char current[sizeof(dir) + 32];
         snprintf(current, sizeof(current), "%s/current.json", dir);
         ASSERT_EQ_INT(outpost_receipt(st, current, true, out, sizeof(out)), 0);
         ASSERT(strstr(out, "\"play_earned\":false") != NULL);
