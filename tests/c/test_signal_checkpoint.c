@@ -31,9 +31,9 @@ static void cp_setup(const char *suffix) {
 
 static void cp_teardown(void) { chain_log_set_dir(NULL); }
 
-static world_t *cp_world(uint32_t seed) {
-    world_t *w = calloc(1, sizeof(world_t));
-    if (!w) return NULL;
+/* Reset a heap world (declared with WORLD_HEAP, which releases it) and
+ * start every station with an empty log. */
+static void cp_world(world_t *w, uint32_t seed) {
     w->rng = seed;
     world_reset(w);
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -41,7 +41,6 @@ static world_t *cp_world(uint32_t seed) {
         w->stations[s].chain_event_count = 0;
         memset(w->stations[s].chain_last_hash, 0, 32);
     }
-    return w;
 }
 
 /* Read a whole file; returns its length, or -1. */
@@ -66,8 +65,9 @@ static void cp_station(signal_checkpoint_station_t *s, uint8_t fill) {
 
 TEST(test_checkpoint_report_commits_to_verified_bytes) {
     cp_setup("report");
-    world_t *w = cp_world(61001u);
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
+    cp_world(w, 61001u);
     station_t *st = &w->stations[0];
     uint8_t pl[24] = "checkpoint-payload";
     for (int i = 0; i < 5; i++)
@@ -102,7 +102,6 @@ TEST(test_checkpoint_report_commits_to_verified_bytes) {
     ASSERT(memcmp(r.valid_bytes_sha256, digest, 32) == 0);
     ASSERT_EQ_INT((int)r.valid_bytes, 0);
 
-    free(w);
     cp_teardown();
 }
 
@@ -215,8 +214,9 @@ TEST(test_checkpoint_cli_matches_library_and_fails_closed) {
         return;
     }
     cp_setup("cli");
-    world_t *w = cp_world(61002u);
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
+    cp_world(w, 61002u);
     uint8_t pl[16] = "cli-payload";
     char paths[2][256];
     signal_checkpoint_station_t stations[2];
@@ -274,7 +274,6 @@ TEST(test_checkpoint_cli_matches_library_and_fails_closed) {
     ASSERT_EQ_INT(cp_run(cmd, out, sizeof(out)), 1);
     ASSERT(strstr(out, "checkpoint_root") == NULL);
 
-    free(w);
     cp_teardown();
 }
 #endif
