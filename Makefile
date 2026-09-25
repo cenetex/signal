@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-hnn-pilot-benchmark hnn-pilot-benchmark build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-ai-eval-repeatability replay-ai-eval-repeatability-long replay-ai-eval-native-wasm replay-ai-outcome-repeatability replay-ai-outcome-native-wasm replay-ai-outcome-modes signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite jank-profile-native jank-profile-browser relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
+.PHONY: all build build-web build-server build-test build-san test-san test-san-soak build-msan test-msan build-tsan test-tsan memzero-codegen build-mode-contract client-memory-budget build-flight-trace flight-trace build-hnn-pilot-benchmark hnn-pilot-benchmark build-signal-replay build-signal-replay-wasm signal-replay replay-repeatability replay-repeatability-long replay-ai-eval-repeatability replay-ai-eval-repeatability-long replay-ai-eval-native-wasm replay-ai-outcome-repeatability replay-ai-outcome-native-wasm replay-ai-outcome-modes signal-no-omniscience-soak replay-cross-build replay-cross-build-long replay-native-wasm replay-native-wasm-long build-chain-assets chain-assets build-rati-receipt rati-receipt build-checkpoint checkpoint rati-anchor-batch test-rati-anchor-batch rati-anchor-stamp test-rati-anchor-stamp neural-gap-ab signal-client-brain-shadow signal-hnn-shadow assets protocol-check test test-serial test-fast test-soak test-all asteroid-physics-bench smoke smoke-latency smoke-ack-lag smoke-latency-suite jank-profile-native jank-profile-browser relay-traffic-probe ws-backpressure-soak ws-backpressure-soak-short cargo-trust-audit banned-apis deterministic-libm deterministic-build-flags doc-freshness soak-automation vendor-drift fuzz-receipts fuzz-receipts-standalone cppcheck crap profile-machine latency-proxy latency-proxy-high latency-proxy-ack-lag rtc-gateway test-rtc-gateway deploy-fly site clean install-hooks
 
 all: build build-web build-server
 
@@ -276,6 +276,21 @@ rati-receipt: build-rati-receipt
 		$(if $(RATI_RECEIPT_CARGO_PUB),--cargo-pub=$(RATI_RECEIPT_CARGO_PUB),) \
 		$(RATI_RECEIPT_INPUT)
 
+CHECKPOINT_LOGS ?= chain/*.log
+CHECKPOINT_PREV ?=
+
+build-checkpoint:
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DGIT_HASH=$(GIT_HASH) $(SIM_PROFILE_CMAKE)
+	@ln -sf build/compile_commands.json compile_commands.json
+	cmake --build build --target signal_checkpoint --parallel
+
+# Signalspace checkpoint root over verified station logs. Chain checkpoints
+# with CHECKPOINT_PREV=<previous checkpoint_root>.
+checkpoint: build-checkpoint
+	./build/signal_checkpoint \
+		$(if $(CHECKPOINT_PREV),--prev=$(CHECKPOINT_PREV),) \
+		$(CHECKPOINT_LOGS)
+
 rati-anchor-batch:
 	@if [ -z "$(RATI_ANCHOR_RECEIPTS)" ]; then \
 		echo "Set RATI_ANCHOR_RECEIPTS=<receipt-json...>"; \
@@ -388,6 +403,7 @@ build-test:
 	cmake --build build --target signal_verify --parallel
 	cmake --build build --target signal_chain_assets --parallel
 	cmake --build build --target signal_rati_receipt --parallel
+	cmake --build build --target signal_checkpoint --parallel
 	# Compile-check the native client too. signal_test doesn't pull in
 	# net_sync.c / world_draw.c / hud.c (client-only), so a struct
 	# rename that breaks the wire-decode side won't fail signal_test
@@ -734,7 +750,7 @@ deterministic-build-flags:
 # here: it pulls in test fixtures and single-header vendor libraries whose
 # allocation-model warnings swamp actionable project-code findings.
 CPPCHECK ?= cppcheck
-CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/signal_chain_assets.c tools/signal_rati_receipt.c tools/flight_trace.c tools/signal_replay.c
+CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/signal_chain_assets.c tools/signal_rati_receipt.c tools/signal_checkpoint.c tools/flight_trace.c tools/signal_replay.c
 
 cppcheck:
 	$(CPPCHECK) --quiet --std=c11 --enable=warning,portability --error-exitcode=1 \

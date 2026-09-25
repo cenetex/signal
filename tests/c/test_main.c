@@ -88,6 +88,7 @@ void register_rx_envelope_tests(void);
 void register_chain_log_tests(void);
 void register_highscore_replay_tests(void);
 void register_signal_verify_tests(void);
+void register_signal_checkpoint_tests(void);
 void register_cross_station_settlement_tests(void);
 void register_sovereign_ledger_tests(void);
 void register_prefix_class_pricing_tests(void);
@@ -249,6 +250,7 @@ int main(int argc, char **argv) {
     register_chain_log_tests();
     register_highscore_replay_tests();
     register_signal_verify_tests();
+    register_signal_checkpoint_tests();
     register_cross_station_settlement_tests();
     register_sovereign_ledger_tests();
     register_prefix_class_pricing_tests();

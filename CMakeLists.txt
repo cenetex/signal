@@ -75,7 +75,7 @@ option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 # Layer E of #479: standalone CLI tools for verifying/exporting station
 # chain logs post-mortem. Default ON so dev builds get them; the
 # server-only Docker image flips it off.
-option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_replay)" ON)
+option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_checkpoint, signal_replay)" ON)
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 option(SIGNAL_SIM_PROFILE "Compile world_sim_step phase profiling timers" OFF)
 option(SIGNAL_HNN_ENABLE_LECORE
@@ -444,6 +444,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_highscore_replay.c
         server/highscore.c
         tests/c/test_signal_verify.c
+        tests/c/test_signal_checkpoint.c
         tests/c/test_cross_station_settlement.c
         tests/c/test_sovereign_ledger.c
         tests/c/test_prefix_class_pricing.c
@@ -614,6 +615,23 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_options(signal_rati_receipt PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
         target_compile_definitions(signal_rati_receipt PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    add_executable(signal_checkpoint
+        tools/signal_checkpoint.c
+        server/chain_log_verify.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_checkpoint PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(signal_checkpoint PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(signal_checkpoint PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_checkpoint PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
     add_executable(signal_hnn_pilot_benchmark

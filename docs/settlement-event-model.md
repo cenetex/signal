@@ -15,6 +15,10 @@ Draft protocol. The existing dedicated server (`signal_server`),
 document extends them toward P2P quorum signing and externally anchored
 segments that can be verified without trusting one dedicated server.
 
+Checkpoint roots v1 are implemented over the existing log format: see
+[Checkpoints (v1)](#checkpoints-v1). `SEGMENT_COMMIT`, the 216-byte header and
+state roots remain proposals.
+
 ## Design principles
 
 1. **Settlement owns durable economic state.** Asset ownership, credit
@@ -330,6 +334,53 @@ When a `TRANSFER_CARGO` crosses station zones:
    set to the source event's id.
 3. For P2P: a quorum of peers in the source station's signal cone signs the
    outgoing event; a quorum in the destination's cone signs the incoming event.
+
+## Checkpoints (v1)
+
+A checkpoint commits to every station's verified history at one moment. It
+needs no log format change. The existing chain already links each header to
+the previous one, so a station's last header hash commits to its final
+segment. A clean `event_id = 1` restart starts a new segment that the head
+does not cover, and real logs contain dozens of them. Each station's leaf
+therefore also commits to a SHA-256 of the complete verified log.
+
+`shared/signal_checkpoint.h` defines the bytes:
+
+```
+leaf  = SHA-256(0x00 || "SIGNAL:CHECKPOINT:LEAF:v1" || station_pubkey
+                || u64le total_events || u64le segment_count
+                || u64le tail_event_id || head_hash || log_sha256
+                || u64le log_bytes)
+node  = SHA-256(0x01 || left || right)    an odd node moves up unchanged
+root  = SHA-256("SIGNAL:CHECKPOINT:v1" || prev_checkpoint_root
+                || u64le station_count || stations_root)
+```
+
+Leaves are sorted by station pubkey. Each checkpoint names the previous
+checkpoint root (zero for the first), so checkpoints form a chain.
+
+`chain_log_verify_with_pubkey` reports `tail_hash`, `valid_bytes` and
+`valid_bytes_sha256` from the same pass that checks signatures and linkage.
+A log therefore cannot change between being verified and being committed.
+
+```
+make checkpoint                          # all chain/*.log
+make checkpoint CHECKPOINT_PREV=<root>   # chain to the previous checkpoint
+```
+
+`signal_checkpoint` fails closed: if one log fails verification, it emits no
+checkpoint. Its JSON output has no clock, so anyone with the same logs
+computes the same root. Each station carries an inclusion proof, so one
+station's history can be shown to be in a checkpoint without the other logs.
+
+The root feeds `scripts/build-rati-anchor-batch.mjs
+--settlement-checkpoint-root`, and from there OpenTimestamps and Bitcoin.
+Forge mint seeds commit to it (`atimics/forge`, `docs/SPEC.md`).
+
+v1 commits to history, not to derived state. A state root over
+settlement-owned state and `SEGMENT_COMMIT` events are later work. A checkpoint
+is as trustworthy as the station signatures under it: one operator today, a
+quorum once quorum certificates ship.
 
 ## Forward-apply semantics
 
