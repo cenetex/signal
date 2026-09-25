@@ -246,7 +246,8 @@ TEST(test_checkpoint_cli_matches_library_and_fails_closed) {
     }
     uint8_t zero[32] = {0}, scratch[2][32], stations_root[32], root[32];
     ASSERT(signal_checkpoint_root(stations, 2, zero, scratch, stations_root, root));
-    char expected[80] = "\"checkpoint_root\":\"";
+    /* "checkpoint_root":" (19) + 64 hex + NUL. */
+    char expected[19 + 64 + 1] = "\"checkpoint_root\":\"";
     for (int i = 0; i < 32; i++)
         snprintf(expected + 19 + (size_t)i * 2u, 3, "%02x", root[i]);
 
