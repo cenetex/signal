@@ -118,6 +118,8 @@ bool chain_log_verify_with_pubkey(FILE *f,
     uint8_t prev_hash[32] = {0};
     uint64_t expected_event_id = 1;
     bool ok = true;
+    sha256_ctx_t valid_ctx;
+    sha256_init(&valid_ctx);
 
     for (;;) {
         uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
@@ -255,11 +257,18 @@ bool chain_log_verify_with_pubkey(FILE *f,
             expected_event_id = 1;
         }
         verify_hash_full(&hdr, prev_hash);
+        memcpy(r->tail_hash, prev_hash, sizeof(r->tail_hash));
+        /* The record exactly as stored: header, raw length, payload. */
+        sha256_update(&valid_ctx, hdr_bytes, CHAIN_EVENT_HEADER_SIZE);
+        sha256_update(&valid_ctx, &payload_len, sizeof(payload_len));
+        if (payload_len > 0) sha256_update(&valid_ctx, payload_buf, payload_len);
+        r->valid_bytes += CHAIN_EVENT_HEADER_SIZE + sizeof(payload_len) + payload_len;
         r->valid_events++;
         r->tail_valid_events++;
         r->tail_event_id = hdr.event_id;
         expected_event_id++;
     }
 
+    sha256_final(&valid_ctx, r->valid_bytes_sha256);
     return ok;
 }

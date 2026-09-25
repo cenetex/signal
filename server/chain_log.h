@@ -578,6 +578,13 @@ typedef struct {
     uint64_t event_type_counts[CHAIN_EVT_TYPE_COUNT];
     uint64_t first_fail_event_id;
     char     first_fail_reason[128];
+    /* Commitments to exactly the bytes this pass verified, for checkpoints.
+     * tail_hash is the SHA-256 of the last valid header (zero if none);
+     * valid_bytes_sha256 covers every valid record in order, including
+     * earlier segments, and valid_bytes is their length. */
+    uint8_t  tail_hash[32];
+    uint64_t valid_bytes;
+    uint8_t  valid_bytes_sha256[32];
 } chain_log_verify_report_t;
 
 bool chain_log_verify_with_pubkey(FILE *log,
