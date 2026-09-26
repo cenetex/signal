@@ -414,7 +414,10 @@ int main(int argc, char **argv) {
                 planted_event_id = event_id;
             }
         } else if (type == CHAIN_EVT_CONSTRUCTION && commissions == 0 &&
-                   len == sizeof(chain_payload_construction_t)) {
+                   (len == sizeof(chain_payload_construction_t) ||
+                    len == sizeof(chain_payload_construction_player_t))) {
+            /* A player's delivery appends the player's pubkey; the leading
+             * 56 bytes are the same in both forms. */
             chain_payload_construction_t c;
             memcpy(&c, payload, sizeof(c));
             if (c.target_kind == CONSTRUCTION_TARGET_STATION) {

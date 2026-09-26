@@ -747,9 +747,13 @@ TEST(test_module_construction_and_delivery) {
  * also have its matching cargo_unit_t removed from the ship manifest.
  * Without the consume, the named frame stays in the ship's manifest
  * and could be sold or transferred again. */
-TEST(test_construction_consumes_manifest_units) {
+/* Deliver frames into a scaffold and check the first CONSTRUCTION event.
+ * A player delivery always uses the 88-byte form; it names the player's key
+ * only when the player is verified. */
+static void construction_scaffold_delivery_case(bool verified) {
     char dir[256];
-    snprintf(dir, sizeof(dir), "%s_scaffold_lineage", TMP("clog"));
+    snprintf(dir, sizeof(dir), "%s_scaffold_lineage_%d", TMP("clog"),
+             verified ? 1 : 0);
     chain_log_set_disk_enabled(true);
     chain_log_set_dir(dir);
 
@@ -768,6 +772,7 @@ TEST(test_construction_consumes_manifest_units) {
     sp->session_ready = true;
     sp->id = 0;
     memset(sp->session_token, 0xCC, sizeof(sp->session_token));
+    if (verified) ASSERT(construction_make_verified_player(sp, 0x40));
     player_init_ship(sp, &w);
     ASSERT(test_set_ship_finished_units(sp->ship, COMMODITY_FRAME, 5,
                                         MINING_GRADE_COMMON));
@@ -806,10 +811,17 @@ TEST(test_construction_consumes_manifest_units) {
     ASSERT(fread(len_bytes, 1, sizeof(len_bytes), f) == sizeof(len_bytes));
     uint16_t payload_len = (uint16_t)len_bytes[0] |
                            (uint16_t)((uint16_t)len_bytes[1] << 8);
-    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_construction_t));
-    chain_payload_construction_t payload = {0};
-    ASSERT(fread(&payload, 1, sizeof(payload), f) == sizeof(payload));
+    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_construction_player_t));
+    chain_payload_construction_player_t player = {0};
+    ASSERT(fread(&player, 1, sizeof(player), f) == sizeof(player));
     fclose(f);
+    const chain_payload_construction_t payload = player.base;
+
+    ASSERT_EQ_INT(payload.deliverer, CONSTRUCTION_DELIVERER_PLAYER);
+    uint8_t expected_pubkey[32] = {0};
+    if (verified) memcpy(expected_pubkey, sp->pubkey, sizeof(expected_pubkey));
+    ASSERT(memcmp(player.deliverer_pubkey, expected_pubkey,
+                  sizeof(expected_pubkey)) == 0);
 
     ASSERT_EQ_INT(payload.target_kind, CONSTRUCTION_TARGET_STATION);
     ASSERT_EQ_INT(payload.station_index, 0);
@@ -818,6 +830,14 @@ TEST(test_construction_consumes_manifest_units) {
     ASSERT_EQ_INT(payload.commodity, COMMODITY_FRAME);
     ASSERT_EQ_FLOAT(payload.contributed_units, 1.0f, 0.001f);
     chain_log_set_dir(NULL);
+}
+
+TEST(test_construction_consumes_manifest_units) {
+    construction_scaffold_delivery_case(false);
+}
+
+TEST(test_scaffold_delivery_names_verified_player) {
+    construction_scaffold_delivery_case(true);
 }
 
 TEST(test_station_scaffold_manifest_batch_append_failure_is_inert) {
@@ -952,9 +972,12 @@ TEST(test_station_scaffold_manifest_batch_append_failure_is_inert) {
     chain_log_set_dir(NULL);
 }
 
-TEST(test_module_delivery_emits_construction_chain_event) {
+/* Deliver three frames into a module from a bare ship (no owner) or from a
+ * verified player's ship, and check who the first CONSTRUCTION event names. */
+static void construction_module_delivery_case(bool player) {
     char dir[256];
-    snprintf(dir, sizeof(dir), "%s_construction_lineage", TMP("clog"));
+    snprintf(dir, sizeof(dir), "%s_construction_lineage_%d", TMP("clog"),
+             player ? 1 : 0);
     chain_log_set_disk_enabled(true);
     chain_log_set_dir(dir);
 
@@ -976,9 +999,18 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     m->scaffold = true;
     m->build_progress = 0.0f;
 
-    SHIP_DECL(ship);
-    ASSERT(manifest_init(&ship.manifest, 4));
-    ship.cargo[COMMODITY_FRAME] = 3.0f;
+    SHIP_DECL(bare);
+    ship_t *ship = &bare;
+    server_player_t *sp = &w.players[0];
+    if (player) {
+        ASSERT(construction_make_verified_player(sp, 0x70));
+        player_init_ship(sp, &w);
+        ASSERT(sp->ship != NULL);
+        ship = sp->ship;
+    } else {
+        ASSERT(manifest_init(&bare.manifest, 4));
+    }
+    ship->cargo[COMMODITY_FRAME] = 3.0f;
     cargo_unit_t units[3] = {{0}};
     cargo_unit_t *unit_ptrs[3] = {0};
     for (int i = 0; i < 3; i++) {
@@ -989,17 +1021,17 @@ TEST(test_module_delivery_emits_construction_chain_event) {
         ASSERT(hash_legacy_migrate_unit(
             origin, COMMODITY_FRAME, 0, &units[i]));
         ASSERT(ship_manifest_push_with_chain(
-            &ship, &units[i], NULL));
-        unit_ptrs[i] = &ship.manifest.units[i];
+            ship, &units[i], NULL));
+        unit_ptrs[i] = &ship->manifest.units[ship->manifest.count - 1];
     }
     ASSERT(world_anchor_legacy_cargo_origins(
         &w, 0, unit_ptrs, 3));
     uint64_t origin_events = st->chain_event_count;
     cargo_receipt_origin_cache_reset();
 
-    float payout = step_module_delivery(&w, st, 0, &ship, COMMODITY_FRAME);
+    float payout = step_module_delivery(&w, st, 0, ship, COMMODITY_FRAME);
     ASSERT(payout > 0.0f);
-    ASSERT_EQ_INT(manifest_count_by_commodity(&ship.manifest, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(manifest_count_by_commodity(&ship->manifest, COMMODITY_FRAME), 0);
     ASSERT_EQ_FLOAT(
         m->build_progress,
         3.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
@@ -1027,10 +1059,13 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     ASSERT(fread(len_bytes, 1, sizeof(len_bytes), f) == sizeof(len_bytes));
     uint16_t payload_len = (uint16_t)len_bytes[0] |
                            (uint16_t)((uint16_t)len_bytes[1] << 8);
-    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_construction_t));
-    chain_payload_construction_t payload = {0};
-    ASSERT(fread(&payload, 1, sizeof(payload), f) == sizeof(payload));
+    ASSERT_EQ_INT(payload_len,
+                  player ? (int)sizeof(chain_payload_construction_player_t)
+                         : (int)sizeof(chain_payload_construction_t));
+    chain_payload_construction_player_t named = {0};
+    ASSERT(fread(&named, 1, payload_len, f) == payload_len);
     fclose(f);
+    const chain_payload_construction_t payload = named.base;
 
     ASSERT(memcmp(payload.cargo_pub, units[0].pub,
                   sizeof(units[0].pub)) == 0);
@@ -1039,11 +1074,27 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     ASSERT_EQ_INT(payload.module_index, module_idx);
     ASSERT_EQ_INT(payload.module_type, MODULE_SIGNAL_RELAY);
     ASSERT_EQ_INT(payload.commodity, COMMODITY_FRAME);
+    if (player) {
+        ASSERT_EQ_INT(payload.deliverer, CONSTRUCTION_DELIVERER_PLAYER);
+        ASSERT(memcmp(named.deliverer_pubkey, sp->pubkey,
+                      sizeof(named.deliverer_pubkey)) == 0);
+    } else {
+        /* No player owns this ship, so nobody is named. */
+        ASSERT_EQ_INT(payload.deliverer, CONSTRUCTION_DELIVERER_UNKNOWN);
+    }
     ASSERT_EQ_FLOAT(payload.contributed_units, 1.0f, 0.001f);
     ASSERT_EQ_FLOAT(payload.progress_after,
                     1.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
                     0.001f);
     chain_log_set_dir(NULL);
+}
+
+TEST(test_module_delivery_emits_construction_chain_event) {
+    construction_module_delivery_case(false);
+}
+
+TEST(test_module_delivery_names_verified_player) {
+    construction_module_delivery_case(true);
 }
 
 TEST(test_module_manifest_batch_append_failure_is_inert) {
@@ -7440,10 +7491,14 @@ TEST(test_a_scaffold_saved_with_drifted_progress_finishes) {
 }
 
 /* Consume `count` distinct frames into station 0's scaffold, recorded as
- * delivered by `deliverer`. */
+ * delivered by `deliverer`. Player frames use the 88-byte form the sim
+ * emits, naming a player key derived from `salt`. */
 static bool outpost_emit_frames(world_t *w, int count, uint8_t deliverer, uint8_t salt) {
     station_t *st = &w->stations[0];
     for (int i = 0; i < count; i++) {
+        chain_payload_construction_player_t p;
+        memset(&p, 0, sizeof(p));
+        memset(p.deliverer_pubkey, (uint8_t)(salt ^ 0xA5), sizeof(p.deliverer_pubkey));
         chain_payload_construction_t c;
         memset(&c, 0, sizeof(c));
         memset(c.cargo_pub, salt, sizeof(c.cargo_pub));
@@ -7455,7 +7510,12 @@ static bool outpost_emit_frames(world_t *w, int count, uint8_t deliverer, uint8_
         c.deliverer = deliverer;
         c.contributed_units = 1.0f;
         c.progress_after = scaffold_progress_for_units(i + 1);
-        if (chain_log_emit(w, st, CHAIN_EVT_CONSTRUCTION, &c, sizeof(c)) == 0) return false;
+        p.base = c;
+        bool player = deliverer == CONSTRUCTION_DELIVERER_PLAYER;
+        if (chain_log_emit(w, st, CHAIN_EVT_CONSTRUCTION,
+                           player ? (const void *)&p : (const void *)&c,
+                           player ? (uint16_t)sizeof(p) : (uint16_t)sizeof(c)) == 0)
+            return false;
     }
     return true;
 }
@@ -7621,6 +7681,7 @@ void register_construction_modules_tests(void) {
     RUN(test_module_build_material_types);
     RUN(test_module_construction_and_delivery);
     RUN(test_construction_consumes_manifest_units);
+    RUN(test_scaffold_delivery_names_verified_player);
     RUN(test_station_scaffold_manifest_batch_append_failure_is_inert);
     RUN(test_outpost_player_delivery_commissions_a_play_earned_outpost);
     RUN(test_outpost_virtual_supply_is_not_play_earned);
@@ -7631,6 +7692,7 @@ void register_construction_modules_tests(void) {
     RUN(test_scaffold_progress_counts_whole_frames);
     RUN(test_a_scaffold_saved_with_drifted_progress_finishes);
     RUN(test_module_delivery_emits_construction_chain_event);
+    RUN(test_module_delivery_names_verified_player);
     RUN(test_module_manifest_batch_append_failure_is_inert);
     RUN(test_module_delivery_consumes_towed_manifest_pod);
     RUN(test_module_physical_delivery_append_failure_is_inert);

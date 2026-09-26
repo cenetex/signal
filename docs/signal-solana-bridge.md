@@ -41,6 +41,18 @@ same mnemonic into their Solana wallet. Same seed, different keys.
 wallet. Most players want the opposite: bring their existing wallet to the
 game. Also, Signal currently uses raw Ed25519 keypairs, not BIP39.
 
+> **Update (2026-09): the link is now a self-checking signature.** The
+> ceremony below has the identity key sign a server challenge that does not
+> name the wallet, so only the server can vouch for the pairing. It was never
+> built. The implemented link (`shared/wallet_link.h`, the
+> `signal_wallet_link` tool) has the identity key sign
+> `"signal-wallet-link-v2" || signal_pubkey || solana_pubkey || sequence_le64`.
+> Anyone, including a Solana program, can check it with the two public keys.
+> The wallet consents by signing whatever transaction uses the link, so no
+> wallet signature is stored. A higher sequence replaces an older link, which
+> is how a player moves to a new wallet. Forge uses this link to mint play
+> supply; the furnace flow below should use it too.
+
 ## Chosen design: Option B with extensions
 
 The player links their Solana wallet to their Signal identity once. After

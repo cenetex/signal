@@ -385,9 +385,18 @@ founder was a verified player at that moment. Frontier founders are synthetic
 keys, so they are recorded as unregistered. This choice is fixed at planting
 and does not depend on the player registry later.
 
-Each `CONSTRUCTION` event for a station scaffold records who delivered the
-unit: a player who docked with it, or an NPC hauler. Logs written before this
-field record 0 (unknown), which never counts as player labor.
+Each `CONSTRUCTION` event for a station scaffold or module records who
+delivered the unit: a player, or an NPC hauler or the station's own stock.
+Logs written before this field record 0 (unknown), which never counts as
+player labor.
+
+A player's delivery also names the player. Its payload is 88 bytes: the
+56-byte construction payload followed by the player's verified identity
+pubkey (`chain_payload_construction_player_t`). The pubkey is zero when the
+player had no verified identity. Every other delivery keeps the 56-byte form,
+so readers tell the two apart by payload length. This is the event Forge
+mints play supply for: one player-delivered frame, to the wallet the named
+identity has linked (`shared/wallet_link.h`, `signal_wallet_link`).
 
 When the scaffold completes, the outpost signs
 `CHAIN_EVT_OUTPOST_COMMISSIONED`. The payload records the founder, the player

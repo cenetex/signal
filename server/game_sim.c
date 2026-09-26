@@ -1486,23 +1486,27 @@ static bool cargo_unit_pub_nonzero(const cargo_unit_t *unit) {
     return unit && memcmp(unit->pub, zero, sizeof(zero)) != 0;
 }
 
+/* A player delivered these frames; `deliverer_pubkey` is the player's
+ * verified identity pubkey or all zeros. */
 static bool emit_station_construction_contributions(
     world_t *w, station_t *st, int station_idx,
     const cargo_unit_t *units, size_t unit_count,
-    float progress_before) {
-    if (!w || !st || !units || unit_count == 0 ||
+    float progress_before, const uint8_t deliverer_pubkey[32]) {
+    if (!w || !st || !units || !deliverer_pubkey || unit_count == 0 ||
         unit_count > CHAIN_LOG_BATCH_MAX_EVENTS) {
         return false;
     }
-    chain_payload_construction_t
-        payloads[CHAIN_LOG_BATCH_MAX_EVENTS];
+    chain_payload_construction_player_t
+        players[CHAIN_LOG_BATCH_MAX_EVENTS];
     chain_log_batch_event_t
         events[CHAIN_LOG_BATCH_MAX_EVENTS];
-    memset(payloads, 0, sizeof(payloads));
+    memset(players, 0, sizeof(players));
     memset(events, 0, sizeof(events));
     for (size_t i = 0; i < unit_count; i++) {
         if (!cargo_unit_pub_nonzero(&units[i])) return false;
-        chain_payload_construction_t *payload = &payloads[i];
+        memcpy(players[i].deliverer_pubkey, deliverer_pubkey,
+               sizeof(players[i].deliverer_pubkey));
+        chain_payload_construction_t *payload = &players[i].base;
         memcpy(payload->cargo_pub, units[i].pub,
                sizeof(payload->cargo_pub));
         payload->target_kind = CONSTRUCTION_TARGET_STATION;
@@ -1521,8 +1525,8 @@ static bool emit_station_construction_contributions(
             (int)i + 1);
         events[i] = (chain_log_batch_event_t){
             .type = CHAIN_EVT_CONSTRUCTION,
-            .payload = payload,
-            .payload_len = (uint16_t)sizeof(*payload),
+            .payload = &players[i],
+            .payload_len = (uint16_t)sizeof(players[i]),
         };
     }
     chain_log_append_result_t appended =
@@ -1590,9 +1594,11 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
             return;
         }
     }
+    uint8_t deliverer[32] = {0};
+    (void)server_player_copy_verified_pubkey(sp, deliverer);
     if (!emit_station_construction_contributions(
             w, st, sp->current_station, units,
-            (size_t)selected, st->scaffold_progress)) {
+            (size_t)selected, st->scaffold_progress, deliverer)) {
         cargo_store_cleanup(&staged_ship);
         return;
     }
@@ -1609,8 +1615,6 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
             sp->id, selected, sp->current_station,
             st->scaffold_progress * 100.0f);
     if (st->scaffold_progress >= 1.0f) {
-        uint8_t deliverer[32] = {0};
-        (void)server_player_copy_verified_pubkey(sp, deliverer);
         activate_outpost(w, sp->current_station,
                          OUTPOST_COMPLETION_PLAYER_DELIVERY, deliverer);
     }

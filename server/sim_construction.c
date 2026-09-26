@@ -65,6 +65,7 @@ static bool emit_module_supply_contributions(
                 ? (uint8_t)module_idx : 0xff;
         payload->module_type = (uint8_t)module->type;
         payload->commodity = (uint8_t)commodity;
+        payload->deliverer = CONSTRUCTION_DELIVERER_NPC; /* station stock */
         payload->target_id =
             (station_idx >= 0) ? (uint64_t)station_idx : 0u;
         payload->contributed_units = 1.0f;
