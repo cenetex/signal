@@ -331,8 +331,8 @@ SIGNAL_PACK_POP
  * delivering player's verified identity pubkey appended, so readers tell the
  * two forms apart by payload length. The pubkey is zero when the player had
  * no verified identity. NPC, station-stock and unknown deliveries keep the
- * 56-byte form. Forge mints play supply to this key after the key signs a
- * wallet link (shared/wallet_link.h). */
+ * 56-byte form. Forge mints play supply for this key to the wallet it and
+ * the wallet both signed a RATi link for (shared/wallet_link.h). */
 SIGNAL_PACK_PUSH
 typedef struct {
     chain_payload_construction_t base;  /* base.deliverer is PLAYER */

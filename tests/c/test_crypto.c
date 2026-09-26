@@ -341,63 +341,106 @@ TEST(test_base64_decode_rejects_short_output_buffer) {
     ASSERT_EQ_INT(base64_decode(encoded, short_decoded, sizeof(short_decoded)), -1);
 }
 
-/* A wallet link must be checkable from the two public keys alone, and must
- * name exactly one wallet and one sequence. */
-static void wallet_link_keys(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
-                             uint8_t sec[SIGNAL_CRYPTO_SECRET_BYTES],
-                             uint8_t wallet[SIGNAL_CRYPTO_PUBKEY_BYTES]) {
+/* RATi link vectors shared with Forge (docs/rati-link.md) and CosyWorld. */
+static const char RATI_LINK_VECTOR[] =
+    "RATi link v1\nApp: signal\n"
+    "Identity: GySVDr1omr3GTodgWFH7qD1ZKav9C5NMPFjdpwb33LvU\n"
+    "Wallet: 2Q7CEgPw9eDDcmcsZXx8R9ZuGuUapzKAQfzb5CnYeQyn\n"
+    "Sequence: 1790000000\n"
+    "This links the identity to the wallet. It does not authorize a transaction.";
+static const char RATI_LINK_IDENTITY_SIG[] =
+    "4ca060d021f052f98d19847c3b77aa0d644f4b627aac15aa18baad080c8778c4"
+    "ee44c482f1822e87d6c113c2ddbae96d51f5b8df5928d788d053011c9b66de01";
+static const char RATI_LINK_WALLET_SIG[] =
+    "97a3de0125ac4bc64c0a2ac6eef979a59f7d8499508ed70a08384c46b76ade15"
+    "928a1f4f1b0badc1abf30caa46d677ad07c494ff44ae4aab190931f711342106";
+#define RATI_LINK_SEQUENCE 1790000000ull
+
+typedef struct {
+    uint8_t identity[32], identity_secret[64];
+    uint8_t wallet[32], wallet_secret[64];
+} rati_link_keys_t;
+
+static void rati_link_keys(rati_link_keys_t *k) {
     uint8_t seed[32];
     for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0x11 + i);
-    signal_crypto_keypair_from_seed(seed, pub, sec);
-    for (int i = 0; i < 32; i++) wallet[i] = (uint8_t)(0xC0 ^ i);
+    signal_crypto_keypair_from_seed(seed, k->identity, k->identity_secret);
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0x51 + i);
+    signal_crypto_keypair_from_seed(seed, k->wallet, k->wallet_secret);
 }
 
-TEST(test_wallet_link_message_layout) {
-    uint8_t pub[32], sec[64], wallet[32];
-    wallet_link_keys(pub, sec, wallet);
-    uint8_t msg[WALLET_LINK_MESSAGE_SIZE];
-    ASSERT(wallet_link_message(msg, pub, wallet, 0x0102030405060708ull));
-    ASSERT_EQ_INT((int)sizeof(msg), 93);
-    ASSERT(memcmp(msg, "signal-wallet-link-v2", 21) == 0);
-    ASSERT(memcmp(msg + 21, pub, 32) == 0);
-    ASSERT(memcmp(msg + 53, wallet, 32) == 0);
-    const uint8_t le[8] = {8, 7, 6, 5, 4, 3, 2, 1};
-    ASSERT(memcmp(msg + 85, le, 8) == 0);
+static uint8_t rati_link_nibble(char c) {
+    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+    return (uint8_t)(c - 'a' + 10);
 }
 
-TEST(test_wallet_link_sign_verify_and_tamper) {
-    uint8_t pub[32], sec[64], wallet[32];
-    wallet_link_keys(pub, sec, wallet);
-    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
-    ASSERT(wallet_link_sign(sig, pub, sec, wallet, 3));
-    ASSERT(wallet_link_verify(pub, wallet, 3, sig));
-
-    uint8_t other_wallet[32];
-    memcpy(other_wallet, wallet, 32);
-    other_wallet[31] ^= 1;
-    ASSERT(!wallet_link_verify(pub, other_wallet, 3, sig));
-    ASSERT(!wallet_link_verify(pub, wallet, 4, sig));
-    uint8_t other_pub[32];
-    memcpy(other_pub, pub, 32);
-    other_pub[0] ^= 1;
-    ASSERT(!wallet_link_verify(other_pub, wallet, 3, sig));
-    sig[5] ^= 1;
-    ASSERT(!wallet_link_verify(pub, wallet, 3, sig));
+/* The vectors are lowercase hex. */
+static void rati_link_hex(const char *hex, uint8_t out[64]) {
+    for (int i = 0; i < 64; i++)
+        out[i] = (uint8_t)(rati_link_nibble(hex[2 * i]) << 4 |
+                           rati_link_nibble(hex[2 * i + 1]));
 }
 
-TEST(test_wallet_link_refuses_mismatched_or_empty_keys) {
-    uint8_t pub[32], sec[64], wallet[32];
-    wallet_link_keys(pub, sec, wallet);
-    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
-    uint8_t other_pub[32];
-    memcpy(other_pub, pub, 32);
-    other_pub[0] ^= 1;
+TEST(test_rati_link_matches_the_shared_vector) {
+    rati_link_keys_t k;
+    rati_link_keys(&k);
+    uint8_t msg[WALLET_LINK_MESSAGE_MAX];
+    size_t len = wallet_link_message(msg, k.identity, k.wallet, RATI_LINK_SEQUENCE);
+    ASSERT_EQ_INT((int)len, (int)strlen(RATI_LINK_VECTOR));
+    ASSERT(memcmp(msg, RATI_LINK_VECTOR, len) == 0);
+
+    uint8_t identity_sig[64], wallet_sig[64], expected[64];
+    ASSERT(wallet_link_sign(identity_sig, k.identity, k.identity_secret,
+                            k.identity, k.wallet, RATI_LINK_SEQUENCE));
+    rati_link_hex(RATI_LINK_IDENTITY_SIG, expected);
+    ASSERT(memcmp(identity_sig, expected, 64) == 0);
+    ASSERT(wallet_link_sign(wallet_sig, k.wallet, k.wallet_secret,
+                            k.identity, k.wallet, RATI_LINK_SEQUENCE));
+    rati_link_hex(RATI_LINK_WALLET_SIG, expected);
+    ASSERT(memcmp(wallet_sig, expected, 64) == 0);
+    ASSERT(wallet_link_verify(k.identity, k.wallet, RATI_LINK_SEQUENCE,
+                              identity_sig, wallet_sig));
+}
+
+TEST(test_rati_link_needs_both_signatures_over_this_link) {
+    rati_link_keys_t k;
+    rati_link_keys(&k);
+    uint8_t identity_sig[64], wallet_sig[64];
+    ASSERT(wallet_link_sign(identity_sig, k.identity, k.identity_secret,
+                            k.identity, k.wallet, 3));
+    ASSERT(wallet_link_sign(wallet_sig, k.wallet, k.wallet_secret,
+                            k.identity, k.wallet, 3));
+    ASSERT(wallet_link_verify(k.identity, k.wallet, 3, identity_sig, wallet_sig));
+
+    uint8_t none[64] = {0};
+    ASSERT(!wallet_link_verify(k.identity, k.wallet, 3, identity_sig, none));
+    ASSERT(!wallet_link_verify(k.identity, k.wallet, 3, none, wallet_sig));
+    ASSERT(!wallet_link_verify(k.identity, k.wallet, 3, wallet_sig, identity_sig));
+    ASSERT(!wallet_link_verify(k.identity, k.wallet, 4, identity_sig, wallet_sig));
+    uint8_t other[32];
+    memcpy(other, k.wallet, 32);
+    other[31] ^= 1;
+    ASSERT(!wallet_link_verify(k.identity, other, 3, identity_sig, wallet_sig));
+    memcpy(other, k.identity, 32);
+    other[0] ^= 1;
+    ASSERT(!wallet_link_verify(other, k.wallet, 3, identity_sig, wallet_sig));
+}
+
+TEST(test_rati_link_signing_refuses_the_wrong_key) {
+    rati_link_keys_t k;
+    rati_link_keys(&k);
+    uint8_t sig[64];
     memset(sig, 0xAA, sizeof(sig));
-    ASSERT(!wallet_link_sign(sig, other_pub, sec, wallet, 1));
+    /* The identity secret cannot sign as the wallet. */
+    ASSERT(!wallet_link_sign(sig, k.wallet, k.identity_secret, k.identity, k.wallet, 1));
     for (size_t i = 0; i < sizeof(sig); i++) ASSERT_EQ_INT(sig[i], 0);
+    /* A third key is neither party. */
+    uint8_t third[32], third_secret[64], seed[32] = {9};
+    signal_crypto_keypair_from_seed(seed, third, third_secret);
+    ASSERT(!wallet_link_sign(sig, third, third_secret, k.identity, k.wallet, 1));
     const uint8_t zero[32] = {0};
-    ASSERT(!wallet_link_sign(sig, pub, sec, zero, 1));
-    ASSERT(!wallet_link_verify(pub, zero, 1, sig));
+    ASSERT(!wallet_link_sign(sig, k.identity, k.identity_secret, k.identity, zero, 1));
+    ASSERT(!wallet_link_verify_signature(k.identity, k.identity, zero, 1, sig));
 }
 
 void register_crypto_tests(void);
@@ -409,9 +452,9 @@ void register_crypto_tests(void) {
     RUN(test_crypto_entropy_failure_clears_random_output);
     RUN(test_crypto_entropy_failure_clears_keypair_outputs);
     RUN(test_crypto_sign_verify_roundtrip);
-    RUN(test_wallet_link_message_layout);
-    RUN(test_wallet_link_sign_verify_and_tamper);
-    RUN(test_wallet_link_refuses_mismatched_or_empty_keys);
+    RUN(test_rati_link_matches_the_shared_vector);
+    RUN(test_rati_link_needs_both_signatures_over_this_link);
+    RUN(test_rati_link_signing_refuses_the_wrong_key);
     RUN(test_crypto_heap_scratch_roundtrip_and_tamper);
     RUN(test_crypto_verify_rejects_msg_tamper);
     RUN(test_crypto_verify_rejects_sig_tamper);

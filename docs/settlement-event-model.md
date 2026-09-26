@@ -396,7 +396,8 @@ pubkey (`chain_payload_construction_player_t`). The pubkey is zero when the
 player had no verified identity. Every other delivery keeps the 56-byte form,
 so readers tell the two apart by payload length. This is the event Forge
 mints play supply for: one player-delivered frame, to the wallet the named
-identity has linked (`shared/wallet_link.h`, `signal_wallet_link`).
+identity has linked with a RATi link that both the identity and the wallet
+signed (`shared/wallet_link.h`, `signal_wallet_link`).
 
 When the scaffold completes, the outpost signs
 `CHAIN_EVT_OUTPOST_COMMISSIONED`. The payload records the founder, the player
