@@ -1515,10 +1515,9 @@ static bool emit_station_construction_contributions(
         payload->target_id =
             (station_idx >= 0) ? (uint64_t)station_idx : 0u;
         payload->contributed_units = 1.0f;
-        payload->progress_after = progress_before +
-            (float)(i + 1u) / SCAFFOLD_MATERIAL_NEEDED;
-        if (payload->progress_after > 1.0f)
-            payload->progress_after = 1.0f;
+        payload->progress_after = scaffold_progress_for_units(
+            (int)lroundf(progress_before * SCAFFOLD_MATERIAL_NEEDED) +
+            (int)i + 1);
         events[i] = (chain_log_batch_event_t){
             .type = CHAIN_EVT_CONSTRUCTION,
             .payload = payload,
@@ -1540,10 +1539,17 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     if (!sp->docked) return;
     station_t *st = &w->stations[sp->current_station];
     if (!st->scaffold) return;
-    float needed_f =
-        SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
-    int needed = (int)ceilf(needed_f - 0.0001f);
-    if (needed <= 0) return;
+    int delivered_before = scaffold_units_delivered(st);
+    int needed = scaffold_units_needed(st);
+    if (needed <= 0) {
+        /* Every frame is in: a scaffold saved with drifted float progress
+         * finishes here. The frames were already delivered, so no one is
+         * named as the finisher. */
+        st->scaffold_progress = 1.0f;
+        activate_outpost(w, sp->current_station,
+                         OUTPOST_COMPLETION_PLAYER_DELIVERY, NULL);
+        return;
+    }
     if (needed > CHAIN_LOG_BATCH_MAX_EVENTS)
         needed = CHAIN_LOG_BATCH_MAX_EVENTS;
 
@@ -1596,10 +1602,8 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     /* Loose/towed pods have no receipt sidecar. They cannot satisfy a
      * provenance-sensitive construction input and remain untouched. */
     ship_finished_sync(sp->ship, COMMODITY_FRAME);
-    st->scaffold_progress +=
-        (float)selected / SCAFFOLD_MATERIAL_NEEDED;
-    if (st->scaffold_progress > 1.0f)
-        st->scaffold_progress = 1.0f;
+    st->scaffold_progress =
+        scaffold_progress_for_units(delivered_before + selected);
     SIM_LOG("[sim] player %d delivered %d frames to scaffold %d (progress %.0f%%)\n",
             sp->id, selected, sp->current_station,
             st->scaffold_progress * 100.0f);
@@ -12365,7 +12369,7 @@ static void step_contracts(world_t *w, float dt) {
                 scaffold_needs = true;
                 break;
             }
-            if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
+            if (st->scaffold && c == COMMODITY_FRAME && scaffold_units_needed(st) > 0)
                 scaffold_needs = true;
 
             if (scaffold_needs) {
@@ -12376,7 +12380,7 @@ static void step_contracts(world_t *w, float dt) {
                     if (module_build_material(st->modules[m].type) != c) continue;
                     if (!module_is_fully_supplied(&st->modules[m])) { all_supplied = false; break; }
                 }
-                if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
+                if (st->scaffold && c == COMMODITY_FRAME && scaffold_units_needed(st) > 0)
                     all_supplied = false;
                 if (all_supplied) {
                     bool was_claimed =
@@ -12537,8 +12541,9 @@ static void step_contracts(world_t *w, float dt) {
 
         /* Priority 2: station scaffold needs frames (production slot) */
         if (!need.active && !has_production_contract && st->scaffold) {
-            float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
-            if (remaining > 0.5f) {
+            int remaining_units = scaffold_units_needed(st);
+            if (remaining_units > 0) {
+                float remaining = (float)remaining_units;
                 float policy_mult = station_policy_trade_price_multiplier(st, COMMODITY_FRAME);
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,

@@ -1762,6 +1762,30 @@ void signal_chain_load(world_t *w);
 module_type_t producer_module_for_commodity(commodity_t c);
 void player_seed_credits(server_player_t *sp, world_t *w);
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
+/* Scaffold progress in whole frames. Progress is stored as a float
+ * fraction for the save and wire formats, but adding 1/48 one frame at a
+ * time drifts to 0.99999958 after 48 frames, which left scaffolds one
+ * frame short forever. Delivery math counts whole frames through these
+ * helpers, and progress is always a whole-frame fraction. */
+static inline int scaffold_units_total(void) {
+    return (int)lroundf(SCAFFOLD_MATERIAL_NEEDED);
+}
+
+static inline int scaffold_units_delivered(const station_t *st) {
+    int units = (int)lroundf(st->scaffold_progress * SCAFFOLD_MATERIAL_NEEDED);
+    if (units < 0) return 0;
+    return units > scaffold_units_total() ? scaffold_units_total() : units;
+}
+
+static inline int scaffold_units_needed(const station_t *st) {
+    return scaffold_units_total() - scaffold_units_delivered(st);
+}
+
+static inline float scaffold_progress_for_units(int units) {
+    if (units >= scaffold_units_total()) return 1.0f;
+    return units <= 0 ? 0.0f : (float)units / SCAFFOLD_MATERIAL_NEEDED;
+}
+
 /* How an outpost scaffold was completed; recorded in its commissioning
  * chain event. */
 typedef enum {
