@@ -6116,9 +6116,8 @@ static int npc_consume_trusted_scaffold_frames(
             cargo_store_cleanup(&staged);
             break;
         }
-        float progress_after = station->scaffold_progress +
-            1.0f / SCAFFOLD_MATERIAL_NEEDED;
-        if (progress_after > 1.0f) progress_after = 1.0f;
+        float progress_after = scaffold_progress_for_units(
+            scaffold_units_delivered(station) + 1);
         chain_payload_construction_t payload = {0};
         memcpy(payload.cargo_pub, unit.pub,
                sizeof(payload.cargo_pub));
@@ -6326,10 +6325,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             /* Hauler also feeds delivered stock into scaffold station/modules. */
             if (dest->scaffold || dest->module_count > 0) {
                 if (dest->scaffold) {
-                    float needed_f = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
                     int held = station_finished_count(dest, COMMODITY_FRAME);
-                    int needed = (int)ceilf(needed_f - 0.0001f);
-                    if (needed < 0) needed = 0;
+                    int needed = scaffold_units_needed(dest);
                     int request = held < needed ? held : needed;
                     int delivered =
                         npc_consume_trusted_scaffold_frames(

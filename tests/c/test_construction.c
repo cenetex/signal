@@ -7365,6 +7365,44 @@ TEST(test_outpost_virtual_supply_is_not_play_earned) {
     chain_log_set_dir(NULL);
 }
 
+/* Adding 1/48 one frame at a time in float ends at 0.99999958, not 1.0.
+ * That left scaffolds one frame short with nothing able to add it. */
+TEST(test_scaffold_progress_counts_whole_frames) {
+    STATION_DECL(st);
+    int total = scaffold_units_total();
+    ASSERT_EQ_INT(total, (int)SCAFFOLD_MATERIAL_NEEDED);
+    float drifted = 0.0f;
+    for (int i = 0; i < total; i++) {
+        drifted += 1.0f / SCAFFOLD_MATERIAL_NEEDED;
+        st.scaffold_progress = scaffold_progress_for_units(scaffold_units_delivered(&st) + 1);
+    }
+    ASSERT(drifted < 1.0f); /* the old arithmetic */
+    ASSERT(st.scaffold_progress == 1.0f);
+    ASSERT_EQ_INT(scaffold_units_needed(&st), 0);
+    st.scaffold_progress = drifted;
+    ASSERT_EQ_INT(scaffold_units_delivered(&st), total);
+    ASSERT_EQ_INT(scaffold_units_needed(&st), 0);
+}
+
+TEST(test_a_scaffold_saved_with_drifted_progress_finishes) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_scaffold_drift", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    float drifted = 0.0f;
+    for (int i = 0; i < scaffold_units_total(); i++)
+        drifted += 1.0f / SCAFFOLD_MATERIAL_NEEDED;
+    st->scaffold_progress = drifted;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FRAME;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!st->scaffold);
+    ASSERT(st->scaffold_progress == 1.0f);
+    chain_log_set_dir(NULL);
+}
+
 void register_construction_modules_tests(void) {
     TEST_SECTION("\nModule construction:\n");
     RUN(test_module_build_material_types);
@@ -7373,6 +7411,8 @@ void register_construction_modules_tests(void) {
     RUN(test_station_scaffold_manifest_batch_append_failure_is_inert);
     RUN(test_outpost_player_delivery_commissions_a_play_earned_outpost);
     RUN(test_outpost_virtual_supply_is_not_play_earned);
+    RUN(test_scaffold_progress_counts_whole_frames);
+    RUN(test_a_scaffold_saved_with_drifted_progress_finishes);
     RUN(test_module_delivery_emits_construction_chain_event);
     RUN(test_module_manifest_batch_append_failure_is_inert);
     RUN(test_module_delivery_consumes_towed_manifest_pod);
