@@ -379,24 +379,46 @@ Forge mint seeds commit to it (`atimics/forge`, `docs/SPEC.md`).
 
 ### Outpost receipts
 
-When an outpost's scaffold completes, the outpost signs
-`CHAIN_EVT_OUTPOST_COMMISSIONED` into its own log. The payload records the
-founder, whether the founder's key is in the player identity registry, the
-player whose delivery completed the build (if any), and how the build
-completed: a player's delivery, an NPC hauler, or frontier virtual supply.
-Frontier founders are synthetic keys that never register, so the registry
-check separates player founders from NPC ones.
+When an outpost is planted, it signs `CHAIN_EVT_OUTPOST_PLANTED` as the
+first event in its own log. The payload names the founder and whether the
+founder was a verified player at that moment. Frontier founders are synthetic
+keys, so they are recorded as unregistered. This choice is fixed at planting
+and does not depend on the player registry later.
+
+Each `CONSTRUCTION` event for a station scaffold records who delivered the
+unit: a player who docked with it, or an NPC hauler. Logs written before this
+field record 0 (unknown), which never counts as player labor.
+
+When the scaffold completes, the outpost signs
+`CHAIN_EVT_OUTPOST_COMMISSIONED`. The payload records the founder, the player
+whose delivery completed the build (if any), and how the build completed: a
+player's delivery, an NPC hauler, or frontier virtual supply.
 
 ```
-signal_outpost_receipt --checkpoint=<checkpoint.json> chain/<outpost>.log
+signal_outpost_receipt --checkpoint=<checkpoint.json> \
+  --expected-root=<published checkpoint root> chain/<outpost>.log
 ```
 
-The tool verifies the outpost's log, proves those exact bytes are the log
-committed in the checkpoint, and reads the commissioning event and the
-`CONSTRUCTION` events before it. The receipt is `play_earned` when a
-registered player founded the outpost, a player's delivery completed it, and
-at least `SCAFFOLD_MATERIAL_NEEDED` distinct manifest units were consumed into
-it. A receipt against a checkpoint taken before the log changed fails.
+The tool verifies the outpost's log and proves that those exact bytes are the
+log committed in the checkpoint. The checkpoint's root must equal
+`--expected-root`, a root the caller got from a published source. A
+checkpoint file on its own proves nothing, because anyone can build one.
+
+The checkpoint is parsed strictly. It must match `signal_checkpoint` output
+exactly, list the station once, and give the same figures as the log.
+
+The log must hold exactly one commissioning event. Only the log segment that
+contains it counts, so a restarted log cannot carry frames or a planting
+record across a reset.
+
+The receipt is `play_earned` when all three hold:
+
+- the planting record names a verified player founder;
+- a player's delivery completed the outpost;
+- at least `SCAFFOLD_MATERIAL_NEEDED` distinct units delivered by players
+  were consumed into the outpost before it was commissioned.
+
+A receipt against a checkpoint taken before the log changed fails.
 
 Forge uses this receipt to decide who may register a token family: play, not
 hash power, grants issuance.

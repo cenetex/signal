@@ -1512,6 +1512,7 @@ static bool emit_station_construction_contributions(
         payload->module_index = 0xff;
         payload->module_type = 0xff;
         payload->commodity = COMMODITY_FRAME;
+        payload->deliverer = CONSTRUCTION_DELIVERER_PLAYER;
         payload->target_id =
             (station_idx >= 0) ? (uint64_t)station_idx : 0u;
         payload->contributed_units = 1.0f;
@@ -10650,7 +10651,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
              * Must run after the name is set (the name is part of the
              * derivation) and stays stable for the station's lifetime. */
             uint8_t founder_pubkey[32];
-            (void)server_player_copy_verified_pubkey(
+            bool founder_verified = server_player_copy_verified_pubkey(
                 sp, founder_pubkey);
             station_authority_init_outpost(
                 st, founder_pubkey, (uint64_t)(w->time * 128.0f));
@@ -10662,6 +10663,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             }
             chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
                                  "new outpost chain; no log events yet");
+            outpost_record_planted(w, st, slot, founder_verified);
             /* Outpost is born under construction — needs frames delivered
              * to activate. The towed relay seed becomes the station's
              * core relay (added below); the dock comes pre-stamped. */
@@ -11911,7 +11913,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                  * here — even if a different player later supplies the
                  * frames, the station's pubkey traces to the planner. */
                 uint8_t founder_pubkey[32];
-                (void)server_player_copy_verified_pubkey(
+                bool founder_verified = server_player_copy_verified_pubkey(
                     sp, founder_pubkey);
                 station_authority_init_outpost(
                     st, founder_pubkey,
@@ -11924,6 +11926,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 }
                 chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
                                      "planned outpost chain; no log events yet");
+                outpost_record_planted(w, st, slot, founder_verified);
                 st->radius = 0.0f;
                 st->dock_radius = 0.0f;
                 st->signal_range = 0.0f;

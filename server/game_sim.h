@@ -1794,6 +1794,12 @@ typedef enum {
     OUTPOST_COMPLETION_VIRTUAL_SUPPLY  = 3, /* frontier supply, no delivery */
 } outpost_completion_t;
 
+/* Record a newly planted outpost in its own chain log: the founder and
+ * whether the founder is a verified player, fixed at planting. Call after
+ * station_authority_init_outpost. */
+void outpost_record_planted(world_t *w, station_t *st, int station_idx,
+                            bool founder_is_player);
+
 /* Complete an outpost scaffold. `completion` and `completed_by` (the
  * delivering player's verified pubkey, or NULL) go into the signed
  * CHAIN_EVT_OUTPOST_COMMISSIONED event in the outpost's own log. */

@@ -339,6 +339,28 @@ static bool pubkey_registered(const world_t *w, const uint8_t pubkey[32]) {
     return false;
 }
 
+void outpost_record_planted(world_t *w, station_t *st, int station_idx,
+                            bool founder_is_player) {
+    static const uint8_t zero[32] = {0};
+    chain_payload_outpost_planted_t payload;
+    memset(&payload, 0, sizeof(payload));
+    memcpy(payload.founder_pubkey, st->outpost_founder_pubkey, 32);
+    payload.planted_tick = st->outpost_planted_tick;
+    if (memcmp(st->outpost_founder_pubkey, zero, 32) == 0)
+        payload.founder_kind = OUTPOST_FOUNDER_NONE;
+    else if (founder_is_player)
+        payload.founder_kind = OUTPOST_FOUNDER_REGISTERED_PLAYER;
+    else
+        payload.founder_kind = OUTPOST_FOUNDER_UNREGISTERED;
+    payload.station_index =
+        (station_idx >= 0 && station_idx <= 255) ? (uint8_t)station_idx : 0xff;
+    if (chain_log_emit(w, st, CHAIN_EVT_OUTPOST_PLANTED,
+                       &payload, (uint16_t)sizeof(payload)) == 0) {
+        SIM_LOG("[chain] outpost %d planted without a planting event\n",
+                station_idx);
+    }
+}
+
 static void emit_outpost_commissioned(world_t *w, station_t *st, int station_idx,
                                       outpost_completion_t completion,
                                       const uint8_t completed_by[32]) {
@@ -350,8 +372,9 @@ static void emit_outpost_commissioned(world_t *w, station_t *st, int station_idx
     payload.planted_tick = st->outpost_planted_tick;
     payload.activated_tick = (uint64_t)(w->time * 128.0f);
     payload.completion = (uint8_t)completion;
-    /* Frontier founders are synthetic keys that never register, so the
-     * registry separates a player founder from an NPC one. */
+    /* Informational: receipts take founder eligibility from the
+     * OUTPOST_PLANTED event, which is fixed when the outpost is planted.
+     * Frontier founders are synthetic keys that never register. */
     if (memcmp(st->outpost_founder_pubkey, zero, 32) == 0)
         payload.founder_kind = OUTPOST_FOUNDER_NONE;
     else if (pubkey_registered(w, st->outpost_founder_pubkey))
