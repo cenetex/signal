@@ -369,12 +369,16 @@ static void rati_link_keys(rati_link_keys_t *k) {
     signal_crypto_keypair_from_seed(seed, k->wallet, k->wallet_secret);
 }
 
+static uint8_t rati_link_nibble(char c) {
+    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+    return (uint8_t)(c - 'a' + 10);
+}
+
+/* The vectors are lowercase hex. */
 static void rati_link_hex(const char *hex, uint8_t out[64]) {
-    for (int i = 0; i < 64; i++) {
-        unsigned v = 0;
-        sscanf(hex + 2 * i, "%2x", &v);
-        out[i] = (uint8_t)v;
-    }
+    for (int i = 0; i < 64; i++)
+        out[i] = (uint8_t)(rati_link_nibble(hex[2 * i]) << 4 |
+                           rati_link_nibble(hex[2 * i + 1]));
 }
 
 TEST(test_rati_link_matches_the_shared_vector) {
