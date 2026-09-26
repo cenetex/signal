@@ -405,6 +405,7 @@ build-test:
 	cmake --build build --target signal_rati_receipt --parallel
 	cmake --build build --target signal_checkpoint --parallel
 	cmake --build build --target signal_outpost_receipt --parallel
+	cmake --build build --target signal_wallet_link --parallel
 	# Compile-check the native client too. signal_test doesn't pull in
 	# net_sync.c / world_draw.c / hud.c (client-only), so a struct
 	# rename that breaks the wire-decode side won't fail signal_test
@@ -751,7 +752,7 @@ deterministic-build-flags:
 # here: it pulls in test fixtures and single-header vendor libraries whose
 # allocation-model warnings swamp actionable project-code findings.
 CPPCHECK ?= cppcheck
-CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/signal_chain_assets.c tools/signal_rati_receipt.c tools/signal_checkpoint.c tools/signal_outpost_receipt.c tools/flight_trace.c tools/signal_replay.c
+CPPCHECK_SOURCES := server shared client tools/signal_verify.c tools/signal_chain_assets.c tools/signal_rati_receipt.c tools/signal_checkpoint.c tools/signal_outpost_receipt.c tools/signal_wallet_link.c tools/flight_trace.c tools/signal_replay.c
 
 cppcheck:
 	$(CPPCHECK) --quiet --std=c11 --enable=warning,portability --error-exitcode=1 \

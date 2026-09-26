@@ -6,6 +6,7 @@
 #include "pubkey_proof.h"
 #include "signal_crypto.h"
 #include "signal_memzero.h"
+#include "wallet_link.h"
 
 typedef struct {
     uint8_t fill;
@@ -340,6 +341,65 @@ TEST(test_base64_decode_rejects_short_output_buffer) {
     ASSERT_EQ_INT(base64_decode(encoded, short_decoded, sizeof(short_decoded)), -1);
 }
 
+/* A wallet link must be checkable from the two public keys alone, and must
+ * name exactly one wallet and one sequence. */
+static void wallet_link_keys(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
+                             uint8_t sec[SIGNAL_CRYPTO_SECRET_BYTES],
+                             uint8_t wallet[SIGNAL_CRYPTO_PUBKEY_BYTES]) {
+    uint8_t seed[32];
+    for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(0x11 + i);
+    signal_crypto_keypair_from_seed(seed, pub, sec);
+    for (int i = 0; i < 32; i++) wallet[i] = (uint8_t)(0xC0 ^ i);
+}
+
+TEST(test_wallet_link_message_layout) {
+    uint8_t pub[32], sec[64], wallet[32];
+    wallet_link_keys(pub, sec, wallet);
+    uint8_t msg[WALLET_LINK_MESSAGE_SIZE];
+    ASSERT(wallet_link_message(msg, pub, wallet, 0x0102030405060708ull));
+    ASSERT_EQ_INT((int)sizeof(msg), 93);
+    ASSERT(memcmp(msg, "signal-wallet-link-v2", 21) == 0);
+    ASSERT(memcmp(msg + 21, pub, 32) == 0);
+    ASSERT(memcmp(msg + 53, wallet, 32) == 0);
+    const uint8_t le[8] = {8, 7, 6, 5, 4, 3, 2, 1};
+    ASSERT(memcmp(msg + 85, le, 8) == 0);
+}
+
+TEST(test_wallet_link_sign_verify_and_tamper) {
+    uint8_t pub[32], sec[64], wallet[32];
+    wallet_link_keys(pub, sec, wallet);
+    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
+    ASSERT(wallet_link_sign(sig, pub, sec, wallet, 3));
+    ASSERT(wallet_link_verify(pub, wallet, 3, sig));
+
+    uint8_t other_wallet[32];
+    memcpy(other_wallet, wallet, 32);
+    other_wallet[31] ^= 1;
+    ASSERT(!wallet_link_verify(pub, other_wallet, 3, sig));
+    ASSERT(!wallet_link_verify(pub, wallet, 4, sig));
+    uint8_t other_pub[32];
+    memcpy(other_pub, pub, 32);
+    other_pub[0] ^= 1;
+    ASSERT(!wallet_link_verify(other_pub, wallet, 3, sig));
+    sig[5] ^= 1;
+    ASSERT(!wallet_link_verify(pub, wallet, 3, sig));
+}
+
+TEST(test_wallet_link_refuses_mismatched_or_empty_keys) {
+    uint8_t pub[32], sec[64], wallet[32];
+    wallet_link_keys(pub, sec, wallet);
+    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
+    uint8_t other_pub[32];
+    memcpy(other_pub, pub, 32);
+    other_pub[0] ^= 1;
+    memset(sig, 0xAA, sizeof(sig));
+    ASSERT(!wallet_link_sign(sig, other_pub, sec, wallet, 1));
+    for (size_t i = 0; i < sizeof(sig); i++) ASSERT_EQ_INT(sig[i], 0);
+    const uint8_t zero[32] = {0};
+    ASSERT(!wallet_link_sign(sig, pub, sec, zero, 1));
+    ASSERT(!wallet_link_verify(pub, zero, 1, sig));
+}
+
 void register_crypto_tests(void);
 void register_crypto_tests(void) {
     TEST_SECTION("\nCrypto (Ed25519) tests:\n");
@@ -349,6 +409,9 @@ void register_crypto_tests(void) {
     RUN(test_crypto_entropy_failure_clears_random_output);
     RUN(test_crypto_entropy_failure_clears_keypair_outputs);
     RUN(test_crypto_sign_verify_roundtrip);
+    RUN(test_wallet_link_message_layout);
+    RUN(test_wallet_link_sign_verify_and_tamper);
+    RUN(test_wallet_link_refuses_mismatched_or_empty_keys);
     RUN(test_crypto_heap_scratch_roundtrip_and_tamper);
     RUN(test_crypto_verify_rejects_msg_tamper);
     RUN(test_crypto_verify_rejects_sig_tamper);

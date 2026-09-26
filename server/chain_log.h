@@ -327,6 +327,19 @@ typedef struct {
 } SIGNAL_PACKED chain_payload_construction_t;
 SIGNAL_PACK_POP
 
+/* A player's delivery names the player. It is the 56-byte payload with the
+ * delivering player's verified identity pubkey appended, so readers tell the
+ * two forms apart by payload length. The pubkey is zero when the player had
+ * no verified identity. NPC, station-stock and unknown deliveries keep the
+ * 56-byte form. Forge mints play supply to this key after the key signs a
+ * wallet link (shared/wallet_link.h). */
+SIGNAL_PACK_PUSH
+typedef struct {
+    chain_payload_construction_t base;  /* base.deliverer is PLAYER */
+    uint8_t  deliverer_pubkey[32];      /* verified identity pubkey, or 0 */
+} SIGNAL_PACKED chain_payload_construction_player_t;
+SIGNAL_PACK_POP
+
 SIGNAL_PACK_PUSH
 typedef struct {
     uint8_t  memory_kind;         /* market_memory_kind_t; reputation/risk */
@@ -417,6 +430,11 @@ _Static_assert(sizeof(chain_payload_outpost_commissioned_t) == 88,
                "outpost_commissioned payload size");
 _Static_assert(sizeof(chain_payload_outpost_planted_t) == 48,
                "outpost_planted payload size");
+_Static_assert(sizeof(chain_payload_construction_player_t) == 88,
+               "player construction payload size");
+_Static_assert(offsetof(chain_payload_construction_player_t,
+                        deliverer_pubkey) == 56,
+               "player construction pubkey follows the base payload");
 _Static_assert(offsetof(chain_payload_construction_t, deliverer) == 37,
                "construction deliverer occupies legacy padding");
 /* The fixed-prefix size (before the text[] variable-length array):

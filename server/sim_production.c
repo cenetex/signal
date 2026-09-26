@@ -2110,16 +2110,25 @@ static bool production_prepare_build_payout(
         recipient, out);
 }
 
+/* `deliverer` says where the units came from. A PLAYER delivery uses the
+ * 88-byte payload form and names `player`'s verified identity pubkey, or
+ * zeros when the player is unverified. */
 static bool emit_construction_contribution_batch(
     world_t *w, station_t *st, int station_idx, int module_idx,
     const station_module_t *module, commodity_t commodity,
     const cargo_unit_t *units, size_t unit_count,
-    float progress_before, float cost) {
+    float progress_before, float cost,
+    construction_deliverer_t deliverer,
+    const server_player_t *player) {
     if (!w || !st || !module || !units || unit_count == 0 ||
         unit_count > CHAIN_LOG_BATCH_MAX_EVENTS || cost <= 0.0f) {
         return false;
     }
-    chain_payload_construction_t
+    uint8_t deliverer_pubkey[32] = {0};
+    bool named = deliverer == CONSTRUCTION_DELIVERER_PLAYER;
+    if (named && player)
+        (void)server_player_copy_verified_pubkey(player, deliverer_pubkey);
+    chain_payload_construction_player_t
         payloads[CHAIN_LOG_BATCH_MAX_EVENTS];
     chain_log_batch_event_t
         events[CHAIN_LOG_BATCH_MAX_EVENTS];
@@ -2127,7 +2136,10 @@ static bool emit_construction_contribution_batch(
     memset(events, 0, sizeof(events));
     for (size_t i = 0; i < unit_count; i++) {
         if (!cargo_pub_nonzero(&units[i])) return false;
-        chain_payload_construction_t *payload = &payloads[i];
+        memcpy(payloads[i].deliverer_pubkey, deliverer_pubkey,
+               sizeof(deliverer_pubkey));
+        chain_payload_construction_t *payload = &payloads[i].base;
+        payload->deliverer = (uint8_t)deliverer;
         memcpy(payload->cargo_pub, units[i].pub,
                sizeof(payload->cargo_pub));
         payload->target_kind = CONSTRUCTION_TARGET_MODULE;
@@ -2148,8 +2160,10 @@ static bool emit_construction_contribution_batch(
             payload->progress_after = 1.0f;
         events[i] = (chain_log_batch_event_t){
             .type = CHAIN_EVT_CONSTRUCTION,
-            .payload = payload,
-            .payload_len = (uint16_t)sizeof(*payload),
+            .payload = &payloads[i],
+            .payload_len = named
+                ? (uint16_t)sizeof(payloads[i])
+                : (uint16_t)sizeof(payloads[i].base),
         };
     }
     chain_log_append_result_t appended =
@@ -2219,7 +2233,10 @@ static int ship_contribute_trusted_module_supply(
     if (!emit_construction_contribution_batch(
             w, st, station_idx, module_idx, module,
             material, out_units, (size_t)selected_count,
-            progress_before, cost)) {
+            progress_before, cost,
+            payee ? CONSTRUCTION_DELIVERER_PLAYER
+                  : CONSTRUCTION_DELIVERER_UNKNOWN,
+            payee)) {
         cargo_store_cleanup(&staged);
         return 0;
     }
@@ -2287,7 +2304,8 @@ static int station_contribute_trusted_module_supply(
     if (!emit_construction_contribution_batch(
             w, st, station_idx, module_idx, module,
             material, removed, (size_t)selected_count,
-            progress_before, cost)) {
+            progress_before, cost,
+            CONSTRUCTION_DELIVERER_NPC, NULL)) {
         cargo_store_cleanup(&staged);
         return 0;
     }
@@ -2381,7 +2399,10 @@ static int pod_contribute_trusted_module_supply(
             w, st, station_idx, module_idx,
             module, material, out_units,
             (size_t)selected_count,
-            progress_before, cost)) {
+            progress_before, cost,
+            payee ? CONSTRUCTION_DELIVERER_PLAYER
+                  : CONSTRUCTION_DELIVERER_UNKNOWN,
+            payee)) {
         return 0;
     }
     if (payout_required && !station_payout_credit_batch_commit(
