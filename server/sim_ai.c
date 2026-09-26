@@ -460,6 +460,7 @@ static bool frontier_plan_outpost(world_t *w) {
             }
             chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
                                  "virtual frontier pilot planned outpost");
+            outpost_record_planted(w, st, slot, false);
             st->radius = 0.0f;
             st->dock_radius = 0.0f;
             st->signal_range = 0.0f;
@@ -6126,6 +6127,7 @@ static int npc_consume_trusted_scaffold_frames(
         payload.module_index = 0xff;
         payload.module_type = 0xff;
         payload.commodity = COMMODITY_FRAME;
+        payload.deliverer = CONSTRUCTION_DELIVERER_NPC;
         payload.target_id = (uint64_t)station_idx;
         payload.contributed_units = 1.0f;
         payload.progress_after = progress_after;

@@ -7180,8 +7180,10 @@ static bool outpost_last_event(const station_t *st, uint8_t *out_type,
     return found;
 }
 
-/* A scaffold at station 0 founded by player 0, whose pubkey is registered. */
-static server_player_t *outpost_setup(world_t *w, const char *dir) {
+/* A scaffold at station 0 founded by player 0, whose pubkey is registered.
+ * The planting record says whether the founder was a verified player. */
+static server_player_t *outpost_setup_founded(world_t *w, const char *dir,
+                                              bool founder_is_player) {
     chain_log_set_disk_enabled(true);
     chain_log_set_dir(dir);
     world_reset(w);
@@ -7204,10 +7206,16 @@ static server_player_t *outpost_setup(world_t *w, const char *dir) {
     sp->pubkey_challenge_consumed = true;
     if (!registry_register_pubkey(w, sp->pubkey, sp->session_token)) return NULL;
     memcpy(st->outpost_founder_pubkey, sp->pubkey, 32);
+    st->outpost_planted_tick = 77;
+    outpost_record_planted(w, st, 0, founder_is_player);
     player_init_ship(sp, w);
     sp->docked = true;
     sp->current_station = 0;
     return sp;
+}
+
+static server_player_t *outpost_setup(world_t *w, const char *dir) {
+    return outpost_setup_founded(w, dir, true);
 }
 
 #ifndef _WIN32
@@ -7237,27 +7245,52 @@ static int outpost_run(const char *cmd, char *out, size_t cap) {
     return status == -1 ? -1 : (status >> 8) & 0xff;
 }
 
+/* The checkpoint_root a checkpoint file names, as the published root. */
+static bool outpost_checkpoint_root(const char *checkpoint_path, char root[65]) {
+    FILE *f = fopen(checkpoint_path, "rb");
+    if (!f) return false;
+    char head[256] = {0};
+    size_t got = fread(head, 1, sizeof(head) - 1, f);
+    fclose(f);
+    head[got] = '\0';
+    const char *at = strstr(head, "\"checkpoint_root\":\"");
+    if (!at || strlen(at) < 19 + 64) return false;
+    memcpy(root, at + 19, 64);
+    root[64] = '\0';
+    return true;
+}
+
+/* Run the receipt tool with `args` before the log path. Returns its exit
+ * status, or -2 when the tool is not built. */
+static int outpost_receipt_args(const station_t *st, const char *args, char *out, size_t cap) {
+    char receipt_bin[256], log_path[256], cmd[1024];
+    const char *bin = outpost_find_bin("signal_outpost_receipt");
+    if (!bin) return -2;
+    snprintf(receipt_bin, sizeof(receipt_bin), "%s", bin);
+    if (!chain_log_path_for(st->station_pubkey, log_path, sizeof(log_path))) return -1;
+    snprintf(cmd, sizeof(cmd), "%s %s %s 2>/dev/null", receipt_bin, args, log_path);
+    return outpost_run(cmd, out, cap);
+}
+
 /* Checkpoint the station's log into `checkpoint_path`, then print its
- * outpost receipt into `out`. Returns the receipt tool's exit status, or -2
- * when the tools are not built. */
+ * outpost receipt into `out`, trusting that checkpoint's root. Returns the
+ * receipt tool's exit status, or -2 when the tools are not built. */
 static int outpost_receipt(const station_t *st, const char *checkpoint_path,
                            bool write_checkpoint, char *out, size_t cap) {
-    char checkpoint_bin[256], receipt_bin[256], log_path[256], cmd[1024];
+    char checkpoint_bin[256], log_path[256], cmd[1024], root[65], args[768];
     const char *bin = outpost_find_bin("signal_checkpoint");
     if (!bin) return -2;
     snprintf(checkpoint_bin, sizeof(checkpoint_bin), "%s", bin);
-    bin = outpost_find_bin("signal_outpost_receipt");
-    if (!bin) return -2;
-    snprintf(receipt_bin, sizeof(receipt_bin), "%s", bin);
+    if (!outpost_find_bin("signal_outpost_receipt")) return -2;
     if (!chain_log_path_for(st->station_pubkey, log_path, sizeof(log_path))) return -1;
     if (write_checkpoint) {
         snprintf(cmd, sizeof(cmd), "%s %s > %s 2>/dev/null", checkpoint_bin, log_path,
                  checkpoint_path);
         if (system(cmd) != 0) return -1;
     }
-    snprintf(cmd, sizeof(cmd), "%s --checkpoint=%s %s 2>/dev/null", receipt_bin,
-             checkpoint_path, log_path);
-    return outpost_run(cmd, out, cap);
+    if (!outpost_checkpoint_root(checkpoint_path, root)) return -1;
+    snprintf(args, sizeof(args), "--checkpoint=%s --expected-root=%s", checkpoint_path, root);
+    return outpost_receipt_args(st, args, out, cap);
 }
 #endif
 
@@ -7308,6 +7341,8 @@ TEST(test_outpost_player_delivery_commissions_a_play_earned_outpost) {
         char units[64];
         snprintf(units, sizeof(units), "\"distinct_units\":%d", needed);
         ASSERT(strstr(out, units) != NULL);
+        snprintf(units, sizeof(units), "\"player_units\":%d", needed);
+        ASSERT(strstr(out, units) != NULL);
     }
 #endif
     chain_log_set_dir(NULL);
@@ -7320,7 +7355,8 @@ TEST(test_outpost_virtual_supply_is_not_play_earned) {
     server_player_t *sp = outpost_setup(&w, dir);
     ASSERT(sp != NULL);
     station_t *st = &w.stations[0];
-    ASSERT(chain_log_emit(&w, st, CHAIN_EVT_LEDGER, "pre", 3) == 1);
+    /* Event 1 is the planting record. */
+    ASSERT(chain_log_emit(&w, st, CHAIN_EVT_LEDGER, "pre", 3) == 2);
 
 #ifndef _WIN32
     /* A checkpoint taken before commissioning. */
@@ -7403,6 +7439,183 @@ TEST(test_a_scaffold_saved_with_drifted_progress_finishes) {
     chain_log_set_dir(NULL);
 }
 
+/* Consume `count` distinct frames into station 0's scaffold, recorded as
+ * delivered by `deliverer`. */
+static bool outpost_emit_frames(world_t *w, int count, uint8_t deliverer, uint8_t salt) {
+    station_t *st = &w->stations[0];
+    for (int i = 0; i < count; i++) {
+        chain_payload_construction_t c;
+        memset(&c, 0, sizeof(c));
+        memset(c.cargo_pub, salt, sizeof(c.cargo_pub));
+        c.cargo_pub[0] = (uint8_t)i;
+        c.target_kind = CONSTRUCTION_TARGET_STATION;
+        c.module_index = 0xff;
+        c.module_type = 0xff;
+        c.commodity = COMMODITY_FRAME;
+        c.deliverer = deliverer;
+        c.contributed_units = 1.0f;
+        c.progress_after = scaffold_progress_for_units(i + 1);
+        if (chain_log_emit(w, st, CHAIN_EVT_CONSTRUCTION, &c, sizeof(c)) == 0) return false;
+    }
+    return true;
+}
+
+TEST(test_outpost_receipt_counts_only_player_delivered_frames) {
+#ifndef _WIN32
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_npc_frames", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    /* NPC haulers bring every frame but one; a player docks with the last.
+     * The completion says player_delivery, but the labor was not theirs. */
+    ASSERT(outpost_emit_frames(&w, needed - 1, CONSTRUCTION_DELIVERER_NPC, 0x51));
+    ASSERT(outpost_emit_frames(&w, 1, CONSTRUCTION_DELIVERER_PLAYER, 0x52));
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    char checkpoint[sizeof(dir) + 32];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2) {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    } else {
+        ASSERT_EQ_INT(status, 0);
+        ASSERT(strstr(out, "\"play_earned\":false") != NULL);
+        ASSERT(strstr(out, "\"completion\":\"player_delivery\"") != NULL);
+        char units[64];
+        snprintf(units, sizeof(units), "\"distinct_units\":%d", needed);
+        ASSERT(strstr(out, units) != NULL);
+        ASSERT(strstr(out, "\"player_units\":1,") != NULL);
+    }
+    chain_log_set_dir(NULL);
+#endif
+}
+
+TEST(test_outpost_founder_eligibility_is_fixed_at_planting) {
+#ifndef _WIN32
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_unverified_founder", TMP("clog"));
+    WORLD_DECL;
+    /* Planted without a verified player key; the key is registered by the
+     * time the outpost is commissioned, which must not matter. */
+    server_player_t *sp = outpost_setup_founded(&w, dir, false);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    ASSERT(outpost_emit_frames(&w, needed, CONSTRUCTION_DELIVERER_PLAYER, 0x61));
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    char checkpoint[sizeof(dir) + 32];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2) {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    } else {
+        ASSERT_EQ_INT(status, 0);
+        ASSERT(strstr(out, "\"founder_kind\":\"unregistered\"") != NULL);
+        ASSERT(strstr(out, "\"play_earned\":false") != NULL);
+    }
+    chain_log_set_dir(NULL);
+#endif
+}
+
+/* Replace the first occurrence of `from` in a file with `to`. */
+static bool outpost_rewrite(const char *path, const char *out_path, const char *from,
+                            const char *to) {
+    static char buf[1 << 16];
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t got = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[got] = '\0';
+    char *at = from ? strstr(buf, from) : buf + got;
+    if (!at) return false;
+    f = fopen(out_path, "wb");
+    if (!f) return false;
+    fwrite(buf, 1, (size_t)(at - buf), f);
+    fputs(to, f);
+    if (from) fputs(at + strlen(from), f);
+    fclose(f);
+    return true;
+}
+
+TEST(test_outpost_receipt_requires_the_published_root) {
+#ifndef _WIN32
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_root", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    ASSERT(outpost_emit_frames(&w, needed, CONSTRUCTION_DELIVERER_PLAYER, 0x71));
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    char checkpoint[sizeof(dir) + 32], root[65], args[1024];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2) {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+        chain_log_set_dir(NULL);
+        return;
+    }
+    ASSERT_EQ_INT(status, 0);
+    ASSERT(strstr(out, "\"play_earned\":true") != NULL);
+    ASSERT(outpost_checkpoint_root(checkpoint, root));
+
+    /* No published root: a usage error. */
+    snprintf(args, sizeof(args), "--checkpoint=%s", checkpoint);
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 2);
+    /* A self-made checkpoint with a different root is refused. */
+    snprintf(args, sizeof(args), "--checkpoint=%s --expected-root=%064d", checkpoint, 0);
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 1);
+
+    /* Strict parsing: extra bytes, a second listing, or a spaced layout. */
+    char tampered[sizeof(dir) + 32];
+    snprintf(tampered, sizeof(tampered), "%s/tampered.json", dir);
+    snprintf(args, sizeof(args), "--checkpoint=%s --expected-root=%s", tampered, root);
+    ASSERT(outpost_rewrite(checkpoint, tampered, NULL, "{}"));
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 1);
+    ASSERT(outpost_rewrite(checkpoint, tampered, "\"station_count\":1,", "\"station_count\":2,"));
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 1);
+    ASSERT(outpost_rewrite(checkpoint, tampered, "\"stations\":[", "\"stations\": ["));
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 1);
+    ASSERT(outpost_rewrite(checkpoint, tampered, NULL, ""));
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 0);
+    chain_log_set_dir(NULL);
+#endif
+}
+
+TEST(test_outpost_receipt_rejects_a_second_commission) {
+#ifndef _WIN32
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_twice", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    ASSERT(outpost_emit_frames(&w, needed, CONSTRUCTION_DELIVERER_PLAYER, 0x81));
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    char checkpoint[sizeof(dir) + 32];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2)
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    else
+        ASSERT_EQ_INT(status, 1);
+    chain_log_set_dir(NULL);
+#endif
+}
+
 void register_construction_modules_tests(void) {
     TEST_SECTION("\nModule construction:\n");
     RUN(test_module_build_material_types);
@@ -7411,6 +7624,10 @@ void register_construction_modules_tests(void) {
     RUN(test_station_scaffold_manifest_batch_append_failure_is_inert);
     RUN(test_outpost_player_delivery_commissions_a_play_earned_outpost);
     RUN(test_outpost_virtual_supply_is_not_play_earned);
+    RUN(test_outpost_receipt_counts_only_player_delivered_frames);
+    RUN(test_outpost_founder_eligibility_is_fixed_at_planting);
+    RUN(test_outpost_receipt_requires_the_published_root);
+    RUN(test_outpost_receipt_rejects_a_second_commission);
     RUN(test_scaffold_progress_counts_whole_frames);
     RUN(test_a_scaffold_saved_with_drifted_progress_finishes);
     RUN(test_module_delivery_emits_construction_chain_event);

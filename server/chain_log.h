@@ -105,6 +105,11 @@ typedef enum {
      * virtual supply completed. The frames consumed are the CONSTRUCTION
      * events before it in the same log. */
     CHAIN_EVT_OUTPOST_COMMISSIONED = 14,
+    /* Outpost planting: the first event in a new outpost's own log. It
+     * records who founded the outpost and whether that founder was a
+     * verified player, decided when the outpost is planted, so a later
+     * receipt does not depend on the player registry at commissioning. */
+    CHAIN_EVT_OUTPOST_PLANTED  = 15,
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
 
@@ -292,6 +297,14 @@ typedef struct {
 } SIGNAL_PACKED chain_payload_death_t;
 SIGNAL_PACK_POP
 
+/* Who delivered a construction unit. Logs written before this field record
+ * 0, which receipts treat as unknown. */
+typedef enum {
+    CONSTRUCTION_DELIVERER_UNKNOWN = 0,
+    CONSTRUCTION_DELIVERER_PLAYER  = 1, /* a player docked and delivered it */
+    CONSTRUCTION_DELIVERER_NPC     = 2, /* an NPC hauler or station stock */
+} construction_deliverer_t;
+
 typedef enum {
     CONSTRUCTION_TARGET_STATION = 1,
     CONSTRUCTION_TARGET_MODULE  = 2,
@@ -306,7 +319,8 @@ typedef struct {
     uint8_t  module_index;        /* station_module_t index, 0xff if N/A */
     uint8_t  module_type;         /* module_type_t, 0xff if N/A */
     uint8_t  commodity;           /* commodity_t */
-    uint8_t  _pad[3];             /* MUST be zero */
+    uint8_t  deliverer;           /* construction_deliverer_t; 0 in older logs */
+    uint8_t  _pad[2];             /* MUST be zero */
     uint64_t target_id;           /* reserved for gate/project ids */
     float    contributed_units;   /* normally 1.0 for manifest units */
     float    progress_after;      /* module/station supply fraction after consume */
@@ -346,7 +360,7 @@ SIGNAL_PACK_POP
 /* outpost_completion_t is defined in game_sim.h next to activate_outpost. */
 typedef enum {
     OUTPOST_FOUNDER_NONE             = 0, /* zero founder pubkey */
-    OUTPOST_FOUNDER_REGISTERED_PLAYER = 1, /* in the player identity registry */
+    OUTPOST_FOUNDER_REGISTERED_PLAYER = 1, /* a verified player key */
     OUTPOST_FOUNDER_UNREGISTERED     = 2, /* e.g. a synthetic frontier founder */
 } outpost_founder_kind_t;
 
@@ -361,6 +375,16 @@ typedef struct {
     uint8_t  station_index;           /* local slot, presentation only */
     uint8_t  _pad[5];                 /* MUST be zero */
 } SIGNAL_PACKED chain_payload_outpost_commissioned_t;
+SIGNAL_PACK_POP
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  founder_pubkey[32];      /* station outpost_founder_pubkey */
+    uint64_t planted_tick;            /* same tick basis as outpost_planted_tick */
+    uint8_t  founder_kind;            /* outpost_founder_kind_t, fixed at planting */
+    uint8_t  station_index;           /* local slot, presentation only */
+    uint8_t  _pad[6];                 /* MUST be zero */
+} SIGNAL_PACKED chain_payload_outpost_planted_t;
 SIGNAL_PACK_POP
 
 /* Wire-format guards: any field-list change that shifts these sizes
@@ -391,6 +415,10 @@ _Static_assert(sizeof(chain_payload_route_history_t)    == 24,  "route_history p
 _Static_assert(sizeof(chain_payload_claim_fragment_t)   == 108, "claim_fragment payload size");
 _Static_assert(sizeof(chain_payload_outpost_commissioned_t) == 88,
                "outpost_commissioned payload size");
+_Static_assert(sizeof(chain_payload_outpost_planted_t) == 48,
+               "outpost_planted payload size");
+_Static_assert(offsetof(chain_payload_construction_t, deliverer) == 37,
+               "construction deliverer occupies legacy padding");
 /* The fixed-prefix size (before the text[] variable-length array):
  * kind(1) + tier(1) + ref_id(2) + text_sha256(32) + text_len(2) = 38 bytes */
 _Static_assert(offsetof(chain_payload_operator_post_t, text) == 38, "operator_post fixed-prefix size");
