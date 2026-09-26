@@ -318,6 +318,7 @@ static const char *event_type_name(uint8_t type) {
     case CHAIN_EVT_CONSTRUCTION: return "CONSTRUCTION";
     case CHAIN_EVT_ROUTE_HISTORY: return "ROUTE_HISTORY";
     case CHAIN_EVT_CLAIM_FRAGMENT: return "CLAIM_FRAGMENT";
+    case CHAIN_EVT_OUTPOST_COMMISSIONED: return "OUTPOST_COMMISSIONED";
     default: return "UNKNOWN";
     }
 }

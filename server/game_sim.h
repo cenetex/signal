@@ -1762,7 +1762,20 @@ void signal_chain_load(world_t *w);
 module_type_t producer_module_for_commodity(commodity_t c);
 void player_seed_credits(server_player_t *sp, world_t *w);
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
-void activate_outpost(world_t *w, int station_idx);
+/* How an outpost scaffold was completed; recorded in its commissioning
+ * chain event. */
+typedef enum {
+    OUTPOST_COMPLETION_PLAYER_DELIVERY = 1, /* a player's frames finished it */
+    OUTPOST_COMPLETION_NPC_DELIVERY    = 2, /* an NPC hauler finished it */
+    OUTPOST_COMPLETION_VIRTUAL_SUPPLY  = 3, /* frontier supply, no delivery */
+} outpost_completion_t;
+
+/* Complete an outpost scaffold. `completion` and `completed_by` (the
+ * delivering player's verified pubkey, or NULL) go into the signed
+ * CHAIN_EVT_OUTPOST_COMMISSIONED event in the outpost's own log. */
+void activate_outpost(world_t *w, int station_idx,
+                      outpost_completion_t completion,
+                      const uint8_t completed_by[32]);
 
 #define DOCK_APPROACH_RANGE 300.0f /* range to detect station for docking */
 

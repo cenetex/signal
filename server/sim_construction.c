@@ -328,7 +328,48 @@ void add_furnace_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t 
     }
 }
 
-void activate_outpost(world_t *w, int station_idx) {
+/* Whether a pubkey is in the persistent player identity registry, online or
+ * not. registry_lookup_by_pubkey only finds live sessions. */
+static bool pubkey_registered(const world_t *w, const uint8_t pubkey[32]) {
+    for (int r = 0; r < MAX_PLAYERS; r++) {
+        if (w->pubkey_registry[r].in_use &&
+            memcmp(w->pubkey_registry[r].pubkey, pubkey, 32) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void emit_outpost_commissioned(world_t *w, station_t *st, int station_idx,
+                                      outpost_completion_t completion,
+                                      const uint8_t completed_by[32]) {
+    static const uint8_t zero[32] = {0};
+    chain_payload_outpost_commissioned_t payload;
+    memset(&payload, 0, sizeof(payload));
+    memcpy(payload.founder_pubkey, st->outpost_founder_pubkey, 32);
+    if (completed_by) memcpy(payload.completed_by_pubkey, completed_by, 32);
+    payload.planted_tick = st->outpost_planted_tick;
+    payload.activated_tick = (uint64_t)(w->time * 128.0f);
+    payload.completion = (uint8_t)completion;
+    /* Frontier founders are synthetic keys that never register, so the
+     * registry separates a player founder from an NPC one. */
+    if (memcmp(st->outpost_founder_pubkey, zero, 32) == 0)
+        payload.founder_kind = OUTPOST_FOUNDER_NONE;
+    else if (pubkey_registered(w, st->outpost_founder_pubkey))
+        payload.founder_kind = OUTPOST_FOUNDER_REGISTERED_PLAYER;
+    else
+        payload.founder_kind = OUTPOST_FOUNDER_UNREGISTERED;
+    payload.station_index =
+        (station_idx >= 0 && station_idx <= 255) ? (uint8_t)station_idx : 0xff;
+    if (chain_log_emit(w, st, CHAIN_EVT_OUTPOST_COMMISSIONED,
+                       &payload, (uint16_t)sizeof(payload)) == 0) {
+        SIM_LOG("[chain] outpost %d activated without a commissioning event\n",
+                station_idx);
+    }
+}
+
+void activate_outpost(world_t *w, int station_idx,
+                      outpost_completion_t completion,
+                      const uint8_t completed_by[32]) {
     station_t *st = &w->stations[station_idx];
     st->scaffold = false;
     st->scaffold_progress = 1.0f;
@@ -370,6 +411,7 @@ void activate_outpost(world_t *w, int station_idx) {
         if (station_is_active(&w->stations[s]) && w->stations[s].signal_connected)
             connected++;
 
+    emit_outpost_commissioned(w, st, station_idx, completion, completed_by);
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_OUTPOST_ACTIVATED,
         .outpost_activated = { .slot = station_idx },

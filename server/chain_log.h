@@ -99,6 +99,12 @@ typedef enum {
      * recompute fragment_pub and grade math. It does not bind those inputs
      * to canonical asteroid/material evidence and is not mining proof. */
     CHAIN_EVT_CLAIM_FRAGMENT   = 13,
+    /* Outpost commissioning: signed by the new outpost itself when its
+     * scaffold completes. Records the founder and how the build finished, so
+     * a receipt can tell an outpost players built from one NPC haulers or
+     * virtual supply completed. The frames consumed are the CONSTRUCTION
+     * events before it in the same log. */
+    CHAIN_EVT_OUTPOST_COMMISSIONED = 14,
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
 
@@ -337,6 +343,26 @@ typedef struct {
 } SIGNAL_PACKED chain_payload_claim_fragment_t;
 SIGNAL_PACK_POP
 
+/* outpost_completion_t is defined in game_sim.h next to activate_outpost. */
+typedef enum {
+    OUTPOST_FOUNDER_NONE             = 0, /* zero founder pubkey */
+    OUTPOST_FOUNDER_REGISTERED_PLAYER = 1, /* in the player identity registry */
+    OUTPOST_FOUNDER_UNREGISTERED     = 2, /* e.g. a synthetic frontier founder */
+} outpost_founder_kind_t;
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  founder_pubkey[32];      /* station outpost_founder_pubkey */
+    uint8_t  completed_by_pubkey[32]; /* player whose delivery finished it, or 0 */
+    uint64_t planted_tick;            /* same tick basis as outpost_planted_tick */
+    uint64_t activated_tick;          /* world.time * 128 at activation */
+    uint8_t  completion;              /* outpost_completion_t */
+    uint8_t  founder_kind;            /* outpost_founder_kind_t */
+    uint8_t  station_index;           /* local slot, presentation only */
+    uint8_t  _pad[5];                 /* MUST be zero */
+} SIGNAL_PACKED chain_payload_outpost_commissioned_t;
+SIGNAL_PACK_POP
+
 /* Wire-format guards: any field-list change that shifts these sizes
  * forks the chain log byte format and must be paired with a
  * versioning story (or accepted as a hard break). */
@@ -363,6 +389,8 @@ _Static_assert(sizeof(chain_payload_death_t)            == 96,  "death payload s
 _Static_assert(sizeof(chain_payload_construction_t)     == 56,  "construction payload size");
 _Static_assert(sizeof(chain_payload_route_history_t)    == 24,  "route_history payload size");
 _Static_assert(sizeof(chain_payload_claim_fragment_t)   == 108, "claim_fragment payload size");
+_Static_assert(sizeof(chain_payload_outpost_commissioned_t) == 88,
+               "outpost_commissioned payload size");
 /* The fixed-prefix size (before the text[] variable-length array):
  * kind(1) + tier(1) + ref_id(2) + text_sha256(32) + text_len(2) = 38 bytes */
 _Static_assert(offsetof(chain_payload_operator_post_t, text) == 38, "operator_post fixed-prefix size");

@@ -1740,10 +1740,12 @@ TEST(test_purchased_frame_pods_found_real_outpost_without_receipt_injection) {
         sp->ship);
     ASSERT(receipts != NULL);
     ASSERT_EQ_INT(receipts->count, 0);
+    /* One CONSTRUCTION event per frame, then the outpost's own
+     * OUTPOST_COMMISSIONED event when the scaffold completes. */
     ASSERT_EQ_INT(
         (int)target->chain_event_count,
         (int)target_events_before +
-            frame_units);
+            frame_units + 1);
 
     uint64_t walked = 0;
     ASSERT(chain_log_verify(
@@ -7155,12 +7157,222 @@ void register_construction_outposts_tests(void) {
     RUN(test_outpost_min_distance);
 }
 
+/* Last record in a station's chain log: its type and payload. */
+static bool outpost_last_event(const station_t *st, uint8_t *out_type,
+                               uint8_t *payload, size_t cap, uint16_t *out_len) {
+    char path[256];
+    if (!chain_log_path_for(st->station_pubkey, path, sizeof(path))) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    bool found = false;
+    for (;;) {
+        uint8_t header[CHAIN_EVENT_HEADER_SIZE];
+        uint8_t len_bytes[2];
+        if (fread(header, 1, sizeof(header), f) != sizeof(header)) break;
+        if (fread(len_bytes, 1, sizeof(len_bytes), f) != sizeof(len_bytes)) break;
+        uint16_t len = (uint16_t)(len_bytes[0] | (len_bytes[1] << 8));
+        if (len > cap || (len && fread(payload, 1, len, f) != len)) break;
+        *out_type = header[16];
+        *out_len = len;
+        found = true;
+    }
+    fclose(f);
+    return found;
+}
+
+/* A scaffold at station 0 founded by player 0, whose pubkey is registered. */
+static server_player_t *outpost_setup(world_t *w, const char *dir) {
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(dir);
+    world_reset(w);
+    for (int s = 0; s < MAX_STATIONS; s++)
+        chain_log_reset(&w->stations[s]);
+    station_t *st = &w->stations[0];
+    st->chain_event_count = 0;
+    memset(st->chain_last_hash, 0, sizeof(st->chain_last_hash));
+    st->scaffold = true;
+    st->scaffold_progress = 0.0f;
+
+    server_player_t *sp = &w->players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    memset(sp->session_token, 0xC9, sizeof(sp->session_token));
+    memset(sp->pubkey, 0xB4, sizeof(sp->pubkey));
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
+    if (!registry_register_pubkey(w, sp->pubkey, sp->session_token)) return NULL;
+    memcpy(st->outpost_founder_pubkey, sp->pubkey, 32);
+    player_init_ship(sp, w);
+    sp->docked = true;
+    sp->current_station = 0;
+    return sp;
+}
+
+#ifndef _WIN32
+extern FILE *popen(const char *command, const char *type);
+extern int   pclose(FILE *stream);
+
+static const char *outpost_find_bin(const char *name) {
+    static char found[256];
+    static const char *dirs[] = {"build-test", "build-coverage", "build", ".",
+                                 "../build-test", "../build"};
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        snprintf(found, sizeof(found), "%s/%s", dirs[i], name);
+        FILE *f = fopen(found, "rb");
+        if (!f) continue;
+        fclose(f);
+        return found;
+    }
+    return NULL;
+}
+
+static int outpost_run(const char *cmd, char *out, size_t cap) {
+    FILE *p = popen(cmd, "r");
+    if (!p) return -1;
+    size_t got = fread(out, 1, cap - 1, p);
+    out[got] = '\0';
+    int status = pclose(p);
+    return status == -1 ? -1 : (status >> 8) & 0xff;
+}
+
+/* Checkpoint the station's log into `checkpoint_path`, then print its
+ * outpost receipt into `out`. Returns the receipt tool's exit status, or -2
+ * when the tools are not built. */
+static int outpost_receipt(const station_t *st, const char *checkpoint_path,
+                           bool write_checkpoint, char *out, size_t cap) {
+    char checkpoint_bin[256], receipt_bin[256], log_path[256], cmd[1024];
+    const char *bin = outpost_find_bin("signal_checkpoint");
+    if (!bin) return -2;
+    snprintf(checkpoint_bin, sizeof(checkpoint_bin), "%s", bin);
+    bin = outpost_find_bin("signal_outpost_receipt");
+    if (!bin) return -2;
+    snprintf(receipt_bin, sizeof(receipt_bin), "%s", bin);
+    if (!chain_log_path_for(st->station_pubkey, log_path, sizeof(log_path))) return -1;
+    if (write_checkpoint) {
+        snprintf(cmd, sizeof(cmd), "%s %s > %s 2>/dev/null", checkpoint_bin, log_path,
+                 checkpoint_path);
+        if (system(cmd) != 0) return -1;
+    }
+    snprintf(cmd, sizeof(cmd), "%s --checkpoint=%s %s 2>/dev/null", receipt_bin,
+             checkpoint_path, log_path);
+    return outpost_run(cmd, out, cap);
+}
+#endif
+
+TEST(test_outpost_player_delivery_commissions_a_play_earned_outpost) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_player", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    ASSERT(test_set_ship_finished_units(sp->ship, COMMODITY_FRAME, needed,
+                                        MINING_GRADE_COMMON));
+    ASSERT(construction_attach_local_ship_receipts(&w, 0, sp));
+
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FRAME;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!st->scaffold);
+
+    uint8_t type = 0;
+    uint16_t len = 0;
+    uint8_t payload[256];
+    ASSERT(outpost_last_event(st, &type, payload, sizeof(payload), &len));
+    ASSERT_EQ_INT(type, CHAIN_EVT_OUTPOST_COMMISSIONED);
+    ASSERT_EQ_INT(len, (int)sizeof(chain_payload_outpost_commissioned_t));
+    chain_payload_outpost_commissioned_t c;
+    memcpy(&c, payload, sizeof(c));
+    ASSERT_EQ_INT(c.completion, OUTPOST_COMPLETION_PLAYER_DELIVERY);
+    ASSERT_EQ_INT(c.founder_kind, OUTPOST_FOUNDER_REGISTERED_PLAYER);
+    ASSERT(memcmp(c.founder_pubkey, sp->pubkey, 32) == 0);
+    ASSERT(memcmp(c.completed_by_pubkey, sp->pubkey, 32) == 0);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(st, &walked, NULL));
+
+#ifndef _WIN32
+    char checkpoint[sizeof(dir) + 32];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2) {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    } else {
+        ASSERT_EQ_INT(status, 0);
+        ASSERT(strstr(out, "\"play_earned\":true") != NULL);
+        ASSERT(strstr(out, "\"completion\":\"player_delivery\"") != NULL);
+        ASSERT(strstr(out, "\"founder_kind\":\"registered_player\"") != NULL);
+        char units[64];
+        snprintf(units, sizeof(units), "\"distinct_units\":%d", needed);
+        ASSERT(strstr(out, units) != NULL);
+    }
+#endif
+    chain_log_set_dir(NULL);
+}
+
+TEST(test_outpost_virtual_supply_is_not_play_earned) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_virtual", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    ASSERT(chain_log_emit(&w, st, CHAIN_EVT_LEDGER, "pre", 3) == 1);
+
+#ifndef _WIN32
+    /* A checkpoint taken before commissioning. */
+    char early[sizeof(dir) + 32];
+    snprintf(early, sizeof(early), "%s/early.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, early, true, out, sizeof(out));
+    bool tools = status != -2;
+    if (tools) ASSERT_EQ_INT(status, 1); /* no commissioning event yet */
+#endif
+
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_VIRTUAL_SUPPLY, NULL);
+    uint8_t type = 0;
+    uint16_t len = 0;
+    uint8_t payload[256];
+    ASSERT(outpost_last_event(st, &type, payload, sizeof(payload), &len));
+    ASSERT_EQ_INT(type, CHAIN_EVT_OUTPOST_COMMISSIONED);
+    chain_payload_outpost_commissioned_t c;
+    memcpy(&c, payload, sizeof(c));
+    ASSERT_EQ_INT(c.completion, OUTPOST_COMPLETION_VIRTUAL_SUPPLY);
+    /* The founder has no finalized live session here; a registered key still
+     * counts, so a founder who logged off keeps credit for founding. */
+    ASSERT_EQ_INT(c.founder_kind, OUTPOST_FOUNDER_REGISTERED_PLAYER);
+    static const uint8_t zero[32] = {0};
+    ASSERT(memcmp(c.completed_by_pubkey, zero, 32) == 0);
+
+#ifndef _WIN32
+    if (tools) {
+        /* The log grew, so the earlier checkpoint no longer covers it. */
+        ASSERT_EQ_INT(outpost_receipt(st, early, false, out, sizeof(out)), 1);
+        char current[sizeof(dir) + 32];
+        snprintf(current, sizeof(current), "%s/current.json", dir);
+        ASSERT_EQ_INT(outpost_receipt(st, current, true, out, sizeof(out)), 0);
+        ASSERT(strstr(out, "\"play_earned\":false") != NULL);
+        ASSERT(strstr(out, "\"completion\":\"virtual_supply\"") != NULL);
+        ASSERT(strstr(out, "\"completed_by\":null") != NULL);
+    } else {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    }
+#endif
+    chain_log_set_dir(NULL);
+}
+
 void register_construction_modules_tests(void) {
     TEST_SECTION("\nModule construction:\n");
     RUN(test_module_build_material_types);
     RUN(test_module_construction_and_delivery);
     RUN(test_construction_consumes_manifest_units);
     RUN(test_station_scaffold_manifest_batch_append_failure_is_inert);
+    RUN(test_outpost_player_delivery_commissions_a_play_earned_outpost);
+    RUN(test_outpost_virtual_supply_is_not_play_earned);
     RUN(test_module_delivery_emits_construction_chain_event);
     RUN(test_module_manifest_batch_append_failure_is_inert);
     RUN(test_module_delivery_consumes_towed_manifest_pod);
