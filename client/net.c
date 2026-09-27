@@ -4294,6 +4294,59 @@ static struct mg_mgr net_mgr;
 static struct mg_connection *ws_conn = NULL;
 static bool mgr_initialized = false;
 
+#if MG_TLS != MG_TLS_NONE
+/* Trust anchors for wss:// servers: SIGNAL_TLS_CA_FILE, else the system
+ * bundle. Loaded once and kept for reconnects. */
+#define NET_TLS_CA_MAX_BYTES ((size_t)4 * 1024 * 1024)
+static char *net_tls_ca = NULL;
+static size_t net_tls_ca_len = 0;
+
+static bool net_tls_read_ca(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char *buf = malloc(NET_TLS_CA_MAX_BYTES + 1);
+    size_t len = buf ? fread(buf, 1, NET_TLS_CA_MAX_BYTES + 1, f) : 0;
+    fclose(f);
+    if (!buf || len == 0 || len > NET_TLS_CA_MAX_BYTES) {
+        free(buf);
+        return false;
+    }
+    buf[len] = '\0';
+    net_tls_ca = buf;
+    net_tls_ca_len = len;
+    return true;
+}
+
+static bool net_tls_load_ca(void) {
+    static const char *const system_bundles[] = {
+        "/etc/ssl/cert.pem",                  /* macOS, Alpine, BSDs */
+        "/etc/ssl/certs/ca-certificates.crt", /* Debian, Ubuntu, Arch */
+        "/etc/pki/tls/certs/ca-bundle.crt",   /* Fedora, RHEL */
+    };
+    if (net_tls_ca) return true;
+    const char *override = getenv("SIGNAL_TLS_CA_FILE");
+    if (override && override[0] != '\0') return net_tls_read_ca(override);
+    for (size_t i = 0; i < sizeof(system_bundles) / sizeof(system_bundles[0]); i++) {
+        if (net_tls_read_ca(system_bundles[i])) return true;
+    }
+    return false;
+}
+#endif
+
+/* Start TLS on a fresh wss:// connection, verifying the chain against the
+ * loaded CA bundle and the certificate against the server's host name. */
+static void net_tls_start(struct mg_connection *c) {
+#if MG_TLS != MG_TLS_NONE
+    struct mg_tls_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.ca = mg_str_n(net_tls_ca, net_tls_ca_len);
+    opts.name = mg_url_host(net_state.server_url);
+    mg_tls_init(c, &opts);
+#else
+    mg_error(c, "this build has no TLS");
+#endif
+}
+
 static bool ws_send_binary(const uint8_t* data, int len) {
     if (!net_message_send_ready(data, len)) return false;
     if (net_loopback_active) {
@@ -4321,7 +4374,9 @@ static void ws_close_authentication_failure(void) {
 }
 
 static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
-    if (ev == MG_EV_WS_OPEN) {
+    if (ev == MG_EV_CONNECT) {
+        if (mg_url_is_ssl(net_state.server_url)) net_tls_start(c);
+    } else if (ev == MG_EV_WS_OPEN) {
         ws_conn = c;
         if (!transport_connected("websocket server")) {
             mg_ws_send(c, NULL, 0, WEBSOCKET_OP_CLOSE);
@@ -4390,6 +4445,17 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
         strncmp(url, "webrtc+wss://", 14) == 0) {
         printf("[net] WebRTC transport is only available in browser builds\n");
         return false;
+    }
+    if (mg_url_is_ssl(url)) {
+#if MG_TLS == MG_TLS_NONE
+        printf("[net] %s needs TLS, and this build has none; rebuild with OpenSSL 3\n", url);
+        return false;
+#else
+        if (!net_tls_load_ca()) {
+            printf("[net] no CA bundle to verify %s; set SIGNAL_TLS_CA_FILE\n", url);
+            return false;
+        }
+#endif
     }
     snprintf(net_state.server_url, sizeof(net_state.server_url), "%s", url);
 

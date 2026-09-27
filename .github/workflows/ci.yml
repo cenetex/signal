@@ -118,7 +118,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y clang cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Run native and policy gates
         run: |
           make build-server
@@ -139,7 +139,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Run functional soak suite
         run: make test-soak TEST_FAILURE_LOG_DIR=test-results/soak
       - name: Upload soak failure logs
@@ -291,7 +291,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Configure release targets
         run: cmake -S . -B build-compile -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DGIT_HASH=${{ github.sha }}
       - name: Compile client and authoritative server
@@ -308,7 +308,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Compile maintained Signal tools
         run: |
           cmake -G Ninja -S . -B build-tools \
