@@ -873,6 +873,27 @@ target_include_directories(signal PRIVATE ${SIGNAL_INCLUDE_DIRS} ${SIGNAL_CRYPTO
 target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}")
 signal_apply_sim_profile(signal)
 
+# wss:// servers need TLS in the native client. Mongoose's built-in TLS
+# accepts any P-384 signature in a certificate chain unchecked, and Let's
+# Encrypt's ECDSA chain has P-384 keys, so the client uses OpenSSL, linked
+# statically so release binaries need no OpenSSL on the player's machine.
+# Without it (and on MSVC for now) the client builds and refuses wss:// URLs.
+option(SIGNAL_NATIVE_TLS "Link OpenSSL so the native client can join wss:// servers" ON)
+if(SIGNAL_NATIVE_TLS AND NOT EMSCRIPTEN AND NOT MSVC)
+    if(APPLE)
+        list(APPEND CMAKE_PREFIX_PATH
+            /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3)
+    endif()
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    find_package(OpenSSL 3)
+    if(OpenSSL_FOUND)
+        target_compile_definitions(signal PRIVATE MG_TLS=MG_TLS_OPENSSL)
+        target_link_libraries(signal PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    else()
+        message(STATUS "OpenSSL 3 not found: the native client cannot join wss:// servers")
+    endif()
+endif()
+
 if(SIGNAL_VOICE)
     target_compile_definitions(signal PRIVATE SIGNAL_VOICE)
 endif()

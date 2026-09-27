@@ -165,6 +165,12 @@ make build
 ./build/signal
 ```
 
+Join a server with `SIGNAL_SERVER=wss://<host>/ws ./build/signal`. `wss://`
+needs OpenSSL 3 at build time (`brew install openssl@3`, or `libssl-dev`); it
+is linked statically. The client verifies the server against the system CA
+bundle, or the PEM file in `SIGNAL_TLS_CA_FILE`, and refuses to connect when
+it cannot. MSVC builds do not have TLS yet.
+
 Native stdout/stderr telemetry persists by default. On macOS it is appended to
 `~/Library/Logs/signal/client.log`; Linux uses
 `$XDG_STATE_HOME/signal/client.log` (default `~/.local/state`), and Windows uses
