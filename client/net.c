@@ -4459,6 +4459,9 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
     }
     snprintf(net_state.server_url, sizeof(net_state.server_url), "%s", url);
 
+    /* Mongoose defaults to debug logging: a line for every socket read and
+     * write on the client's main thread. Keep errors only. */
+    mg_log_set(MG_LL_ERROR);
     mg_mgr_init(&net_mgr);
     mgr_initialized = true;
 
