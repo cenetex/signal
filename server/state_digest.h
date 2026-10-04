@@ -5,8 +5,8 @@
 
 #include "game_sim.h"
 
-#define SIGNAL_AUTH_STATE_DIGEST_SCHEMA "signal.authoritative_state.v3"
-#define SIGNAL_AUTH_STATE_DIGEST_VERSION 3u
+#define SIGNAL_AUTH_STATE_DIGEST_SCHEMA "signal.authoritative_state.v4"
+#define SIGNAL_AUTH_STATE_DIGEST_VERSION 4u
 #define SIGNAL_AUTH_STATE_DIGEST_SIZE 32u
 
 const char *signal_authoritative_state_digest_schema(void);

@@ -1,0 +1,234 @@
+{
+  "schema": 1,
+  "status": "Recovered source files; portrait files and publication terms pending",
+  "files": {
+    "music/nebula_drift_protocol.mp3": {
+      "sha256": "6fb8ade215b02f841293cfa846a18154660bdeac93336b8cfbcd5745c8cc29e7",
+      "source": "Local project-owner Downloads: Nebula Drift Protocol.mp3",
+      "bytes": 6154003,
+      "license": null
+    },
+    "music/nebula_drift_protocol_2.mp3": {
+      "sha256": "bf597de179cd56b7e964945cf76fa2d9bd4f3ae870301f3422fb595bb8367625",
+      "source": "Local project-owner Downloads: Nebula Drift Protocol-2.mp3",
+      "bytes": 5819013,
+      "license": null
+    },
+    "music/last_light_in_the_belt.mp3": {
+      "sha256": "47c8e7553bbad4724aaf727482f08faa0c33c11a15e7efe0a5fcf4c51d6ee1c9",
+      "source": "Local project-owner Downloads: Last Light in the Belt.mp3",
+      "bytes": 5423591,
+      "license": null
+    },
+    "music/last_light_in_the_belt_2.mp3": {
+      "sha256": "c465ee6b5be7620bb291d8c9000fe3125d8db2036c802590ac63772fbda999f4",
+      "source": "Local project-owner Downloads: Last Light in the Belt-2.mp3",
+      "bytes": 4817236,
+      "license": null
+    },
+    "music/echoes.mp3": {
+      "sha256": "634260a60758281bd1e59cf7efc2c8e3e89ac7da19d48387eb4b6c6ccc04eab6",
+      "source": "Local project-owner Downloads: Signal_ Echoes in the Belt.mp3",
+      "bytes": 10264889,
+      "license": null
+    },
+    "music/echoes_2.mp3": {
+      "sha256": "22e89cf0be1532c812266112c8db7a6972744e5cdab9bd2fcecf3eb563114412",
+      "source": "Local project-owner Downloads: Signal_ Echoes in the Belt-2.mp3",
+      "bytes": 5405960,
+      "license": null
+    },
+    "music/echoes_3.mp3": {
+      "sha256": "591acb6381c2a4da19ca707da853f9f0484576a01227f0923624882c8f60611e",
+      "source": "Local project-owner Downloads: Signal_ Echoes in the Belt-3.mp3",
+      "bytes": 5764869,
+      "license": null
+    },
+    "music/lofi_drift_jam.mp3": {
+      "sha256": "353e1e40122f4ed2f62c148169e6deba87bc546340b36c8babb090e96b90d8c2",
+      "source": "Local project-owner Downloads: Signal_ Lo-Fi Drift Jam.mp3",
+      "bytes": 5014164,
+      "license": null
+    },
+    "music/belt_drifters.mp3": {
+      "sha256": "3584a54953ea8c2a2c998dfc2de4980d44bc92ad057552b8ced522bb404e58dd",
+      "source": "Local project-owner Downloads: Signal_ Belt Drifters.mp3",
+      "bytes": 12199531,
+      "license": null
+    },
+    "music/belt_drifters_2.mp3": {
+      "sha256": "8723fd3805f13ffb98470f2039124553754ce1d80bd7659103e64ea782d25553",
+      "source": "Local project-owner Downloads: Signal_ Belt Drifters-2.mp3",
+      "bytes": 6068083,
+      "license": null
+    },
+    "music/belt_drifters_3.mp3": {
+      "sha256": "3be51ffad9ef5b2e307ef07a849409b8f008c4ef0f7567b4f0555cf9dc93321c",
+      "source": "Local project-owner Downloads: Signal_ Belt Drifters-3.mp3",
+      "bytes": 5261922,
+      "license": null
+    },
+    "music/belt_drifters_4.mp3": {
+      "sha256": "397444d7018e3bd2a56a46c8eac9ee168c23924022cfc130c8889527cfc50866",
+      "source": "Local project-owner Downloads: Signal_ Belt Drifters-4.mp3",
+      "bytes": 11848965,
+      "license": null
+    },
+    "music/clock_thunder.mp3": {
+      "sha256": "2006a48620905262bf5ab0f935de9aa6ff134f1a00afab9d06ae653d58acc6f6",
+      "source": "Local project-owner Downloads: Clock Made Of Thunder.mp3",
+      "bytes": 9928347,
+      "license": null
+    },
+    "music/clock_thunder_2.mp3": {
+      "sha256": "d04bea31d23cb76e1bb0f7cf10e204824da356a0786c2558ad034b78c75cafb4",
+      "source": "Local project-owner Downloads: Clock Made Of Thunder-2.mp3",
+      "bytes": 9641924,
+      "license": null
+    },
+    "music/vector_miners_epoch.mp3": {
+      "sha256": "a504ace19cc62e7e0064ab07f13a924a6e583fef7dd171fb359934e7136cee52",
+      "source": "Local project-owner Downloads: Signal_ Vector Miners Epoch.mp3",
+      "bytes": 7683147,
+      "license": null
+    },
+    "music/vector_miners_epoch_2.mp3": {
+      "sha256": "ecb12f70bb641df010e13bfe0adc3d862b6b5fd4ab16dc65ba3bc2e5b8141c67",
+      "source": "Local project-owner Downloads: Signal_ Vector Miners Epoch-2.mp3",
+      "bytes": 12607935,
+      "license": null
+    },
+    "music/kings_of_nowhere.mp3": {
+      "sha256": "0c89cb46a773cbecfb69c480230754637fc552a3d75beab43f941ec2b085d357",
+      "source": "Local project-owner Downloads: Vector Kings of Nowhere.mp3",
+      "bytes": 4817130,
+      "license": null
+    },
+    "music/kings_of_nowhere_2.mp3": {
+      "sha256": "ac6667396586be98d3855b1c450eba0c6263cb7044b2645c97cfd39996d6969a",
+      "source": "Local project-owner Downloads: Vector Kings of Nowhere-2.mp3",
+      "bytes": 4479645,
+      "license": null
+    },
+    "music/vector_economy.mp3": {
+      "sha256": "98797a6db466ddc1aba9945a78b242cbcd0ea6058200a290b2b9045c861a9f6a",
+      "source": "Local project-owner Downloads: Signal_ Vector Space Economy.mp3",
+      "bytes": 7441233,
+      "license": null
+    },
+    "music/vector_economy_2.mp3": {
+      "sha256": "ae93f29cd61eb1cc88e699094592a493065039b4961bb11f3ef3804591d0716a",
+      "source": "Local project-owner Downloads: Signal_ Vector Space Economy-2.mp3",
+      "bytes": 8304465,
+      "license": null
+    },
+    "music/vector_veins.mp3": {
+      "sha256": "c2cb86374b18a726a16d736aa17e1a125c0375bc5925a001e5c51129d346594e",
+      "source": "Local project-owner Downloads: Vector Veins.mp3",
+      "bytes": 5517744,
+      "license": null
+    },
+    "music/vector_veins_lofi.mp3": {
+      "sha256": "00c643d54ede2f3798e69c8d3d444ae3e3f22e6fb4063c0b2f6cd4c23e896d9d",
+      "source": "Local project-owner Downloads: Vector Veins_ Lo-Fi Belt Miners.mp3",
+      "bytes": 4332377,
+      "license": null
+    },
+    "music/vector_veins_80s.mp3": {
+      "sha256": "8950431bc949e746acc5b94facdb08cf1c36f64420353ed7bd6a9261a8eb7069",
+      "source": "Local project-owner Downloads: Vector Veins_ 80s Belt Miners.mp3",
+      "bytes": 5716382,
+      "license": null
+    },
+    "music/vector_veins_80s_2.mp3": {
+      "sha256": "06775c818554e0247f742d159254bcfe4d1c5a63d36ebee90a1aff4b86f88d12",
+      "source": "Local project-owner Downloads: Vector Veins_ 80s Belt Miners-2.mp3",
+      "bytes": 5259765,
+      "license": null
+    },
+    "music/fade_out_at_seventeen.mp3": {
+      "sha256": "c5cd4fe17bb42c8dc8c3747d877a4d86d2bec314a0e547a44f67426fdd1dea74",
+      "source": "Local project-owner Downloads: Fade Out At Seventeen.mp3",
+      "bytes": 4470689,
+      "license": null
+    },
+    "music/fade_out_at_seventeen_2.mp3": {
+      "sha256": "9868f94ad9486c91e5bcae72a05d37cf26c1ea36d0568a3519277e71e3ba603c",
+      "source": "Local project-owner Downloads: Fade Out At Seventeen-2.mp3",
+      "bytes": 4732969,
+      "license": null
+    },
+    "music/vacuum_in_my_lungs.mp3": {
+      "sha256": "d9154b18f44d8ed7c0c145e0bb2e758f3c74e82cf77ecf30faaa2e5e128b114d",
+      "source": "Local project-owner Downloads: Vacuum in My Lungs.mp3",
+      "bytes": 5249068,
+      "license": null
+    },
+    "music/vacuum_in_my_lungs_2.mp3": {
+      "sha256": "936b4c2e52be9f97f1b5f31cc8841d4f5e980576277d51fb04425ca871946028",
+      "source": "Local project-owner Downloads: Vacuum in My Lungs-2.mp3",
+      "bytes": 5100689,
+      "license": null
+    },
+    "anime/ep0-first-light.mpg": {
+      "sha256": "89ecbceb3732dac6f27599b369bd32fcd8f7b7472ff8717f90c54f2e7cb8488e",
+      "source": "Existing Signal checkout: assets/anime/ep0-first-light.mpg",
+      "bytes": 1443840,
+      "license": null
+    },
+    "anime/ep1-keplers-law.mpg": {
+      "sha256": "1198515bf8ae749cdfac9beb72411eff467091c02cced40caa4a0f204e51c008",
+      "source": "Existing Signal checkout: assets/anime/ep1-keplers-law.mpg",
+      "bytes": 1458176,
+      "license": null
+    },
+    "anime/ep2-furnace.mpg": {
+      "sha256": "91448933d82d7437b2a68871d200ee0ebd246153e4c8e87b7c2cd1487f0bb323",
+      "source": "Existing Signal checkout: assets/anime/ep2-furnace.mpg",
+      "bytes": 1318912,
+      "license": null
+    },
+    "anime/ep3-scaffold.mpg": {
+      "sha256": "d0b11a4469e4b7c738a312e6c8bbf16da4dc2a333a96a54c46627729d7c11776",
+      "source": "Existing Signal checkout: assets/anime/ep3-scaffold.mpg",
+      "bytes": 1386496,
+      "license": null
+    },
+    "anime/ep4-naming.mpg": {
+      "sha256": "00d186e79a630d2a179aa9d5ccc2d58f8176f23353946ba6634158399a8a8c4c",
+      "source": "Existing Signal checkout: assets/anime/ep4-naming.mpg",
+      "bytes": 1431552,
+      "license": null
+    },
+    "anime/ep5-drones.mpg": {
+      "sha256": "f78a76524c8208b27e03306680e228dcc978bfe3419361af3df707b103445c2e",
+      "source": "Existing Signal checkout: assets/anime/ep5-drones.mpg",
+      "bytes": 1411072,
+      "license": null
+    },
+    "anime/ep6-hauler.mpg": {
+      "sha256": "b79601fad896c8de4263d82b028b3d4ba1e2e2d4bdecb586bb113937d7885fa5",
+      "source": "Existing Signal checkout: assets/anime/ep6-hauler.mpg",
+      "bytes": 1318912,
+      "license": null
+    },
+    "anime/ep7-dark-sector.mpg": {
+      "sha256": "f52c045192a52766b0c31b6ac118ade2aec85f91b57f845f3eab54bfa28499ee",
+      "source": "Existing Signal checkout: assets/anime/ep7-dark-sector.mpg",
+      "bytes": 1388544,
+      "license": null
+    },
+    "anime/ep8-every-ai-dreams.mpg": {
+      "sha256": "39ca7ecfdc2f42b07260bd2a1e24b925be1b4965f0a1e1782befc812a8a71c0e",
+      "source": "Existing Signal checkout: assets/anime/ep8-every-ai-dreams.mpg",
+      "bytes": 1462272,
+      "license": null
+    },
+    "anime/ep9-death.mpg": {
+      "sha256": "d745a084cfdd6a1974d4602dc1ba91ffbd768a6255ee299afe0cba7e1fd50615",
+      "source": "Existing Signal checkout: assets/anime/ep9-death.mpg",
+      "bytes": 1323008,
+      "license": null
+    }
+  }
+}

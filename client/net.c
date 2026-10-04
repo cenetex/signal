@@ -2902,6 +2902,8 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].tow_hardpoint_tag = p[38];
                 pods[i].custody_station = p[39];
                 memcpy(pods[i].selection_token, &p[40], 32);
+                pods[i].summary_buy_quote = read_u32_le(&p[72]);
+                pods[i].summary_origin_station = p[76];
             }
             net_state.callbacks.on_cargo_pods(pods, max);
         }
@@ -2943,6 +2945,8 @@ static void handle_message(const uint8_t* data, int len) {
                 pods[i].tow_hardpoint_tag = p[28];
                 pods[i].custody_station = p[29];
                 memcpy(pods[i].selection_token, &p[30], 32);
+                pods[i].summary_buy_quote = read_u32_le(&p[62]);
+                pods[i].summary_origin_station = p[66];
             }
             net_state.callbacks.on_cargo_pods(pods, max);
         }

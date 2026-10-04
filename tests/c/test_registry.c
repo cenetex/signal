@@ -1686,7 +1686,7 @@ TEST(test_protocol_v3_classifies_legacy_pubkey_proof_without_accepting_it) {
     server_pubkey_proof_result_t proof;
     ASSERT(server_dispatch_pubkey_proof_message(
         w, 0, proof_msg, sizeof(proof_msg), &proof));
-    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 7);
+    ASSERT_EQ_INT(SIGNAL_PROTOCOL_VERSION, 8);
     ASSERT_EQ_INT(
         proof.status, SERVER_PUBKEY_PROOF_LEGACY_VERSION);
     ASSERT(strcmp(server_pubkey_proof_status_name(proof.status),

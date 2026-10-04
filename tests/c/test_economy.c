@@ -5334,9 +5334,36 @@ TEST(test_sell_towed_pod_transfers_whole_pod) {
     ASSERT(ledger_balance(st, sp->session_token) > before);
 }
 
+TEST(test_market_pod_quote_includes_the_physical_shell) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *station = &w.stations[0];
+    cargo_pod_t pod = {0};
+    pod.active = true;
+    pod.kind = CARGO_POD_CARGO;
+    pod.commodity = COMMODITY_FERRITE_INGOT;
+    pod.quantity = 1;
+    pod.manifest_count = 1;
+    pod.manifest_units[0].commodity = COMMODITY_FERRITE_INGOT;
+    pod.manifest_units[0].grade = MINING_GRADE_COMMON;
+    float contents = station_market_pod_sell_quote(station, &pod);
+    ASSERT(contents > 0.0f);
+    pod.has_shell_frame = true;
+    pod.shell_frame.commodity = COMMODITY_FRAME;
+    pod.shell_frame.grade = MINING_GRADE_FINE;
+    float shell = station_sell_price_unit(station, &pod.shell_frame) *
+                  mining_payout_multiplier(MINING_GRADE_FINE);
+    ASSERT(shell > 0.0f);
+    ASSERT_EQ_FLOAT(station_market_pod_sell_quote(station, &pod),
+                    contents + shell, 0.001f);
+    pod.quantity = 2;
+    ASSERT_EQ_FLOAT(station_market_pod_sell_quote(station, &pod), 0.0f, 0.001f);
+}
+
 void register_economy_basic_tests(void) {
     TEST_SECTION("\nEconomy tests:\n");
     RUN(test_sell_legacy_manifest_requires_pod);
+    RUN(test_market_pod_quote_includes_the_physical_shell);
     RUN(test_market_buy_ignores_legacy_manifest_ingots);
     RUN(test_sell_towed_pod_transfers_whole_pod);
     RUN(test_station_production_yard_makes_frames);

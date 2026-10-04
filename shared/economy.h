@@ -21,6 +21,10 @@ bool producer_recipe_for_module(module_type_t module,
 
 void step_station_production(station_t* stations, int count, float dt);
 
+float station_pod_shell_quote(const station_t *station, const cargo_pod_t *pod,
+                              bool station_sells);
+float station_market_pod_sell_quote(const station_t *station, const cargo_pod_t *pod);
+
 float station_repair_cost(const ship_t* ship, const station_t* station);
 float upgrade_station_credit_cost(const station_t* station,
                                   const ship_t* ship,

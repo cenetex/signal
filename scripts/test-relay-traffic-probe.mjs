@@ -6,20 +6,20 @@ import {
 } from './relay-traffic-probe.mjs';
 
 function cargoPodQPacket(count, trailingBytes = 0) {
-    const packet = Buffer.alloc(2 + count * 62 + trailingBytes);
+    const packet = Buffer.alloc(2 + count * 67 + trailingBytes);
     packet[0] = 0x62;
     packet[1] = count;
     return packet;
 }
 
 function cargoPodPacket(count, trailingBytes = 0) {
-  const packet = Buffer.alloc(2 + count * 72 + trailingBytes);
+  const packet = Buffer.alloc(2 + count * 77 + trailingBytes);
   packet[0] = 0x46;
   packet[1] = count;
   return packet;
 }
 
-test('relay probe accepts only exact v4 compact cargo-pod records', () => {
+test('relay probe accepts only exact v8 compact cargo-pod records', () => {
   const client = {};
   assert.deepEqual(
     decodeRecordInfo(cargoPodQPacket(2), client),
@@ -32,7 +32,7 @@ test('relay probe accepts only exact v4 compact cargo-pod records', () => {
     null);
 });
 
-test('relay probe accepts only exact v4 full cargo-pod records', () => {
+test('relay probe accepts only exact v8 full cargo-pod records', () => {
   const client = {};
   assert.deepEqual(
     decodeRecordInfo(cargoPodPacket(2), client),

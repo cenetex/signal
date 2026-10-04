@@ -887,8 +887,10 @@ enum {
  * Version 6 replaces bearer-backed combat attribution with typed public
  * actor IDs and marks legacy event attribution explicitly unknown.
  * Version 7 adds Engine cargo/module identities and expands station module
- * records for the first Engine Fab. */
-#define SIGNAL_PROTOCOL_VERSION 7u
+ * records for the first Engine Fab.
+ * Version 8 adds the full station crate quote and its source station to
+ * both cargo-pod record encodings. */
+#define SIGNAL_PROTOCOL_VERSION 8u
 #define SIGNAL_PROTOCOL_CHALLENGE_PUBKEY_PROOF_VERSION 3u
 
 enum {
@@ -1678,14 +1680,14 @@ _Static_assert(NET_ACTION_COMMISSION_SHIP + HULL_CLASS_COUNT <= 256,
  * [vel:2xf32][radius:f32][rotation:f32][quantity:u16]
  * [manifest_count:u16][shipment_id:u16][flags:1][best_grade:1]
  * [tractor_station_tag:1][tractor_module_tag:1][tow_hardpoint_tag:1]
- * [custody_station_tag:1][selection_token:32].
+ * [custody_station_tag:1][selection_token:32][buy_quote:u32][origin_station_tag:1].
  * Manifest unit rows are not present on this live stream; the flags carry
  * server-derived summary truth for UI gates, while the opaque token lets a
  * client bind a signed PRESENT action without learning private manifest rows. */
-#define CARGO_POD_RECORD_SIZE 72
-#define CARGO_POD_Q_RECORD_SIZE 62
+#define CARGO_POD_RECORD_SIZE 77
+#define CARGO_POD_Q_RECORD_SIZE 67
 _Static_assert(CARGO_POD_Q_RECORD_SIZE ==
-               (4 + 4 * 2 + 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2 + 1 + 1 + 32),
+               (4 + 4 * 2 + 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2 + 1 + 1 + 32 + 4 + 1),
                "compact cargo pod identity record size drifted");
 #define CARGO_POD_MOTION_MSG_HEADER 2
 #define CARGO_POD_MOTION_RECORD_SIZE 21

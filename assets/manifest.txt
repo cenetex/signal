@@ -1,8 +1,8 @@
 # Signal external asset pack.
 # Paths are relative to the local assets/ directory. Browser runtime fetches
-# deployed assets from same-origin Worker routes.
+# deployed assets from same-origin paths.
 # Prefix optional entries with ?. Missing optional assets warn but do not fail
-# the sync; the client keeps its runtime fallback.
+# installation; the client keeps its runtime fallback.
 
 stations/prospect/portrait.png
 ?stations/prospect/motd.json

@@ -2385,6 +2385,8 @@ static float trade_station_pod_quote(const station_t *st,
         pod->shipment_id != 0) {
         return 0.0f;
     }
+    if (pod->summary_buy_quote > 0 && pod->summary_buy_quote <= LEDGER_FLOAT_LIMIT)
+        return (float)pod->summary_buy_quote;
     commodity_t c = pod->commodity;
     float price = station_sell_price(st, c);
     if (price <= FLOAT_EPSILON && st->base_price[c] > FLOAT_EPSILON)
@@ -2397,19 +2399,12 @@ static float trade_station_pod_quote(const station_t *st,
             return 0.0f;
         }
         if (local_pod_has_detailed_manifest(pod)) {
-            float value = 0.0f;
-            for (uint16_t i = 0; i < pod->manifest_count; i++) {
-                const cargo_unit_t *unit = &pod->manifest_units[i];
-                float unit_value = station_sell_price_unit(st, unit);
-                unit_value *= mining_payout_multiplier((mining_grade_t)unit->grade);
-                value += unit_value;
-            }
-            return value;
+            return station_market_pod_sell_quote(st, pod);
         }
         return trade_unit_price_with_summary_grade(price, pod) *
-               (float)pod->quantity;
+               (float)pod->quantity + station_pod_shell_quote(st, pod, true);
     }
-    return price * (float)pod->quantity;
+    return price * (float)pod->quantity + station_pod_shell_quote(st, pod, true);
 }
 
 static mining_grade_t trade_pod_display_grade(const cargo_pod_t *pod) {
@@ -2677,12 +2672,22 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 pod->custody_station == 0 ||
                 pod->custody_station ==
                     (uint8_t)(station_idx + 1);
-            uint8_t blk = exact && token_ready && custody_here
+            uint8_t source = pod->summary_origin_station > 0
+                ? (uint8_t)(pod->summary_origin_station - 1) : UINT8_MAX;
+            if (local_pod_has_detailed_manifest(pod)) {
+                source = pod->manifest_units[0].origin_station;
+                for (uint16_t unit = 1; unit < pod->manifest_count; unit++)
+                    if (pod->manifest_units[unit].origin_station != source)
+                        source = UINT8_MAX;
+            }
+            bool source_here = source == (uint8_t)station_idx;
+            uint8_t blk = exact && token_ready && custody_here && source_here
                 ? TRADE_BLOCK_NONE
                 : TRADE_BLOCK_NO_RECEIPT_SOURCE;
             int quantity = (int)pod->quantity;
             trade_row_t row = (trade_row_t){
                 .kind = 2,
+                .origin_station_idx = source,
                 .commodity = c,
                 .grade = trade_pod_display_grade(pod),
                 .stock = quantity,
@@ -4446,11 +4451,17 @@ static void draw_trade_view(const station_ui_state_t *ui,
             case TRADE_BLOCK_NO_SELLER:     why = "(no seller)";  break;
             case TRADE_BLOCK_NO_POD_FRAME:  why = "(need frame)"; break;
             case TRADE_BLOCK_NO_RECEIPT_SOURCE:
-                why = "(wrong source)";
+                why = "(unpack at source)";
                 break;
             default:                        why = "";             break;
             }
-            snprintf(total_buf, sizeof(total_buf), "%s", why);
+            if (r->block_reason == TRADE_BLOCK_NO_RECEIPT_SOURCE &&
+                r->origin_station_idx < MAX_STATIONS &&
+                r->origin_station_idx != (uint8_t)(st - g.world.stations))
+                snprintf(total_buf, sizeof(total_buf), "(unpack: %s)",
+                         station_short_name(r->origin_station_idx));
+            else
+                snprintf(total_buf, sizeof(total_buf), "%s", why);
         }
 
         /* Prefix-class indicator (#prefix-pricing): drop "M-", "RATi-",

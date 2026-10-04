@@ -338,6 +338,8 @@ typedef struct {
     uint8_t tow_hardpoint_tag;
     uint8_t custody_station;
     uint8_t selection_token[32];
+    uint32_t summary_buy_quote; /* server quote, including the frame shell */
+    uint8_t summary_origin_station; /* 0 unknown/mixed; station index + 1 */
 } NetCargoPodState;
 typedef struct {
     uint8_t index;
