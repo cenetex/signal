@@ -108,6 +108,7 @@
       "scope": "shipping",
       "paths": [
         "assets/**",
+        "itch/**",
         "web/**"
       ],
       "lanes": [
