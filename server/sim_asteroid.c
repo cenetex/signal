@@ -813,6 +813,30 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
             break;
         }
     }
+
+    /* Hard speed ceiling, applied after every force so tow and the
+     * intentional slingshot keep their feel below it. Instrumented: logs a
+     * capped tick at most every 2 s with the worst pre-clamp speed. */
+    int clamped = 0;
+    float max_pre = 0.0f;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        float spd_sq = v2_len_sq(a->vel);
+        if (spd_sq <= ASTEROID_MAX_SPEED * ASTEROID_MAX_SPEED) continue;
+        float spd = fixp_sqrtf(spd_sq);
+        if (spd > max_pre) max_pre = spd;
+        a->vel = v2_scale(a->vel, ASTEROID_MAX_SPEED / spd);
+        clamped++;
+    }
+    if (clamped > 0) {
+        static uint32_t last_clamp_log_tick = 0;
+        if ((uint32_t)(w->tick - last_clamp_log_tick) >= 240u) {
+            last_clamp_log_tick = w->tick;
+            SIM_LOG("[clamp] %d asteroid(s) capped (max %.0f u/s -> %.0f)\n",
+                    clamped, (double)max_pre, (double)ASTEROID_MAX_SPEED);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */

@@ -71,6 +71,7 @@ jobs:
           python3 scripts/test_check_ci_workflow_contract.py
       - name: Run path and aggregate mutation tests
         run: |
+          python3 scripts/test_compare_connectome_strategy.py
           python3 scripts/test_classify_ci_paths.py
           python3 scripts/test_check_ci_required.py
       - name: Run Node script self-tests
@@ -79,6 +80,7 @@ jobs:
           node scripts/test-rati-anchor-stamp.mjs
           node scripts/test-relay-region-broker.mjs
           node --test scripts/test-relay-traffic-probe.mjs
+          node --test scripts/test-solana-ship-burn.mjs scripts/test-fly-shop.mjs
           node scripts/test-ws-backpressure-soak.mjs
           node scripts/test-ws-latency-proxy.mjs
       - name: Run checked policy self-tests
@@ -117,7 +119,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y clang cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Run native and policy gates
         run: |
           make build-server
@@ -138,7 +140,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Run functional soak suite
         run: make test-soak TEST_FAILURE_LOG_DIR=test-results/soak
       - name: Upload soak failure logs
@@ -290,7 +292,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Configure release targets
         run: cmake -S . -B build-compile -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=OFF -DGIT_HASH=${{ github.sha }}
       - name: Compile client and authoritative server
@@ -307,7 +309,7 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y cmake ninja-build libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Compile maintained Signal tools
         run: |
           cmake -G Ninja -S . -B build-tools \

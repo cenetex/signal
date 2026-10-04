@@ -34,7 +34,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y cmake ninja-build cppcheck libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
       - name: Run safety gates
         run: |
           make build-server
@@ -71,7 +71,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
 
       - name: Provision verified media before configure
         shell: bash
@@ -115,7 +115,7 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+          sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libssl-dev
 
       - name: Build server
         run: |

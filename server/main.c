@@ -17,6 +17,7 @@
 #include "sim_asteroid.h"
 #include "sim_autopilot.h"
 #include "signal_intelligence.h"
+#include "signal_connectome_brain.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 #include "cargo_legacy_inventory.h"
@@ -6385,6 +6386,8 @@ static bool serve_static_http(struct mg_connection *c,
     return true;
 }
 
+#include "fly_shop_http.inc"
+
 static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_POLL) {
         if (c->is_websocket) {
@@ -6403,7 +6406,9 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         }
     } else if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = ev_data;
-        if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
+        if (mg_match(hm->uri, mg_str("/internal/v1/fly-shop/*"), NULL)) {
+            handle_fly_shop(c, hm);
+        } else if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
             server_note_ws_client_addr(c, hm);
             mg_ws_upgrade(c, hm, NULL);
         } else if (mg_match(hm->uri, mg_str("/api/protocol"), NULL)) {
@@ -8441,8 +8446,16 @@ static void apply_persistence_writer_result(
     uint64_t now,
     uint64_t *last_save
 ) {
+    /* Only a real completion is a completion. persistence_writer_wait()
+     * consumes SUCCEEDED/FAILED and resets the writer to IDLE, while
+     * metrics.write_complete stays true until the next write starts. Keying
+     * the observability line off write_complete alone mislabels every later
+     * tick as a failure on stale metrics, which is what flooded production
+     * logs with result=failed after an entirely successful save. */
+    bool completed = state == PERSISTENCE_WRITER_SUCCEEDED ||
+                     state == PERSISTENCE_WRITER_FAILED;
     persistence_writer_metrics_t save_metrics = {0};
-    if (persistence_writer &&
+    if (completed && persistence_writer &&
         persistence_writer_get_metrics(
             persistence_writer, &save_metrics) &&
         save_metrics.write_complete) {
@@ -8545,6 +8558,11 @@ int main(void) {
 
     chain_log_set_disk_enabled(true);
     signal_chain_set_disk_enabled(true);
+    /* Fly connectome brain: must init before the world loads so NPC
+     * spawn/normalize stamps CONNECTOME from the first tick. Enabled
+     * only when SIGNAL_CONNECTOME_FAST points at a compiled .cnx
+     * circuit; prints its own status block. */
+    (void)signal_connectome_init();
     if (!enter_persistence_data_dir()) return 1;
     ensure_persistence_dirs();
     if (!load_world_state()) return 1;

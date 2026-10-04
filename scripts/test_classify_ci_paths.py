@@ -30,6 +30,7 @@ class CiPathPolicyTests(unittest.TestCase):
 
     def test_web_package_and_playwright_paths_run_browser_smoke(self) -> None:
         for path in (
+            "itch/index.html",
             "web/play.html",
             "package.json",
             "package-lock.json",

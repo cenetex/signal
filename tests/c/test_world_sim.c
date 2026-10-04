@@ -3717,6 +3717,158 @@ TEST(test_hail_reports_no_station_in_range) {
     ASSERT(sp->hail_decision_source_id == 0ull);
 }
 
+TEST(test_fly_purchase_grant_is_durable_and_once_only) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    world_reset(w);
+    uint8_t wallet[32] = {41}, id[32] = {42}, signature[64] = {43};
+    const fly_purchase_t *purchase = world_fly_purchase_reserve(w, id, wallet, 2);
+    ASSERT(purchase != NULL);
+    uint32_t reserved_id = purchase->asset_id;
+    ship_asset_t *reserved_asset = world_ship_asset_by_id(w, reserved_id);
+    ASSERT_EQ_INT(reserved_asset->status, SHIP_ASSET_STATUS_STORED);
+    ASSERT_EQ_INT(ship_asset_launch_fly_worker(w, reserved_asset, 2), -1);
+    ASSERT(world_fly_purchases_valid(w));
+    ASSERT(world_save(w, TMP("fly-reservation.sav")));
+    ASSERT(world_load(loaded, TMP("fly-reservation.sav")));
+    ASSERT(world_fly_purchases_valid(loaded));
+    ASSERT(world_fly_purchase_reserve(loaded, id, wallet, 2) != NULL);
+    purchase = world_fly_purchase_grant(w, id, wallet, signature, 2);
+    ASSERT(purchase != NULL);
+    ASSERT_EQ_INT(purchase->asset_id, reserved_id);
+    uint32_t asset_id = purchase->asset_id;
+    ship_asset_t *asset = world_ship_asset_by_id(w, asset_id);
+    ASSERT(asset != NULL);
+    ASSERT_EQ_INT(asset->owner_principal.kind, ACTOR_PRINCIPAL_PLAYER);
+    ASSERT(memcmp(asset->owner_principal.id, wallet, 32) == 0);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
+    ASSERT_EQ_INT(world_ship_asset_state(w, asset)->mining_level, 2);
+    ASSERT(world_fly_purchase_grant(w, id, wallet, signature, 2) != NULL);
+    ASSERT_EQ_INT(w->fly_purchase_count, 1);
+    id[0]++;
+    ASSERT(world_fly_purchase_grant(w, id, wallet, signature, 2) == NULL);
+    id[0]--;
+    wallet[0]++;
+    ASSERT(world_fly_purchase_grant(w, id, wallet, signature, 2) == NULL);
+    wallet[0]--;
+    ASSERT(world_fly_purchases_valid(w));
+    ASSERT(world_save(w, TMP("fly-purchase.sav")));
+    ASSERT(world_load(loaded, TMP("fly-purchase.sav")));
+    ASSERT(world_fly_purchases_valid(loaded));
+    purchase = world_fly_purchase_grant(loaded, id, wallet, signature, 2);
+    ASSERT(purchase != NULL);
+    ASSERT_EQ_INT(purchase->asset_id, asset_id);
+    ASSERT_EQ_INT(loaded->fly_purchase_count, 1);
+    asset = world_ship_asset_by_id(loaded, asset_id);
+    world_ship_asset_state(loaded, asset)->hull = 0.0f;
+    step_npc_ships(loaded, SIM_DT);
+    /* A sponsored worker is recovered with debt, not lost: the same asset is
+     * relaunched with its ledger identity preserved, and the rebuild fee sits
+     * on the account its work earns into. */
+    ASSERT(!asset->destroyed);
+    ASSERT_EQ_INT(asset->operator_kind, SHIP_ASSET_OPERATOR_NPC);
+    ASSERT(asset->operator_slot >= 0 && asset->operator_slot < MAX_NPC_SHIPS);
+    {
+        const npc_ship_t *worker = &loaded->npc_ships[asset->operator_slot];
+        ASSERT(worker->active);
+        ASSERT_EQ_INT(worker->ship_asset_id, asset_id);
+        ASSERT(ledger_balance(&loaded->stations[2], worker->session_token)
+               < 0.0f);
+    }
+    purchase = world_fly_purchase_grant(loaded, id, wallet, signature, 2);
+    ASSERT(purchase != NULL);
+    ASSERT_EQ_INT(purchase->asset_id, asset_id);
+    ASSERT(!asset->destroyed);
+    ASSERT(world_save(loaded, TMP("fly-purchase-rebuilt.sav")));
+    loaded->fly_purchases[0].wallet[0]++;
+    ASSERT(!world_fly_purchases_valid(loaded));
+    ASSERT(!world_save(loaded, TMP("fly-purchase-invalid.sav")));
+}
+
+TEST(test_fly_worker_ledger_token_survives_restart_for_rebuild) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    world_reset(w);
+    uint8_t wallet[32] = {71}, id[32] = {72}, signature[64] = {73};
+    const fly_purchase_t *p =
+        world_fly_purchase_grant(w, id, wallet, signature, 0);
+    ASSERT(p != NULL);
+    uint32_t asset_id = p->asset_id;
+    ship_asset_t *asset = world_ship_asset_by_id(w, asset_id);
+    ASSERT(asset != NULL);
+    uint8_t token[8];
+    memcpy(token, asset->worker_token, 8);
+    ASSERT(token[0] != 0);
+
+    /* The ledger identity must survive a restart so a deferred rebuild can
+     * still put the debt on the account the worker earns into. */
+    ASSERT(world_save(w, TMP("fly-worker-token.sav")));
+    ASSERT(world_load(loaded, TMP("fly-worker-token.sav")));
+    ship_asset_t *lasset = world_ship_asset_by_id(loaded, asset_id);
+    ASSERT(lasset != NULL);
+    ASSERT(memcmp(lasset->worker_token, token, 8) == 0);
+
+    /* Deferred rebuild: stored and unoperated, then relaunched. The new NPC
+     * must reuse the persisted token rather than mint a fresh one. */
+    lasset->destroyed = false;
+    lasset->status = SHIP_ASSET_STATUS_STORED;
+    lasset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+    lasset->operator_slot = -1;
+    lasset->stored_ship.hull = hull_max_for_class(lasset->hull_class);
+    ASSERT(ship_asset_launch_fly_worker(loaded, lasset, 0) >= 0);
+    ASSERT(lasset->operator_slot >= 0 &&
+           lasset->operator_slot < MAX_NPC_SHIPS);
+    const npc_ship_t *worker = &loaded->npc_ships[lasset->operator_slot];
+    ASSERT(worker->active);
+    ASSERT(memcmp(worker->session_token, token, 8) == 0);
+}
+
+TEST(test_fly_worker_credits_follow_worker_ledgers) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    world_reset(w);
+    uint8_t wallet[32] = {61}, id[32] = {62}, signature[64] = {63};
+    const fly_purchase_t *p = world_fly_purchase_grant(w, id, wallet, signature, 0);
+    ASSERT(p != NULL);
+    uint32_t asset_id = p->asset_id;
+    ship_asset_t *asset = world_ship_asset_by_id(w, asset_id);
+    ASSERT(asset != NULL);
+    npc_ship_t *npc = &w->npc_ships[asset->operator_slot];
+    double before = 0.0, after = 0.0;
+    ASSERT(world_fly_worker_credits(w, asset_id, &before));
+    ledger_earn(&w->stations[0], npc->session_token, 123.5f);
+    ledger_earn(&w->stations[1], npc->session_token, 45.25f);
+    ledger_earn_by_pubkey(&w->stations[0], wallet, 9000.0f);
+    ASSERT(world_fly_worker_credits(w, asset_id, &after));
+    ASSERT_EQ_FLOAT(after - before, 168.75, 0.001);
+    ASSERT(world_save(w, TMP("fly-credits.sav")));
+    ASSERT(world_load(loaded, TMP("fly-credits.sav")));
+    ASSERT(world_fly_worker_credits(loaded, asset_id, &before));
+    ASSERT_EQ_FLOAT(before, after, 0.001);
+    npc->active = false;
+    ASSERT(!world_fly_worker_credits(w, asset_id, &after));
+    ASSERT(!world_fly_worker_credits(w, 0, &after));
+}
+
+TEST(test_fly_purchase_reserved_hull_survives_full_inventory) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    uint8_t wallet[32] = {51}, id[32] = {52}, signature[64] = {53};
+    const fly_purchase_t *p = world_fly_purchase_reserve(w, id, wallet, 0);
+    ASSERT(p != NULL);
+    uint32_t reserved_id = p->asset_id;
+    actor_principal_t owner = world_ship_asset_by_id(w, reserved_id)->owner_principal;
+    int filled = 0;
+    while (world_ship_asset_mint(w, HULL_CLASS_MINER, &owner, 0,
+                                 SHIP_ASSET_PROVENANCE_LEGACY, false, 0)) filled++;
+    ASSERT(filled > 0);
+    p = world_fly_purchase_grant(w, id, wallet, signature, 0);
+    ASSERT(p != NULL);
+    ASSERT_EQ_INT(p->asset_id, reserved_id);
+    ASSERT_EQ_INT(world_ship_asset_by_id(w, reserved_id)->operator_kind, SHIP_ASSET_OPERATOR_NPC);
+    ASSERT(world_fly_purchases_valid(w));
+}
+
 TEST(test_dead_neural_worker_auto_respawns) {
     /* Contract-origin hulls mean a dead worker is not replaced by a
      * free spawn. With yard materials available, replenishment first
@@ -3755,6 +3907,12 @@ TEST(test_dead_neural_worker_auto_respawns) {
      * directly to skip the npc-side mirror lag. */
     ship_t *s = world_npc_ship_for(w, target_slot);
     ASSERT(s != NULL);
+    /* Hold the other workers at dock so this fixture has one roster gap. */
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active || n == target_slot) continue;
+        w->npc_ships[n].state = NPC_STATE_DOCKED;
+        w->npc_ships[n].state_timer = 1000.0f;
+    }
     s->hull = 0.0f;
     /* One sim step lets the despawn check at top of step_npc_ships
      * notice and free the slot. */
@@ -3782,7 +3940,16 @@ TEST(test_dead_neural_worker_auto_respawns) {
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_FRAME), 0);
     ASSERT_EQ_INT(station_finished_count(kepler, COMMODITY_TRACTOR_MODULE), 0);
 
-    for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
+    /* Observe the birth before the working ship leaves and faces hazards. */
+    for (int i = 0; i < 4000; i++) {
+        world_sim_step(w, SIM_DT);
+        bool spawned = false;
+        for (int n = 0; n < MAX_NPC_SHIPS; n++)
+            if (w->npc_ships[n].active &&
+                w->npc_ships[n].home_station == 1)
+                spawned = true;
+        if (spawned) break;
+    }
 
     int kepler_workers_after = 0;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -4174,6 +4341,12 @@ TEST(test_station_roster_uses_shipyard_contract_for_resident_worker_hulls) {
     ASSERT(target_slot >= 0);
     ship_t *s = world_npc_ship_for(w, target_slot);
     ASSERT(s != NULL);
+    /* Hold the other workers at dock so this fixture has one roster gap. */
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active || n == target_slot) continue;
+        w->npc_ships[n].state = NPC_STATE_DOCKED;
+        w->npc_ships[n].state_timer = 1000.0f;
+    }
     s->hull = 0.0f;
     world_sim_step(w, SIM_DT);
 
@@ -4196,7 +4369,17 @@ TEST(test_station_roster_uses_shipyard_contract_for_resident_worker_hulls) {
         &helios->pending_ship_builds[0].owner_principal,
         &helios_owner));
 
-    for (int i = 0; i < 4000; i++) world_sim_step(w, SIM_DT);
+    /* Observe the birth before the working ship leaves and faces hazards. */
+    for (int i = 0; i < 4000; i++) {
+        world_sim_step(w, SIM_DT);
+        bool spawned = false;
+        for (int n = 0; n < MAX_NPC_SHIPS; n++)
+            if (w->npc_ships[n].active &&
+                w->npc_ships[n].home_station == 2 &&
+                w->npc_ships[n].role == NPC_ROLE_MINER)
+                spawned = true;
+        if (spawned) break;
+    }
 
     int helios_miners_after = 0;
     int helios_tows_after = 0;
@@ -7059,22 +7242,27 @@ TEST(test_miner_inside_station_nav_envelope_routes_to_outer_gap) {
     }
     ASSERT(miner >= 0);
 
+    /* Target a rock the world actually maintains. This used to hand-seed
+     * one into an inactive slot, but the sim reclaims that slot on the very
+     * first step, so the miner was left holding a dead target every time.
+     * The test passed anyway because selection then swept the entire world
+     * and handed back a real rock somewhere else -- meaning it exercised
+     * the global scan, not the nav route it is named for. Selection is
+     * bounded by sight now, so the target has to be real to survive.
+     *
+     * Any fracturable rock outside the station envelope will do; what is
+     * under test is that a miner starting INSIDE the envelope routes out
+     * through the gap rather than straight through the ring. */
     int target_a = -1;
+    float far_d = 0.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!w.asteroids[i].active) { target_a = i; break; }
+        const asteroid_t *cand = &w.asteroids[i];
+        if (!mining_level_can_fracture_asteroid(1, cand)) continue;
+        float d = v2_dist_sq(cand->pos, w.stations[2].pos);
+        if (d < 2500.0f * 2500.0f) continue;   /* clear of the envelope */
+        if (d > far_d) { far_d = d; target_a = i; }
     }
     ASSERT(target_a >= 0);
-    asteroid_t *a = &w.asteroids[target_a];
-    memset(a, 0, sizeof(*a));
-    a->active = true;
-    a->tier = ASTEROID_TIER_M;
-    a->commodity = COMMODITY_CUPRITE_ORE;
-    a->ore = 30.0f;
-    a->max_ore = 30.0f;
-    a->hp = 100.0f;
-    a->max_hp = 100.0f;
-    a->radius = 30.0f;
-    a->pos = v2_add(w.stations[2].pos, v2(3240.0f, -4200.0f));
 
     npc_ship_t *npc = &w.npc_ships[miner];
     npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
@@ -8200,7 +8388,7 @@ TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
     ASSERT(slot >= 0);
     npc_ship_t *npc = &w.npc_ships[slot];
     npc->state = NPC_STATE_DOCKED;
-    npc->state_timer = 0.0f;
+    npc->state_timer = 1.5f * SIM_DT;
     memset(&npc->ship->knowledge, 0, sizeof(npc->ship->knowledge));
     knowledge_view_configure(&npc->ship->knowledge, SHIP_KNOWN_ITEM_CAP);
     ship_t *ship = world_npc_ship_for(&w, slot);
@@ -8219,6 +8407,10 @@ TEST(test_neural_npc_assignment_repairs_damaged_worker_from_shared_offer) {
     ASSERT(knowledge_item_from_market_memory(&supply, &item));
     knowledge_view_insert(&npc->ship->knowledge, &item);
 
+    /* The assignment gets its turn as the dock timer expires. */
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_REPAIR_KIT), before_kits);
     step_npc_ships(&w, SIM_DT);
 
     ASSERT(ship->hull > npc_max_hull(npc) - 12.0f);
@@ -12553,6 +12745,10 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hail_responds_to_station_signal_outside_ship_comm_range);
     RUN(test_hail_responds_at_helios_dock_even_with_short_ship_comm);
     RUN(test_hail_reports_no_station_in_range);
+    RUN(test_fly_purchase_grant_is_durable_and_once_only);
+    RUN(test_fly_worker_ledger_token_survives_restart_for_rebuild);
+    RUN(test_fly_purchase_reserved_hull_survives_full_inventory);
+    RUN(test_fly_worker_credits_follow_worker_ledgers);
     RUN(test_dead_neural_worker_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);
     RUN(test_black_market_contract_accepts_npc_module_delivery);

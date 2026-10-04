@@ -9,6 +9,8 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "signal_intelligence.h"
+#include "signal_connectome_brain.h"
+#include "sim_scent.h"
 #include "sim_ship.h"
 #include "sim_physics.h"
 #include "sim_mining.h"
@@ -378,7 +380,7 @@ static bool frontier_virtual_supply_one(world_t *w) {
         if (!station_exists(st) || st->planned) continue;
         if (st->scaffold && st->scaffold_progress < 1.0f) {
             st->scaffold_progress = 1.0f;
-            activate_outpost(w, s);
+            activate_outpost(w, s, OUTPOST_COMPLETION_VIRTUAL_SUPPLY, NULL);
             w->frontier_virtual_supply_deliveries++;
             SIM_LOG("[frontier] virtual pilots supplied station scaffold at station %d\n", s);
             return true;
@@ -458,6 +460,7 @@ static bool frontier_plan_outpost(world_t *w) {
             }
             chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
                                  "virtual frontier pilot planned outpost");
+            outpost_record_planted(w, st, slot, false);
             st->radius = 0.0f;
             st->dock_radius = 0.0f;
             st->signal_range = 0.0f;
@@ -1694,7 +1697,11 @@ static void npc_normalize_brain_mode(npc_ship_t *npc) {
     if (npc->role == NPC_ROLE_MINER ||
         npc->role == NPC_ROLE_HAULER ||
         npc->role == NPC_ROLE_TOW) {
-        if (npc->brain_mode == SERVER_BRAIN_MODE_NONE ||
+        if (signal_connectome_enabled()) {
+            /* Fly connectome owns flight control when configured; the
+             * mining/hauling state machines keep running underneath. */
+            npc->brain_mode = SERVER_BRAIN_MODE_CONNECTOME;
+        } else if (npc->brain_mode == SERVER_BRAIN_MODE_NONE ||
             npc->brain_mode == SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS) {
             npc->brain_mode = SERVER_BRAIN_MODE_NEURAL_FLIGHT;
         }
@@ -1767,17 +1774,11 @@ static ship_asset_t *ship_asset_find_stored_npc_hull(world_t *w,
     return NULL;
 }
 
-int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
-    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return -1;
+static int npc_claim_selected_asset(world_t *w, int station_idx,
+                                     npc_role_t role, ship_asset_t *asset,
+                                     const uint8_t *reuse_token) {
     station_t *st = &w->stations[station_idx];
-    if (!station_exists(st)) return -1;
     hull_class_t hc = npc_resident_hull_class_for_role(role);
-    ship_asset_t *asset = ship_asset_find_stored_npc_hull(w, station_idx, hc);
-    if (!asset) {
-        (void)shipyard_queue_station_hull_request(w, station_idx, hc);
-        return -1;
-    }
-
     int slot = npc_alloc_free_slot(w);
     if (slot < 0) return -1;
     npc_ship_t *npc = &w->npc_ships[slot];
@@ -1821,7 +1822,9 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->brain_mode = (role == NPC_ROLE_MINER ||
                        role == NPC_ROLE_HAULER ||
                        role == NPC_ROLE_TOW)
-        ? SERVER_BRAIN_MODE_NEURAL_FLIGHT
+        ? (signal_connectome_enabled()
+               ? SERVER_BRAIN_MODE_CONNECTOME
+               : SERVER_BRAIN_MODE_NEURAL_FLIGHT)
         : SERVER_BRAIN_MODE_NONE;
     npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
     npc->ship_asset_id = asset->asset_id;
@@ -1835,16 +1838,23 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
      *          so respawns of the same role at the same slot get a
      *          fresh ledger identity. The dead token's ledger entry
      *          stays attributed until the 16-slot LRU evicts it. */
-    if (w->next_npc_token == 0) w->next_npc_token = 1;
-    uint16_t tok = w->next_npc_token++;
-    npc->session_token[0] = 'N';
-    npc->session_token[1] = 'P';
-    npc->session_token[2] = 'C';
-    npc->session_token[3] = (uint8_t)station_idx;
-    npc->session_token[4] = (uint8_t)role;
-    npc->session_token[5] = (uint8_t)slot;
-    npc->session_token[6] = (uint8_t)(tok & 0xFF);
-    npc->session_token[7] = (uint8_t)((tok >> 8) & 0xFF);
+    if (reuse_token) {
+        /* Rebuild of a sponsored worker: keep the exact ledger identity so
+         * the rebuild debt charged on death is repaid by its own future
+         * earnings -- the same loop players get from emergency_recover_ship. */
+        memcpy(npc->session_token, reuse_token, 8);
+    } else {
+        if (w->next_npc_token == 0) w->next_npc_token = 1;
+        uint16_t tok = w->next_npc_token++;
+        npc->session_token[0] = 'N';
+        npc->session_token[1] = 'P';
+        npc->session_token[2] = 'C';
+        npc->session_token[3] = (uint8_t)station_idx;
+        npc->session_token[4] = (uint8_t)role;
+        npc->session_token[5] = (uint8_t)slot;
+        npc->session_token[6] = (uint8_t)(tok & 0xFF);
+        npc->session_token[7] = (uint8_t)((tok >> 8) & 0xFF);
+    }
     /* No starter balance — fresh NPCs run on credit and pay it back
      * as they complete deliveries. ledger_force_debit at the dock
      * lets the balance go negative; the chain self-balances over
@@ -1875,6 +1885,44 @@ int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
             role == NPC_ROLE_MINER ? "miner" :
             role == NPC_ROLE_HAULER ? "hauler" : "npc",
             station_idx, slot);
+    return slot;
+}
+
+int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return -1;
+    station_t *st = &w->stations[station_idx];
+    if (!station_exists(st)) return -1;
+    hull_class_t hc = npc_resident_hull_class_for_role(role);
+    ship_asset_t *asset = ship_asset_find_stored_npc_hull(w, station_idx, hc);
+    if (!asset) {
+        (void)shipyard_queue_station_hull_request(w, station_idx, hc);
+        return -1;
+    }
+
+    return npc_claim_selected_asset(w, station_idx, role, asset, NULL);
+}
+
+int ship_asset_launch_fly_worker(world_t *w, ship_asset_t *asset, int station) {
+    if (!w || !asset || !asset->active || asset->destroyed ||
+        asset->provenance != SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
+        asset->owner_principal.kind != ACTOR_PRINCIPAL_PLAYER ||
+        asset->status != SHIP_ASSET_STATUS_STORED || station < 0 || station > 2)
+        return -1;
+    bool paid = false;
+    for (uint32_t i = 0; i < w->fly_purchase_count; i++) {
+        if (w->fly_purchases[i].asset_id != asset->asset_id) continue;
+        for (size_t k = 0; k < 64; k++)
+            if (w->fly_purchases[i].burn_signature[k]) paid = true;
+    }
+    if (!paid) return -1;
+    npc_role_t role = station == 1 ? NPC_ROLE_TOW : NPC_ROLE_MINER;
+    /* A rebuild keeps the worker's persisted ledger token so the rebuild debt
+     * is repaid by the same account its work credits. */
+    bool reuse = asset->worker_token[0] != 0;
+    int slot = npc_claim_selected_asset(w, station, role, asset,
+                                        reuse ? asset->worker_token : NULL);
+    if (slot >= 0)
+        memcpy(asset->worker_token, w->npc_ships[slot].session_token, 8);
     return slot;
 }
 
@@ -2037,27 +2085,37 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         if (!miner_target_taken(w, idx, self_npc_slot)) return idx;
     }
 
-    /* Most-needed useful rock: the home station must expose a concrete
-     * furnace+hopper endpoint for the ore, and the ore must feed a
-     * non-saturated downstream chain. Distance only breaks ties within
-     * the same demand band; otherwise Helios keeps mining nearby
-     * crystal while the laser line is actually starved for crystal. */
+    /* Most-needed useful rock THE MINER CAN SEE. This used to sweep every
+     * asteroid in the world and rank them by home-station demand, which
+     * meant a rock on the far side of the map advertised itself exactly as
+     * loudly as one off the bow. Nothing was ever discovered because
+     * nothing was ever hidden, and every miner in a station converged on
+     * the same globally-optimal answer.
+     *
+     * Sight is bounded by scent_sight_radius(), which collapses out past
+     * the relay chain. A miner that sees nothing is not stuck: the caller
+     * falls back to smell, and the ore-scent field will walk it toward a
+     * patch until something comes into view. Returning -1 here is an
+     * ordinary answer, not a failure. */
     const station_t *home = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
                           ? &w->stations[npc->home_station]
                           : NULL;
     if (!home) return -1;
+    float sight = scent_sight_radius(w, npc->ship);
+    float sight_sq = sight * sight;
     int best = -1;
     float best_need = 0.0f;
     float best_d = 1e18f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!mining_level_can_fracture_asteroid(npc->ship->mining_level, a)) continue;
+        float d = v2_dist_sq(npc->ship->pos, a->pos);
+        if (d > sight_sq) continue;                 /* out of view */
         if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
         if (miner_target_taken(w, i, self_npc_slot)) continue;
         if (!station_smelt_pair_for_ore(home, a->commodity, NULL)) continue;
         float need = station_raw_ore_need_score(home, a->commodity);
         if (need <= 0.0f) continue;
-        float d = v2_dist_sq(npc->ship->pos, a->pos);
         if (need > best_need + 0.05f ||
             (fabsf(need - best_need) <= 0.05f && d < best_d)) {
             best_need = need;
@@ -2066,6 +2124,31 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         }
     }
     return best;
+}
+
+/* Where should a miner with nothing in sight go? Up the ore-scent
+ * gradient. This is deliberately a heading and not a destination: the
+ * field resolves patches, not rocks, so smell can only say "richer that
+ * way" and hand over to sight on arrival.
+ *
+ * Returns false when the field is flat, which is the fly's cue to cast
+ * rather than commit -- the caller keeps its existing wander. */
+static bool npc_scent_seek_heading(const world_t *w, const npc_ship_t *npc,
+                            vec2 *out_target) {
+    if (!w || !npc || !npc->ship || !out_target) return false;
+    /* A fly out of signal cannot smell either; it is not a radio, but the
+     * field is only maintained where the sim is paying attention. */
+    if (signal_npc_confidence(signal_strength_at(w, npc->ship->pos)) < 0.05f)
+        return false;
+    vec2 dir; float here = 0.0f;
+    if (!scent_gradient(w, npc->ship->pos, SIGNAL_FIELD_KIND_ORE_SCENT,
+                        &dir, &here))
+        return false;
+    /* Step about one cell up-gradient. Short enough that the fly re-smells
+     * often and follows a curving plume instead of committing to a line. */
+    *out_target = v2(npc->ship->pos.x + dir.x * SIGNAL_FIELD_CELL_SIZE,
+                     npc->ship->pos.y + dir.y * SIGNAL_FIELD_CELL_SIZE);
+    return true;
 }
 
 static bool npc_claim_fracture_contracts_for_target(
@@ -4562,7 +4645,14 @@ static bool npc_worker_score_assignment(world_t *w,
 
 static bool npc_can_reassign(const npc_ship_t *npc) {
     if (!npc || !npc->active) return false;
-    if (npc->brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT) return false;
+    /* Combined brain: a connectome fly cannot be flown by a second
+     * controller, but it CAN still be re-assigned -- the strategic
+     * planner picks the job and the connectome executes the flight.
+     * Off unless SIGNAL_CONNECTOME_STRATEGY=1 and the adapter loaded. */
+    if (npc->brain_mode != SERVER_BRAIN_MODE_NEURAL_FLIGHT &&
+        !(npc->brain_mode == SERVER_BRAIN_MODE_CONNECTOME &&
+          signal_connectome_strategy_enabled()))
+        return false;
     if (npc->role != NPC_ROLE_MINER &&
         npc->role != NPC_ROLE_HAULER &&
         npc->role != NPC_ROLE_TOW) return false;
@@ -5327,12 +5417,14 @@ static void npc_begin_repair_offer(world_t *w,
     npc->state_timer = HAULER_DOCK_TIME;
 }
 
-static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc) {
+static void npc_choose_assignment(world_t *w, int npc_slot, npc_ship_t *npc, float dt) {
     ship_t *ship = world_npc_ship_for(w, npc_slot);
     if (!npc_can_reassign(npc)) return;
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return;
+    /* Give the planner the expiry tick before role logic consumes it and
+     * resets the timer or starts another trip. */
     if ((npc->state == NPC_STATE_DOCKED || npc->state == NPC_STATE_IDLE) &&
-        npc->state_timer > 0.0f) {
+        npc->state_timer > dt) {
         return;
     }
 
@@ -5571,6 +5663,14 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
 
     flight_cmd_t cmd = flight_steer_to(w, npc->ship, path, final_target,
                                         0.0f, max_speed, dt);
+    /* Fly connectome: the brain's descending command replaces the
+     * reflex turn in open space; the reflex wins near rock faces. The
+     * speed-control/avoidance thrust stays and is gated by arousal. */
+    if (npc->brain_mode == SERVER_BRAIN_MODE_CONNECTOME &&
+        signal_connectome_enabled()) {
+        (void)signal_connectome_flight_cmd(w, npc_idx, npc, cmd.turn,
+                                           &cmd.turn, &cmd.thrust);
+    }
     cmd.thrust *= thrust_scale;
     npc_apply_flight_cmd(npc, cmd, dt);
 }
@@ -6017,9 +6117,8 @@ static int npc_consume_trusted_scaffold_frames(
             cargo_store_cleanup(&staged);
             break;
         }
-        float progress_after = station->scaffold_progress +
-            1.0f / SCAFFOLD_MATERIAL_NEEDED;
-        if (progress_after > 1.0f) progress_after = 1.0f;
+        float progress_after = scaffold_progress_for_units(
+            scaffold_units_delivered(station) + 1);
         chain_payload_construction_t payload = {0};
         memcpy(payload.cargo_pub, unit.pub,
                sizeof(payload.cargo_pub));
@@ -6028,6 +6127,7 @@ static int npc_consume_trusted_scaffold_frames(
         payload.module_index = 0xff;
         payload.module_type = 0xff;
         payload.commodity = COMMODITY_FRAME;
+        payload.deliverer = CONSTRUCTION_DELIVERER_NPC;
         payload.target_id = (uint64_t)station_idx;
         payload.contributed_units = 1.0f;
         payload.progress_after = progress_after;
@@ -6227,17 +6327,17 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             /* Hauler also feeds delivered stock into scaffold station/modules. */
             if (dest->scaffold || dest->module_count > 0) {
                 if (dest->scaffold) {
-                    float needed_f = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
                     int held = station_finished_count(dest, COMMODITY_FRAME);
-                    int needed = (int)ceilf(needed_f - 0.0001f);
-                    if (needed < 0) needed = 0;
+                    int needed = scaffold_units_needed(dest);
                     int request = held < needed ? held : needed;
                     int delivered =
                         npc_consume_trusted_scaffold_frames(
                             w, unload_station, request);
                     if (delivered > 0) {
                         if (dest->scaffold_progress >= 1.0f)
-                            activate_outpost(w, npc->dest_station);
+                            activate_outpost(w, npc->dest_station,
+                                                     OUTPOST_COMPLETION_NPC_DELIVERY,
+                                                     NULL);
                     }
                 }
                 /* Feed the station cargo store directly into scaffolded
@@ -6546,6 +6646,14 @@ static void step_scaffold_tow_contract(world_t *w, npc_ship_t *npc, int n, float
 #define NPC_CONTACT_GOSSIP_INTERVAL_TICKS 120u
 
 void step_npc_ships(world_t *w, float dt) {
+    if (w && w->tick % 120 == 0) {
+        for (uint32_t i = 0; i < w->fly_purchase_count; i++) {
+            const fly_purchase_t *p = &w->fly_purchases[i];
+            ship_asset_t *asset = world_ship_asset_by_id(w, p->asset_id);
+            if (asset) (void)ship_asset_launch_fly_worker(w, asset, p->station);
+        }
+    }
+
     /* Replenish dead haulers/miners on a slow drip. The first call
      * after world_reset waits the full interval so the seeded roster
      * isn't immediately doubled. */
@@ -6555,6 +6663,14 @@ void step_npc_ships(world_t *w, float dt) {
         w->npc_respawn_timer = NPC_RESPAWN_INTERVAL;
         (void)replenish_npc_roster(w);
     }
+
+    /* Sponsored workers destroyed this tick, relaunched after the loop with
+     * their ledger identity preserved. */
+    uint32_t rebuild_assets[8];
+    uint8_t rebuild_tokens[8][8];
+    int16_t rebuild_home[8];
+    int rebuild_count = 0;
+
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active) continue;
@@ -6577,11 +6693,42 @@ void step_npc_ships(world_t *w, float dt) {
             if (npc->ship_asset_id != SHIP_ASSET_ID_NONE) {
                 (void)world_ship_asset_sync_from_npc(w, n);
                 ship_asset_t *asset = world_ship_asset_by_id(w, npc->ship_asset_id);
-                if (asset) {
+                if (asset && asset->provenance == SHIP_ASSET_PROVENANCE_FLY_PURCHASE) {
+                    /* Sponsored worker: recover with debt rather than lose it
+                     * forever, mirroring emergency_recover_ship. Charge the
+                     * rebuild fee to the worker's own ledger and relaunch it
+                     * preserving that identity, so its earnings repay it. */
+                    int home = npc->home_station;
+                    if (home < 0 || home >= MAX_STATIONS) home = 0;
+                    int fee = station_spawn_fee(&w->stations[home]);
+                    ledger_force_debit(&w->stations[home], npc->session_token,
+                                       (float)fee, npc->ship);
+                    asset->destroyed = false;
+                    asset->status = SHIP_ASSET_STATUS_STORED;
+                    asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
+                    asset->operator_slot = -1;
+                    asset->stored_ship.hull = hull_max_for_class(asset->hull_class);
+                    /* Persist the ledger identity so even a deferred rebuild
+                     * (or one after a restart) carries the debt. */
+                    memcpy(asset->worker_token, npc->session_token, 8);
+                    if (rebuild_count < (int)(sizeof(rebuild_assets) /
+                                              sizeof(rebuild_assets[0]))) {
+                        rebuild_assets[rebuild_count] = asset->asset_id;
+                        memcpy(rebuild_tokens[rebuild_count],
+                               npc->session_token, 8);
+                        rebuild_home[rebuild_count] = (int16_t)home;
+                        rebuild_count++;
+                    }
+                    SIM_LOG("[npc] %d destroyed asset=%u provenance=fly_purchase "
+                            "rebuild_fee=%d charged as debt\n",
+                            n, asset->asset_id, fee);
+                } else if (asset) {
                     asset->destroyed = true;
                     asset->status = SHIP_ASSET_STATUS_DESTROYED;
                     asset->operator_kind = SHIP_ASSET_OPERATOR_NONE;
                     asset->operator_slot = -1;
+                    SIM_LOG("[npc] %d destroyed asset=%u provenance=%u\n",
+                            n, asset->asset_id, (unsigned)asset->provenance);
                 }
                 npc->ship_asset_id = SHIP_ASSET_ID_NONE;
                 world_refresh_station_hull_inventories(w);
@@ -6596,7 +6743,7 @@ void step_npc_ships(world_t *w, float dt) {
         npc_enforce_role_hull(w, n, npc);
         refresh_npc_character_registration(w, n);
         npc_validate_stations(w, npc);
-        npc_choose_assignment(w, n, npc);
+        npc_choose_assignment(w, n, npc, dt);
 
         /* Holographic pilots own their flight controller outside the
          * role-specific state machines. Neural checkpoint pilots keep
@@ -6941,6 +7088,17 @@ void step_npc_ships(world_t *w, float dt) {
             break;
         }
         case NPC_STATE_IDLE: {
+            /* Nothing in sight is not nothing to do. Follow the ore scent
+             * up-gradient and keep re-smelling: the heading is recomputed
+             * every tick, so the fly tracks a curving plume instead of
+             * committing to a bearing it took once. When the field is flat
+             * it gets no heading and simply drifts, which is the cast --
+             * and drifting moves it to a new sample point, which is how a
+             * cast finds a plume in the first place. */
+            vec2 scent_target;
+            if (npc_scent_seek_heading(w, npc, &scent_target))
+                npc_steer_with_path(w, n, npc, scent_target,
+                                    /*thrust_scale=*/0.55f, dt);
             npc_apply_physics(npc, dt, w);
             npc->state_timer -= dt;
             if (npc->state_timer <= 0.0f) {
@@ -6957,7 +7115,9 @@ void step_npc_ships(world_t *w, float dt) {
                 }
                 int target = npc_find_mineable_asteroid(w, npc);
                 if (target >= 0) { npc->target_asteroid = target; npc->state = NPC_STATE_TRAVEL_TO_ASTEROID; }
-                else npc->state_timer = 3.0f;
+                /* Short re-look: the fly is moving up-gradient between
+                 * checks, so the view changes even when nothing else does. */
+                else npc->state_timer = 0.6f;
             }
             break;
         }
@@ -6973,6 +7133,27 @@ void step_npc_ships(world_t *w, float dt) {
         }
         npc_update_manifest_rarity_tint(npc, dt);
     }
+
+    /* Relaunch sponsored workers that died this tick. Doing it after the loop
+     * keeps the NPC iteration stable, and passing the old session token keeps
+     * the rebuild debt on the account the worker earns into. */
+    for (int r = 0; r < rebuild_count; r++) {
+        ship_asset_t *asset = world_ship_asset_by_id(w, rebuild_assets[r]);
+        if (!asset) continue;
+        npc_role_t role = rebuild_home[r] == 1 ? NPC_ROLE_TOW : NPC_ROLE_MINER;
+        if (npc_claim_selected_asset(w, rebuild_home[r], role, asset,
+                                     rebuild_tokens[r]) < 0) {
+            SIM_LOG("[npc] rebuild of asset=%u deferred\n",
+                    rebuild_assets[r]);
+        } else {
+            SIM_LOG("[npc] rebuilt asset=%u at station %d (debt carried)\n",
+                    rebuild_assets[r], rebuild_home[r]);
+        }
+    }
+
+    /* Advance the fly swarm once per tick: drives, stakes, injection,
+     * and the brain-budget market. No-op when the mode is off. */
+    signal_connectome_tick(w);
     if (w->tick % NPC_CONTACT_GOSSIP_INTERVAL_TICKS == 0u)
         (void)gossip_ship_contact_exchange(w);
 }

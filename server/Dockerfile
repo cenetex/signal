@@ -26,7 +26,7 @@ RUN emcmake cmake -S . -B build-web \
     && if [ -d assets/stations ]; then cp -R assets/stations public/; fi \
     && if [ -f assets/media-provenance.json ]; then cp assets/media-provenance.json public/; fi \
     && cp web/index.html web/mine.html web/ost.html web/ost-manifest.json \
-          web/ost-cover.jpg public/
+          web/ost-cover.jpg web/workers.html web/workers.mjs web/fly-codec.mjs public/
 
 FROM alpine:3.19 AS builder
 
@@ -62,9 +62,19 @@ RUN npm ci --omit=dev \
 
 COPY --from=builder /src/build/signal_server ./signal-server
 COPY --from=web-builder /src/public ./public
-COPY scripts/webrtc-gateway.mjs ./scripts/webrtc-gateway.mjs
+COPY scripts/webrtc-gateway.mjs scripts/fly-shop-chain.mjs scripts/fly-shop-service.mjs scripts/fly-shop-store.mjs scripts/solana-ship-burn.mjs ./scripts/
+COPY web/fly-codec.mjs ./web/fly-codec.mjs
 COPY scripts/fly-webrtc-entrypoint.sh ./scripts/fly-webrtc-entrypoint.sh
 COPY scripts/lightsail-webrtc-entrypoint.sh ./scripts/lightsail-webrtc-entrypoint.sh
+
+# nav circuit blob for the connectome NPC brain (SIGNAL_CONNECTOME_FAST in
+# fly.toml points here). See docs/connectome-brain.md.
+COPY assets/connectome/nav.cnx ./nav.cnx
+
+# Trained NPC worker-option policy (SIGNAL_BOT_NPC_WORKER_BRAIN_CHECKPOINT
+# in fly.toml points here). Regenerate with the crlplrimes
+# `signal-npc-worker-economy` target; see assets/models/README.md.
+COPY assets/models/signal_npc_worker.nnckpt ./signal_npc_worker.nnckpt
 
 ENV PORT=8080
 ENV SIGNAL_SERVER_PORT=9091

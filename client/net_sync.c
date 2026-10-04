@@ -1973,6 +1973,7 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->tint_b = (float)npcs[i].tint_b / 255.0f;
         n->home_station = (npcs[i].home_station == 0xFFu)
             ? -1 : (int)npcs[i].home_station;
+        n->worker_id = npcs[i].worker_id;
         if (motion_changed)
             g.net_reconcile.npc_motion_samples++;
     }
@@ -1985,6 +1986,11 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
     }
 
     /* World NPCs updated by interpolate_world_for_render(). */
+}
+
+uint64_t client_npc_worker_id(int slot) {
+    if (slot < 0 || slot >= MAX_NPC_SHIPS) return 0;
+    return g.npc_interp.curr[slot].worker_id;
 }
 
 void apply_remote_npc_motion(const NetNpcMotionState* npcs, int count) {

@@ -237,6 +237,11 @@ enum {
     SERVER_BRAIN_MODE_NEURAL_FLIGHT = 1,
     SERVER_BRAIN_MODE_HEURISTIC_LOGISTICS = 2,
     SERVER_BRAIN_MODE_HOLOGRAPHIC = 3,
+    /* Fly connectome: integer leaky-integrate-and-fire kernel over a
+     * FlyWire Drosophila subgraph (server/connectome/). The wiring is
+     * the program; drives (hunger/lust/fear/pain) modulate injection,
+     * and brain-time is rationed by economic stake via flyswarm. */
+    SERVER_BRAIN_MODE_CONNECTOME = 4,
 };
 
 /* input_intent_t lives in shared/types.h since slice 2 of #294 — both
@@ -581,6 +586,15 @@ typedef enum {
     STATION_PAYOUT_COUNT,
 } station_payout_action_t;
 
+enum { MAX_FLY_PURCHASES = 80 };
+typedef struct {
+    uint8_t purchase_id[32];
+    uint8_t wallet[32];
+    uint8_t burn_signature[64];
+    uint32_t asset_id;
+    uint8_t station;
+} fly_purchase_t;
+
 typedef struct {
     uint8_t payout_id[32];
     uint8_t recipient_hash[32]; /* one-way hash; never bearer/session bytes */
@@ -862,6 +876,8 @@ typedef struct {
     contract_t contracts[MAX_CONTRACTS];
     delivery_shipment_t delivery_shipments[MAX_DELIVERY_SHIPMENTS];
     station_payout_journal_t payout_journal;
+    uint32_t fly_purchase_count;
+    fly_purchase_t fly_purchases[MAX_FLY_PURCHASES];
     /* Server-only, inert diagnostics for legacy owner rows that could not be
      * rebound to a proven stable principal. Never replicated to clients and
      * deliberately incapable of storing bearer/session material. */
@@ -1514,6 +1530,13 @@ bool world_rebind_player_slot_refs(world_t *w,
 bool world_player_transfer_ship_state(world_t *w, int dst_slot, int src_slot);
 bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx);
 int ship_asset_claim_for_npc(world_t *w, int station_idx, npc_role_t role);
+int ship_asset_launch_fly_worker(world_t *w, ship_asset_t *asset, int station);
+const fly_purchase_t *world_fly_purchase_reserve(world_t*, const uint8_t id[32],
+    const uint8_t wallet[32], int station);
+const fly_purchase_t *world_fly_purchase_grant(world_t *w,
+    const uint8_t id[32], const uint8_t wallet[32], const uint8_t signature[64], int station);
+bool world_fly_purchases_valid(const world_t *w);
+bool world_fly_worker_credits(const world_t *w, uint32_t asset_id, double *out);
 bool shipyard_queue_station_hull_request(world_t *w, int requester_station,
                                          hull_class_t hull_class);
 bool world_ship_assets_ensure_legacy_bindings(world_t *w);
@@ -1743,12 +1766,61 @@ void signal_chain_load(world_t *w);
 module_type_t producer_module_for_commodity(commodity_t c);
 void player_seed_credits(server_player_t *sp, world_t *w);
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
-void activate_outpost(world_t *w, int station_idx);
+/* Scaffold progress in whole frames. Progress is stored as a float
+ * fraction for the save and wire formats, but adding 1/48 one frame at a
+ * time drifts to 0.99999958 after 48 frames, which left scaffolds one
+ * frame short forever. Delivery math counts whole frames through these
+ * helpers, and progress is always a whole-frame fraction. */
+static inline int scaffold_units_total(void) {
+    return (int)lroundf(SCAFFOLD_MATERIAL_NEEDED);
+}
+
+static inline int scaffold_units_delivered(const station_t *st) {
+    int units = (int)lroundf(st->scaffold_progress * SCAFFOLD_MATERIAL_NEEDED);
+    if (units < 0) return 0;
+    return units > scaffold_units_total() ? scaffold_units_total() : units;
+}
+
+static inline int scaffold_units_needed(const station_t *st) {
+    return scaffold_units_total() - scaffold_units_delivered(st);
+}
+
+static inline float scaffold_progress_for_units(int units) {
+    if (units >= scaffold_units_total()) return 1.0f;
+    return units <= 0 ? 0.0f : (float)units / SCAFFOLD_MATERIAL_NEEDED;
+}
+
+/* How an outpost scaffold was completed; recorded in its commissioning
+ * chain event. */
+typedef enum {
+    OUTPOST_COMPLETION_PLAYER_DELIVERY = 1, /* a player's frames finished it */
+    OUTPOST_COMPLETION_NPC_DELIVERY    = 2, /* an NPC hauler finished it */
+    OUTPOST_COMPLETION_VIRTUAL_SUPPLY  = 3, /* frontier supply, no delivery */
+} outpost_completion_t;
+
+/* Record a newly planted outpost in its own chain log: the founder and
+ * whether the founder is a verified player, fixed at planting. Call after
+ * station_authority_init_outpost. */
+void outpost_record_planted(world_t *w, station_t *st, int station_idx,
+                            bool founder_is_player);
+
+/* Complete an outpost scaffold. `completion` and `completed_by` (the
+ * delivering player's verified pubkey, or NULL) go into the signed
+ * CHAIN_EVT_OUTPOST_COMMISSIONED event in the outpost's own log. */
+void activate_outpost(world_t *w, int station_idx,
+                      outpost_completion_t completion,
+                      const uint8_t completed_by[32]);
 
 #define DOCK_APPROACH_RANGE 300.0f /* range to detect station for docking */
 
 /* Hopper/furnace constants — shared between game_sim.c and sim_production.c */
 #define HOPPER_PULL_RANGE 300.0f    /* furnace attracts fragments from this far */
+
+/* Hard ceiling on a fragment's speed. Fracture inheritance, rock-on-rock
+ * collisions and released band energy all compound without one, and a single
+ * rock can end up crossing the whole belt. Set high enough that ordinary
+ * towing and the intentional slingshot keep their feel below it. */
+#define ASTEROID_MAX_SPEED 480.0f
 #define HOPPER_INTAKE_STAGING_RANGE 132.0f /* pod must be at the tagged intake mouth */
 
 /* Cargo-pod module tractor tuning. Economic custody does not create a

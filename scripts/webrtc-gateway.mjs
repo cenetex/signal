@@ -7,6 +7,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import nodeDataChannel from 'node-datachannel';
 import WebSocket from 'ws';
+import { shopFromEnvironment } from './fly-shop-service.mjs';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const SERVER_PEER_ID = 'signal-authority';
@@ -461,6 +462,7 @@ function proxyUpgrade(req, socket, head, base) {
 const CONTENT_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
   ['.mjs', 'text/javascript; charset=utf-8'],
   ['.css', 'text/css; charset=utf-8'],
   ['.wasm', 'application/wasm'],
@@ -929,9 +931,18 @@ async function handleMessage(socket, text) {
   sendJson(socket, { type: 'error', error: 'unknown-type' });
 }
 
+const flyShop = await shopFromEnvironment();
 const server = http.createServer((req, res) => {
   setTcpNoDelay(req.socket);
   const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
+  if (url.pathname.startsWith('/internal/v1/fly-shop/')) {
+    res.writeHead(404); res.end(); return;
+  }
+  if (url.pathname.startsWith('/api/fly-shop/')) {
+    if (flyShop) { void flyShop.handle(req, res, url); return; }
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'shop_unavailable' })); return;
+  }
   if (url.pathname === '/rtc-health' || (!opts.proxy && url.pathname === '/health')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({

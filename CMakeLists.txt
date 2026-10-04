@@ -75,7 +75,7 @@ option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 # Layer E of #479: standalone CLI tools for verifying/exporting station
 # chain logs post-mortem. Default ON so dev builds get them; the
 # server-only Docker image flips it off.
-option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_replay)" ON)
+option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify, signal_chain_assets, signal_rati_receipt, signal_checkpoint, signal_outpost_receipt, signal_wallet_link, signal_replay)" ON)
 option(BUILD_WASM_REPLAY "Build signal_replay as an Emscripten Node CLI" OFF)
 option(SIGNAL_SIM_PROFILE "Compile world_sim_step phase profiling timers" OFF)
 option(SIGNAL_HNN_ENABLE_LECORE
@@ -193,6 +193,7 @@ set(SIGNAL_SIM_SOURCES
     server/cargo_smelt_provenance.c
     server/ship_birth_reservation.c
     server/sim_ai.c
+    server/fly_shop.c
     server/gossip.c
     server/sim_autopilot.c
     server/signal_brain.c
@@ -215,7 +216,14 @@ set(SIGNAL_SIM_SOURCES
     server/sim_construction.c
     server/sim_mining.c
     server/sim_anchor.c
+    server/sim_scent.c
     server/sim_ship.c
+    # Fly connectome brain: vendored integer LIF kernel (upstream: the
+    # flybrain project) plus the signal adapter. Kernel is float-free in
+    # the step path; see server/connectome/ headers for provenance.
+    server/connectome/flybrain.c
+    server/connectome/flyswarm.c
+    server/signal_connectome_brain.c
 )
 
 # Authoritative persistence orchestration. Dedicated servers and local worlds
@@ -245,6 +253,7 @@ set(SIGNAL_SIM_HELPERS
     shared/station_util.c
     shared/cargo_receipt.c
     shared/pubkey_proof.c
+    shared/wallet_link.c
     shared/rx_envelope.c
     shared/handoff_ticket.c
     shared/tractor.c
@@ -437,6 +446,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_highscore_replay.c
         server/highscore.c
         tests/c/test_signal_verify.c
+        tests/c/test_signal_checkpoint.c
         tests/c/test_cross_station_settlement.c
         tests/c/test_sovereign_ledger.c
         tests/c/test_prefix_class_pricing.c
@@ -463,6 +473,8 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_hnn_backend.c
         tests/c/test_hnn_confidence.c
         tests/c/test_gossip.c
+        tests/c/test_connectome_brain.c
+        tests/c/test_scent.c
         tests/c/test_npc_radio.c
         tests/c/test_ai_feature_contract.c
         tests/c/test_hud_attention.c
@@ -608,6 +620,58 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_definitions(signal_rati_receipt PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
+    add_executable(signal_checkpoint
+        tools/signal_checkpoint.c
+        server/chain_log_verify.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_checkpoint PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(signal_checkpoint PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(signal_checkpoint PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_checkpoint PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    add_executable(signal_outpost_receipt
+        tools/signal_outpost_receipt.c
+        server/chain_log_verify.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_outpost_receipt PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(signal_outpost_receipt PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+        target_link_libraries(signal_outpost_receipt PRIVATE m)
+    else()
+        target_compile_options(signal_outpost_receipt PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_outpost_receipt PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    add_executable(signal_wallet_link
+        tools/signal_wallet_link.c
+        shared/wallet_link.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_wallet_link PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(signal_wallet_link PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(signal_wallet_link PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_wallet_link PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
     add_executable(signal_hnn_pilot_benchmark
         tools/signal_hnn_pilot_benchmark.c
         shared/holographic_nn_backend.c
@@ -674,6 +738,33 @@ if(BUILD_TOOLS AND NOT EMSCRIPTEN)
         target_compile_options(signal_first_outpost PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
         target_compile_definitions(signal_first_outpost PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+
+    # Headless NPC-swarm probe for the connectome brain. The unit tests
+    # cannot enable the process-global adapter without flipping every
+    # other sim test's NPCs, so this is where the mode gets end-to-end
+    # coverage. See tools/connectome_swarm_probe.c.
+    add_executable(connectome_swarm_probe
+        tools/connectome_swarm_probe.c
+        ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SERVER_PERSISTENCE_SOURCES}
+        ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_STATIC_FLIGHT_BRAIN_SOURCES}
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(connectome_swarm_probe PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    target_compile_definitions(
+        connectome_swarm_probe PRIVATE SIGNAL_SERVER_PERSISTENCE=1)
+    signal_apply_sim_profile(connectome_swarm_probe)
+    if(NOT MSVC)
+        target_link_libraries(connectome_swarm_probe PRIVATE m)
+        target_compile_options(connectome_swarm_probe PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-fast-math)
+    else()
+        target_compile_options(connectome_swarm_probe PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(connectome_swarm_probe PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 
     add_executable(signal_replay
@@ -806,6 +897,27 @@ target_include_directories(signal SYSTEM PRIVATE
 target_include_directories(signal PRIVATE ${SIGNAL_INCLUDE_DIRS} ${SIGNAL_CRYPTO_INCLUDE_DIR})
 target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}" SIGNAL_SERVER_PERSISTENCE=1)
 signal_apply_sim_profile(signal)
+
+# wss:// servers need TLS in the native client. Mongoose's built-in TLS
+# accepts any P-384 signature in a certificate chain unchecked, and Let's
+# Encrypt's ECDSA chain has P-384 keys, so the client uses OpenSSL, linked
+# statically so release binaries need no OpenSSL on the player's machine.
+# Without it (and on MSVC for now) the client builds and refuses wss:// URLs.
+option(SIGNAL_NATIVE_TLS "Link OpenSSL so the native client can join wss:// servers" ON)
+if(SIGNAL_NATIVE_TLS AND NOT EMSCRIPTEN AND NOT MSVC)
+    if(APPLE)
+        list(APPEND CMAKE_PREFIX_PATH
+            /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3)
+    endif()
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    find_package(OpenSSL 3)
+    if(OpenSSL_FOUND)
+        target_compile_definitions(signal PRIVATE MG_TLS=MG_TLS_OPENSSL)
+        target_link_libraries(signal PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    else()
+        message(STATUS "OpenSSL 3 not found: the native client cannot join wss:// servers")
+    endif()
+endif()
 
 if(SIGNAL_VOICE)
     target_compile_definitions(signal PRIVATE SIGNAL_VOICE)

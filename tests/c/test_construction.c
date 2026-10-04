@@ -747,9 +747,13 @@ TEST(test_module_construction_and_delivery) {
  * also have its matching cargo_unit_t removed from the ship manifest.
  * Without the consume, the named frame stays in the ship's manifest
  * and could be sold or transferred again. */
-TEST(test_construction_consumes_manifest_units) {
+/* Deliver frames into a scaffold and check the first CONSTRUCTION event.
+ * A player delivery always uses the 88-byte form; it names the player's key
+ * only when the player is verified. */
+static void construction_scaffold_delivery_case(bool verified) {
     char dir[256];
-    snprintf(dir, sizeof(dir), "%s_scaffold_lineage", TMP("clog"));
+    snprintf(dir, sizeof(dir), "%s_scaffold_lineage_%d", TMP("clog"),
+             verified ? 1 : 0);
     chain_log_set_disk_enabled(true);
     chain_log_set_dir(dir);
 
@@ -768,6 +772,7 @@ TEST(test_construction_consumes_manifest_units) {
     sp->session_ready = true;
     sp->id = 0;
     memset(sp->session_token, 0xCC, sizeof(sp->session_token));
+    if (verified) ASSERT(construction_make_verified_player(sp, 0x40));
     player_init_ship(sp, &w);
     ASSERT(test_set_ship_finished_units(sp->ship, COMMODITY_FRAME, 5,
                                         MINING_GRADE_COMMON));
@@ -806,10 +811,17 @@ TEST(test_construction_consumes_manifest_units) {
     ASSERT(fread(len_bytes, 1, sizeof(len_bytes), f) == sizeof(len_bytes));
     uint16_t payload_len = (uint16_t)len_bytes[0] |
                            (uint16_t)((uint16_t)len_bytes[1] << 8);
-    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_construction_t));
-    chain_payload_construction_t payload = {0};
-    ASSERT(fread(&payload, 1, sizeof(payload), f) == sizeof(payload));
+    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_construction_player_t));
+    chain_payload_construction_player_t player = {0};
+    ASSERT(fread(&player, 1, sizeof(player), f) == sizeof(player));
     fclose(f);
+    const chain_payload_construction_t payload = player.base;
+
+    ASSERT_EQ_INT(payload.deliverer, CONSTRUCTION_DELIVERER_PLAYER);
+    uint8_t expected_pubkey[32] = {0};
+    if (verified) memcpy(expected_pubkey, sp->pubkey, sizeof(expected_pubkey));
+    ASSERT(memcmp(player.deliverer_pubkey, expected_pubkey,
+                  sizeof(expected_pubkey)) == 0);
 
     ASSERT_EQ_INT(payload.target_kind, CONSTRUCTION_TARGET_STATION);
     ASSERT_EQ_INT(payload.station_index, 0);
@@ -818,6 +830,14 @@ TEST(test_construction_consumes_manifest_units) {
     ASSERT_EQ_INT(payload.commodity, COMMODITY_FRAME);
     ASSERT_EQ_FLOAT(payload.contributed_units, 1.0f, 0.001f);
     chain_log_set_dir(NULL);
+}
+
+TEST(test_construction_consumes_manifest_units) {
+    construction_scaffold_delivery_case(false);
+}
+
+TEST(test_scaffold_delivery_names_verified_player) {
+    construction_scaffold_delivery_case(true);
 }
 
 TEST(test_station_scaffold_manifest_batch_append_failure_is_inert) {
@@ -952,9 +972,12 @@ TEST(test_station_scaffold_manifest_batch_append_failure_is_inert) {
     chain_log_set_dir(NULL);
 }
 
-TEST(test_module_delivery_emits_construction_chain_event) {
+/* Deliver three frames into a module from a bare ship (no owner) or from a
+ * verified player's ship, and check who the first CONSTRUCTION event names. */
+static void construction_module_delivery_case(bool player) {
     char dir[256];
-    snprintf(dir, sizeof(dir), "%s_construction_lineage", TMP("clog"));
+    snprintf(dir, sizeof(dir), "%s_construction_lineage_%d", TMP("clog"),
+             player ? 1 : 0);
     chain_log_set_disk_enabled(true);
     chain_log_set_dir(dir);
 
@@ -976,9 +999,18 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     m->scaffold = true;
     m->build_progress = 0.0f;
 
-    SHIP_DECL(ship);
-    ASSERT(manifest_init(&ship.manifest, 4));
-    ship.cargo[COMMODITY_FRAME] = 3.0f;
+    SHIP_DECL(bare);
+    ship_t *ship = &bare;
+    server_player_t *sp = &w.players[0];
+    if (player) {
+        ASSERT(construction_make_verified_player(sp, 0x70));
+        player_init_ship(sp, &w);
+        ASSERT(sp->ship != NULL);
+        ship = sp->ship;
+    } else {
+        ASSERT(manifest_init(&bare.manifest, 4));
+    }
+    ship->cargo[COMMODITY_FRAME] = 3.0f;
     cargo_unit_t units[3] = {{0}};
     cargo_unit_t *unit_ptrs[3] = {0};
     for (int i = 0; i < 3; i++) {
@@ -989,17 +1021,17 @@ TEST(test_module_delivery_emits_construction_chain_event) {
         ASSERT(hash_legacy_migrate_unit(
             origin, COMMODITY_FRAME, 0, &units[i]));
         ASSERT(ship_manifest_push_with_chain(
-            &ship, &units[i], NULL));
-        unit_ptrs[i] = &ship.manifest.units[i];
+            ship, &units[i], NULL));
+        unit_ptrs[i] = &ship->manifest.units[ship->manifest.count - 1];
     }
     ASSERT(world_anchor_legacy_cargo_origins(
         &w, 0, unit_ptrs, 3));
     uint64_t origin_events = st->chain_event_count;
     cargo_receipt_origin_cache_reset();
 
-    float payout = step_module_delivery(&w, st, 0, &ship, COMMODITY_FRAME);
+    float payout = step_module_delivery(&w, st, 0, ship, COMMODITY_FRAME);
     ASSERT(payout > 0.0f);
-    ASSERT_EQ_INT(manifest_count_by_commodity(&ship.manifest, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(manifest_count_by_commodity(&ship->manifest, COMMODITY_FRAME), 0);
     ASSERT_EQ_FLOAT(
         m->build_progress,
         3.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
@@ -1027,10 +1059,13 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     ASSERT(fread(len_bytes, 1, sizeof(len_bytes), f) == sizeof(len_bytes));
     uint16_t payload_len = (uint16_t)len_bytes[0] |
                            (uint16_t)((uint16_t)len_bytes[1] << 8);
-    ASSERT_EQ_INT(payload_len, (int)sizeof(chain_payload_construction_t));
-    chain_payload_construction_t payload = {0};
-    ASSERT(fread(&payload, 1, sizeof(payload), f) == sizeof(payload));
+    ASSERT_EQ_INT(payload_len,
+                  player ? (int)sizeof(chain_payload_construction_player_t)
+                         : (int)sizeof(chain_payload_construction_t));
+    chain_payload_construction_player_t named = {0};
+    ASSERT(fread(&named, 1, payload_len, f) == payload_len);
     fclose(f);
+    const chain_payload_construction_t payload = named.base;
 
     ASSERT(memcmp(payload.cargo_pub, units[0].pub,
                   sizeof(units[0].pub)) == 0);
@@ -1039,11 +1074,27 @@ TEST(test_module_delivery_emits_construction_chain_event) {
     ASSERT_EQ_INT(payload.module_index, module_idx);
     ASSERT_EQ_INT(payload.module_type, MODULE_SIGNAL_RELAY);
     ASSERT_EQ_INT(payload.commodity, COMMODITY_FRAME);
+    if (player) {
+        ASSERT_EQ_INT(payload.deliverer, CONSTRUCTION_DELIVERER_PLAYER);
+        ASSERT(memcmp(named.deliverer_pubkey, sp->pubkey,
+                      sizeof(named.deliverer_pubkey)) == 0);
+    } else {
+        /* No player owns this ship, so nobody is named. */
+        ASSERT_EQ_INT(payload.deliverer, CONSTRUCTION_DELIVERER_UNKNOWN);
+    }
     ASSERT_EQ_FLOAT(payload.contributed_units, 1.0f, 0.001f);
     ASSERT_EQ_FLOAT(payload.progress_after,
                     1.0f / module_build_cost_lookup(MODULE_SIGNAL_RELAY),
                     0.001f);
     chain_log_set_dir(NULL);
+}
+
+TEST(test_module_delivery_emits_construction_chain_event) {
+    construction_module_delivery_case(false);
+}
+
+TEST(test_module_delivery_names_verified_player) {
+    construction_module_delivery_case(true);
 }
 
 TEST(test_module_manifest_batch_append_failure_is_inert) {
@@ -1740,10 +1791,12 @@ TEST(test_purchased_frame_pods_found_real_outpost_without_receipt_injection) {
         sp->ship);
     ASSERT(receipts != NULL);
     ASSERT_EQ_INT(receipts->count, 0);
+    /* One CONSTRUCTION event per frame, then the outpost's own
+     * OUTPOST_COMMISSIONED event when the scaffold completes. */
     ASSERT_EQ_INT(
         (int)target->chain_event_count,
         (int)target_events_before +
-            frame_units);
+            frame_units + 1);
 
     uint64_t walked = 0;
     ASSERT(chain_log_verify(
@@ -7155,13 +7208,491 @@ void register_construction_outposts_tests(void) {
     RUN(test_outpost_min_distance);
 }
 
+/* Last record in a station's chain log: its type and payload. */
+static bool outpost_last_event(const station_t *st, uint8_t *out_type,
+                               uint8_t *payload, size_t cap, uint16_t *out_len) {
+    char path[256];
+    if (!chain_log_path_for(st->station_pubkey, path, sizeof(path))) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    bool found = false;
+    for (;;) {
+        uint8_t header[CHAIN_EVENT_HEADER_SIZE];
+        uint8_t len_bytes[2];
+        if (fread(header, 1, sizeof(header), f) != sizeof(header)) break;
+        if (fread(len_bytes, 1, sizeof(len_bytes), f) != sizeof(len_bytes)) break;
+        uint16_t len = (uint16_t)(len_bytes[0] | (len_bytes[1] << 8));
+        if (len > cap || (len && fread(payload, 1, len, f) != len)) break;
+        *out_type = header[16];
+        *out_len = len;
+        found = true;
+    }
+    fclose(f);
+    return found;
+}
+
+/* A scaffold at station 0 founded by player 0, whose pubkey is registered.
+ * The planting record says whether the founder was a verified player. */
+static server_player_t *outpost_setup_founded(world_t *w, const char *dir,
+                                              bool founder_is_player) {
+    chain_log_set_disk_enabled(true);
+    chain_log_set_dir(dir);
+    world_reset(w);
+    for (int s = 0; s < MAX_STATIONS; s++)
+        chain_log_reset(&w->stations[s]);
+    station_t *st = &w->stations[0];
+    st->chain_event_count = 0;
+    memset(st->chain_last_hash, 0, sizeof(st->chain_last_hash));
+    st->scaffold = true;
+    st->scaffold_progress = 0.0f;
+
+    server_player_t *sp = &w->players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    memset(sp->session_token, 0xC9, sizeof(sp->session_token));
+    memset(sp->pubkey, 0xB4, sizeof(sp->pubkey));
+    sp->pubkey_set = true;
+    sp->pubkey_proof_ok = true;
+    sp->pubkey_challenge_consumed = true;
+    if (!registry_register_pubkey(w, sp->pubkey, sp->session_token)) return NULL;
+    memcpy(st->outpost_founder_pubkey, sp->pubkey, 32);
+    st->outpost_planted_tick = 77;
+    outpost_record_planted(w, st, 0, founder_is_player);
+    player_init_ship(sp, w);
+    sp->docked = true;
+    sp->current_station = 0;
+    return sp;
+}
+
+static server_player_t *outpost_setup(world_t *w, const char *dir) {
+    return outpost_setup_founded(w, dir, true);
+}
+
+#ifndef _WIN32
+extern FILE *popen(const char *command, const char *type);
+extern int   pclose(FILE *stream);
+
+static const char *outpost_find_bin(const char *name) {
+    static char found[256];
+    static const char *dirs[] = {"build-test", "build-coverage", "build", ".",
+                                 "../build-test", "../build"};
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+        snprintf(found, sizeof(found), "%s/%s", dirs[i], name);
+        FILE *f = fopen(found, "rb");
+        if (!f) continue;
+        fclose(f);
+        return found;
+    }
+    return NULL;
+}
+
+static int outpost_run(const char *cmd, char *out, size_t cap) {
+    FILE *p = popen(cmd, "r");
+    if (!p) return -1;
+    size_t got = fread(out, 1, cap - 1, p);
+    out[got] = '\0';
+    int status = pclose(p);
+    return status == -1 ? -1 : (status >> 8) & 0xff;
+}
+
+/* The checkpoint_root a checkpoint file names, as the published root. */
+static bool outpost_checkpoint_root(const char *checkpoint_path, char root[65]) {
+    FILE *f = fopen(checkpoint_path, "rb");
+    if (!f) return false;
+    char head[256] = {0};
+    size_t got = fread(head, 1, sizeof(head) - 1, f);
+    fclose(f);
+    head[got] = '\0';
+    const char *at = strstr(head, "\"checkpoint_root\":\"");
+    if (!at || strlen(at) < 19 + 64) return false;
+    memcpy(root, at + 19, 64);
+    root[64] = '\0';
+    return true;
+}
+
+/* Run the receipt tool with `args` before the log path. Returns its exit
+ * status, or -2 when the tool is not built. */
+static int outpost_receipt_args(const station_t *st, const char *args, char *out, size_t cap) {
+    char receipt_bin[256], log_path[256], cmd[1024];
+    const char *bin = outpost_find_bin("signal_outpost_receipt");
+    if (!bin) return -2;
+    snprintf(receipt_bin, sizeof(receipt_bin), "%s", bin);
+    if (!chain_log_path_for(st->station_pubkey, log_path, sizeof(log_path))) return -1;
+    snprintf(cmd, sizeof(cmd), "%s %s %s 2>/dev/null", receipt_bin, args, log_path);
+    return outpost_run(cmd, out, cap);
+}
+
+/* Checkpoint the station's log into `checkpoint_path`, then print its
+ * outpost receipt into `out`, trusting that checkpoint's root. Returns the
+ * receipt tool's exit status, or -2 when the tools are not built. */
+static int outpost_receipt(const station_t *st, const char *checkpoint_path,
+                           bool write_checkpoint, char *out, size_t cap) {
+    char checkpoint_bin[256], log_path[256], cmd[1024], root[65], args[768];
+    const char *bin = outpost_find_bin("signal_checkpoint");
+    if (!bin) return -2;
+    snprintf(checkpoint_bin, sizeof(checkpoint_bin), "%s", bin);
+    if (!outpost_find_bin("signal_outpost_receipt")) return -2;
+    if (!chain_log_path_for(st->station_pubkey, log_path, sizeof(log_path))) return -1;
+    if (write_checkpoint) {
+        snprintf(cmd, sizeof(cmd), "%s %s > %s 2>/dev/null", checkpoint_bin, log_path,
+                 checkpoint_path);
+        if (system(cmd) != 0) return -1;
+    }
+    if (!outpost_checkpoint_root(checkpoint_path, root)) return -1;
+    snprintf(args, sizeof(args), "--checkpoint=%s --expected-root=%s", checkpoint_path, root);
+    return outpost_receipt_args(st, args, out, cap);
+}
+#endif
+
+TEST(test_outpost_player_delivery_commissions_a_play_earned_outpost) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_player", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    ASSERT(test_set_ship_finished_units(sp->ship, COMMODITY_FRAME, needed,
+                                        MINING_GRADE_COMMON));
+    ASSERT(construction_attach_local_ship_receipts(&w, 0, sp));
+
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FRAME;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!st->scaffold);
+
+    uint8_t type = 0;
+    uint16_t len = 0;
+    uint8_t payload[256];
+    ASSERT(outpost_last_event(st, &type, payload, sizeof(payload), &len));
+    ASSERT_EQ_INT(type, CHAIN_EVT_OUTPOST_COMMISSIONED);
+    ASSERT_EQ_INT(len, (int)sizeof(chain_payload_outpost_commissioned_t));
+    chain_payload_outpost_commissioned_t c;
+    memcpy(&c, payload, sizeof(c));
+    ASSERT_EQ_INT(c.completion, OUTPOST_COMPLETION_PLAYER_DELIVERY);
+    ASSERT_EQ_INT(c.founder_kind, OUTPOST_FOUNDER_REGISTERED_PLAYER);
+    ASSERT(memcmp(c.founder_pubkey, sp->pubkey, 32) == 0);
+    ASSERT(memcmp(c.completed_by_pubkey, sp->pubkey, 32) == 0);
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(st, &walked, NULL));
+
+#ifndef _WIN32
+    char checkpoint[sizeof(dir) + 32];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2) {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    } else {
+        ASSERT_EQ_INT(status, 0);
+        ASSERT(strstr(out, "\"play_earned\":true") != NULL);
+        ASSERT(strstr(out, "\"completion\":\"player_delivery\"") != NULL);
+        ASSERT(strstr(out, "\"founder_kind\":\"registered_player\"") != NULL);
+        char units[64];
+        snprintf(units, sizeof(units), "\"distinct_units\":%d", needed);
+        ASSERT(strstr(out, units) != NULL);
+        snprintf(units, sizeof(units), "\"player_units\":%d", needed);
+        ASSERT(strstr(out, units) != NULL);
+    }
+#endif
+    chain_log_set_dir(NULL);
+}
+
+TEST(test_outpost_virtual_supply_is_not_play_earned) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_virtual", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    /* Event 1 is the planting record. */
+    ASSERT(chain_log_emit(&w, st, CHAIN_EVT_LEDGER, "pre", 3) == 2);
+
+#ifndef _WIN32
+    /* A checkpoint taken before commissioning. */
+    char early[sizeof(dir) + 32];
+    snprintf(early, sizeof(early), "%s/early.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, early, true, out, sizeof(out));
+    bool tools = status != -2;
+    if (tools) ASSERT_EQ_INT(status, 1); /* no commissioning event yet */
+#endif
+
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_VIRTUAL_SUPPLY, NULL);
+    uint8_t type = 0;
+    uint16_t len = 0;
+    uint8_t payload[256];
+    ASSERT(outpost_last_event(st, &type, payload, sizeof(payload), &len));
+    ASSERT_EQ_INT(type, CHAIN_EVT_OUTPOST_COMMISSIONED);
+    chain_payload_outpost_commissioned_t c;
+    memcpy(&c, payload, sizeof(c));
+    ASSERT_EQ_INT(c.completion, OUTPOST_COMPLETION_VIRTUAL_SUPPLY);
+    /* The founder has no finalized live session here; a registered key still
+     * counts, so a founder who logged off keeps credit for founding. */
+    ASSERT_EQ_INT(c.founder_kind, OUTPOST_FOUNDER_REGISTERED_PLAYER);
+    static const uint8_t zero[32] = {0};
+    ASSERT(memcmp(c.completed_by_pubkey, zero, 32) == 0);
+
+#ifndef _WIN32
+    if (tools) {
+        /* The log grew, so the earlier checkpoint no longer covers it. */
+        ASSERT_EQ_INT(outpost_receipt(st, early, false, out, sizeof(out)), 1);
+        char current[sizeof(dir) + 32];
+        snprintf(current, sizeof(current), "%s/current.json", dir);
+        ASSERT_EQ_INT(outpost_receipt(st, current, true, out, sizeof(out)), 0);
+        ASSERT(strstr(out, "\"play_earned\":false") != NULL);
+        ASSERT(strstr(out, "\"completion\":\"virtual_supply\"") != NULL);
+        ASSERT(strstr(out, "\"completed_by\":null") != NULL);
+    } else {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    }
+#endif
+    chain_log_set_dir(NULL);
+}
+
+/* Adding 1/48 one frame at a time in float ends at 0.99999958, not 1.0.
+ * That left scaffolds one frame short with nothing able to add it. */
+TEST(test_scaffold_progress_counts_whole_frames) {
+    STATION_DECL(st);
+    int total = scaffold_units_total();
+    ASSERT_EQ_INT(total, (int)SCAFFOLD_MATERIAL_NEEDED);
+    float drifted = 0.0f;
+    for (int i = 0; i < total; i++) {
+        drifted += 1.0f / SCAFFOLD_MATERIAL_NEEDED;
+        st.scaffold_progress = scaffold_progress_for_units(scaffold_units_delivered(&st) + 1);
+    }
+    ASSERT(drifted < 1.0f); /* the old arithmetic */
+    ASSERT(st.scaffold_progress == 1.0f);
+    ASSERT_EQ_INT(scaffold_units_needed(&st), 0);
+    st.scaffold_progress = drifted;
+    ASSERT_EQ_INT(scaffold_units_delivered(&st), total);
+    ASSERT_EQ_INT(scaffold_units_needed(&st), 0);
+}
+
+TEST(test_a_scaffold_saved_with_drifted_progress_finishes) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_scaffold_drift", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    float drifted = 0.0f;
+    for (int i = 0; i < scaffold_units_total(); i++)
+        drifted += 1.0f / SCAFFOLD_MATERIAL_NEEDED;
+    st->scaffold_progress = drifted;
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FRAME;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!st->scaffold);
+    ASSERT(st->scaffold_progress == 1.0f);
+    chain_log_set_dir(NULL);
+}
+
+/* Consume `count` distinct frames into station 0's scaffold, recorded as
+ * delivered by `deliverer`. Player frames use the 88-byte form the sim
+ * emits, naming a player key derived from `salt`. */
+static bool outpost_emit_frames(world_t *w, int count, uint8_t deliverer, uint8_t salt) {
+    station_t *st = &w->stations[0];
+    for (int i = 0; i < count; i++) {
+        chain_payload_construction_player_t p;
+        memset(&p, 0, sizeof(p));
+        memset(p.deliverer_pubkey, (uint8_t)(salt ^ 0xA5), sizeof(p.deliverer_pubkey));
+        chain_payload_construction_t c;
+        memset(&c, 0, sizeof(c));
+        memset(c.cargo_pub, salt, sizeof(c.cargo_pub));
+        c.cargo_pub[0] = (uint8_t)i;
+        c.target_kind = CONSTRUCTION_TARGET_STATION;
+        c.module_index = 0xff;
+        c.module_type = 0xff;
+        c.commodity = COMMODITY_FRAME;
+        c.deliverer = deliverer;
+        c.contributed_units = 1.0f;
+        c.progress_after = scaffold_progress_for_units(i + 1);
+        p.base = c;
+        bool player = deliverer == CONSTRUCTION_DELIVERER_PLAYER;
+        if (chain_log_emit(w, st, CHAIN_EVT_CONSTRUCTION,
+                           player ? (const void *)&p : (const void *)&c,
+                           player ? (uint16_t)sizeof(p) : (uint16_t)sizeof(c)) == 0)
+            return false;
+    }
+    return true;
+}
+
+TEST(test_outpost_receipt_counts_only_player_delivered_frames) {
+#ifndef _WIN32
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_npc_frames", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    /* NPC haulers bring every frame but one; a player docks with the last.
+     * The completion says player_delivery, but the labor was not theirs. */
+    ASSERT(outpost_emit_frames(&w, needed - 1, CONSTRUCTION_DELIVERER_NPC, 0x51));
+    ASSERT(outpost_emit_frames(&w, 1, CONSTRUCTION_DELIVERER_PLAYER, 0x52));
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    char checkpoint[sizeof(dir) + 32];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2) {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    } else {
+        ASSERT_EQ_INT(status, 0);
+        ASSERT(strstr(out, "\"play_earned\":false") != NULL);
+        ASSERT(strstr(out, "\"completion\":\"player_delivery\"") != NULL);
+        char units[64];
+        snprintf(units, sizeof(units), "\"distinct_units\":%d", needed);
+        ASSERT(strstr(out, units) != NULL);
+        ASSERT(strstr(out, "\"player_units\":1,") != NULL);
+    }
+    chain_log_set_dir(NULL);
+#endif
+}
+
+TEST(test_outpost_founder_eligibility_is_fixed_at_planting) {
+#ifndef _WIN32
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_unverified_founder", TMP("clog"));
+    WORLD_DECL;
+    /* Planted without a verified player key; the key is registered by the
+     * time the outpost is commissioned, which must not matter. */
+    server_player_t *sp = outpost_setup_founded(&w, dir, false);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    ASSERT(outpost_emit_frames(&w, needed, CONSTRUCTION_DELIVERER_PLAYER, 0x61));
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    char checkpoint[sizeof(dir) + 32];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2) {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    } else {
+        ASSERT_EQ_INT(status, 0);
+        ASSERT(strstr(out, "\"founder_kind\":\"unregistered\"") != NULL);
+        ASSERT(strstr(out, "\"play_earned\":false") != NULL);
+    }
+    chain_log_set_dir(NULL);
+#endif
+}
+
+/* Replace the first occurrence of `from` in a file with `to`. */
+static bool outpost_rewrite(const char *path, const char *out_path, const char *from,
+                            const char *to) {
+    static char buf[1 << 16];
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t got = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[got] = '\0';
+    char *at = from ? strstr(buf, from) : buf + got;
+    if (!at) return false;
+    f = fopen(out_path, "wb");
+    if (!f) return false;
+    fwrite(buf, 1, (size_t)(at - buf), f);
+    fputs(to, f);
+    if (from) fputs(at + strlen(from), f);
+    fclose(f);
+    return true;
+}
+
+TEST(test_outpost_receipt_requires_the_published_root) {
+#ifndef _WIN32
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_root", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    ASSERT(outpost_emit_frames(&w, needed, CONSTRUCTION_DELIVERER_PLAYER, 0x71));
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    char checkpoint[sizeof(dir) + 32], root[65], args[1024];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2) {
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+        chain_log_set_dir(NULL);
+        return;
+    }
+    ASSERT_EQ_INT(status, 0);
+    ASSERT(strstr(out, "\"play_earned\":true") != NULL);
+    ASSERT(outpost_checkpoint_root(checkpoint, root));
+
+    /* No published root: a usage error. */
+    snprintf(args, sizeof(args), "--checkpoint=%s", checkpoint);
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 2);
+    /* A self-made checkpoint with a different root is refused. */
+    snprintf(args, sizeof(args), "--checkpoint=%s --expected-root=%064d", checkpoint, 0);
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 1);
+
+    /* Strict parsing: extra bytes, a second listing, or a spaced layout. */
+    char tampered[sizeof(dir) + 32];
+    snprintf(tampered, sizeof(tampered), "%s/tampered.json", dir);
+    snprintf(args, sizeof(args), "--checkpoint=%s --expected-root=%s", tampered, root);
+    ASSERT(outpost_rewrite(checkpoint, tampered, NULL, "{}"));
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 1);
+    ASSERT(outpost_rewrite(checkpoint, tampered, "\"station_count\":1,", "\"station_count\":2,"));
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 1);
+    ASSERT(outpost_rewrite(checkpoint, tampered, "\"stations\":[", "\"stations\": ["));
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 1);
+    ASSERT(outpost_rewrite(checkpoint, tampered, NULL, ""));
+    ASSERT_EQ_INT(outpost_receipt_args(st, args, out, sizeof(out)), 0);
+    chain_log_set_dir(NULL);
+#endif
+}
+
+TEST(test_outpost_receipt_rejects_a_second_commission) {
+#ifndef _WIN32
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s_outpost_twice", TMP("clog"));
+    WORLD_DECL;
+    server_player_t *sp = outpost_setup(&w, dir);
+    ASSERT(sp != NULL);
+    station_t *st = &w.stations[0];
+    int needed = (int)ceilf(SCAFFOLD_MATERIAL_NEEDED);
+    ASSERT(outpost_emit_frames(&w, needed, CONSTRUCTION_DELIVERER_PLAYER, 0x81));
+    st->scaffold_progress = 1.0f;
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    activate_outpost(&w, 0, OUTPOST_COMPLETION_PLAYER_DELIVERY, sp->pubkey);
+    char checkpoint[sizeof(dir) + 32];
+    snprintf(checkpoint, sizeof(checkpoint), "%s/checkpoint.json", dir);
+    static char out[1 << 15];
+    int status = outpost_receipt(st, checkpoint, true, out, sizeof(out));
+    if (status == -2)
+        TEST_WARN("checkpoint tools not built; skipping outpost receipt CLI check");
+    else
+        ASSERT_EQ_INT(status, 1);
+    chain_log_set_dir(NULL);
+#endif
+}
+
 void register_construction_modules_tests(void) {
     TEST_SECTION("\nModule construction:\n");
     RUN(test_module_build_material_types);
     RUN(test_module_construction_and_delivery);
     RUN(test_construction_consumes_manifest_units);
+    RUN(test_scaffold_delivery_names_verified_player);
     RUN(test_station_scaffold_manifest_batch_append_failure_is_inert);
+    RUN(test_outpost_player_delivery_commissions_a_play_earned_outpost);
+    RUN(test_outpost_virtual_supply_is_not_play_earned);
+    RUN(test_outpost_receipt_counts_only_player_delivered_frames);
+    RUN(test_outpost_founder_eligibility_is_fixed_at_planting);
+    RUN(test_outpost_receipt_requires_the_published_root);
+    RUN(test_outpost_receipt_rejects_a_second_commission);
+    RUN(test_scaffold_progress_counts_whole_frames);
+    RUN(test_a_scaffold_saved_with_drifted_progress_finishes);
     RUN(test_module_delivery_emits_construction_chain_event);
+    RUN(test_module_delivery_names_verified_player);
     RUN(test_module_manifest_batch_append_failure_is_inert);
     RUN(test_module_delivery_consumes_towed_manifest_pod);
     RUN(test_module_physical_delivery_append_failure_is_inert);

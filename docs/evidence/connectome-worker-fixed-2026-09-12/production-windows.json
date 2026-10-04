@@ -1,0 +1,52 @@
+{
+  "schema": "signal.connectome_production_windows.v1",
+  "measured_source": "3b3432a1b7d9d494d149fd13757194abae63da2c",
+  "study_manifest_sha256": "9262b877ac01710723c734c5f8851f7c5d3c5eee81fba9d99da5811034c4360f",
+  "analyzer_sha256": "92383cba9b71973bee3676a83ecb1b67502303de4c7257b92e87e19f30d753da",
+  "ticks": 216000,
+  "window_ticks": 36000,
+  "episodes": [
+    {
+      "seed": 2037,
+      "strategy": false,
+      "smelt_units": [
+        88,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "seed": 2037,
+      "strategy": true,
+      "smelt_units": [
+        110,
+        29,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "totals": {
+    "off": [
+      88,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "on": [
+      110,
+      29,
+      0,
+      0,
+      0,
+      0
+    ]
+  }
+}

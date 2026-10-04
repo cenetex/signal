@@ -1968,6 +1968,30 @@ TEST(test_ship_tow_excludes_hidden_station_fragment_forces) {
     ASSERT_EQ_FLOAT(a->vel.y, before.y, 0.001f);
 }
 
+TEST(test_asteroid_speed_is_capped) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        w.asteroids[i].active = false;
+
+    asteroid_t *a = &w.asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->radius = 8.0f;
+    a->ore = 1.0f;
+    a->max_ore = 1.0f;
+    a->hp = 8.0f;
+    a->max_hp = 8.0f;
+    a->pos = w.stations[0].pos;
+    a->vel = v2(900.0f, 900.0f);
+
+    sim_step_asteroid_dynamics(&w, SIM_DT);
+
+    ASSERT(a->active);
+    ASSERT(v2_len(a->vel) <= ASTEROID_MAX_SPEED + 0.5f);
+}
+
 static void setup_two_towed_fragment_prediction_world(world_t *w) {
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -2773,6 +2797,7 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_player_only_predicts_towed_pod_station_contact);
     RUN(test_station_vortex_marks_asteroid_motion_for_fast_replication);
     RUN(test_ship_tow_excludes_hidden_station_fragment_forces);
+    RUN(test_asteroid_speed_is_capped);
     RUN(test_player_only_predicts_towed_fragment_separation);
     RUN(test_player_only_predicts_towed_scaffold_motion);
     RUN(test_player_only_ship_asset_references_live_component);

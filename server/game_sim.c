@@ -40,6 +40,7 @@
 #include "station_policy.h"
 #include "gossip.h"
 #include "ship.h"
+#include "sim_scent.h"
 #include "sim_ai.h"
 #include "sim_autopilot.h"
 #include "signal_intelligence.h"
@@ -1485,23 +1486,27 @@ static bool cargo_unit_pub_nonzero(const cargo_unit_t *unit) {
     return unit && memcmp(unit->pub, zero, sizeof(zero)) != 0;
 }
 
+/* A player delivered these frames; `deliverer_pubkey` is the player's
+ * verified identity pubkey or all zeros. */
 static bool emit_station_construction_contributions(
     world_t *w, station_t *st, int station_idx,
     const cargo_unit_t *units, size_t unit_count,
-    float progress_before) {
-    if (!w || !st || !units || unit_count == 0 ||
+    float progress_before, const uint8_t deliverer_pubkey[32]) {
+    if (!w || !st || !units || !deliverer_pubkey || unit_count == 0 ||
         unit_count > CHAIN_LOG_BATCH_MAX_EVENTS) {
         return false;
     }
-    chain_payload_construction_t
-        payloads[CHAIN_LOG_BATCH_MAX_EVENTS];
+    chain_payload_construction_player_t
+        players[CHAIN_LOG_BATCH_MAX_EVENTS];
     chain_log_batch_event_t
         events[CHAIN_LOG_BATCH_MAX_EVENTS];
-    memset(payloads, 0, sizeof(payloads));
+    memset(players, 0, sizeof(players));
     memset(events, 0, sizeof(events));
     for (size_t i = 0; i < unit_count; i++) {
         if (!cargo_unit_pub_nonzero(&units[i])) return false;
-        chain_payload_construction_t *payload = &payloads[i];
+        memcpy(players[i].deliverer_pubkey, deliverer_pubkey,
+               sizeof(players[i].deliverer_pubkey));
+        chain_payload_construction_t *payload = &players[i].base;
         memcpy(payload->cargo_pub, units[i].pub,
                sizeof(payload->cargo_pub));
         payload->target_kind = CONSTRUCTION_TARGET_STATION;
@@ -1511,17 +1516,17 @@ static bool emit_station_construction_contributions(
         payload->module_index = 0xff;
         payload->module_type = 0xff;
         payload->commodity = COMMODITY_FRAME;
+        payload->deliverer = CONSTRUCTION_DELIVERER_PLAYER;
         payload->target_id =
             (station_idx >= 0) ? (uint64_t)station_idx : 0u;
         payload->contributed_units = 1.0f;
-        payload->progress_after = progress_before +
-            (float)(i + 1u) / SCAFFOLD_MATERIAL_NEEDED;
-        if (payload->progress_after > 1.0f)
-            payload->progress_after = 1.0f;
+        payload->progress_after = scaffold_progress_for_units(
+            (int)lroundf(progress_before * SCAFFOLD_MATERIAL_NEEDED) +
+            (int)i + 1);
         events[i] = (chain_log_batch_event_t){
             .type = CHAIN_EVT_CONSTRUCTION,
-            .payload = payload,
-            .payload_len = (uint16_t)sizeof(*payload),
+            .payload = &players[i],
+            .payload_len = (uint16_t)sizeof(players[i]),
         };
     }
     chain_log_append_result_t appended =
@@ -1539,10 +1544,17 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     if (!sp->docked) return;
     station_t *st = &w->stations[sp->current_station];
     if (!st->scaffold) return;
-    float needed_f =
-        SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
-    int needed = (int)ceilf(needed_f - 0.0001f);
-    if (needed <= 0) return;
+    int delivered_before = scaffold_units_delivered(st);
+    int needed = scaffold_units_needed(st);
+    if (needed <= 0) {
+        /* Every frame is in: a scaffold saved with drifted float progress
+         * finishes here. The frames were already delivered, so no one is
+         * named as the finisher. */
+        st->scaffold_progress = 1.0f;
+        activate_outpost(w, sp->current_station,
+                         OUTPOST_COMPLETION_PLAYER_DELIVERY, NULL);
+        return;
+    }
     if (needed > CHAIN_LOG_BATCH_MAX_EVENTS)
         needed = CHAIN_LOG_BATCH_MAX_EVENTS;
 
@@ -1582,9 +1594,11 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
             return;
         }
     }
+    uint8_t deliverer[32] = {0};
+    (void)server_player_copy_verified_pubkey(sp, deliverer);
     if (!emit_station_construction_contributions(
             w, st, sp->current_station, units,
-            (size_t)selected, st->scaffold_progress)) {
+            (size_t)selected, st->scaffold_progress, deliverer)) {
         cargo_store_cleanup(&staged_ship);
         return;
     }
@@ -1595,15 +1609,14 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     /* Loose/towed pods have no receipt sidecar. They cannot satisfy a
      * provenance-sensitive construction input and remain untouched. */
     ship_finished_sync(sp->ship, COMMODITY_FRAME);
-    st->scaffold_progress +=
-        (float)selected / SCAFFOLD_MATERIAL_NEEDED;
-    if (st->scaffold_progress > 1.0f)
-        st->scaffold_progress = 1.0f;
+    st->scaffold_progress =
+        scaffold_progress_for_units(delivered_before + selected);
     SIM_LOG("[sim] player %d delivered %d frames to scaffold %d (progress %.0f%%)\n",
             sp->id, selected, sp->current_station,
             st->scaffold_progress * 100.0f);
     if (st->scaffold_progress >= 1.0f) {
-        activate_outpost(w, sp->current_station);
+        activate_outpost(w, sp->current_station,
+                         OUTPOST_COMPLETION_PLAYER_DELIVERY, deliverer);
     }
 }
 
@@ -2804,7 +2817,8 @@ static ship_asset_t *world_ship_asset_free_slot(world_t *w) {
     }
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         ship_asset_t *asset = &w->ship_assets[i];
-        if (!asset->destroyed ||
+        if (asset->provenance == SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
+            !asset->destroyed ||
             asset->status != SHIP_ASSET_STATUS_DESTROYED ||
             asset->operator_kind != SHIP_ASSET_OPERATOR_NONE) {
             continue;
@@ -3288,7 +3302,8 @@ static bool ship_asset_player_can_reclaim_bound(const world_t *w,
 
 static bool ship_asset_assign_to_player(world_t *w, int player_slot,
                                         ship_asset_t *asset, int station_idx) {
-    if (!w || !asset || player_slot < 0 || player_slot >= MAX_PLAYERS)
+    if (!w || !asset || asset->provenance == SHIP_ASSET_PROVENANCE_FLY_PURCHASE ||
+        player_slot < 0 || player_slot >= MAX_PLAYERS)
         return false;
     server_player_t *sp = &w->players[player_slot];
     if (asset->destroyed || asset->status == SHIP_ASSET_STATUS_DESTROYED)
@@ -10599,7 +10614,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
              * Must run after the name is set (the name is part of the
              * derivation) and stays stable for the station's lifetime. */
             uint8_t founder_pubkey[32];
-            (void)server_player_copy_verified_pubkey(
+            bool founder_verified = server_player_copy_verified_pubkey(
                 sp, founder_pubkey);
             station_authority_init_outpost(
                 st, founder_pubkey, (uint64_t)(w->time * 128.0f));
@@ -10611,6 +10626,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             }
             chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
                                  "new outpost chain; no log events yet");
+            outpost_record_planted(w, st, slot, founder_verified);
             /* Outpost is born under construction — needs frames delivered
              * to activate. The towed relay seed becomes the station's
              * core relay (added below); the dock comes pre-stamped. */
@@ -11860,7 +11876,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                  * here — even if a different player later supplies the
                  * frames, the station's pubkey traces to the planner. */
                 uint8_t founder_pubkey[32];
-                (void)server_player_copy_verified_pubkey(
+                bool founder_verified = server_player_copy_verified_pubkey(
                     sp, founder_pubkey);
                 station_authority_init_outpost(
                     st, founder_pubkey,
@@ -11873,6 +11889,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 }
                 chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
                                      "planned outpost chain; no log events yet");
+                outpost_record_planted(w, st, slot, founder_verified);
                 st->radius = 0.0f;
                 st->dock_radius = 0.0f;
                 st->signal_range = 0.0f;
@@ -12318,7 +12335,7 @@ static void step_contracts(world_t *w, float dt) {
                 scaffold_needs = true;
                 break;
             }
-            if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
+            if (st->scaffold && c == COMMODITY_FRAME && scaffold_units_needed(st) > 0)
                 scaffold_needs = true;
 
             if (scaffold_needs) {
@@ -12329,7 +12346,7 @@ static void step_contracts(world_t *w, float dt) {
                     if (module_build_material(st->modules[m].type) != c) continue;
                     if (!module_is_fully_supplied(&st->modules[m])) { all_supplied = false; break; }
                 }
-                if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
+                if (st->scaffold && c == COMMODITY_FRAME && scaffold_units_needed(st) > 0)
                     all_supplied = false;
                 if (all_supplied) {
                     bool was_claimed =
@@ -12490,8 +12507,9 @@ static void step_contracts(world_t *w, float dt) {
 
         /* Priority 2: station scaffold needs frames (production slot) */
         if (!need.active && !has_production_contract && st->scaffold) {
-            float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
-            if (remaining > 0.5f) {
+            int remaining_units = scaffold_units_needed(st);
+            if (remaining_units > 0) {
+                float remaining = (float)remaining_units;
                 float policy_mult = station_policy_trade_price_multiplier(st, COMMODITY_FRAME);
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
@@ -16825,6 +16843,9 @@ enum {
 
 static void step_signal_field_decay(world_t *w) {
     if (!w) return;
+    /* Lay down this tick's physical traces before decaying the field, so a
+     * live source always wins against its own decay. */
+    scent_step(w);
     if (w->signal_field_decay_tick == 0u) {
         w->signal_field_decay_tick = w->tick;
         return;

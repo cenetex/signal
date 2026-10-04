@@ -15,6 +15,10 @@ Draft protocol. The existing dedicated server (`signal_server`),
 document extends them toward P2P quorum signing and externally anchored
 segments that can be verified without trusting one dedicated server.
 
+Checkpoint roots v1 are implemented over the existing log format: see
+[Checkpoints (v1)](#checkpoints-v1). `SEGMENT_COMMIT`, the 216-byte header and
+state roots remain proposals.
+
 ## Design principles
 
 1. **Settlement owns durable economic state.** Asset ownership, credit
@@ -330,6 +334,109 @@ When a `TRANSFER_CARGO` crosses station zones:
    set to the source event's id.
 3. For P2P: a quorum of peers in the source station's signal cone signs the
    outgoing event; a quorum in the destination's cone signs the incoming event.
+
+## Checkpoints (v1)
+
+A checkpoint commits to every station's verified history at one moment. It
+needs no log format change. The existing chain already links each header to
+the previous one, so a station's last header hash commits to its final
+segment. A clean `event_id = 1` restart starts a new segment that the head
+does not cover, and real logs contain dozens of them. Each station's leaf
+therefore also commits to a SHA-256 of the complete verified log.
+
+`shared/signal_checkpoint.h` defines the bytes:
+
+```
+leaf  = SHA-256(0x00 || "SIGNAL:CHECKPOINT:LEAF:v1" || station_pubkey
+                || u64le total_events || u64le segment_count
+                || u64le tail_event_id || head_hash || log_sha256
+                || u64le log_bytes)
+node  = SHA-256(0x01 || left || right)    an odd node moves up unchanged
+root  = SHA-256("SIGNAL:CHECKPOINT:v1" || prev_checkpoint_root
+                || u64le station_count || stations_root)
+```
+
+Leaves are sorted by station pubkey. Each checkpoint names the previous
+checkpoint root (zero for the first), so checkpoints form a chain.
+
+`chain_log_verify_with_pubkey` reports `tail_hash`, `valid_bytes` and
+`valid_bytes_sha256` from the same pass that checks signatures and linkage.
+A log therefore cannot change between being verified and being committed.
+
+```
+make checkpoint                          # all chain/*.log
+make checkpoint CHECKPOINT_PREV=<root>   # chain to the previous checkpoint
+```
+
+`signal_checkpoint` fails closed: if one log fails verification, it emits no
+checkpoint. Its JSON output has no clock, so anyone with the same logs
+computes the same root. Each station carries an inclusion proof, so one
+station's history can be shown to be in a checkpoint without the other logs.
+
+The root feeds `scripts/build-rati-anchor-batch.mjs
+--settlement-checkpoint-root`, and from there OpenTimestamps and Bitcoin.
+Forge mint seeds commit to it (`atimics/forge`, `docs/SPEC.md`).
+
+### Outpost receipts
+
+When an outpost is planted, it signs `CHAIN_EVT_OUTPOST_PLANTED` as the
+first event in its own log. The payload names the founder and whether the
+founder was a verified player at that moment. Frontier founders are synthetic
+keys, so they are recorded as unregistered. This choice is fixed at planting
+and does not depend on the player registry later.
+
+Each `CONSTRUCTION` event for a station scaffold or module records who
+delivered the unit: a player, or an NPC hauler or the station's own stock.
+Logs written before this field record 0 (unknown), which never counts as
+player labor.
+
+A player's delivery also names the player. Its payload is 88 bytes: the
+56-byte construction payload followed by the player's verified identity
+pubkey (`chain_payload_construction_player_t`). The pubkey is zero when the
+player had no verified identity. Every other delivery keeps the 56-byte form,
+so readers tell the two apart by payload length. This is the event Forge
+mints play supply for: one player-delivered frame, to the wallet the named
+identity has linked with a RATi link that both the identity and the wallet
+signed (`shared/wallet_link.h`, `signal_wallet_link`).
+
+When the scaffold completes, the outpost signs
+`CHAIN_EVT_OUTPOST_COMMISSIONED`. The payload records the founder, the player
+whose delivery completed the build (if any), and how the build completed: a
+player's delivery, an NPC hauler, or frontier virtual supply.
+
+```
+signal_outpost_receipt --checkpoint=<checkpoint.json> \
+  --expected-root=<published checkpoint root> chain/<outpost>.log
+```
+
+The tool verifies the outpost's log and proves that those exact bytes are the
+log committed in the checkpoint. The checkpoint's root must equal
+`--expected-root`, a root the caller got from a published source. A
+checkpoint file on its own proves nothing, because anyone can build one.
+
+The checkpoint is parsed strictly. It must match `signal_checkpoint` output
+exactly, list the station once, and give the same figures as the log.
+
+The log must hold exactly one commissioning event. Only the log segment that
+contains it counts, so a restarted log cannot carry frames or a planting
+record across a reset.
+
+The receipt is `play_earned` when all three hold:
+
+- the planting record names a verified player founder;
+- a player's delivery completed the outpost;
+- at least `SCAFFOLD_MATERIAL_NEEDED` distinct units delivered by players
+  were consumed into the outpost before it was commissioned.
+
+A receipt against a checkpoint taken before the log changed fails.
+
+Forge uses this receipt to decide who may register a token family: play, not
+hash power, grants issuance.
+
+v1 commits to history, not to derived state. A state root over
+settlement-owned state and `SEGMENT_COMMIT` events are later work. A checkpoint
+is as trustworthy as the station signatures under it: one operator today, a
+quorum once quorum certificates ship.
 
 ## Forward-apply semantics
 

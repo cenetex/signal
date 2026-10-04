@@ -1,0 +1,238 @@
+{
+  "pairs": [
+    {
+      "seed": 2037,
+      "delta_on_minus_off": {
+        "smelt_output_units": 51,
+        "delivered_units": 0,
+        "contract_completions": 0,
+        "craft_events": 0,
+        "construction_contributions": 0,
+        "destroyed_ships": 3,
+        "observed_hull_loss": 166.308395386,
+        "distance": -71967.84728228702,
+        "active_ticks": -470821,
+        "travel_ticks": -65277,
+        "docked_ticks": 0,
+        "idle_ticks": -115876,
+        "towing_ticks": 47901
+      }
+    }
+  ],
+  "totals": {
+    "smelt_output_units": {
+      "off": 88,
+      "on": 139,
+      "median_delta": 51,
+      "min_delta": 51,
+      "max_delta": 51,
+      "higher": 1,
+      "equal": 0,
+      "lower": 0
+    },
+    "delivered_units": {
+      "off": 0,
+      "on": 0,
+      "median_delta": 0,
+      "min_delta": 0,
+      "max_delta": 0,
+      "higher": 0,
+      "equal": 1,
+      "lower": 0
+    },
+    "contract_completions": {
+      "off": 0,
+      "on": 0,
+      "median_delta": 0,
+      "min_delta": 0,
+      "max_delta": 0,
+      "higher": 0,
+      "equal": 1,
+      "lower": 0
+    },
+    "craft_events": {
+      "off": 0,
+      "on": 0,
+      "median_delta": 0,
+      "min_delta": 0,
+      "max_delta": 0,
+      "higher": 0,
+      "equal": 1,
+      "lower": 0
+    },
+    "construction_contributions": {
+      "off": 0,
+      "on": 0,
+      "median_delta": 0,
+      "min_delta": 0,
+      "max_delta": 0,
+      "higher": 0,
+      "equal": 1,
+      "lower": 0
+    },
+    "destroyed_ships": {
+      "off": 0,
+      "on": 3,
+      "median_delta": 3,
+      "min_delta": 3,
+      "max_delta": 3,
+      "higher": 1,
+      "equal": 0,
+      "lower": 0
+    },
+    "observed_hull_loss": {
+      "off": 43.691604614,
+      "on": 210.0,
+      "median_delta": 166.308395386,
+      "min_delta": 166.308395386,
+      "max_delta": 166.308395386,
+      "higher": 1,
+      "equal": 0,
+      "lower": 0
+    },
+    "distance": {
+      "off": 333470.789367237,
+      "on": 261502.94208495,
+      "median_delta": -71967.84728228702,
+      "min_delta": -71967.84728228702,
+      "max_delta": -71967.84728228702,
+      "higher": 0,
+      "equal": 0,
+      "lower": 1
+    },
+    "active_ticks": {
+      "off": 1080000,
+      "on": 609179,
+      "median_delta": -470821,
+      "min_delta": -470821,
+      "max_delta": -470821,
+      "higher": 0,
+      "equal": 0,
+      "lower": 1
+    },
+    "travel_ticks": {
+      "off": 269829,
+      "on": 204552,
+      "median_delta": -65277,
+      "min_delta": -65277,
+      "max_delta": -65277,
+      "higher": 0,
+      "equal": 0,
+      "lower": 1
+    },
+    "docked_ticks": {
+      "off": 1795,
+      "on": 1795,
+      "median_delta": 0,
+      "min_delta": 0,
+      "max_delta": 0,
+      "higher": 0,
+      "equal": 1,
+      "lower": 0
+    },
+    "idle_ticks": {
+      "off": 433692,
+      "on": 317816,
+      "median_delta": -115876,
+      "min_delta": -115876,
+      "max_delta": -115876,
+      "higher": 0,
+      "equal": 0,
+      "lower": 1
+    },
+    "towing_ticks": {
+      "off": 8354,
+      "on": 56255,
+      "median_delta": 47901,
+      "min_delta": 47901,
+      "max_delta": 47901,
+      "higher": 1,
+      "equal": 0,
+      "lower": 0
+    }
+  },
+  "episodes": [
+    {
+      "schema": 1,
+      "seed": 2037,
+      "ticks": 216000,
+      "strategy": false,
+      "initial_rng": 2037,
+      "chain_verified": true,
+      "smelt_output_units": 88,
+      "craft_events": 0,
+      "construction_contributions": 0,
+      "delivered_units": 0,
+      "destroyed_ships": 0,
+      "contract_completions": 0,
+      "distance": 333470.789367237,
+      "observed_hull_loss": 43.691604614,
+      "active_ticks": 1080000,
+      "travel_ticks": 269829,
+      "docked_ticks": 1795,
+      "idle_ticks": 433692,
+      "towing_ticks": 8354,
+      "event_capacity_ticks": 0,
+      "brains": {
+        "fast_neurons": 4564,
+        "deep_neurons": 0,
+        "connectome_steps": 6469230,
+        "deep_promotions": 0,
+        "hnn_backend": "builtin-radix2",
+        "flight_builtin_available": true,
+        "flight_inferences": 0,
+        "contract_loaded": false,
+        "contract_inferences": 0,
+        "worker_loaded": true,
+        "worker_inferences": 0,
+        "worker_decisions": 0,
+        "worker_teacher_decisions": 0
+      },
+      "active_at_end": 5,
+      "strategy_changes": 0,
+      "connectome_checksum": "fd86edb61fe099a7"
+    },
+    {
+      "schema": 1,
+      "seed": 2037,
+      "ticks": 216000,
+      "strategy": true,
+      "initial_rng": 2037,
+      "chain_verified": true,
+      "smelt_output_units": 139,
+      "craft_events": 0,
+      "construction_contributions": 0,
+      "delivered_units": 0,
+      "destroyed_ships": 3,
+      "contract_completions": 0,
+      "distance": 261502.94208495,
+      "observed_hull_loss": 210.0,
+      "active_ticks": 609179,
+      "travel_ticks": 204552,
+      "docked_ticks": 1795,
+      "idle_ticks": 317816,
+      "towing_ticks": 56255,
+      "event_capacity_ticks": 0,
+      "brains": {
+        "fast_neurons": 4564,
+        "deep_neurons": 0,
+        "connectome_steps": 6469230,
+        "deep_promotions": 0,
+        "hnn_backend": "builtin-radix2",
+        "flight_builtin_available": true,
+        "flight_inferences": 0,
+        "contract_loaded": false,
+        "contract_inferences": 0,
+        "worker_loaded": true,
+        "worker_inferences": 0,
+        "worker_decisions": 0,
+        "worker_teacher_decisions": 0
+      },
+      "active_at_end": 2,
+      "strategy_changes": 1118,
+      "connectome_checksum": "824f538d6e9371db"
+    }
+  ],
+  "repeat_seed": 2037,
+  "repeat_exact": true
+}

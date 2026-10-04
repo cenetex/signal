@@ -49,7 +49,22 @@ const char *signal_field_kind_label(signal_field_kind_t kind) {
     case SIGNAL_FIELD_KIND_PROOF:    return "proof";
     case SIGNAL_FIELD_KIND_HOLOGRAM: return "hologram";
     case SIGNAL_FIELD_KIND_RISK:     return "risk";
+    case SIGNAL_FIELD_KIND_ORE_SCENT:  return "ore-scent";
+    case SIGNAL_FIELD_KIND_CARGO_WAKE: return "cargo-wake";
     default:                         return "?";
+    }
+}
+
+float signal_field_kind_half_life_scale(signal_field_kind_t kind) {
+    switch (kind) {
+    /* Rocks do not move, so their scent should outlast a fly's attention
+     * span -- long enough to work a patch. It still fades once the patch
+     * is mined out, because emission stops when the ore does. */
+    case SIGNAL_FIELD_KIND_ORE_SCENT:  return 4.0f;
+    /* A wake is only worth anything while it is fresh. That is what makes
+     * running down a laden hauler a chase instead of a lookup. */
+    case SIGNAL_FIELD_KIND_CARGO_WAKE: return 0.25f;
+    default:                           return 1.0f;
     }
 }
 
@@ -143,8 +158,12 @@ void signal_field_decay(signal_field_t *field,
             uint32_t last = cell->last_tick[kind];
             if (current_tick <= last) continue;
             uint32_t elapsed = current_tick - last;
+            float scale =
+                signal_field_kind_half_life_scale((signal_field_kind_t)kind);
+            uint32_t hl = (uint32_t)((float)half_life_ticks * scale);
+            if (hl == 0) hl = 1;
             cell->strength[kind] =
-                s * signal_field_decay_multiplier(elapsed, half_life_ticks);
+                s * signal_field_decay_multiplier(elapsed, hl);
             cell->last_tick[kind] = current_tick;
             if (cell->strength[kind] <= SIGNAL_FIELD_EMPTY_EPSILON) {
                 cell->strength[kind] = 0.0f;

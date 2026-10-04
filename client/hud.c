@@ -1864,7 +1864,21 @@ static void hud_npc_label(const npc_ship_t *npc, int idx, char *out, size_t cap)
         snprintf(out, cap, "NPC --");
         return;
     }
-    /* Runtime slot is presentation only; no bearer-derived name is shown. */
+    /* A purchased fly worker carries its public asset id, the same #NN the
+     * workers page shows, so its owner can find it in the shared world. */
+    uint64_t worker_id = client_npc_worker_id(idx);
+    if (worker_id != 0) {
+        /* Same callsign format players get, derived from the worker's stable
+         * asset id, so a sponsored miner is recognizable in-world. */
+        uint8_t seed[MINING_PUBKEY_BYTES];
+        for (size_t i = 0; i < sizeof(seed); i++)
+            seed[i] = (uint8_t)(worker_id >> ((i % 8u) * 8u));
+        char callsign[8];
+        mining_callsign_from_pubkey(seed, callsign);
+        snprintf(out, cap, "%.7s", callsign);
+        return;
+    }
+    /* Everything else: runtime slot is presentation only. */
     snprintf(out, cap, "%s %02d", hud_npc_custody_role_label(npc->role), idx);
 }
 

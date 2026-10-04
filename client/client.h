@@ -316,6 +316,7 @@ typedef struct {
     float tint_g;
     float tint_b;
     int home_station;
+    uint64_t worker_id; /* public fly-worker asset id; 0 = not a purchased worker */
 } client_npc_render_state_t;
 
 typedef struct {

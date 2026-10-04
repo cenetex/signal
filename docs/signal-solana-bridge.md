@@ -41,6 +41,28 @@ same mnemonic into their Solana wallet. Same seed, different keys.
 wallet. Most players want the opposite: bring their existing wallet to the
 game. Also, Signal currently uses raw Ed25519 keypairs, not BIP39.
 
+> **Update (2026-09): the link is the RATi link, signed by both keys.** The
+> ceremony below has the identity key sign a server challenge that does not
+> name the wallet, so only the server can vouch for the pairing. It was never
+> built. Signal now uses the RATi link that every RATi app shares (Forge
+> `docs/rati-link.md`; `shared/wallet_link.h`; the `signal_wallet_link`
+> tool). It is one readable message:
+>
+> ```text
+> RATi link v1
+> App: signal
+> Identity: <base58 identity key>
+> Wallet: <base58 wallet>
+> Sequence: <unix seconds>
+> This links the identity to the wallet. It does not authorize a transaction.
+> ```
+>
+> The identity key and the wallet (for example with Phantom's
+> `signMessage`) both sign those bytes, and anyone, including a Solana
+> program, can check both signatures. A higher sequence replaces an older
+> link. Forge's `LinkWallet` uses it to route play supply; the furnace flow
+> below should use it too.
+
 ## Chosen design: Option B with extensions
 
 The player links their Solana wallet to their Signal identity once. After

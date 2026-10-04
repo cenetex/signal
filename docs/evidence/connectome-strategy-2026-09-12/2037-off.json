@@ -1,0 +1,8 @@
+{
+  "schema": 1, "seed": 2037, "ticks": 36000, "strategy": false, "initial_rng": 2037,
+  "chain_verified": true, "smelt_output_units": 88, "craft_events": 0, "construction_contributions": 0,
+  "delivered_units": 0, "destroyed_ships": 0, "contract_completions": 0,
+  "distance": 44471.290812392, "observed_hull_loss": 43.691604614,
+  "active_ticks": 180000, "travel_ticks": 54346, "docked_ticks": 1795, "idle_ticks": 73210, "towing_ticks": 5553, "event_capacity_ticks": 0,
+  "active_at_end": 5, "strategy_changes": 0, "connectome_checksum": "a056ca3ce8a90106"
+}

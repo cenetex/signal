@@ -11,6 +11,11 @@ RTC_PROXY=${RTC_GATEWAY_PROXY:-http://127.0.0.1:${SERVER_PORT}}
 
 mkdir -p "$DATA_DIR" "$DATA_DIR/saves" "$DATA_DIR/stations" "$DATA_DIR/chain"
 
+if [ "${SIGNAL_FLY_SHOP_ENABLED:-0}" = "1" ]; then
+    SIGNAL_FLY_SHOP_KEY=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')
+    export SIGNAL_FLY_SHOP_KEY
+fi
+
 cleanup() {
     [ -n "${GATEWAY_PID:-}" ] && kill "$GATEWAY_PID" 2>/dev/null || true
     [ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null || true

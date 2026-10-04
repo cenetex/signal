@@ -16,7 +16,7 @@ Status: candidate work is in progress. Publish after the acceptance checks in
 
 ## Downloads and compatibility
 
-The candidate uses protocol 8, world save 85, and player save PLY8. Update the
+The candidate uses protocol 8, world save 87, and player save PLY8. Update the
 server and clients together. Save readers support the documented older formats.
 
 The media pack carries file hashes and source records. Native and web packages

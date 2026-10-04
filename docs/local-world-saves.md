@@ -25,7 +25,7 @@ generation selects its authenticated previous generation. An invalid pair
 leaves the files available for recovery and shows a recovery message. Storage
 write failures keep the session running and show a retry notice.
 
-World format v85 records the verified borrower of each station loan. Player
+World format v87 records the verified borrower of each station loan. Player
 format PLY8 records the exact hull and local guidance flags. A returning
 borrower resumes the same hull, upgrades, and cargo. Another player can use a
 free station loaner. Station ownership remains attached to the borrowed hull.
