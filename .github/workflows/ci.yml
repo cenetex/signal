@@ -69,6 +69,7 @@ jobs:
         run: |
           python3 scripts/check_ci_workflow_contract.py
           python3 scripts/test_check_ci_workflow_contract.py
+          python3 scripts/test_valgrind_guard.py
       - name: Run path and aggregate mutation tests
         run: |
           python3 scripts/test_compare_connectome_strategy.py
