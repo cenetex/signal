@@ -237,7 +237,7 @@ static int neural_hnn_best_allowed(
     return best;
 }
 
-static void neural_print_json_float(float value) {
+static void neural_print_json_float(double value) {
     if (isfinite(value)) printf("%.9g", value);
     else printf("null");
 }

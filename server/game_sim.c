@@ -14478,7 +14478,7 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
             /* Eject in a deterministic direction based on time so successive
              * builds spread around the station instead of stacking. Push
              * hard enough to clear the inner ring quickly. */
-            float angle = w->time * 0.7f; /* slow rotation through directions */
+            float angle = (float)(w->time * 0.7f); /* slow rotation through directions */
             vec2 dir = v2_from_angle(angle);
             nascent->pos = v2_add(st->pos, v2_scale(dir, 12.0f));
             nascent->vel = v2_scale(dir, 90.0f);

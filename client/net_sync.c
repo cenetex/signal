@@ -4056,8 +4056,8 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
 }
 
 void on_remote_world_time(float server_time) {
-    float delta = server_time - g.world.time;
-    if (fabsf(delta) > 2.0f) {
+    double delta = (double)server_time - g.world.time;
+    if (fabs(delta) > 2.0) {
         g.world.time = server_time;
     } else {
         g.world.time += delta * 0.10f;
