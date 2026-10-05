@@ -2385,7 +2385,7 @@ static void render_world(void) {
             const station_module_t *tm = &tst->modules[g.target_module];
             vec2 mp = module_world_pos_ring(tst, tm->ring, tm->slot);
             /* Pulsing highlight ring around targeted module */
-            float tp = 0.6f + 0.4f * sinf(g.world.time * 5.0f);
+            float tp = 0.6f + 0.4f * sinf((float)g.world.time * 5.0f);
             draw_circle_outline(mp, 50.0f, 20, 0.3f, 1.0f, 0.7f, tp * 0.7f);
             draw_circle_outline(mp, 52.0f, 20, 0.3f, 1.0f, 0.7f, tp * 0.3f);
             /* Tractor line from ship to target */

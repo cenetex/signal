@@ -255,7 +255,7 @@ typedef struct {
     float tractor_press_time;  /* client monotonic time when Space was pressed */
     bool tractor_press_active;
     bool tractor_release_tap_pending;
-    float self_destruct_hold_time; /* world time when X press began; 0 = not held */
+    double self_destruct_hold_time; /* world time when X press began; 0 = not held */
     bool brake_stop_latched;   /* S/Down hold began while moving; do not reverse */
     bool reverse_thrust_active; /* S/Down hold began while stopped */
 } input_state_t;
@@ -630,7 +630,7 @@ typedef struct {
      * until the server-created planned outpost shows up in reticle
      * targets. Without this, the user has to press B twice — once to
      * create, once to actually enter plan mode after the ghost arrives. */
-    float plan_mode_grace_until;
+    double plan_mode_grace_until;
     /* Lock effect: flash/pulse at the position where a planned outpost
      * is locked by its first placement plan. */
     float outpost_lock_timer;

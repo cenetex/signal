@@ -933,11 +933,11 @@ TEST(test_asteroid_pair_plan_save_load_phase_continuity) {
     ASSERT(loaded != NULL);
     world_reset(original);
 
-    /* world.tick is reconstructed from persisted time. Pick the final
+    /* world.tick is persisted canonically. Pick the final
      * 120 Hz tick of a four-tick pair epoch, then prove load and the next
      * tick retain the same phase transition. */
     original->tick = 39;
-    original->time = (float)original->tick * SIM_DT;
+    original->time = world_time_from_tick(original->tick);
     spatial_grid_build(original);
     asteroid_pair_plan_t before;
     ASSERT(asteroid_pair_plan_build(original, &before));
@@ -954,7 +954,7 @@ TEST(test_asteroid_pair_plan_save_load_phase_continuity) {
     ASSERT_EQ_INT(after_load.epoch, before.epoch);
 
     loaded->tick++;
-    loaded->time += SIM_DT;
+    loaded->time = world_time_from_tick(loaded->tick);
     spatial_grid_build(loaded);
     asteroid_pair_plan_t next_epoch;
     ASSERT(asteroid_pair_plan_build(loaded, &next_epoch));
@@ -3192,7 +3192,8 @@ TEST(test_v81_cargo_pod_player_slot_migrates_to_bound_quarantine) {
              * Fresh worlds have two starter pods, so +80 bytes.
              * v84: +4B empty durable payout-journal count.
              * v85: +4B empty FLY purchase count. */
-/* v87 adds a 33-byte borrower principal per durable hull. */
+/* v87 adds a 33-byte borrower principal per durable hull.
+ * v88 replaces four-byte float time with four-byte uint32 tick (same size). */
 #define EXPECTED_SAVE_SIZE 851710
 
 TEST(test_save_file_size_stable) {
@@ -3216,23 +3217,24 @@ TEST(test_save_header_golden_bytes) {
     WORLD_DECL;
     w.rng = 2037u;  /* default seed */
     world_reset(&w);
-    w.time = 0.0f;
+    w.tick = 123u;
+    w.time = -1.0; /* derived view must never override the saved tick */
     w.field_spawn_timer = 0.0f;
     ASSERT(world_save(&w, TMP("test_header.sav")));
     FILE *f = fopen(TMP("test_header.sav"), "rb");
     ASSERT(f != NULL);
-    uint32_t magic, version, rng;
-    float time_val, spawn_timer;
+    uint32_t magic, version, rng, tick;
+    float spawn_timer;
     ASSERT_EQ_INT((int)fread(&magic,       4, 1, f), 1);
     ASSERT_EQ_INT((int)fread(&version,     4, 1, f), 1);
     ASSERT_EQ_INT((int)fread(&rng,         4, 1, f), 1);
-    ASSERT_EQ_INT((int)fread(&time_val,    4, 1, f), 1);
+    ASSERT_EQ_INT((int)fread(&tick,        4, 1, f), 1);
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 87);
+    ASSERT_EQ_INT((int)version, 88);
     ASSERT(rng != 0);  /* seed is set */
-    ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
+    ASSERT_EQ_INT(tick, 123u);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
     remove(TMP("test_header.sav"));
 }
@@ -4334,6 +4336,8 @@ TEST(test_world_load_rejects_nonfinite_time_and_station_count) {
     world_reset(world);
 
     ASSERT(world_save(world, path));
+    /* v87 has the same layout as v88 except for the clock field. */
+    ASSERT(test_patch_file_u32(path, 4, 87u));
     ASSERT(test_patch_file_u32(
         path, 12, UINT32_C(0x7fc00000)));
     ASSERT(test_rewrite_crc32_trailer(path));
@@ -4345,6 +4349,90 @@ TEST(test_world_load_rejects_nonfinite_time_and_station_count) {
     ASSERT(test_rewrite_crc32_trailer(path));
     ASSERT(test_world_load_rejected_file(path));
 
+    remove(path);
+}
+
+TEST(test_world_clock_crosses_float32_freeze_and_roundtrips) {
+    const char *path = TMP("test_clock_freeze.sav");
+    WORLD_HEAP world = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(world && loaded);
+    world_reset(world);
+    world->tick = 31457280u - 2u; /* 2^18 seconds at 120 Hz */
+    world->time = (double)world->tick / 120.0;
+    for (int i = 0; i < 6; i++) {
+        double before = world->time;
+        uint32_t tick_before = world->tick;
+        world_sim_step(world, SIM_DT);
+        ASSERT(world->tick == tick_before + 1u);
+        ASSERT(world->time > before);
+        ASSERT(fabs((world->time - before) - 1.0 / 120.0) < 1e-9);
+        ASSERT(world->time == (double)world->tick / 120.0);
+    }
+    ASSERT(world->time > 262144.0);
+    ASSERT(world_save(world, path));
+    ASSERT(world_load(loaded, path));
+    ASSERT(loaded->tick == world->tick);
+    ASSERT(loaded->time == world->time);
+    double before = loaded->time;
+    world_sim_step(loaded, SIM_DT);
+    ASSERT(loaded->tick == world->tick + 1u);
+    ASSERT(loaded->time > before);
+    remove(path);
+}
+
+TEST(test_world_clock_tick_is_canonical_across_save_load) {
+    const char *path = TMP("test_clock_canonical.sav");
+    WORLD_HEAP world = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(world && loaded);
+    world_reset(world);
+    const uint32_t ticks[] = {0u, 39458827u, UINT32_MAX - 1u, UINT32_MAX};
+    for (size_t i = 0; i < sizeof(ticks) / sizeof(ticks[0]); i++) {
+        world->tick = ticks[i];
+        world->time = 262144.0; /* stale/frozen cache is not a save authority */
+        ASSERT(world_save(world, path));
+        ASSERT(world_load(loaded, path));
+        ASSERT(loaded->tick == ticks[i]);
+        ASSERT(loaded->time == (double)ticks[i] / 120.0);
+        if (ticks[i] != UINT32_MAX) {
+            double before = loaded->time;
+            world_sim_step(loaded, SIM_DT);
+            ASSERT(loaded->tick == ticks[i] + 1u);
+            ASSERT(fabs((loaded->time - before) - 1.0 / 120.0) < 1e-8);
+        }
+    }
+    remove(path);
+}
+
+TEST(test_world_clock_migrates_frozen_legacy_save) {
+    const char *path = TMP("test_clock_legacy.sav");
+    WORLD_HEAP world = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(world && loaded);
+    world_reset(world);
+    world->tick = 39458827u; /* true elapsed tick is absent from legacy disk */
+    ASSERT(world_save(world, path));
+    /* v87 -> v88 changed only the meaning of this four-byte header field.
+     * Build a CRC-valid legacy file whose float accumulator already froze. */
+    float frozen_time = 262144.0f;
+    uint32_t frozen_bits;
+    memcpy(&frozen_bits, &frozen_time, sizeof(frozen_bits));
+    ASSERT(test_patch_file_u32(path, 4, 87u));
+    ASSERT(test_patch_file_u32(path, 12, frozen_bits));
+    ASSERT(test_rewrite_crc32_trailer(path));
+    ASSERT(world_load(loaded, path));
+    /* No guessed recovery: migrate the last recorded time, then resume. */
+    ASSERT(loaded->tick == 31457280u);
+    ASSERT(loaded->tick < world->tick);
+    ASSERT(loaded->time == 262144.0);
+    world_sim_step(loaded, SIM_DT);
+    ASSERT(loaded->tick == 31457281u);
+    ASSERT(loaded->time > 262144.0);
+    ASSERT(world_save(loaded, path));
+    ASSERT(world_load(world, path));
+    ASSERT(world->tick == loaded->tick);
+    ASSERT(world->time == loaded->time);
     remove(path);
 }
 
@@ -4419,6 +4507,9 @@ TEST(test_world_save_load_preserves_payout_replay_barrier) {
 
 void register_save_persistence_tests(void) {
     TEST_SECTION("\nPersistence tests:\n");
+    RUN(test_world_clock_crosses_float32_freeze_and_roundtrips);
+    RUN(test_world_clock_tick_is_canonical_across_save_load);
+    RUN(test_world_clock_migrates_frozen_legacy_save);
     RUN(test_player_save_load_roundtrip);
     RUN(test_world_save_load_preserves_stations);
     RUN(test_world_save_load_preserves_station_factions);

@@ -6450,7 +6450,8 @@ static inline void server_emit_world_snapshot_for_player(
         (uint32_t)(w->tick - sp->replication->world_time_last_sent_tick) >=
             WORLD_TIME_REPEAT_TICKS) {
         scratch->world_time[0] = NET_MSG_WORLD_TIME;
-        write_f32_le(&scratch->world_time[1], w->time);
+        /* Wire time remains a float presentation hint; tick is authoritative. */
+        write_f32_le(&scratch->world_time[1], (float)w->time);
         send(send_user, scratch->world_time, (int)sizeof(scratch->world_time));
         sp->replication->world_time_sent = true;
         sp->replication->world_time_last_sent_tick = w->tick;

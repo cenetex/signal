@@ -33,7 +33,8 @@ TEST(test_local_save_restart_restores_world_player_and_currency) {
     ASSERT(local_test_authenticate(&w, 0, 3));
     ASSERT(local_save_restore_player(save, &w, 0));
     player_seed_credits(&w.players[0], &w);
-    w.time = 123.0f;
+    w.tick = 123u * 120u;
+    w.time = world_time_from_tick(w.tick);
     w.players[0].ship->hull = 42.0f;
     uint32_t ship_id = w.players[0].ship_asset_id;
     ledger_earn_by_pubkey(&w.stations[0], local_test_pubkey, 200.0f);
@@ -87,11 +88,13 @@ TEST(test_local_save_recovers_previous_complete_generation) {
     ASSERT(save != NULL);
     ASSERT(local_test_authenticate(&w, 0, 5));
     ASSERT(local_save_restore_player(save, &w, 0));
-    w.time = 10.0f;
+    w.tick = 10u * 120u;
+    w.time = world_time_from_tick(w.tick);
     w.players[0].ship->hull = 33.0f;
     client_progress_restore_local(0x80070023u);
     ASSERT(local_save_request(save, &w, true));
-    w.time = 20.0f;
+    w.tick = 20u * 120u;
+    w.time = world_time_from_tick(w.tick);
     w.players[0].ship->hull = 66.0f;
     client_progress_restore_local(0x803f01ffu);
     ASSERT(local_save_request(save, &w, true));

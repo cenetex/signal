@@ -1001,7 +1001,8 @@ void signal_authoritative_state_digest(
     digest_u32(&ctx, world->rng);
     digest_u32(&ctx, world->belt_seed);
     digest_u32(&ctx, world->world_seq);
-    digest_float(&ctx, world->time);
+    /* Preserve the digest encoding; the full canonical tick is hashed below. */
+    digest_float(&ctx, (float)world->time);
     digest_u32(&ctx, world->tick);
     digest_float(&ctx, world->field_spawn_timer);
     digest_float(&ctx, world->gravity_accumulator);

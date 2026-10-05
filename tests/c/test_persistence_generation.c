@@ -53,7 +53,8 @@ static bool test_prepare_generation_world(
     float credits) {
     if (!world || !token) return false;
     world_reset(world);
-    world->time = world_time;
+    world->tick = (uint32_t)llround((double)world_time * 120.0);
+    world->time = world_time_from_tick(world->tick);
     server_player_t *player = &world->players[0];
     player->connected = true;
     player->session_ready = true;
@@ -349,7 +350,8 @@ TEST(test_persistence_generation_publish_boundaries_and_player_carry) {
     ASSERT(snprintf(runtime_player_dir, sizeof(runtime_player_dir), "%s",
                     published.player_dir) > 0);
 
-    world->time = 20.0f;
+    world->tick = 20u * 120u;
+    world->time = world_time_from_tick(world->tick);
     world->players[0].ship->hull = 77.0f;
     ledger_earn(&world->stations[0], token, 25.0f);
     static const persistence_generation_fault_t pre_publish_faults[] = {
@@ -427,7 +429,8 @@ TEST(test_persistence_generation_prunes_bounded_history_after_publish) {
 
     persistence_generation_paths_t published = {0};
     for (uint64_t generation = 1; generation <= 12u; generation++) {
-        world->time = (float)generation;
+        world->tick = (uint32_t)generation * 120u;
+        world->time = world_time_from_tick(world->tick);
         ASSERT(persistence_generation_commit(
             root, legacy, world, save_slots,
             PERSISTENCE_GENERATION_FAULT_NONE, &published));
@@ -470,7 +473,8 @@ TEST(test_persistence_generation_recovery_follows_published_lineage) {
         root, legacy, world, save_slots,
         PERSISTENCE_GENERATION_FAULT_NONE, &first));
 
-    world->time = 2.0f;
+    world->tick = 2u * 120u;
+    world->time = world_time_from_tick(world->tick);
     ASSERT(test_set_exact_generation_payload(
         world, 0x22u, 2202u, 22u, 62.0f));
     persistence_generation_paths_t second = {0};
@@ -487,7 +491,8 @@ TEST(test_persistence_generation_recovery_follows_published_lineage) {
     world_cleanup(loaded);
     memset(loaded, 0, sizeof(*loaded));
 
-    world->time = 3.0f;
+    world->tick = 3u * 120u;
+    world->time = world_time_from_tick(world->tick);
     ASSERT(test_set_exact_generation_payload(
         world, 0x33u, 3303u, 33u, 93.0f));
     persistence_generation_paths_t unpublished = {0};
@@ -621,7 +626,6 @@ TEST(test_persistence_writer_commits_immutable_snapshot) {
     ASSERT(world != NULL);
     ASSERT(test_prepare_generation_world(
         world, token, 12.0f, 44.0f, 75.0f));
-    world->tick = 123u;
     bool save_slots[MAX_PLAYERS] = {0};
     save_slots[0] = true;
 
@@ -634,7 +638,8 @@ TEST(test_persistence_writer_commits_immutable_snapshot) {
 
     /* These changes happen after snapshot capture and must not leak into the
      * generation being serialized by the worker. */
-    world->time = 99.0f;
+    world->tick = 99u * 120u;
+    world->time = world_time_from_tick(world->tick);
     world->players[0].ship->hull = 9.0f;
     persistence_generation_paths_t published = {0};
     ASSERT_EQ_INT(
@@ -643,7 +648,7 @@ TEST(test_persistence_writer_commits_immutable_snapshot) {
     ASSERT(!persistence_writer_active(writer));
     persistence_writer_metrics_t metrics = {0};
     ASSERT(persistence_writer_get_metrics(writer, &metrics));
-    ASSERT_EQ_INT(metrics.snapshot_tick, 123);
+    ASSERT_EQ_INT(metrics.snapshot_tick, 12u * 120u);
     ASSERT(metrics.snapshot_clone_ms >= 0.0);
     ASSERT(metrics.background_write_ms >= 0.0);
     ASSERT(metrics.write_complete);
@@ -665,6 +670,7 @@ TEST(test_persistence_writer_commits_immutable_snapshot) {
     WORLD_HEAP loaded = calloc(1, sizeof(*loaded));
     ASSERT(loaded != NULL);
     ASSERT(test_load_generation_world(&published, loaded));
+    ASSERT_EQ_INT(loaded->tick, 12u * 120u);
     ASSERT_EQ_FLOAT(loaded->time, 12.0f, 0.001f);
     ASSERT(test_load_generation_player(&published, loaded, token));
     ASSERT_EQ_FLOAT(loaded->players[0].ship->hull, 44.0f, 0.001f);

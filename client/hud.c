@@ -2105,7 +2105,7 @@ static void hud_draw_npc_memory_ticker(const NetInspectSnapshot *snap,
     float bg_h = 76.0f;
     int text_chars = (int)floorf((bg_w - 20.0f) / cell);
 
-    int cycle = (int)floorf(g.world.time / 0.85f);
+    int cycle = (int)floorf((float)g.world.time / 0.85f);
     InspectJobCause cause;
     bool has_job = inspect_label_find_job_cause(snap, &cause);
     const NetInspectSnapshotRow *job = has_job ? cause.job : NULL;
@@ -2299,7 +2299,7 @@ bool hud_npc_motive_perception_summary(char *out, size_t out_size) {
     }
 
     ui_clarity_t clarity = hud_job_clarity(job);
-    int cycle = (int)floorf(g.world.time / 0.85f);
+    int cycle = (int)floorf((float)g.world.time / 0.85f);
     char motive_seen[96];
     char source_seen[96];
     ui_clarity_degrade_text(
@@ -2562,7 +2562,7 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         next_y += 94.0f + (float)link_line_count * 12.0f +
                   (has_link_page_line ? 12.0f : 0.0f);
     }
-    float now = g.world.time;
+    float now = (float)g.world.time;
     for (int i = 0; i < rows; i++) {
         const NetInspectSnapshotRow *row = &snap->rows[i];
         if (row->flags & INSPECT_ROW_DIAGNOSTIC) {
@@ -2918,7 +2918,7 @@ static void hud_draw_signal_lost_warning(float screen_w, float screen_h, float s
     bool low = sig_quality < SIGNAL_BAND_OPERATIONAL;
     if (!lost && !low) return;
 
-    float blink = sinf(g.world.time * 3.0f);
+    float blink = sinf((float)g.world.time * 3.0f);
     if (lost && blink <= 0.0f) return;
 
     float cell = 8.0f;
@@ -4762,7 +4762,7 @@ static int smoke_apply_loop_state(int state) {
         station_module_t *module = &st->modules[module_idx];
         if (module->ring > 0 && module->ring <= MAX_ARMS) {
             st->arm_rotation[module->ring - 1] =
-                fmodf(g.world.time * 0.35f, TWO_PI_F);
+                fmodf((float)g.world.time * 0.35f, TWO_PI_F);
         }
         vec2 module_pos = module_world_pos_ring(
             st, module->ring, module->slot);
@@ -5518,7 +5518,7 @@ void hull_fog_shutdown(void) {
 
 /* Shared lava-lamp pulse — slow multi-frequency drift, no spikes. */
 static float fog_pulse(void) {
-    float t = g.world.time;
+    float t = (float)g.world.time;
     float wob = 0.55f * sinf(t * 0.43f)
               + 0.30f * sinf(t * 0.71f + 1.3f)
               + 0.15f * sinf(t * 1.07f + 2.7f);
@@ -5788,7 +5788,7 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
 
     if (active && age < DEATH_CINEMATIC_WARNING_SEC) {
         float warning_fade = clampf((DEATH_CINEMATIC_WARNING_SEC - age) / 0.8f, 0.0f, 1.0f);
-        float blink = (sinf(g.world.time * 18.0f) > 0.0f) ? 1.0f : 0.20f;
+        float blink = (sinf((float)g.world.time * 18.0f) > 0.0f) ? 1.0f : 0.20f;
         uint8_t wa = (uint8_t)(255.0f * warning_fade * blink);
         sdtx_color4b(PAL_DEATH_PROMPT, wa);
         sdtx_centered_text(cx, fmaxf(2.0f, (screen_h * 0.18f) / cell),
@@ -5871,7 +5871,7 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
     /* Prompt — RED, hard FLASH on/off. Includes the spawn fee that was
      * just debited at the respawn station so the player sees the cost
      * of dying ("respawn -300 Helios credits"). */
-    float flash = (sinf(g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
+    float flash = (sinf((float)g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
     uint8_t pa = (uint8_t)(flash * (float)a8);
     sdtx_color4b(PAL_DEATH_PROMPT, pa);
     char prompt[80];

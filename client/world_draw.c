@@ -839,7 +839,7 @@ static void draw_asteroid_faults(const asteroid_t *a,
     sgl_end();
 
     if (leak_t > 0.001f) {
-        float pulse = 0.82f + 0.18f * sinf(g.world.time * 16.0f + a->seed);
+        float pulse = 0.82f + 0.18f * sinf((float)g.world.time * 16.0f + a->seed);
         draw_circle_filled(item->center, a->radius * lerpf(0.08f, 0.18f, leak_t),
                            10, 1.0f, 0.82f, 0.34f, 0.22f * leak_t * pulse);
     }
@@ -894,7 +894,7 @@ void draw_asteroids(void) {
         const asteroid_t *a = &g.world.asteroids[item->index];
 
         if (a->phase == ASTEROID_PHASE_GAS_RICH && a->tier != ASTEROID_TIER_S) {
-            float pulse = 1.0f + 0.06f * sinf(g.world.time * 2.0f + a->seed);
+            float pulse = 1.0f + 0.06f * sinf((float)g.world.time * 2.0f + a->seed);
             draw_circle_filled(item->center, a->radius * 1.55f * pulse, 24,
                                0.10f, 0.52f, 0.58f, 0.09f);
         }
@@ -946,7 +946,7 @@ void draw_asteroids(void) {
                 grade_tint(grade, &cr, &cg, &cb);
                 float bloom = 1.10f + 0.18f * (float)(grade - 1);
                 float pulse = (grade >= (uint8_t)MINING_GRADE_RATI)
-                    ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
+                    ? (1.0f + 0.18f * sinf((float)g.world.time * 6.0f))
                     : 1.0f;
                 float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
                 draw_circle_filled(item->center, base_r, 12,
@@ -1768,7 +1768,7 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
             draw_module_shape(type, mr, mg, mb, 0.92f);
         }
         draw_layout_warning_outline(type, layout_status,
-                                    0.5f + 0.5f * sinf(g.world.time * 5.0f + (float)(pos.x + pos.y) * 0.01f));
+                                    0.5f + 0.5f * sinf((float)g.world.time * 5.0f + (float)(pos.x + pos.y) * 0.01f));
 
     }
 
@@ -1914,7 +1914,7 @@ static void draw_strut_sequence(const vec2 *starts, const vec2 *ends,
         vec2 weld = v2_add(starts[active],
                            v2_scale(v2_sub(ends[active], starts[active]),
                                     partial));
-        float pulse = 0.58f + 0.42f * sinf(g.world.time * 9.0f +
+        float pulse = 0.58f + 0.42f * sinf((float)g.world.time * 9.0f +
                                            (float)active * 1.7f);
         draw_circle_filled(weld, 1.4f + pulse * 1.2f, 8,
                            1.0f, 0.52f, 0.18f, alpha * pulse);
@@ -2241,7 +2241,7 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
     /* Scaffold rendering */
     if (station->scaffold) {
-        float alpha = 0.3f + 0.2f * sinf(g.world.time * 1.5f);
+        float alpha = 0.3f + 0.2f * sinf((float)g.world.time * 1.5f);
         float prog = station->scaffold_progress;
         draw_station_cell(station->pos, true, true, prog,
                           role_r, role_g, role_b, alpha + 0.45f);
@@ -2390,7 +2390,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         commodity_color((commodity_t)spoke->commodity, &r, &g0, &b);
         float alpha = field_alpha * (0.35f + 0.55f * spoke->pulse);
         for (int packet = 0; packet < 4; packet++) {
-            float phase = fmodf(g.world.time * 0.62f +
+            float phase = fmodf((float)g.world.time * 0.62f +
                                 (float)packet * 0.25f, 1.0f);
             vec2 p = v2_add(from, v2_scale(v2_sub(to, from), phase));
             draw_circle_filled(p, 3.4f, 8, r, g0, b, alpha);
@@ -2564,7 +2564,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                  * body color. */
                 float fr, fg, fb;
                 station_palette_furnace_module_color(station, m, &fr, &fg, &fb);
-                float pulse = 0.3f + 0.15f * sinf(g.world.time * 3.0f + (float)m->slot);
+                float pulse = 0.3f + 0.15f * sinf((float)g.world.time * 3.0f + (float)m->slot);
 
                 /* Always: warm glow at furnace */
                 draw_circle_filled(positions[i], 44.0f, 12, fr * 0.6f, fg * 0.3f, fb * 0.15f, pulse * 0.3f);
@@ -2607,9 +2607,9 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 
                 if (has_smelting && has_target) {
                     /* RED LASER between furnace and target — zappy flicker */
-                    float flicker = 0.7f + 0.3f * sinf(g.world.time * 47.0f);
-                    float zap1 = sinf(g.world.time * 31.0f) * 0.5f + 0.5f;
-                    float zap2 = sinf(g.world.time * 53.0f) * 0.5f + 0.5f;
+                    float flicker = 0.7f + 0.3f * sinf((float)g.world.time * 47.0f);
+                    float zap1 = sinf((float)g.world.time * 31.0f) * 0.5f + 0.5f;
+                    float zap2 = sinf((float)g.world.time * 53.0f) * 0.5f + 0.5f;
                     vec2 bdir = v2_sub(target, positions[i]);
                     float blen = sqrtf(v2_len_sq(bdir));
                     if (blen > 1.0f) {
@@ -2668,8 +2668,8 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 
                 if (producing) {
                     /* Active: colored beam from supplier to fab */
-                    float flicker = 0.7f + 0.3f * sinf(g.world.time * 37.0f + (float)m->slot * 2.0f);
-                    float zap = sinf(g.world.time * 29.0f) * 0.5f + 0.5f;
+                    float flicker = 0.7f + 0.3f * sinf((float)g.world.time * 37.0f + (float)m->slot * 2.0f);
+                    float zap = sinf((float)g.world.time * 29.0f) * 0.5f + 0.5f;
                     vec2 bdir = v2_sub(supplier, positions[i]);
                     float blen = sqrtf(v2_len_sq(bdir));
                     if (blen > 1.0f) {
@@ -2689,7 +2689,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                     draw_circle_filled(positions[i], 30.0f, 8, fr * 0.8f, fg * 0.8f, fb * 0.8f, 0.2f * flicker);
                 } else {
                     /* Idle: faint connection line */
-                    float pulse = 0.3f + 0.15f * sinf(g.world.time * 2.0f + (float)m->slot);
+                    float pulse = 0.3f + 0.15f * sinf((float)g.world.time * 2.0f + (float)m->slot);
                     draw_segment(positions[i], supplier, fr, fg, fb, pulse * 0.1f);
                 }
             }
@@ -2724,7 +2724,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 int station_idx = (int)(station - g.world.stations);
                 bool approaching = LOCAL_PLAYER.docking_approach &&
                     LOCAL_PLAYER.nearby_station == station_idx;
-                float dp = 0.5f + 0.4f * sinf(g.world.time * 4.0f);
+                float dp = 0.5f + 0.4f * sinf((float)g.world.time * 4.0f);
 
                 for (int b = 0; b < 3; b++) {
                     int global_berth = berth_base + b;
@@ -2799,7 +2799,7 @@ static void draw_tractor_tether_wave(vec2 from, vec2 to,
         float u = (float)s / (float)steps;
         /* Envelope pins the wave at ship and fragment anchor points. */
         float envelope = sinf(u * PI_F);
-        float wave = sinf(u * 4.0f * PI_F - g.world.time * 6.0f + phase);
+        float wave = sinf(u * 4.0f * PI_F - (float)g.world.time * 6.0f + phase);
         vec2 p = v2_add(from, v2_scale(dir, u * len));
         p = v2_add(p, v2_scale(perp, amp * envelope * wave));
         sgl_v2f(p.x, p.y);
@@ -2823,7 +2823,7 @@ static void draw_tractor_field_spirals(vec2 center, float radius,
     }
     for (int arm = 0; arm < arms; arm++) {
         float base = seed + (float)arm * (2.0f * PI_F / (float)arms)
-                     - g.world.time * 0.9f;
+                     - (float)g.world.time * 0.9f;
         sgl_begin_line_strip();
         for (int s = 0; s <= steps; s++) {
             float u = (float)s / (float)steps; /* 0 = rim, 1 = ship */
@@ -2840,7 +2840,7 @@ void draw_ship_tractor_field(void) {
     if (g.death_cinematic.active) return;
     float tr = ship_tractor_range(LOCAL_PLAYER.ship);
 
-    float now = g.world.time;
+    float now = (float)g.world.time;
     float field_dt = 0.0f;
     if (g.tractor_field_last_time > 0.0f && now >= g.tractor_field_last_time)
         field_dt = now - g.tractor_field_last_time;
@@ -2931,7 +2931,7 @@ static void draw_throw_arrow(vec2 start, vec2 dir, float speed, float hotness) {
 static void draw_throw_lock_bracket(vec2 pos, float radius, float hotness) {
     float half = radius + 10.0f + 4.0f * hotness;
     float arm = fminf(half * 0.45f, 18.0f);
-    float pulse = 0.65f + 0.35f * sinf(g.world.time * 10.0f);
+    float pulse = 0.65f + 0.35f * sinf((float)g.world.time * 10.0f);
     float r = 1.0f;
     float g0 = 0.32f + 0.34f * (1.0f - hotness);
     float b = 0.10f;
@@ -2956,7 +2956,7 @@ static void draw_throw_practice_target(vec2 start, vec2 dir, float speed,
     if (g.onboarding.threw || !g.onboarding.tractored) return;
     float dist = 180.0f + clampf(speed * 0.55f, 0.0f, 260.0f);
     vec2 pos = v2_add(start, v2_scale(dir, dist));
-    float pulse = 0.65f + 0.35f * sinf(g.world.time * 7.0f);
+    float pulse = 0.65f + 0.35f * sinf((float)g.world.time * 7.0f);
     float a = 0.28f + 0.42f * pulse;
     float r = 0.36f + 0.44f * hotness;
     float g0 = 0.90f;
@@ -3136,7 +3136,7 @@ static void ship_cell_draw_triangle(const cell_node_t *node, vec2 graph_center,
     }
 
     if (thrusting && node->role == CELL_ROLE_ENGINE) {
-        float flicker = 7.0f + sinf(g.world.time * 42.0f + host.x) * 2.0f;
+        float flicker = 7.0f + sinf((float)g.world.time * 42.0f + host.x) * 2.0f;
         vec2 exhaust = v2_add(tip, v2_scale(normal, flicker));
         vec2 e0 = v2_add(tip, v2_scale(tangent, 3.0f));
         vec2 e1 = v2_sub(tip, v2_scale(tangent, 3.0f));
@@ -3336,7 +3336,7 @@ void draw_death_wreckage(void) {
 
     /* --- Smoldering embers near the wreckage --- */
     for (int i = 0; i < 5; i++) {
-        float t = g.world.time;
+        float t = (float)g.world.time;
         float seed = (float)i * 1.7f;
         float ang = t * 0.6f + seed;
         float r = 12.0f + 4.0f * sinf(t * 1.3f + seed);
@@ -3413,7 +3413,7 @@ void draw_npc_ships(void) {
             float tr = ship_tractor_range(tnpc->ship);
             float d = ta->active ? v2_len(v2_sub(ta->pos, tnpc->ship->pos)) : 0.0f;
             if (ta->active && tr > 0.0f && d <= tr * 1.5f) {
-                float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)i * 1.5f);
+                float tp = 0.4f + 0.15f * sinf((float)g.world.time * 3.0f + (float)i * 1.5f);
                 tractor_beam_t beam = tractor_tow_beam(
                     tr, TRACTOR_TOW_BAND_REST_LENGTH);
                 float stretch = tractor_beam_tautness(
@@ -3438,7 +3438,7 @@ void draw_npc_ships(void) {
                 float stretch = tractor_beam_tautness(
                     tnpc->ship->pos, sc->pos, &beam);
                 float pulse = 0.5f + 0.2f *
-                    sinf(g.world.time * 3.0f + (float)i * 1.5f);
+                    sinf((float)g.world.time * 3.0f + (float)i * 1.5f);
                 draw_tractor_tether_wave(
                     tnpc->ship->pos, sc->pos,
                     0.5f, 0.85f, 0.75f, pulse,
@@ -3455,7 +3455,7 @@ void draw_npc_ships(void) {
              * fraction reads as "highlighting this ship" rather than
              * "drawing a halo around general space near it". Pulse is
              * subtle (±1 unit) so the radius stays visually stable. */
-            float pulse = 0.5f + 0.5f * sinf(g.world.time * 6.0f);
+            float pulse = 0.5f + 0.5f * sinf((float)g.world.time * 6.0f);
             float ship_r = npc_hull_def(tnpc)->ship_radius;
             float r = ship_r * 0.7f + 2.0f + 1.0f * pulse;
             float a = 0.65f + 0.20f * pulse;
@@ -3549,7 +3549,7 @@ static void draw_cargo_pod_module_tractor_beam(vec2 emitter,
     float taut = clampf(tautness, 0.0f, 1.0f);
     float strength = clampf(intensity, 0.0f, 1.0f);
     float pulse = 0.88f + 0.12f *
-        sinf(g.world.time * 3.0f + (float)seed * 1.37f);
+        sinf((float)g.world.time * 3.0f + (float)seed * 1.37f);
     float alpha = (0.28f + 0.58f * taut) * pulse *
                   (0.55f + 0.45f * strength);
     draw_tractor_tether_wave(emitter, pod_pos, cr, cg, cb, alpha,
@@ -3650,7 +3650,7 @@ void draw_hopper_tractors(void) {
         float fr, fg, fb;
         module_color(st->modules[module_idx].type, &fr, &fg, &fb);
         float pulse = 0.78f + 0.22f *
-            sinf(g.world.time * 6.0f + (float)asteroid_idx * 1.7f);
+            sinf((float)g.world.time * 6.0f + (float)asteroid_idx * 1.7f);
         float alpha = (0.22f + 0.58f * tautness) * pulse *
                       clampf(it->intensity, 0.15f, 1.0f);
         draw_tractor_tether_wave(
@@ -3685,7 +3685,7 @@ void draw_spark_burst(vec2 pos, float intensity, bool red, float seed) {
     /* Intensity > 1 grows the burst (used for damaging-velocity hits). */
     if (intensity > 2.5f) intensity = 2.5f;
     float scale = intensity > 1.0f ? intensity : 1.0f;
-    float t = g.world.time;
+    float t = (float)g.world.time;
     float bucket = floorf(t * 32.0f) + seed * 71.3f;
 
     /* Hot core cross — 3 very short rays */
@@ -3894,7 +3894,7 @@ void draw_autopilot_path(void) {
         vec2 dir = v2_scale(delta, 1.0f / v2_len(delta));
         /* Draw dashed line along this segment */
         float t = 0.0f;
-        float pulse = 0.35f + 0.15f * sinf(g.world.time * 2.0f);
+        float pulse = 0.35f + 0.15f * sinf((float)g.world.time * 2.0f);
         sgl_begin_lines();
         sgl_c4f(0.3f, 0.85f, 1.0f, pulse);
         while (t < seg_len) {
@@ -3935,9 +3935,9 @@ void draw_towed_tethers(void) {
         if (!a->active) continue;
         float r, gg, b;
         grade_tint(a->grade, &r, &gg, &b);
-        float pulse = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
+        float pulse = 0.4f + 0.15f * sinf((float)g.world.time * 3.0f + (float)t * 1.5f);
         if (a->grade >= (uint8_t)MINING_GRADE_RARE)
-            pulse += 0.12f * sinf(g.world.time * 7.0f + (float)t);
+            pulse += 0.12f * sinf((float)g.world.time * 7.0f + (float)t);
         float stretch = tractor_beam_tautness(
             LOCAL_PLAYER.ship->pos, a->pos, &beam);
         draw_tractor_tether_wave(LOCAL_PLAYER.ship->pos, a->pos,
@@ -3968,7 +3968,7 @@ void draw_towed_tethers(void) {
         float stretch = tractor_beam_tautness(
             ship->pos, hardpoint, &pod_beam);
         float pulse = 0.40f + 0.15f *
-            sinf(g.world.time * 3.0f + (float)i * 1.5f);
+            sinf((float)g.world.time * 3.0f + (float)i * 1.5f);
         draw_tractor_tether_wave(ship->pos, hardpoint,
                                  r, gg, b, pulse, stretch,
                                  (float)i * 1.7f,
@@ -4009,7 +4009,7 @@ void draw_tracked_contract_highlight(void) {
     contract_objective_target_kind_t kind = CONTRACT_OBJECTIVE_TARGET_NONE;
     if (!resolve_tracked_contract_target(&target, &radius, &kind)) return;
     if (!on_screen(target.x, target.y, radius + 40.0f)) return;
-    float t = g.world.time;
+    float t = (float)g.world.time;
     float pulse = 0.5f + 0.5f * sinf(t * 2.4f);
     float cr, cg, cb;
     contract_target_color(kind, &cr, &cg, &cb);
@@ -4051,7 +4051,7 @@ void draw_compass_ring(void) {
             float _px = ship.x + cosf(_a) * ring_r; \
             float _py = ship.y + sinf(_a) * ring_r; \
             float _ca = cosf(_a), _sa = sinf(_a); \
-            float _pulse = 0.6f + 0.3f * sinf(g.world.time * 3.0f); \
+            float _pulse = 0.6f + 0.3f * sinf((float)g.world.time * 3.0f); \
             sgl_begin_lines(); sgl_c4f(pr, pg, pb, _pulse); \
             sgl_v2f(_px+(-_ca*pip_size-_sa*pip_size*0.6f), _py+(-_sa*pip_size+_ca*pip_size*0.6f)); sgl_v2f(_px, _py); \
             sgl_v2f(_px, _py); sgl_v2f(_px+(-_ca*pip_size+_sa*pip_size*0.6f), _py+(-_sa*pip_size-_ca*pip_size*0.6f)); \
@@ -4188,7 +4188,7 @@ void draw_remote_players(void) {
 
         /* Thrust flame */
         if (thrusting) {
-            float flicker = 10.0f + sinf(g.world.time * 42.0f + (float)i * 7.0f) * 3.0f;
+            float flicker = 10.0f + sinf((float)g.world.time * 42.0f + (float)i * 7.0f) * 3.0f;
             sgl_c4f(1.0f, 0.74f, 0.24f, 0.9f);
             sgl_begin_triangles();
             sgl_v2f(-12.0f, 0.0f);
@@ -4247,7 +4247,7 @@ void draw_remote_players(void) {
         if (tractor_on || players[i].towed_count > 0) {
             vec2 pos = v2(players[i].x, players[i].y);
             if (tractor_on) {
-                float pulse = 0.28f + (sinf(g.world.time * 7.0f + (float)i * 2.0f) * 0.08f);
+                float pulse = 0.28f + (sinf((float)g.world.time * 7.0f + (float)i * 2.0f) * 0.08f);
                 draw_circle_outline(pos, tr, 40, cr * 0.4f, cg * 0.8f, cb * 0.9f, pulse * 0.8f);
                 draw_tractor_field_spirals(pos, tr, cr * 0.5f, cg * 0.85f, cb,
                                            pulse * 0.7f, (float)i * 1.3f);
@@ -4263,9 +4263,9 @@ void draw_remote_players(void) {
                 if (!a->active) continue;
                 float rr, rg, rb;
                 grade_tint(a->grade, &rr, &rg, &rb);
-                float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
+                float tp = 0.4f + 0.15f * sinf((float)g.world.time * 3.0f + (float)t * 1.5f);
                 if (a->grade >= (uint8_t)MINING_GRADE_RARE)
-                    tp += 0.12f * sinf(g.world.time * 7.0f + (float)t);
+                    tp += 0.12f * sinf((float)g.world.time * 7.0f + (float)t);
                 float stretch = tractor_beam_tautness(pos, a->pos, &beam);
                 draw_tractor_tether_wave(pos, a->pos, rr, rg, rb, tp,
                                          stretch, (float)t * 1.7f + (float)i,
@@ -4425,7 +4425,7 @@ void draw_towed_cargo_hopper_guides(void) {
 
         float r, g0, b;
         commodity_color(pod->commodity, &r, &g0, &b);
-        float pulse = 0.5f + 0.5f * sinf(g.world.time * 4.5f);
+        float pulse = 0.5f + 0.5f * sinf((float)g.world.time * 4.5f);
         float radius = 48.0f + 9.0f * pulse;
         draw_circle_filled(target, radius * 0.62f, 18,
                            r, g0, b, 0.07f + pulse * 0.04f);
@@ -4438,7 +4438,7 @@ void draw_towed_cargo_hopper_guides(void) {
         if (distance < 1800.0f) {
             draw_segment(pod->pos, target, r, g0, b, 0.16f);
             for (int packet = 0; packet < 6; packet++) {
-                float phase = fmodf(g.world.time * 0.38f +
+                float phase = fmodf((float)g.world.time * 0.38f +
                                     (float)packet / 6.0f, 1.0f);
                 vec2 p = v2_add(pod->pos,
                     v2_scale(v2_sub(target, pod->pos), phase));
@@ -5183,7 +5183,7 @@ void draw_cargo_pods(void) {
 
         float r, g0, b;
         cargo_pod_content_color(pod, &r, &g0, &b);
-        float pulse = 1.0f + 0.08f * sinf(g.world.time * 4.0f + pod->rotation);
+        float pulse = 1.0f + 0.08f * sinf((float)g.world.time * 4.0f + pod->rotation);
 
         cargo_pod_content_shape_t content = cargo_pod_content_shape(pod);
         float load = cargo_pod_load_ratio(pod);
@@ -5285,7 +5285,7 @@ void draw_scaffolds(void) {
         if (!on_screen(sc->pos.x, sc->pos.y, sc->radius + 20.0f)) continue;
 
         float amb_r = 1.0f, amb_g = 0.85f, amb_b = 0.47f; /* construction amber */
-        float pulse = 0.5f + 0.2f * sinf(g.world.time * 2.5f + sc->age * 3.0f);
+        float pulse = 0.5f + 0.2f * sinf((float)g.world.time * 2.5f + sc->age * 3.0f);
 
         /* Module-type tint blended with amber */
         float mr, mg, mb;
@@ -5352,7 +5352,7 @@ void draw_scaffolds(void) {
         if (sc->state == SCAFFOLD_SNAPPING && sc->placed_station >= 0) {
             const station_t *st = &g.world.stations[sc->placed_station];
             vec2 target = module_world_pos_ring(st, sc->placed_ring, sc->placed_slot);
-            float t_pulse = 0.4f + 0.3f * sinf(g.world.time * 4.0f);
+            float t_pulse = 0.4f + 0.3f * sinf((float)g.world.time * 4.0f);
 
             /* Main tendril: station slot → scaffold */
             draw_segment(target, sc->pos, amb_r * 0.6f, amb_g * 0.6f, amb_b * 0.4f, t_pulse);
@@ -5375,7 +5375,7 @@ void draw_scaffold_tether(void) {
     const scaffold_t *sc = &g.world.scaffolds[idx];
     if (!sc->active) return;
 
-    float pulse = 0.5f + 0.2f * sinf(g.world.time * 3.0f);
+    float pulse = 0.5f + 0.2f * sinf((float)g.world.time * 3.0f);
     float cue_prev = world_signal_visual_enter_cue();
     draw_segment(LOCAL_PLAYER.ship->pos, sc->pos, 0.5f, 0.85f, 0.75f, pulse);
     world_signal_visual_leave_cue(cue_prev);
@@ -5419,7 +5419,7 @@ static void draw_planned_stations(void) {
         const station_t *st = &g.world.stations[s];
         if (!st->planned) continue;
         vec2 c = st->pos;
-        float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
+        float pulse = 0.4f + 0.3f * sinf((float)g.world.time * 2.5f);
         int max_ring = station_unlocked_rings_client(st);
         bool abandoned = station_planned_site_abandoned(st);
         float ghost_r = abandoned ? 0.95f : 0.40f;
@@ -5483,7 +5483,7 @@ static void draw_placement_plans(void) {
             vec2 pos = module_world_pos_ring(st, ring, slot);
             float mr, mg, mb;
             module_color_fn(type, &mr, &mg, &mb);
-            float pulse = 0.25f + 0.15f * sinf(g.world.time * 1.5f + (float)p * 0.7f);
+            float pulse = 0.25f + 0.15f * sinf((float)g.world.time * 1.5f + (float)p * 0.7f);
             /* Faint dashed outline + filled core in module color */
             draw_circle_outline(pos, 22.0f, 16, mr, mg, mb, pulse);
             draw_circle_filled(pos, 4.0f, 8, mr, mg, mb, pulse * 1.5f);
@@ -5527,8 +5527,8 @@ static void draw_blocked_construction_yards(void) {
         }
 
         const scaffold_t *blocker = &g.world.scaffolds[blocker_idx];
-        float pulse = 0.55f + 0.30f * sinf(g.world.time * 5.0f);
-        float dim = 0.35f + 0.15f * sinf(g.world.time * 3.0f);
+        float pulse = 0.55f + 0.30f * sinf((float)g.world.time * 5.0f);
+        float dim = 0.35f + 0.15f * sinf((float)g.world.time * 3.0f);
         const float br = 1.0f;
         const float bg = 0.34f;
         const float bb = 0.14f;
@@ -5578,7 +5578,7 @@ void draw_placement_reticle(void) {
     if (g.plan_mode_active && g.plan_target_station == -1) {
         float cue_prev = world_signal_visual_enter_cue();
         vec2 c = LOCAL_PLAYER.ship->pos;
-        float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
+        float pulse = 0.4f + 0.3f * sinf((float)g.world.time * 2.5f);
         const float ghost_r = 0.78f;
         const float ghost_g = 0.70f;
         const float ghost_b = 0.48f;
@@ -5611,7 +5611,7 @@ void draw_placement_reticle(void) {
             if (active) {
                 float mr, mg, mb;
                 module_color_fn((module_type_t)g.plan_type, &mr, &mg, &mb);
-                float ap = 0.5f + 0.4f * sinf(g.world.time * 5.0f);
+                float ap = 0.5f + 0.4f * sinf((float)g.world.time * 5.0f);
                 draw_circle_outline(sp, 32.0f, 24, mr, mg, mb, ap);
                 draw_circle_outline(sp, 26.0f, 24, mr, mg, mb, ap * 0.7f);
                 draw_circle_filled(sp, 6.0f, 8, mr, mg, mb, ap);
@@ -5632,7 +5632,7 @@ void draw_placement_reticle(void) {
             vec2 target = module_world_pos_ring(st, g.placement_target_ring, g.placement_target_slot);
             float mr, mg, mb;
             module_color_fn((module_type_t)g.plan_type, &mr, &mg, &mb);
-            float pulse = 0.5f + 0.4f * sinf(g.world.time * 5.0f);
+            float pulse = 0.5f + 0.4f * sinf((float)g.world.time * 5.0f);
             /* Bright module-tinted ring */
             draw_circle_outline(target, 32.0f, 24, mr, mg, mb, pulse);
             draw_circle_outline(target, 26.0f, 24, mr, mg, mb, pulse * 0.7f);
@@ -5698,7 +5698,7 @@ void draw_placement_reticle(void) {
         }
     }
 
-    float pulse = 0.5f + 0.4f * sinf(g.world.time * 5.0f);
+    float pulse = 0.5f + 0.4f * sinf((float)g.world.time * 5.0f);
     float r = valid ? 0.4f : 1.0f;
     float g0 = valid ? 1.0f : 0.3f;
     float b = valid ? 1.0f : 0.3f;
@@ -5754,7 +5754,7 @@ void draw_shipyard_intake_beams(void) {
         module_type_t prod_type = producer_for_commodity_client(mat);
 
         vec2 target = sc->pos;
-        float t = g.world.time * 4.0f;
+        float t = (float)g.world.time * 4.0f;
 
         /* Beam from each contributing module */
         for (int i = 0; i < st->module_count; i++) {
