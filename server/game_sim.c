@@ -2952,6 +2952,7 @@ void world_refresh_station_physical_inventories(world_t *w) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         memset(w->stations[s]._physical_inventory_cache, 0,
                sizeof(w->stations[s]._physical_inventory_cache));
+        w->stations[s]._physical_frame_shell_cache = 0.0f;
     }
 
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
@@ -2969,6 +2970,7 @@ void world_refresh_station_physical_inventories(world_t *w) {
         if (pod->has_shell_frame &&
             (commodity_t)pod->shell_frame.commodity == COMMODITY_FRAME) {
             station->_physical_inventory_cache[COMMODITY_FRAME] += 1.0f;
+            station->_physical_frame_shell_cache += 1.0f;
         }
     }
 }
@@ -12663,6 +12665,35 @@ static void step_contracts(world_t *w, float dt) {
                 };
                 recipe_id_t recipe;
                 if (heritage_recipe_for_commodity(mat, &recipe))
+                    contract_require_recipe_provenance(&kit_need, recipe);
+            }
+        }
+
+        /* Priority 6b: frame shells for a furnace. Every smelt builds its
+         * ingot pod from one frame, so a refinery with no frame press (Prospect)
+         * stops smelting once its frames run out. Ask for frames in the kit
+         * slot, which a non-shipyard station leaves free. */
+        if (!kit_need.active && !has_kit_input_contract &&
+            !station_has_module(st, MODULE_SHIPYARD) &&
+            station_has_module(st, MODULE_FURNACE)) {
+            station_supply_need_t supply = station_supply_need_for(
+                st, COMMODITY_FRAME);
+            if (supply.should_open && supply.deficit > 0.0f) {
+                float dmult = station_demand_for(st, COMMODITY_FRAME).price_mult *
+                              station_policy_trade_price_multiplier(
+                                  st, COMMODITY_FRAME);
+                kit_need = (contract_t){
+                    .active = true, .action = CONTRACT_TRACTOR,
+                    .station_index = (uint8_t)s,
+                    .commodity = COMMODITY_FRAME,
+                    .quantity_needed = supply.deficit,
+                    .base_price = (st->base_price[COMMODITY_FRAME] > 0.0f
+                                  ? st->base_price[COMMODITY_FRAME] * 1.25f * pool_factor
+                                  : 28.0f * pool_factor) * dmult,
+                    .target_index = -1, .claimed_by = -1,
+                };
+                recipe_id_t recipe;
+                if (heritage_recipe_for_commodity(COMMODITY_FRAME, &recipe))
                     contract_require_recipe_provenance(&kit_need, recipe);
             }
         }

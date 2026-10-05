@@ -6187,14 +6187,15 @@ TEST(test_construction_contract_closes_on_activation) {
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
 
     /* There should be a supply contract for this station+material */
-    bool found_contract = false;
+    int construction_contract = -1;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
             && w.contracts[k].station_index == outpost && w.contracts[k].commodity == mat) {
-            found_contract = true; break;
+            construction_contract = k; break;
         }
     }
-    ASSERT(found_contract);
+    ASSERT(construction_contract >= 0);
+    float posted_age = w.contracts[construction_contract].age;
 
     /* Supply and activate */
     float cost = module_build_cost_lookup(MODULE_FURNACE);
@@ -6206,14 +6207,13 @@ TEST(test_construction_contract_closes_on_activation) {
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
     ASSERT(!m->scaffold); /* activated */
 
-    /* Contract should now be closed */
-    bool contract_alive = false;
-    for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
-            && w.contracts[k].station_index == outpost && w.contracts[k].commodity == mat) {
-            contract_alive = true; break;
-        }
-    }
+    /* Contract should now be closed. The active furnace may post its own
+     * frame-shell contract for the same commodity; that one is younger
+     * than the construction contract would be. */
+    const contract_t *c = &w.contracts[construction_contract];
+    bool contract_alive = c->active && c->action == CONTRACT_TRACTOR &&
+        c->station_index == outpost && c->commodity == mat &&
+        c->age >= posted_age + (120 + 2400) * SIM_DT - 0.01f;
     ASSERT(!contract_alive);
 }
 
@@ -6230,6 +6230,15 @@ TEST(test_stale_contract_does_not_block_next_need) {
     /* Supply, build, activate */
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
+    int construction_contract = -1;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
+            && w.contracts[k].station_index == outpost && w.contracts[k].commodity == mat) {
+            construction_contract = k; break;
+        }
+    }
+    ASSERT(construction_contract >= 0);
+    float posted_age = w.contracts[construction_contract].age;
     ASSERT(test_set_station_finished_amount(&w.stations[outpost], mat, cost));
     ASSERT(test_anchor_station_legacy_cargo(&w, outpost));
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
@@ -6242,14 +6251,12 @@ TEST(test_stale_contract_does_not_block_next_need) {
     /* The station should be able to post a new contract (not blocked).
      * A furnace station needs ore — check if any contract exists or
      * at least that no stale construction contract is blocking. */
-    bool stale_construction = false;
-    for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
-            && w.contracts[k].station_index == outpost && w.contracts[k].commodity == mat) {
-            /* A supply contract for the build material should not linger */
-            stale_construction = true; break;
-        }
-    }
+    /* A supply contract for the build material should not linger. The
+     * active furnace may post a younger frame-shell contract for it. */
+    const contract_t *c = &w.contracts[construction_contract];
+    bool stale_construction = c->active && c->action == CONTRACT_TRACTOR &&
+        c->station_index == outpost && c->commodity == mat &&
+        c->age >= posted_age + (120 + 2400 + 240) * SIM_DT - 0.01f;
     ASSERT(!stale_construction);
 }
 

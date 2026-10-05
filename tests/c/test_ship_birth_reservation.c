@@ -138,6 +138,11 @@ static bool birth_test_ferrite_smelt_midpoint(const station_t *station,
 TEST(test_ship_birth_reservation_blocks_furnace_smelting) {
     WORLD_DECL;
     world_reset(&w);
+    /* A trusted frame shell lets the furnace take the ore once the
+     * reservation clears. */
+    ASSERT(test_set_station_finished_units(
+        &w.stations[0], COMMODITY_FRAME, 1));
+    ASSERT(test_anchor_station_legacy_cargo(&w, 0));
     memset(w.asteroids, 0, sizeof(w.asteroids));
     memset(w.ship_birth_assemblies, 0, sizeof(w.ship_birth_assemblies));
 
