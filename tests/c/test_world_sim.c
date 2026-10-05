@@ -4787,6 +4787,7 @@ TEST(test_mining_class_prefix_round_trip) {
     ASSERT(seen[MINING_CLASS_K]);
 }
 
+static void test_furnace_without_frame_shell_refuses_ore_and_asks_for_frames(void);
 TEST(test_refinery_deposits_named_ingot) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -4957,6 +4958,11 @@ TEST(test_refinery_deposits_named_ingot) {
 TEST(test_furnace_smelting_accepts_beam_corridor_delivery) {
     WORLD_DECL;
     world_reset(&w);
+    /* The furnace only takes ore it can finish, which needs a trusted
+     * frame shell in station stock. */
+    ASSERT(test_set_station_finished_units(
+        &w.stations[0], COMMODITY_FRAME, 1));
+    ASSERT(test_anchor_station_legacy_cargo(&w, 0));
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     for (int arm = 0; arm < MAX_ARMS; arm++) {
@@ -5545,9 +5551,11 @@ TEST(test_station_physical_stock_counts_payload_and_frame_shell) {
     world_refresh_station_physical_inventories(&w);
     ASSERT_EQ_FLOAT(station_inventory_amount(st, COMMODITY_FRAME),
                     4.0f, 0.001f);
+    /* Supply need counts only free frames: the shell is sealed into the
+     * pod and cannot meet a frame need, though it still prices as stock. */
     station_supply_need_t need = station_supply_need_for(
         st, COMMODITY_FRAME);
-    ASSERT_EQ_FLOAT(need.stock, 4.0f, 0.001f);
+    ASSERT_EQ_FLOAT(need.stock, 3.0f, 0.001f);
     ASSERT(station_sell_price(st, COMMODITY_FRAME) <
            st->base_price[COMMODITY_FRAME] * 2.0f);
 }
@@ -12778,6 +12786,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_sim_step_refinery_hopper_path_retired);
     RUN(test_mining_class_prefix_round_trip);
     RUN(test_refinery_deposits_named_ingot);
+    RUN(test_furnace_without_frame_shell_refuses_ore_and_asks_for_frames);
     RUN(test_furnace_smelting_accepts_beam_corridor_delivery);
     RUN(test_furnace_smelting_requires_frame_shell);
     RUN(test_furnace_smelting_consumes_loose_frame_shell);
@@ -13131,3 +13140,127 @@ void register_world_sim_chunk_tests(void) {
     RUN(test_destroyed_rocks_insert_past_legacy_256_cap);
     RUN(test_destroyed_rocks_stays_sorted_after_inserts);
 }
+
+
+TEST(test_furnace_without_frame_shell_refuses_ore_and_asks_for_frames) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    ASSERT(test_anchor_station_legacy_cargo(w, 0));
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    player_init_ship(&w->players[0], w);
+    actor_principal_t verified_actor = actor_principal_none();
+    ASSERT(test_make_verified_player_principal(
+        &w->players[0], 0x42, &verified_actor));
+    w->players[0].docked = false;
+    /* Force a furnace at station 0 — already exists by default in
+     * world_reset, but assert. */
+    bool has_furnace = false;
+    int furnace_idx = -1;
+    for (int m = 0; m < w->stations[0].module_count; m++) {
+        if (w->stations[0].modules[m].type == MODULE_FURNACE) {
+            has_furnace = true;
+            furnace_idx = m;
+        }
+    }
+    ASSERT(has_furnace);
+
+    /* Stop ring motion. Then mirror the smelt code's silo pick — the
+     * closest module on an adjacent ring to the furnace, with current
+     * ring offsets baked in. With Prospect's full hopper ring on
+     * ring 2, several hoppers are within range; whichever is closest
+     * becomes the silo end of the smelt beam. */
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        w->stations[0].arm_speed[arm] = 0.0f;
+        w->stations[0].arm_rotation[arm] = 0.0f;
+    }
+    vec2 furnace_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[furnace_idx].ring, w->stations[0].modules[furnace_idx].slot);
+    int silo_idx = -1;
+    {
+        int fr = w->stations[0].modules[furnace_idx].ring;
+        float best_d = 1e18f;
+        int adj_rings[] = { fr + 1, fr - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int m2 = 0; m2 < w->stations[0].module_count; m2++) {
+                if (w->stations[0].modules[m2].ring != adj) continue;
+                vec2 mp2 = module_world_pos_ring(&w->stations[0], adj,
+                                                  w->stations[0].modules[m2].slot);
+                float dd = v2_dist_sq(furnace_pos, mp2);
+                if (dd < best_d) { best_d = dd; silo_idx = m2; }
+            }
+        }
+    }
+    ASSERT(silo_idx >= 0);
+    vec2 silo_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[silo_idx].ring, w->stations[0].modules[silo_idx].slot);
+    vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
+
+
+    /* Smelt until the station's own frame shells run out. Each smelt
+     * builds its ingot pod from one frame. */
+    int smelted = 0;
+    bool refused = false;
+    for (int round = 0; round < 40 && !refused; round++) {
+    /* Spawn an S-tier ferrite fragment on the smelt midpoint, with an
+         * arbitrary fracture_seed. */
+        int slot = -1;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!w->asteroids[i].active) { slot = i; break; }
+        }
+        ASSERT(slot >= 0);
+        asteroid_t *a = &w->asteroids[slot];
+        memset(a, 0, sizeof(*a));
+        a->active = true;
+        a->tier = ASTEROID_TIER_S;
+        a->commodity = COMMODITY_FERRITE_ORE;
+        a->ore = 10.0f;
+        a->max_ore = 10.0f;
+        a->radius = 6.0f;
+        a->fracture_child = true;
+        /* Seed values intentionally varied so the roll lands somewhere. */
+        for (int i = 0; i < 32; i++) a->fracture_seed[i] = (uint8_t)(i * 17 + 3);
+        a->grade = (uint8_t)MINING_GRADE_RATI;
+        a->pos = midpoint;
+        a->vel = v2(0, 0);
+        a->last_fractured_by = 0;
+        a->last_towed_by = 0;
+        memcpy(a->last_towed_token, w->players[0].session_token,
+               sizeof(a->last_towed_token));
+        memcpy(a->last_fractured_token, w->players[0].session_token,
+               sizeof(a->last_fractured_token));
+        a->net_dirty = true;
+        w->players[0].ship->pos = v2_add(midpoint, v2(100.0f, 0.0f));
+        w->players[0].ship->vel = v2(0.0f, 0.0f);
+        a->fracture_seed[0] = (uint8_t)round;
+        a->fracture_seed[1] = (uint8_t)(round >> 8);
+        for (int i = 0; i < 600 && w->asteroids[slot].active; i++)
+            world_sim_step(w, 1.0f / 120.0f);
+        if (w->asteroids[slot].active) {
+            /* No shell: the furnace must not take the ore, so it is
+             * never heated or held in the beam. */
+            ASSERT_EQ_FLOAT(w->asteroids[slot].smelt_progress, 0.0f, 0.0001f);
+            refused = true;
+        } else {
+            smelted++;
+        }
+    }
+    ASSERT(smelted > 0);
+    ASSERT(refused);
+
+    /* Out of frames, the refinery asks for them. */
+    bool frame_contract = false;
+    for (int i = 0; i < 240 && !frame_contract; i++) {
+        world_sim_step(w, 1.0f / 120.0f);
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            const contract_t *c = &w->contracts[k];
+            if (c->active && c->action == CONTRACT_TRACTOR &&
+                c->station_index == 0 && c->commodity == COMMODITY_FRAME)
+                frame_contract = true;
+        }
+    }
+    ASSERT(frame_contract);
+}
+

@@ -792,6 +792,10 @@ typedef struct {
      * under this station's custody.  Pod shells contribute one FRAME here.
      * Rebuilt from world cargo pods; never mutate as inventory authority. */
     float _physical_inventory_cache[COMMODITY_COUNT];
+    /* Derived, non-persisted: how many of the FRAME units above are shells
+     * of other pods. A shell cannot be used again, so supply need for
+     * frames leaves it out. */
+    float _physical_frame_shell_cache;
     uint32_t services;
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];

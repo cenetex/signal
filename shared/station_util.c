@@ -310,7 +310,9 @@ bool station_consumes(const station_t *st, commodity_t c) {
             return station_has_module(st, MODULE_LASER_FAB) ||
                    station_has_module(st, MODULE_ENGINE_FAB);
         case COMMODITY_FRAME:
+            /* A furnace builds every ingot pod from one frame shell. */
             return is_shipyard ||
+                   station_has_module(st, MODULE_FURNACE) ||
                    station_has_module(st, MODULE_LASER_FAB) ||
                    station_has_module(st, MODULE_TRACTOR_FAB) ||
                    station_has_module(st, MODULE_ENGINE_FAB);
@@ -835,6 +837,10 @@ station_supply_need_t station_supply_need_for(const station_t *st,
 
     out.commodity = c;
     out.stock = station_inventory_amount(st, c);
+    /* Frames sealed as other pods' shells are spent; only free frames
+     * meet a frame need. */
+    if (c == COMMODITY_FRAME)
+        out.stock = fmaxf(0.0f, out.stock - st->_physical_frame_shell_cache);
     out.eligible = station_consumes(st, c);
     out.locally_produced = station_produces(st, c);
 

@@ -1254,6 +1254,26 @@ static void crystal_fragment_make_intermediate(asteroid_t *a,
     a->vel = v2_add(a->vel, v2_scale(away, 90.0f));
 }
 
+/* A smelt builds its ingot pod from one frame shell, either a loose frame
+ * pod the furnace can reach or a trusted frame in station stock. Mirrors
+ * the shell lookup in step_furnace_smelting so the furnace only takes ore
+ * it can finish. Without this, ore heated to full and hung in the beam
+ * whenever the station had no frame. */
+static bool furnace_has_smelt_shell(const world_t *w, int station_idx,
+                                    int module_idx) {
+    production_loose_shell_t loose = {0};
+    if (production_select_loose_shell(w, station_idx, module_idx,
+                                      NULL, 0, &loose))
+        return true;
+    const station_t *st = &w->stations[station_idx];
+    for (uint16_t i = 0; i < st->manifest.count; i++) {
+        if (st->manifest.units[i].commodity == (uint8_t)COMMODITY_FRAME &&
+            production_station_unit_trusted(w, station_idx, i))
+            return true;
+    }
+    return false;
+}
+
 void step_furnace_smelting(world_t *w, float dt) {
     step_station_cargo_pod_tractors(w, 0.0f);
     float pull_range = HOPPER_PULL_RANGE;
@@ -1288,6 +1308,11 @@ void step_furnace_smelting(world_t *w, float dt) {
                 if (st->modules[m].type != MODULE_FURNACE) continue;
                 if (module_instance_input_ore(&st->modules[m]) != a->commodity) continue;
                 if (crystal_stage_source_matches(a, s, m)) continue;
+                bool crystal_stage_one =
+                    a->commodity == COMMODITY_CRYSTAL_ORE &&
+                    a->crystal_stage != CRYSTAL_STAGE_INTERMEDIATE;
+                if (!crystal_stage_one && !furnace_has_smelt_shell(w, s, m))
+                    continue;
 
                 int ring = st->modules[m].ring;
                 vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);

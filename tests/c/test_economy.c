@@ -2843,6 +2843,9 @@ TEST(test_station_policy_cache_drives_trade_price_modifier) {
     prospect->_inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     ASSERT(test_set_station_finished_units(
         prospect, COMMODITY_REPAIR_KIT, 0));
+    /* Stock the furnace's frame shells so repair kits are the top need. */
+    ASSERT(test_set_station_finished_units(
+        prospect, COMMODITY_FRAME, 12));
 
     station_policy_refresh(prospect, 0, 7);
 
@@ -3335,14 +3338,14 @@ TEST(test_one_contract_per_station) {
         w.stations[0]._inventory_cache[i] = 0.0f;
     /* Run a few ticks to generate contracts */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
-    /* Count contracts for station 0. Up to two are allowed per station:
-     * one ore contract (raw mining) + one production contract
-     * (scaffold/ingot/kit-fab input). */
+    /* Count contracts for station 0. Up to three are allowed per station,
+     * one per slot: ore (raw mining), production (scaffold/ingot), and kit
+     * input (shipyard kit-fab inputs, or a furnace's frame shells). */
     int count = 0;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].station_index == 0) count++;
     }
-    ASSERT(count >= 1 && count <= 2);
+    ASSERT(count >= 1 && count <= 3);
 }
 
 TEST(test_destroy_contract_completes_when_asteroid_gone) {
