@@ -80,6 +80,11 @@ static const float OUTPOST_MIN_DISTANCE = 1500.0f; /* min distance between stati
  * outposts out to the fringe, extending the network instead of stacking. */
 #define OUTPOST_MAX_SIGNAL SIGNAL_BAND_OPERATIONAL
 static const float SIM_DT = 1.0f / 120.0f;
+/* Clock conversion uses double precision, independently of the float physics
+ * timestep. The integer tick is authoritative; time is only a derived view. */
+static inline double world_time_from_tick(uint32_t tick) {
+    return (double)tick / 120.0;
+}
 static const float MINING_RANGE = 170.0f;
 static const float SHIP_BRAKE = 180.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
@@ -830,7 +835,7 @@ typedef struct {
      * chain logs without a WORLD_INFO event default to 0, the oldest
      * possible). */
     uint32_t world_seq;
-    float time;
+    double time; /* derived from tick, never accumulated or persisted */
     uint32_t tick;
     float field_spawn_timer;
     float gravity_accumulator;  /* runs gravity at reduced rate */

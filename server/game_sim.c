@@ -17187,7 +17187,7 @@ void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     sim_interactions_clear(w);
     w->tick++;
-    w->time += dt;
+    w->time = world_time_from_tick(w->tick);
     step_signal_field_decay(w);
     SIM_PROFILE_END(SIM_PROF_BOOKKEEPING, prof_bookkeeping);
 

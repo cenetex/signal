@@ -90,7 +90,8 @@
 #define SAVE_CRC_MAGIC 0x43524332u /* "CRC2" */
 #define SAVE_STATION_SLOTS_V25 64
 #define OWNERSHIP_QUARANTINE_AUTO_REPORT_ROWS 32
-#define SAVE_VERSION 87  /* v87: persist the verified borrower of each loaned hull.
+#define SAVE_VERSION 88  /* v88: replace the float time header with canonical u32 tick.
+                          * v87: persist the verified borrower of each loaned hull.
                           * v86: persist the sponsored worker's ledger token
                           * so a rebuild keeps its debt identity.
                           * v85: append wallet-owned FLY purchase receipts.
@@ -3327,7 +3328,13 @@ static bool world_save_payload(const world_t *w, FILE *f,
     WRITE_FIELD(f, magic);
     WRITE_FIELD(f, version);
     WRITE_FIELD(f, w->rng);
-    WRITE_FIELD(f, w->time);
+    if (output_version >= 88) {
+        WRITE_FIELD(f, w->tick);
+    } else {
+        /* Test-only legacy writers retain the original four-byte layout. */
+        float legacy_time = (float)w->time;
+        WRITE_FIELD(f, legacy_time);
+    }
     WRITE_FIELD(f, w->field_spawn_timer);
     /* v25: station count + next ID counter */
     { int32_t sc = (int32_t)w->station_count;
@@ -3651,14 +3658,26 @@ static bool world_load_payload(
     g_loaded_save_version = (int)version;
 
     READ_FIELD(f, w->rng);
-    READ_FIELD(f, w->time);
-    if (!isfinite(w->time) || w->time < 0.0f) return false;
-    double loaded_tick = (double)w->time / (double)SIM_DT;
-    if (!isfinite(loaded_tick) ||
-        loaded_tick > (double)UINT32_MAX) {
-        return false;
+    if (version >= 88) {
+        READ_FIELD(f, w->tick);
+    } else {
+        float legacy_time;
+        READ_FIELD(f, legacy_time);
+        if (!isfinite(legacy_time) || legacy_time < 0.0f) return false;
+        /* Legacy saves contain no independent tick. Migrate the last recorded
+         * time to the nearest 120 Hz tick; lost elapsed time cannot be inferred
+         * from this file (including from unrelated event/expiry timestamps). */
+        double loaded_tick = (double)legacy_time * 120.0;
+        if (loaded_tick > (double)UINT32_MAX) return false;
+        w->tick = (uint32_t)llround(loaded_tick);
+        if (legacy_time >= 262144.0f) {
+            printf("[save] warning: legacy v%u clock may have frozen; "
+                   "migrating last recorded time to tick %u, "
+                   "lost elapsed ticks cannot be recovered from this save\n",
+                   version, w->tick);
+        }
     }
-    w->tick = (uint32_t)llround(loaded_tick);
+    w->time = world_time_from_tick(w->tick);
     READ_FIELD(f, w->field_spawn_timer);
     if (!isfinite(w->field_spawn_timer)) return false;
 
