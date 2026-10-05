@@ -51,6 +51,15 @@ On September 5, all 28 music tracks were recovered from the project owner's
 Downloads folder. All 10 episode files were recovered from the existing
 checkout.
 The source names and SHA-256 hashes are in
-[the recovery index](recovered-media-index.json). The three station portraits
-and publication permission notes are pending. The first complete pack and its
-deployment proof remain release acceptance work.
+[the recovery index](recovered-media-index.json).
+
+The original station portraits were lost with the deleted
+`signal-ratimics-assets` bucket. On October 4, three vector portraits were
+drawn to replace them.
+
+Media pack 1 is the first complete pack, with all 41 files. It is published at
+<https://github.com/cenetex/signal/releases/tag/media-pack-1>, with SHA-256
+`d2ed10d38cae7b4aa11d3fe2ce8ab891300ead69e6ad87497e050ebb1ba26c67`. The
+repository variables point at it. The music was made with Suno under the
+project owner's paid plan, which grants commercial use. The episodes and
+portraits belong to the project owner.
