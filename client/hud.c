@@ -3745,6 +3745,14 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     /* Subtitle-style messages: one clean line, no label brackets.
      * Priority order — only the most important message shows. */
 
+    if (client_waiting_for_replacement_ship()) {
+        label[0] = '\0';
+        snprintf(message, message_size,
+                 "Waiting for a station loaner. Recovery resumes when a ship is ready.");
+        *r = 255; *g0 = 221; *b = 119;
+        return true;
+    }
+
     /* Hull critical */
     if (!LOCAL_PLAYER.docked && g.death_screen_timer <= 0.0f) {
         float max_hull = ship_max_hull(LOCAL_PLAYER.ship);
@@ -5875,7 +5883,9 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
     uint8_t pa = (uint8_t)(flash * (float)a8);
     sdtx_color4b(PAL_DEATH_PROMPT, pa);
     char prompt[80];
-    if (g.death_respawn_fee > 0.5f &&
+    if (client_waiting_for_replacement_ship()) {
+        snprintf(prompt, sizeof(prompt), "[ E ] return to dock");
+    } else if (g.death_respawn_fee > 0.5f &&
         g.death_respawn_station < MAX_STATIONS &&
         g.world.stations[g.death_respawn_station].name[0]) {
         const char *cur =
@@ -6141,7 +6151,9 @@ void draw_hud(void) {
     sdtx_pos(top_text_x, top_row_2);
     if (LOCAL_PLAYER.docked && current_station) {
         sdtx_color3b(PAL_SIGNAL_MINT);
-        sdtx_printf("%s // docked // E launch", current_station->name);
+        sdtx_printf("%s // docked // %s", current_station->name,
+                    client_waiting_for_replacement_ship()
+                        ? "awaiting loaner" : "E launch");
     } else if (LOCAL_PLAYER.in_dock_range) {
         sdtx_color3b(PAL_SIGNAL_MINT);
         sdtx_puts(message_panel_visible
@@ -6297,7 +6309,8 @@ void draw_hud(void) {
         float ey = ui_text_pos(message_y + message_h + 6.0f);
         sdtx_pos(ex, ey);
         sdtx_color3b(PAL_TEXT_GREY);
-        sdtx_puts("[E] launch");
+        sdtx_puts(client_waiting_for_replacement_ship()
+            ? "[E] check replacement" : "[E] launch");
     }
 
     /* Shared post-classify panels: connection indicator + alpha banner, nav

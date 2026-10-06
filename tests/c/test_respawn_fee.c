@@ -114,9 +114,64 @@ TEST(test_respawn_event_carries_station_and_fee) {
     ASSERT(found);
 }
 
+TEST(test_self_destruct_is_consumed_before_respawn_launch) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->session_ready = true;
+
+    sp->input.launch = true;
+    world_sim_step(w, SIM_DT);
+    ASSERT(!sp->docked);
+    sp->input.reset = true;
+    world_sim_step(w, SIM_DT);
+    ASSERT(sp->docked);
+    ASSERT(!sp->input.reset);
+    uint32_t replacement_id = sp->ship_asset_id;
+    ASSERT(replacement_id != SHIP_ASSET_ID_NONE);
+
+    /* Keep the server's retained input across the death screen and launch. */
+    for (int i = 0; i < 12; i++) world_sim_step(w, SIM_DT);
+    sp->input.launch = true;
+    world_sim_step(w, SIM_DT);
+    ASSERT(!sp->docked);
+    for (int i = 0; i < 12; i++) world_sim_step(w, SIM_DT);
+    ASSERT(!sp->docked);
+    ASSERT_EQ_INT(sp->ship_asset_id, replacement_id);
+    ASSERT(sp->ship->hull > 0.0f);
+}
+
+TEST(test_docked_self_destruct_is_consumed_before_launch) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->session_ready = true;
+    uint32_t asset_id = sp->ship_asset_id;
+
+    /* A reset can arrive after another cause has already docked the ship. */
+    sp->input.reset = true;
+    world_sim_step(w, SIM_DT);
+    ASSERT(sp->docked);
+    ASSERT(!sp->input.reset);
+    sp->input.launch = true;
+    world_sim_step(w, SIM_DT);
+    for (int i = 0; i < 12; i++) world_sim_step(w, SIM_DT);
+    ASSERT(!sp->docked);
+    ASSERT_EQ_INT(sp->ship_asset_id, asset_id);
+    ASSERT(sp->ship->hull > 0.0f);
+}
+
 void register_respawn_fee_tests(void) {
     TEST_SECTION("\nRespawn fee + death payload:\n");
     RUN(test_respawn_debits_station_ledger);
     RUN(test_respawn_fee_persists_negative_balance);
     RUN(test_respawn_event_carries_station_and_fee);
+    RUN(test_self_destruct_is_consumed_before_respawn_launch);
+    RUN(test_docked_self_destruct_is_consumed_before_launch);
 }

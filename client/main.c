@@ -3588,6 +3588,37 @@ int signal_smoke_known_ledger_sync_state(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+int signal_smoke_prepare_crash_recovery(int all_loaners_used) {
+    if (!g.local_server.active || !net_is_loopback() ||
+        !emscripten_run_script_int(
+            "new URLSearchParams(location.search).get('smoke') === '1'"))
+        return 0;
+    world_t *authority = local_server_world(&g.local_server);
+    if (!authority || g.local_player_slot < 0 ||
+        g.local_player_slot >= MAX_PLAYERS) return 0;
+    server_player_t *player = &authority->players[g.local_player_slot];
+    if (!player->ship || !server_player_is_gameplay_ready(player)) return 0;
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *asset = &authority->ship_assets[i];
+        if (!asset->active || !asset->loaner ||
+            asset->status != SHIP_ASSET_STATUS_STORED) continue;
+        if (!all_loaners_used && asset->custody_station != 1) continue;
+        asset->destroyed = true;
+        asset->status = SHIP_ASSET_STATUS_DESTROYED;
+    }
+    vec2 module = module_world_pos_ring(&authority->stations[1], 1, 1);
+    player->docked = false;
+    player->in_dock_range = false;
+    player->ship->hull = 1.0f;
+    player->ship->pos = v2(module.x + 60.0f, module.y);
+    player->ship->vel = v2(-2000.0f, 0.0f);
+    memset(&player->input, 0, sizeof(player->input));
+    player->movement_queue_count = 0;
+    g.local_server.private_snapshot_dirty = true;
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
 int signal_smoke_prepare_tow_lifecycle(void) {
     if (!g.local_server.active || !net_is_loopback()) return 0;
     int player_idx = g.local_player_slot;
