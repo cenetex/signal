@@ -1253,8 +1253,9 @@ static void draw_header_band(const station_ui_state_t *ui,
      * same name (#479 B). */
     sdtx_color3b(PAL_TEXT_PRIMARY);
     sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L1));
+    const char *launch = client_waiting_for_replacement_ship()
+        ? "[E] CHECK" : "[E] LAUNCH";
     {
-        const char *launch = "[E] LAUNCH";
         float launch_w = (panel_w >= 360.0f) ? (float)strlen(launch) * cell_w : 0.0f;
         float title_right = panel_x + panel_w - right_margin
                           - (launch_w > 0.0f ? launch_w + 16.0f : 0.0f);
@@ -1278,7 +1279,6 @@ static void draw_header_band(const station_ui_state_t *ui,
     }
 
     if (panel_w >= 360.0f) {
-        const char *launch = "[E] LAUNCH";
         float lw = (float)strlen(launch) * cell_w;
         sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - lw),
                  ui_text_pos(panel_y + HEADER_L1));
@@ -5805,7 +5805,21 @@ void draw_station_services(const station_ui_state_t* ui) {
     }
     float cy = content_top + 34.0f;
 
-    if (active_panel && active_panel->draw_fn)
+    if (client_waiting_for_replacement_ship()) {
+        float right = cx + inner_w - 36.0f;
+        float y = cy + draw_section_header(cx, cy, right, "RECOVERY", HDR_SERVICE);
+        const uint8_t color[3] = { PAL_ORE_AMBER };
+        const char *lines[] = {
+            "Waiting for a loaner.",
+            "Recovery resumes when",
+            "a ship is ready.",
+        };
+        for (int i = 0; i < 3; i++) {
+            if (!station_row_has_room(y, 18.0f, panel_y + panel_h - 78.0f)) break;
+            draw_row_lr(cx, y, right, color, lines[i], color, "");
+            y += 18.0f;
+        }
+    } else if (active_panel && active_panel->draw_fn)
         active_panel->draw_fn(ui, cx, cy, inner_w, compact);
 
     char dynamic_hint[96];
@@ -5814,6 +5828,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         ui->station, dynamic_hint, sizeof(dynamic_hint))
         ? dynamic_hint
         : "[TAB] panels";
+    if (client_waiting_for_replacement_ship()) hint = "[E] check replacement";
     char hint_fit[96];
     int hint_chars = (int)floorf((panel_w - 40.0f) / 8.0f);
     ui_fit_text(hint, hint_chars, hint_fit, sizeof(hint_fit));

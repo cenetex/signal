@@ -2263,6 +2263,59 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  for (const allLoanersUsed of [false, true]) {
+    test(`crash recovery handles ${allLoanersUsed ? 'all loaners in use' : 'an empty nearby dock'}`, async ({ page }) => {
+      test.skip(usesLiveSmokeUrl(), 'crash recovery uses the local test world');
+      const logs = installFatalCollectors(page);
+      const canvas = await loadGame(page, false, { singleplayer: true });
+      await canvas.click();
+      const prepared = await page.evaluate((empty) => {
+        const mod = (window as unknown as {
+          Module: { ccall: (name: string, type: string, types: string[], args: number[]) => number };
+        }).Module;
+        return mod.ccall('signal_smoke_prepare_crash_recovery', 'number', ['number'], [empty ? 1 : 0]);
+      }, allLoanersUsed);
+      expect(prepared).toBe(1);
+      await expect.poll(() => wasmNumber(page, 'get_net_reconcile_death_respawn_events')).toBe(1);
+      await page.waitForTimeout(8_000);
+      await tap(page, 'E');
+      if (allLoanersUsed) {
+        await expect.poll(() => hudHintText(page)).toContain('Waiting for a station loaner');
+        expect(await wasmNumber(page, 'get_player_docked')).toBe(1);
+      } else {
+        await expect.poll(() => wasmNumber(page, 'get_player_docked')).toBe(0);
+        await page.waitForTimeout(1_000);
+        expect(await wasmNumber(page, 'get_player_docked')).toBe(0);
+      }
+      expect(await wasmNumber(page, 'get_net_reconcile_death_respawn_events')).toBe(1);
+      expectNoFatalErrors(logs);
+    });
+  }
+
+  test('E launches a living replacement ship after self-destruct', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'death and launch use the local test world');
+
+    const logs = installFatalCollectors(page);
+    const canvas = await loadGame(page, false, { singleplayer: true });
+    await canvas.click();
+    await tap(page, 'E');
+    await expect.poll(() => wasmNumber(page, 'get_player_docked')).toBe(0);
+
+    await hold(page, 'X', 1_400);
+    await expect.poll(() => wasmNumber(page, 'get_net_reconcile_death_respawn_events'))
+      .toBe(1);
+    await expect.poll(() => wasmNumber(page, 'get_player_docked')).toBe(1);
+
+    // Let the wreckage animation and launch menu finish their fade.
+    await page.waitForTimeout(8_000);
+    await tap(page, 'E');
+    await expect.poll(() => wasmNumber(page, 'get_player_docked')).toBe(0);
+    await page.waitForTimeout(1_000);
+    expect(await wasmNumber(page, 'get_player_docked')).toBe(0);
+    expect(await wasmNumber(page, 'get_net_reconcile_death_respawn_events')).toBe(1);
+    expectNoFatalErrors(logs);
+  });
+
   test('desktop core controls stay alive through the golden path keys', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });

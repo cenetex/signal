@@ -787,7 +787,8 @@ TEST(test_player_init_clears_stale_binding_when_waiting_for_hull) {
         SHIP_ASSET_PROVENANCE_SHIPYARD, false, 1);
     ASSERT(foreign != NULL);
     sp->ship_asset_id = foreign->asset_id;
-    ASSERT(test_destroy_stored_station_loaners(&w, 0) > 0);
+    for (int s = 0; s < SIGNAL_ROOT_STATION_COUNT; s++)
+        ASSERT(test_destroy_stored_station_loaners(&w, s) > 0);
     ASSERT_EQ_INT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER), 0);
 
     int frames = 0, lasers = 0, tractors = 0;
@@ -1123,7 +1124,8 @@ TEST(test_player_respawn_without_loaner_waits_for_shipyard_asset) {
     uint32_t old_asset_id = sp->ship_asset_id;
     ASSERT(old_asset_id != SHIP_ASSET_ID_NONE);
 
-    ASSERT(test_destroy_stored_station_loaners(&w, 0) > 0);
+    for (int s = 0; s < SIGNAL_ROOT_STATION_COUNT; s++)
+        ASSERT(test_destroy_stored_station_loaners(&w, s) > 0);
     ASSERT_EQ_INT(world_station_stored_hull_count(&w, 0, HULL_CLASS_MINER), 0);
     int frames = 0, lasers = 0, tractors = 0;
     ASSERT(shipyard_hull_cost(HULL_CLASS_MINER, &frames, &lasers, &tractors));
@@ -1169,6 +1171,86 @@ TEST(test_player_respawn_without_loaner_waits_for_shipyard_asset) {
     world_sim_step(&w, SIM_DT);
     ASSERT(!sp->docked);
     ASSERT_EQ_INT(sp->ship_asset_id, replacement->asset_id);
+}
+
+TEST(test_crash_respawn_uses_available_station_loaner) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    actor_principal_t player = actor_principal_none();
+    ASSERT(test_make_verified_player_principal(sp, 0x42, &player));
+    ASSERT(test_destroy_stored_station_loaners(&w, 1) > 0);
+
+    /* Helios's remaining loaners belong to another borrower. */
+    actor_principal_t borrower = actor_principal_none();
+    ASSERT(test_make_principal(ACTOR_PRINCIPAL_PLAYER, 0x53, &borrower));
+    for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
+        ship_asset_t *asset = &w.ship_assets[i];
+        if (asset->active && asset->loaner &&
+            asset->custody_station == 2 &&
+            asset->status == SHIP_ASSET_STATUS_STORED)
+            asset->borrower_principal = borrower;
+    }
+    float balance_before = ledger_balance_by_pubkey(&w.stations[0], sp->pubkey);
+    float crash_station_balance = ledger_balance_by_pubkey(&w.stations[1], sp->pubkey);
+    uint32_t old_asset_id = sp->ship_asset_id;
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->ship->hull = 1.0f;
+    vec2 module = module_world_pos_ring(&w.stations[1], 1, 1);
+    sp->ship->pos = v2(module.x + 60.0f, module.y);
+    sp->ship->vel = v2(-2000.0f, 0.0f);
+
+    bool died = false;
+    for (int tick = 0; tick < 10 && !died; tick++) {
+        world_sim_step(&w, SIM_DT);
+        for (int i = 0; i < w.events.count; i++) {
+            const sim_event_t *ev = &w.events.events[i];
+            if (ev->type != SIM_EVENT_DEATH || ev->player_id != sp->id) continue;
+            died = true;
+            ASSERT_EQ_INT(ev->death.respawn_station, 0);
+            ASSERT_EQ_FLOAT(ev->death.respawn_fee,
+                            (float)station_spawn_fee(&w.stations[0]), 0.01f);
+        }
+    }
+    ASSERT(died);
+    ASSERT(sp->docked);
+    ASSERT_EQ_INT(sp->current_station, 0);
+    ASSERT(sp->ship_asset_id != SHIP_ASSET_ID_NONE);
+    ASSERT(sp->ship_asset_id != old_asset_id);
+    ASSERT(sp->ship->hull > 0.0f);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(&w.stations[0], sp->pubkey),
+                    balance_before - (float)station_spawn_fee(&w.stations[0]), 0.01f);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(&w.stations[1], sp->pubkey),
+                    crash_station_balance, 0.01f);
+    sp->input.launch = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->docked);
+}
+
+TEST(test_waiting_player_can_launch_with_another_station_loaner) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->session_ready = true;
+    ship_asset_t *old = world_ship_asset_by_id(&w, sp->ship_asset_id);
+    ASSERT(old != NULL);
+    old->destroyed = true;
+    old->status = SHIP_ASSET_STATUS_DESTROYED;
+    sp->ship_asset_id = SHIP_ASSET_ID_NONE;
+    sp->ship->hull = 0.0f;
+    ASSERT(test_destroy_stored_station_loaners(&w, 0) > 0);
+    int nearest = v2_dist_sq(w.stations[0].pos, w.stations[1].pos) <=
+                  v2_dist_sq(w.stations[0].pos, w.stations[2].pos) ? 1 : 2;
+    sp->input.launch = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!sp->docked);
+    ASSERT_EQ_INT(sp->current_station, nearest);
+    ASSERT(sp->ship_asset_id != SHIP_ASSET_ID_NONE);
+    ASSERT(sp->ship->hull > 0.0f);
 }
 
 TEST(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots) {
@@ -12700,6 +12782,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_init_ship_null_context_safe);
     RUN(test_player_respawn_retires_asset_and_claims_loaner);
     RUN(test_player_respawn_without_loaner_waits_for_shipyard_asset);
+    RUN(test_crash_respawn_uses_available_station_loaner);
+    RUN(test_waiting_player_can_launch_with_another_station_loaner);
     RUN(test_ship_asset_mint_reclaims_destroyed_unreferenced_slots);
     RUN(test_spawn_npc_bootstrap_does_not_queue_shipyard_build);
     RUN(test_npc_asset_claim_requires_controller_registry_slot);

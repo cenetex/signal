@@ -3392,8 +3392,10 @@ static bool ship_asset_assign_to_player(world_t *w, int player_slot,
     return true;
 }
 
-bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
-    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
+static ship_asset_t *ship_asset_find_for_player(world_t *w, int player_slot,
+                                               int station_idx,
+                                               uint32_t excluded_asset_id) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return NULL;
     server_player_t *sp = &w->players[player_slot];
     if (station_idx < 0 || station_idx >= MAX_STATIONS ||
         !station_exists(&w->stations[station_idx])) {
@@ -3401,20 +3403,20 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
     }
 
     ship_asset_t *bound = world_ship_asset_by_id(w, sp->ship_asset_id);
-    if (bound &&
+    if (bound && bound->asset_id != excluded_asset_id &&
         ship_asset_player_can_reclaim_bound(w, bound, sp, player_slot) &&
         (bound->status == SHIP_ASSET_STATUS_STORED ||
          (bound->status == SHIP_ASSET_STATUS_ASSIGNED &&
           bound->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
           bound->operator_slot == player_slot))) {
-        return ship_asset_assign_to_player(w, player_slot, bound,
-                                           bound->custody_station);
+        return bound;
     }
 
     for (int pass = 0; pass < 4; pass++) {
         for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
             ship_asset_t *asset = &w->ship_assets[i];
-            if (!asset->active || asset->destroyed) continue;
+            if (!asset->active || asset->destroyed ||
+                asset->asset_id == excluded_asset_id) continue;
             if (asset->status != SHIP_ASSET_STATUS_STORED &&
                 !(asset->status == SHIP_ASSET_STATUS_ASSIGNED &&
                   asset->operator_kind == SHIP_ASSET_OPERATOR_PLAYER &&
@@ -3427,27 +3429,54 @@ bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
                 actor_principal_equal(&asset->borrower_principal, &player);
             if (pass < 2 ? !ship_asset_player_matches_owner(w, asset, sp) : !borrowed) continue;
             if ((pass % 2) == 0 && asset->custody_station != station_idx) continue;
-            return ship_asset_assign_to_player(w, player_slot, asset,
-                                               asset->custody_station);
+            return asset;
         }
     }
 
+    /* Recover at the closest station with a free loaner. */
+    ship_asset_t *nearest = NULL;
+    float nearest_distance = 1e18f;
     for (int i = 0; i < MAX_SHIP_ASSETS; i++) {
         ship_asset_t *asset = &w->ship_assets[i];
-        if (!asset->active || asset->destroyed) continue;
+        if (!asset->active || asset->destroyed ||
+            asset->asset_id == excluded_asset_id) continue;
         if (asset->status != SHIP_ASSET_STATUS_STORED) continue;
+        if (asset->provenance == SHIP_ASSET_PROVENANCE_FLY_PURCHASE) continue;
+        int custody = asset->custody_station;
+        if (custody < 0 || custody >= MAX_STATIONS ||
+            (custody != station_idx &&
+             !station_exists(&w->stations[custody]))) continue;
         actor_principal_t station_owner = actor_principal_none();
-        if (!actor_principal_from_station(w, station_idx, &station_owner) ||
+        if (!actor_principal_from_station(w, custody, &station_owner) ||
             !actor_principal_equal(
                 &asset->owner_principal, &station_owner)) {
             continue;
         }
         if (!asset->loaner) continue;
         if (asset->borrower_principal.kind != ACTOR_PRINCIPAL_NONE) continue;
-        if (asset->custody_station != station_idx) continue;
-        return ship_asset_assign_to_player(w, player_slot, asset, station_idx);
+        /* Preserve local claims during saved-world restoration. */
+        if (custody == station_idx) return asset;
+        float distance = v2_dist_sq(w->stations[station_idx].pos,
+                                    w->stations[custody].pos);
+        if (distance < nearest_distance) {
+            nearest = asset;
+            nearest_distance = distance;
+        }
     }
+    return nearest;
+}
 
+bool ship_asset_claim_for_player(world_t *w, int player_slot, int station_idx) {
+    if (!w || player_slot < 0 || player_slot >= MAX_PLAYERS) return false;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_exists(&w->stations[station_idx])) station_idx = 0;
+    ship_asset_t *asset = ship_asset_find_for_player(
+        w, player_slot, station_idx, SHIP_ASSET_ID_NONE);
+    if (asset)
+        return ship_asset_assign_to_player(w, player_slot, asset,
+                                           asset->custody_station);
+
+    server_player_t *sp = &w->players[player_slot];
     sp->ship_asset_id = SHIP_ASSET_ID_NONE;
     (void)shipyard_queue_station_hull_request(w, station_idx, HULL_CLASS_MINER);
     return false;
@@ -5497,6 +5526,13 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
         if (!station_exists(&w->stations[i])) continue;
         float d = v2_dist_sq(sp->ship->pos, w->stations[i].pos);
         if (d < best_d) { best_d = d; best = i; }
+    }
+    ship_asset_t *replacement = ship_asset_find_for_player(
+        w, sp->id, best, sp->ship_asset_id);
+    if (replacement && replacement->custody_station >= 0 &&
+        replacement->custody_station < MAX_STATIONS &&
+        station_exists(&w->stations[replacement->custody_station])) {
+        best = replacement->custody_station;
     }
     /* Charge the spawn fee against THAT station's ledger. Force-debit so
      * a bankrupt player still gets a ship — the negative balance becomes
@@ -11616,11 +11652,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         }
     }
 
-    /* Self-destruct: X key */
-    if (sp->input.reset && !sp->docked) {
-        sp->ship->hull = 0.0f;
-        emergency_recover_ship(w, sp);
-        return;
+    /* Consume each self-destruct request once, including docked arrivals. */
+    if (sp->input.reset) {
+        sp->input.reset = false;
+        if (!sp->docked) {
+            sp->ship->hull = 0.0f;
+            emergency_recover_ship(w, sp);
+            return;
+        }
     }
     /* Mark that we still need to restore inputs at end of step_player */
     bool restore_net_input = sp->autopilot_mode != 0;

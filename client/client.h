@@ -822,6 +822,11 @@ _Static_assert(sizeof(game_t) <= SIGNAL_GAME_SIZE_BUDGET_BYTES,
 extern game_t g;
 #define LOCAL_PLAYER (g.world.players[g.local_player_slot])
 
+/* Recovery uses a zero-hull placeholder while the shipyard supplies a ship. */
+static inline bool client_waiting_for_replacement_ship(void) {
+    return LOCAL_PLAYER.docked && LOCAL_PLAYER.ship->hull <= 0.0f;
+}
+
 /* Derive the local pubkey-backed public actor for presentation matching. */
 bool client_local_public_actor_id(public_actor_id_t *out);
 
