@@ -390,6 +390,18 @@
         "nohup.out"
       ],
       "lanes": []
+    },
+    {
+      "name": "deployed-play-check",
+      "scope": "test",
+      "paths": [
+        "scripts/prepare-play-check-identities.mjs",
+        "scripts/test-prepare-play-check-identities.mjs"
+      ],
+      "lanes": [
+        "browser",
+        "deployment"
+      ]
     }
   ]
 }

@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
+import { playCheckIdentity, validPlayCheckIdentity } from './prepare-play-check-identities.mjs';
+
+const desktop = playCheckIdentity('local-test-secret', 'test-app', 'desktop');
+assert.equal(desktop, playCheckIdentity('local-test-secret', 'test-app', 'desktop'));
+assert.notEqual(desktop, playCheckIdentity('local-test-secret', 'test-app', 'touch'));
+assert.notEqual(desktop, playCheckIdentity('local-test-secret', 'other-app', 'desktop'));
+assert.notEqual(desktop, playCheckIdentity('other-secret', 'test-app', 'desktop'));
+assert.throws(() => playCheckIdentity('', 'test-app', 'desktop'));
+assert.throws(() => playCheckIdentity('test-secret', 'test-app', 'other'));
+assert(validPlayCheckIdentity(desktop));
+assert.equal(validPlayCheckIdentity(Buffer.alloc(64).toString('base64')), false);
+assert.equal(validPlayCheckIdentity(desktop + '\n'), false);
+assert.equal(validPlayCheckIdentity(undefined), false);
+const bytes = Buffer.from(desktop, 'base64');
+assert.equal(bytes.length, 64);
+const privateKey = createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), bytes.subarray(0, 32)]), format: 'der', type: 'pkcs8' });
+const publicKey = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), bytes.subarray(32)]), format: 'der', type: 'spki' });
+const message = Buffer.from('signal release play identity check');
+assert(verify(null, message, publicKey, sign(null, message, privateKey)));
+console.log('Play-check identity derivation passed.');

@@ -152,3 +152,45 @@ SMOKE_LIVE_RELAY_ASSERT=1 \
   Machine while players are online.
 - Volumes are one-Machine, one-region storage. Create backups before treating
   the relay as durable production state.
+
+
+## Post-deployment play check
+
+The Fly workflow reports deployment and play verification in separate jobs.
+After a successful deployment, `play-check` checks `/health`, the loaded
+browser build, and the connected server against the release commit. It runs
+one desktop browser and one narrow touch browser in sequence.
+
+The workflow derives two stable test accounts from the existing station
+authority secret. An HMAC scope binds each account to the app and device.
+Only the derived Ed25519 identity reaches its fresh browser session. Private
+identity setup finishes before tracing starts. The station secret stays in
+the preparation process. The same accounts return on later releases, so the
+checks reserve at most two starter loans for each app and authority secret.
+When rotating that secret, reconcile the previous test accounts with the
+operator's usual account and loan process.
+
+Each player launches if docked, turns briefly, releases the control, receives
+server input acknowledgements, and reloads. A turn in the other direction
+checks control after reconnect. The touch case uses actual touch events.
+The check uses only launch and short turns, with each turn lasting 300 ms
+after the held control is observed. It records screenshots, a Playwright
+trace, and a small result file for seven days. The browser contexts close
+after each check.
+
+For a development server, prepare two local test identities using
+`playCheckIdentity` from `scripts/prepare-play-check-identities.mjs`. Pass them
+as `SIGNAL_PLAY_IDENTITY_DESKTOP` and `SIGNAL_PLAY_IDENTITY_TOUCH` in the test
+process environment. Then run:
+
+```sh
+SIGNAL_PLAY_URL='http://127.0.0.1:3000/play.html?server=ws://127.0.0.1:9091/ws' \
+SIGNAL_HEALTH_URL='http://127.0.0.1:9091/health' \
+SIGNAL_EXPECTED_REVISION=0123456 \
+npx --no-install playwright test --config tests/post-deploy-play.config.ts
+```
+
+Set the revision to the commit baked into both builds. The dedicated config
+runs both device checks with zero retries. A failed play check marks the
+workflow as failed and preserves the completed deployment as a separate job
+result. Release candidate safety gates still run before deployment.

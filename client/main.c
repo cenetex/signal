@@ -6204,6 +6204,20 @@ int signal_debug_auth_available(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+const char *signal_build_revision(void) {
+#ifdef GIT_HASH
+    return GIT_HASH;
+#else
+    return "dev";
+#endif
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_server_revision(void) {
+    return net_server_hash();
+}
+
+EMSCRIPTEN_KEEPALIVE
 int signal_debug_net_connected(void) {
     return net_is_connected() ? 1 : 0;
 }

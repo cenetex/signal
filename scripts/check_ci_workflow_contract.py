@@ -560,6 +560,28 @@ def contract_failures(
         failures.append(
             "deploy-fly.yml: browser build lacks release WASM memory budget"
         )
+    play_check = job_block(deploy, "play-check")
+    for marker in (
+        "needs: deploy",
+        "if: github.event_name != 'workflow_dispatch' || inputs.deploy == true",
+        "node scripts/test-prepare-play-check-identities.mjs",
+        "node scripts/prepare-play-check-identities.mjs",
+        "SIGNAL_EXPECTED_REVISION: ${{ github.sha }}",
+        "SIGNAL_STATION_AUTH_SECRET: ''",
+        "npx --no-install playwright test --config tests/post-deploy-play.config.ts",
+        "if: always()",
+        "name: deployed-play-${{ github.sha }}",
+        "test-results/post-deploy-play/",
+    ):
+        if marker not in play_check:
+            failures.append(
+                f"deploy-fly.yml: deployed play check requires {marker!r}"
+            )
+    for secret in ("SIGNAL_STATION_AUTH_SECRET", "FLY_API_TOKEN"):
+        if re.search(rf"(?m)^      {secret}: ''$", play_check) is None:
+            failures.append(f"deploy-fly.yml: deployed play check must clear job-level {secret}")
+    if "continue-on-error:" in play_check:
+        failures.append("deploy-fly.yml: deployed play check must report failure")
     for workflow_name, workflow_source in (
         ("release.yml", release),
         ("deploy-fly.yml", deploy),

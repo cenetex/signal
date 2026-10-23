@@ -55,6 +55,20 @@ class WorkflowContractTests(unittest.TestCase):
             for failure in failures
         ), failures)
 
+    def test_deployed_play_contract(self) -> None:
+        for before, after in (
+            ("    needs: deploy\n", "    needs: verify\n"),
+            ("          SIGNAL_EXPECTED_REVISION: ${{ github.sha }}\n", ""),
+            ("      SIGNAL_STATION_AUTH_SECRET: ''\n", ""),
+            ("          node scripts/prepare-play-check-identities.mjs\n", ""),
+            ("        run: npx --no-install playwright test --config tests/post-deploy-play.config.ts\n", "        run: true\n"),
+            ("          name: deployed-play-${{ github.sha }}\n", ""),
+            ("  play-check:\n", "  play-check:\n    continue-on-error: true\n"),
+        ):
+            with self.subTest(before=before):
+                failures = self.failures(workflow="deploy-fly.yml", before=before, after=after)
+                self.assertTrue(any("deployed play check" in failure for failure in failures), failures)
+
     def test_pr_path_filter_cannot_suppress_required_check(self) -> None:
         failures = self.failures(
             workflow="ci.yml",
