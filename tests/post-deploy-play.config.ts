@@ -13,8 +13,8 @@ export default defineConfig({
   use: {
     browserName: 'chromium',
     headless: true,
-    trace: 'on',
-    screenshot: 'on',
+    trace: 'off', // The test starts a trace after private identity setup.
+    screenshot: 'off',
     storageState: { cookies: [], origins: [] },
   },
   projects: [

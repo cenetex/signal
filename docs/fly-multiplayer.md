@@ -159,19 +159,29 @@ SMOKE_LIVE_RELAY_ASSERT=1 \
 The Fly workflow reports deployment and play verification in separate jobs.
 After a successful deployment, `play-check` checks `/health`, the loaded
 browser build, and the connected server against the release commit. It runs
-one desktop browser and one narrow touch browser in sequence. Each starts
-with empty browser storage and gets its own identity through normal signup.
+one desktop browser and one narrow touch browser in sequence.
 
-Each player launches, holds thrust briefly, releases it, receives server
-input acknowledgements, and reloads to check the same identity can reconnect.
-The touch case uses actual touch events. The check takes screenshots and
-keeps a Playwright trace plus a small result file for seven days. Identity
-keys and session tokens stay in the temporary browser context. The two test
-players use ordinary starter ships and normal movement; this check creates
-two persistent test accounts per release. The browser contexts close at the
-end of each check.
+The workflow derives two stable test accounts from the existing station
+authority secret. An HMAC scope binds each account to the app and device.
+Only the derived Ed25519 identity reaches its fresh browser session. Private
+identity setup finishes before tracing starts. The station secret stays in
+the preparation process. The same accounts return on later releases, so the
+checks reserve at most two starter loans for each app and authority secret.
+When rotating that secret, reconcile the previous test accounts with the
+operator's usual account and loan process.
 
-Run the same check against a development server with a matching browser build:
+Each player launches if docked, turns briefly, releases the control, receives
+server input acknowledgements, and reloads. A turn in the other direction
+checks control after reconnect. The touch case uses actual touch events.
+The check uses only launch and short turns, with each turn lasting 300 ms
+after the held control is observed. It records screenshots, a Playwright
+trace, and a small result file for seven days. The browser contexts close
+after each check.
+
+For a development server, prepare two local test identities using
+`playCheckIdentity` from `scripts/prepare-play-check-identities.mjs`. Pass them
+as `SIGNAL_PLAY_IDENTITY_DESKTOP` and `SIGNAL_PLAY_IDENTITY_TOUCH` in the test
+process environment. Then run:
 
 ```sh
 SIGNAL_PLAY_URL='http://127.0.0.1:3000/play.html?server=ws://127.0.0.1:9091/ws' \

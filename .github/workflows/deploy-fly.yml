@@ -27,6 +27,8 @@ on:
       - '.github/workflows/deploy-fly.yml'
       - 'tests/post-deploy-play.live.ts'
       - 'tests/post-deploy-play.config.ts'
+      - 'scripts/prepare-play-check-identities.mjs'
+      - 'scripts/test-prepare-play-check-identities.mjs'
   workflow_dispatch:
     inputs:
       launch:
@@ -203,6 +205,9 @@ jobs:
 
   play-check:
     name: Verify deployed desktop and touch play
+    env:
+      FLY_API_TOKEN: ''
+      SIGNAL_STATION_AUTH_SECRET: ''
     needs: deploy
     if: github.event_name != 'workflow_dispatch' || inputs.deploy == true
     runs-on: ubuntu-latest
@@ -217,10 +222,18 @@ jobs:
         run: |
           npm ci
           npx --no-install playwright install --with-deps chromium
+      - name: Prepare dedicated play accounts
+        env:
+          SIGNAL_STATION_AUTH_SECRET: ${{ secrets.SIGNAL_STATION_AUTH_SECRET }}
+        run: |
+          node scripts/test-prepare-play-check-identities.mjs
+          node scripts/prepare-play-check-identities.mjs
       - name: Check deployed revision and play
         env:
           SIGNAL_PLAY_URL: https://${{ env.FLY_APP }}.fly.dev/play.html
           SIGNAL_EXPECTED_REVISION: ${{ github.sha }}
+          SIGNAL_STATION_AUTH_SECRET: ''
+          FLY_API_TOKEN: ''
         run: npx --no-install playwright test --config tests/post-deploy-play.config.ts
       - name: Upload deployed play evidence
         if: always()

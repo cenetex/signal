@@ -122,8 +122,10 @@
       "paths": [
         "playwright.config.ts",
         "tests/browser-smoke.spec.ts",
-        "tests/post-deploy-play.live.ts",
-        "tests/post-deploy-play.config.ts"
+        "tests/gameplay-profile.spec.ts",
+        "tests/player-guide.spec.ts",
+        "tests/post-deploy-play.config.ts",
+        "tests/post-deploy-play.live.ts"
       ],
       "lanes": [
         "browser"
@@ -388,6 +390,18 @@
         "nohup.out"
       ],
       "lanes": []
+    },
+    {
+      "name": "deployed-play-check",
+      "scope": "test",
+      "paths": [
+        "scripts/prepare-play-check-identities.mjs",
+        "scripts/test-prepare-play-check-identities.mjs"
+      ],
+      "lanes": [
+        "browser",
+        "deployment"
+      ]
     }
   ]
 }
