@@ -71,8 +71,12 @@ Each run writes and attaches these JSON files under its `test-results` folder:
 - `saved-world-checkpoint.json`: the world before aging, after aging, and after reload.
 
 The check writes each report before its assertions so a failed run retains
-its measurements. Compare runs on the same named hardware and browser. The
-frame histogram measures frame processing time. Its 0.25 ms buckets saturate
+its measurements. It observes the browser save completion callback before
+reload, which preserves the completed generation when another autosave starts.
+The raw `snapshots.max_gap_ms` is the largest gap for any observed message
+type. Rare event messages contribute to it alongside regular snapshots.
+Compare runs on the same named hardware and browser. The frame histogram
+measures frame processing time. Its 0.25 ms buckets saturate
 at 63.875 ms; use the exact maximum alongside percentiles for long stalls.
 Dropped-tick percentage is dropped ticks divided by completed plus dropped
 ticks. `missed` remains available separately in the raw report.
