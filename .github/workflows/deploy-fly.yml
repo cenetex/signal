@@ -250,6 +250,7 @@ jobs:
         env:
           PLAY_STATUS: ${{ job.status }}
         run: |
-          echo "### Deployed play verification" >> "$GITHUB_STEP_SUMMARY"
-          echo "Deployment completed in the deploy job. Desktop and touch play checks: $PLAY_STATUS." >> "$GITHUB_STEP_SUMMARY"
-          echo "Evidence: deployed-play-${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' \
+            "### Deployed play verification" \
+            "Deployment completed in the deploy job. Desktop and touch play checks: $PLAY_STATUS." \
+            "Evidence: deployed-play-${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
