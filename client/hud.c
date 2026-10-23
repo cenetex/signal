@@ -3735,7 +3735,7 @@ static bool hud_find_snapping_scaffold(hud_snapping_scaffold_t *out) {
 }
 
 
-static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
+static bool build_hud_message_raw(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
     /* ================================================================
      * SYSTEM HINT PANEL — bottom-right, one message at a time.
      * Tutorial copy uses the local guide voice; stations never speak
@@ -3938,6 +3938,14 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     return false;
 }
 
+static bool build_hud_message(char *label, size_t label_size,
+                              char *message, size_t message_size,
+                              uint8_t *r, uint8_t *g0, uint8_t *b) {
+    bool shown = build_hud_message_raw(label, label_size, message, message_size, r, g0, b);
+    if (shown) onboarding_format_controls(message, message_size);
+    return shown;
+}
+
 #ifdef __EMSCRIPTEN__
 static int smoke_loop_state_override = 0;
 static int smoke_apply_loop_state(int state);
@@ -4036,6 +4044,9 @@ enum {
     SMOKE_LOOP_STATE_REFIT_WORK_AGED = 40,
     SMOKE_LOOP_STATE_CARGO_HOPPER_GUIDE = 41,
     SMOKE_LOOP_STATE_STORY_CALL = 42,
+    SMOKE_LOOP_STATE_GUIDE_CHOICE = 43,
+    SMOKE_LOOP_STATE_GUIDE_TRACTOR = 44,
+    SMOKE_LOOP_STATE_GUIDE_LOCAL_CREDIT = 45,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -5151,6 +5162,27 @@ static int smoke_apply_loop_state(int state) {
         g.station_view = STATION_VIEW_TRADE;
         g.onboarding.welcomed = false;
         return 1;
+    case SMOKE_LOOP_STATE_GUIDE_LOCAL_CREDIT:
+        if (!smoke_apply_loop_state(SMOKE_LOOP_STATE_GUIDE_CHOICE)) return 0;
+        return smoke_maintain_local_money_view() ? 1 : 0;
+    case SMOKE_LOOP_STATE_GUIDE_CHOICE:
+        if (!smoke_apply_loop_state(SMOKE_LOOP_STATE_TRACKED_CUPRITE_CONTRACT))
+            return 0;
+        g.worker_story.flags = 0;
+        sp->docked = true;
+        sp->current_station = 0;
+        sp->nearby_station = 0;
+        sp->in_dock_range = true;
+        g.station_view = STATION_VIEW_WORK;
+        g.was_docked = true;
+        g.dock_settle_timer = 0.0f;
+        return 1;
+    case SMOKE_LOOP_STATE_GUIDE_TRACTOR:
+        smoke_set_onboarding_economy_progress(false, false, false);
+        g.onboarding.tractored = false;
+        sp->nearby_fragments = 2;
+        g.local_server.active = false;
+        return 1;
     case SMOKE_LOOP_STATE_STORY_CALL:
         smoke_set_onboarding_economy_progress(true, true, true);
         sp->docked = true;
@@ -5158,6 +5190,7 @@ static int smoke_apply_loop_state(int state) {
         g.onboarding.welcomed = true;
         g.worker_story.flags = 0u;
         g.worker_story.loaded = true;
+        g.onboarding.story_focus = true;
         return 1;
     case SMOKE_LOOP_STATE_SCAN_LASER_FAB: {
         if (g.world.station_count <= 2 || !station_exists(&g.world.stations[2]))

@@ -47,7 +47,7 @@ TEST(test_progress_corruption_preserves_a_known_start)
 {
     const char *bad[] = {
         "", "SGP2:ff:3ff\n", "SGP2:01:3f", "SGP1:01:3ff",
-        "SGP2:0z:000", "SGP2:02:000", "SGP2:ff:400", "SGP2:ff:fff"
+        "SGP2:0z:000", "SGP2:02:000", "SGP2:ff:800", "SGP2:ff:fff"
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         client_progress_t progress = {255, 1023};
@@ -81,8 +81,26 @@ TEST(test_progress_invalid_update_keeps_the_last_saved_record)
     remove(path);
 }
 
+TEST(test_progress_remembers_guide_focus_and_local_restore)
+{
+    client_progress_t saved = {31, 1023 | CLIENT_PROGRESS_STORY_FOCUS};
+    char text[12];
+    ASSERT(client_progress_encode(text, &saved));
+    client_progress_t restored;
+    ASSERT(client_progress_decode(text, &restored));
+    ASSERT_EQ_INT(restored.guide, saved.guide);
+    client_progress_restore_local(0x80000000u | (31u << 16) | saved.guide);
+    ASSERT_EQ_INT(client_progress_current().guide, saved.guide);
+    ASSERT_EQ_INT(client_progress_pack_local(), 0x80000000u | (31u << 16) | saved.guide);
+    /* Existing records retain their guide steps and use Work focus. */
+    ASSERT(client_progress_decode("SGP2:1f:3ff", &restored));
+    ASSERT_EQ_INT(restored.guide & CLIENT_PROGRESS_STORY_FOCUS, 0);
+    client_progress_restore_local(0);
+}
+
 void register_progress_store_tests(void)
 {
+    RUN(test_progress_remembers_guide_focus_and_local_restore);
     RUN(test_progress_scope_separates_players_and_authorities);
     RUN(test_progress_restart_restores_story_and_guide);
     RUN(test_progress_corruption_preserves_a_known_start);

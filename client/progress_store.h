@@ -5,6 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define CLIENT_PROGRESS_STORY_FOCUS (1u << 10)
+#define CLIENT_PROGRESS_GUIDE_MASK 2047u
+
 typedef struct {
     uint16_t story;
     uint16_t guide;

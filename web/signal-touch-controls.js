@@ -32,7 +32,8 @@
     five: 24,
     auto: 30,
     back: 31,
-    recoveryConfirm: 32
+    recoveryConfirm: 32,
+    guide: 33
   };
 
   var RECOVERY_FLAG = {
@@ -80,6 +81,7 @@
   };
 
   var fallbackKeys = {
+    33: ["g", "KeyG", 71],
     1: ["w", "KeyW", 87],
     2: ["s", "KeyS", 83],
     3: ["a", "KeyA", 65],
@@ -158,6 +160,7 @@
   }
 
   function send(action, down) {
+    if (down) wasmCall("signal_guide_touch_mode", null, ["number"], [1]);
     if (wasmCall("signal_mobile_key", null, ["number", "number"],
                  [action, down ? 1 : 0]) === null) {
       fallbackKey(action, down);
@@ -259,6 +262,7 @@
       ".signal-touch-station .repair{grid-column:1/span 2;grid-row:2}.signal-touch-station .laser{grid-column:3/span 2;grid-row:2}.signal-touch-station .cargo{grid-column:5/span 3;grid-row:2}",
       ".signal-touch-station .tractorUpgrade{grid-column:1/span 2;grid-row:3}.signal-touch-station .one{grid-column:3;grid-row:3}.signal-touch-station .two{grid-column:4;grid-row:3}.signal-touch-station .three{grid-column:5;grid-row:3}.signal-touch-station .four{grid-column:6;grid-row:3}.signal-touch-station .five{grid-column:7;grid-row:3}",
       ".signal-touch-station .lineage{grid-column:1/span 3;grid-row:4}.signal-touch-station .lineageProof{grid-column:4/span 2;grid-row:4}.signal-touch-station .back{grid-column:6/span 2;grid-row:4}",
+      ".signal-touch-guide{left:var(--left-side);bottom:calc(var(--edge) + 130px);width:110px}.signal-touch-guide .guide{min-height:38px}",
       ".signal-touch-recovery{left:50%;bottom:var(--edge);transform:translateX(-50%);width:min(360px,calc(100vw - 24px));grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}",
       ".signal-touch-recovery .signal-touch-button{min-width:0;min-height:52px;font-size:11px;background:rgba(8,7,6,.78)}",
       ".signal-touch-recovery .recovery-confirm{color:#dffff4;border-color:rgba(128,255,213,.72)}",
@@ -387,7 +391,15 @@
     return "Use";
   }
 
+  var guideTouchVisible = null;
   function refreshControls() {
+    if (window.SignalGameWasmReady) {
+      var visible = !!controlsRoot && window.getComputedStyle(controlsRoot).display !== "none";
+      if (visible !== guideTouchVisible) {
+        wasmCall("signal_guide_touch_mode", null, ["number"], [visible ? 1 : 0]);
+        guideTouchVisible = visible;
+      }
+    }
     var recovery = recoveryFlags();
     var recoveryVisible = has(recovery, RECOVERY_FLAG.visible);
     if (controlsRoot) {
@@ -432,6 +444,8 @@
       controlsRoot.classList.toggle("is-station", docked || tradeView || workView || yardView);
     }
 
+    var storyFocus = wasmCall("signal_guide_story_focus", "number", [], []);
+    setButton("guide", flight || docked, storyFocus ? "Work guide" : "Story guide");
     setButton("left", flight, "<");
     setButton("right", flight, ">");
     setButton("boost", flight, "Boost");
@@ -576,6 +590,10 @@
       recovery, "recoveryCancel", "Leave Untouched",
       ACTION.back, "tap", "recovery-cancel");
 
+    var guide = document.createElement("div");
+    guide.className = "signal-touch-stack signal-touch-guide";
+    addButton(guide, "guide", "Story guide", ACTION.guide, "tap", "guide");
+    root.appendChild(guide);
     root.appendChild(left);
     root.appendChild(right);
     root.appendChild(secondary);

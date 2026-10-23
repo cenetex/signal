@@ -184,6 +184,7 @@
         KeyH: 8,
         ShiftLeft: 9, ShiftRight: 9,
         KeyB: 10,
+        KeyG: 33,
         KeyR: 11,
         Tab: 12,
         KeyF: 13,
@@ -222,6 +223,7 @@
         var action = signalKeyActions[e.code] || signalKeyActions[e.key];
         if (!action) return;
         signalFocusCanvas();
+        signalWasmCall('signal_guide_touch_mode', null, ['number'], [0]);
         signalWasmCall('signal_mobile_key', null, ['number', 'number'], [action, down ? 1 : 0]);
       }
 

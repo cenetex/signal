@@ -593,6 +593,7 @@ void station_panel_input_work(input_intent_t *intent) {
         if (slot_contract[k] < 0) break;
         g.selected_contract = slot_contract[k];
         g.tracked_contract = slot_contract[k];
+        onboarding_choose_story(false);
         char step[192];
         if (contract_step_hint(step, sizeof(step)))
             set_notice("%s", step);
@@ -1297,6 +1298,7 @@ input_intent_t sample_input_intent(void) {
     sample_ui_safety();
     sample_targeting(&intent);
     sample_e_interact(&intent);
+    if (is_key_pressed(SAPP_KEYCODE_G)) onboarding_toggle_focus();
     sample_station_tab();
     station_panel_sample_current(&intent);
     sample_placement(&intent);

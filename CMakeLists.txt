@@ -1208,6 +1208,8 @@ if(EMSCRIPTEN)
         "'_signal_mobile_control_flags'"
         "'_signal_mobile_digit_mask'"
         "'_signal_mobile_key'"
+        "'_signal_guide_touch_mode'"
+        "'_signal_guide_story_focus'"
         "'_signal_mobile_clear'"
         "'_signal_legacy_recovery_ui_flags'"
         "'_signal_legacy_recovery_ui_semantic'"

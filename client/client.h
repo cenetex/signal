@@ -554,6 +554,7 @@ typedef struct {
         bool complete;       /* first physical economy loop is complete */
         bool welcomed;       /* completion message shown */
         bool loaded;         /* selected player's guide progress loaded */
+        bool story_focus;    /* player chose Story instead of Work */
     } onboarding;
     /* First story arc. Progress is a compact set of proof-backed milestones:
      * station hails, the weak-signal crossing, relay work, a paid route, and

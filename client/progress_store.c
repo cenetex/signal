@@ -53,7 +53,7 @@ static int hex_digit(char c)
 static bool progress_valid(const client_progress_t *progress)
 {
     /* Story events form an ordered prefix; guide events may arrive freely. */
-    return progress && progress->story <= 255u && progress->guide <= 1023u &&
+    return progress && progress->story <= 255u && progress->guide <= CLIENT_PROGRESS_GUIDE_MASK &&
         (progress->story & (progress->story + 1u)) == 0;
 }
 
@@ -237,9 +237,9 @@ void client_progress_restore_local(uint32_t flags)
 {
     client_progress_t saved = {
         .story = (uint16_t)((flags >> 16) & 255u),
-        .guide = (uint16_t)(flags & 1023u),
+        .guide = (uint16_t)(flags & CLIENT_PROGRESS_GUIDE_MASK),
     };
-    if ((flags & 0xff00fc00u) == 0x80000000u && progress_valid(&saved))
+    if ((flags & 0xff00f800u) == 0x80000000u && progress_valid(&saved))
         current = saved;
     else memset(&current, 0, sizeof(current));
 }
