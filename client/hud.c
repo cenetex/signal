@@ -4046,6 +4046,7 @@ enum {
     SMOKE_LOOP_STATE_STORY_CALL = 42,
     SMOKE_LOOP_STATE_GUIDE_CHOICE = 43,
     SMOKE_LOOP_STATE_GUIDE_TRACTOR = 44,
+    SMOKE_LOOP_STATE_GUIDE_LOCAL_CREDIT = 45,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -5161,6 +5162,9 @@ static int smoke_apply_loop_state(int state) {
         g.station_view = STATION_VIEW_TRADE;
         g.onboarding.welcomed = false;
         return 1;
+    case SMOKE_LOOP_STATE_GUIDE_LOCAL_CREDIT:
+        if (!smoke_apply_loop_state(SMOKE_LOOP_STATE_GUIDE_CHOICE)) return 0;
+        return smoke_maintain_local_money_view() ? 1 : 0;
     case SMOKE_LOOP_STATE_GUIDE_CHOICE:
         if (!smoke_apply_loop_state(SMOKE_LOOP_STATE_TRACKED_CUPRITE_CONTRACT))
             return 0;

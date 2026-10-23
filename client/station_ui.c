@@ -3891,7 +3891,7 @@ static float draw_station_arrival_brief(const station_t *st,
             onboarding_format_controls(message, sizeof(message));
             char heading[64];
             snprintf(heading, sizeof(heading), "%s // [G] %s",
-                     onboarding_story_focus() ? "STORY" : "WORK",
+                     strncmp(label, "STORY", 5) == 0 ? "STORY" : "WORK",
                      onboarding_story_focus() ? "Work" : "Story");
             onboarding_format_controls(heading, sizeof(heading));
             float y = panel_y + 78.0f;
@@ -3906,6 +3906,14 @@ static float draw_station_arrival_brief(const station_t *st,
             sdtx_pos(ui_text_pos(x), ui_text_pos(y));
             sdtx_puts(fit);
             y += step;
+            char bridge[128];
+            if (station_credit_bridge_line(station_index_of(st), bridge, sizeof(bridge))) {
+                ui_fit_text(bridge, chars, fit, sizeof(fit));
+                sdtx_color3b(PAL_STATION_HINT);
+                sdtx_pos(ui_text_pos(x), ui_text_pos(y));
+                sdtx_puts(fit);
+                y += step;
+            }
             const char *next = message;
             for (int row = 0; row < 5 && *next; row++) {
                 size_t n = strlen(next);

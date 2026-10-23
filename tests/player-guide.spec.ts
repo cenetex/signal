@@ -35,7 +35,11 @@ for (const viewport of [{width: 1280, height: 720}, {width: 390, height: 844}]) 
     await expect.poll(() => call(page, 'signal_guide_story_focus')).toBe(0);
     await expect.poll(() => hint(page), {timeout: 8000}).toContain('requires L2 laser');
     await page.screenshot({path: info.outputPath(`work-${viewport.width}.png`)});
-
+    await page.keyboard.press('g');
+    await expect.poll(() => call(page, 'signal_guide_story_focus')).toBe(1);
+    await fixture(page, 45);
+    expect(await call(page, 'signal_station_credit_perception_summary', 'string')).toContain('Prospect: buy > haul');
+    await page.screenshot({path: info.outputPath(`credit-guide-${viewport.width}.png`)});
   });
 }
 

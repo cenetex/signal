@@ -89,14 +89,13 @@ void onboarding_format_controls(char *message, size_t size) {
     const char *use = LOCAL_PLAYER.docked ? "[Launch]"
         : g.plan_mode_active ? (g.plan_target_station < 0 ? "[Lock]" : "[Place]")
         : LOCAL_PLAYER.ship->towed_scaffold >= 0 ? "[Place]" : "[Dock]";
-    const char *mine = LOCAL_PLAYER.docked ? "[Laser+]" : "[Mine]";
     const char *service = LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_WORK
         ? "[Deliver]" : "[Sell]";
     const char *focus = g.onboarding.story_focus ? "[Work guide]" : "[Story guide]";
     const struct { const char *key; const char *touch; } replacements[] = {
         {"HOLD [SPACE]", "TAP [Tow]"}, {"hold [Space]", "tap [Tow]"},
-        {"tap [Space] release", "tap [Release]"},
-        {"TAP [SPACE]", "TAP [Tow On] TO RELEASE"},
+        {"tap [Space] release", "switch towing off, then double-tap [Release]"},
+        {"TAP [SPACE]", "SWITCH TOW OFF, THEN DOUBLE-TAP [Tow]"},
         {"[WASD]", "[Accel] + [<] / [>]"},
         {"dock [E]", "dock with [Dock]"},
         {"then [E] to lock", "then [Lock] to lock"},
@@ -107,7 +106,8 @@ void onboarding_format_controls(char *message, size_t size) {
         {"[B]", g.plan_mode_active ? "[Exit]" : "[Plan]"},
         {"[R]", LOCAL_PLAYER.docked ? "[Repair]" : "[Type]"},
         {"[G] Story", "[Story guide]"}, {"[G] Work", "[Work guide]"},
-        {"[E]", use}, {"[M]", mine}, {"[S]", service},
+        {"AT DOCK [M]", "AT DOCK [Laser+]"},
+        {"[E]", use}, {"[M]", "[Mine]"}, {"[S]", service},
         {"[C]", "[Hold+]"}, {"[T]", "[Tow+]"}, {"[G]", focus},
     };
     char source[512];
