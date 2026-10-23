@@ -1227,6 +1227,8 @@ if(EMSCRIPTEN)
         "'_signal_debug_local_save_summary'"
         "'_signal_debug_auth_available'"
         "'_signal_debug_net_connected'"
+        "'_signal_build_revision'"
+        "'_signal_server_revision'"
         "'_signal_smoke_market_memory_packet_parity'"
         "'_signal_debug_local_authority_state'"
         "'_signal_debug_local_authority_generation'"

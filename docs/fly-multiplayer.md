@@ -152,3 +152,35 @@ SMOKE_LIVE_RELAY_ASSERT=1 \
   Machine while players are online.
 - Volumes are one-Machine, one-region storage. Create backups before treating
   the relay as durable production state.
+
+
+## Post-deployment play check
+
+The Fly workflow reports deployment and play verification in separate jobs.
+After a successful deployment, `play-check` checks `/health`, the loaded
+browser build, and the connected server against the release commit. It runs
+one desktop browser and one narrow touch browser in sequence. Each starts
+with empty browser storage and gets its own identity through normal signup.
+
+Each player launches, holds thrust briefly, releases it, receives server
+input acknowledgements, and reloads to check the same identity can reconnect.
+The touch case uses actual touch events. The check takes screenshots and
+keeps a Playwright trace plus a small result file for seven days. Identity
+keys and session tokens stay in the temporary browser context. The two test
+players use ordinary starter ships and normal movement; this check creates
+two persistent test accounts per release. The browser contexts close at the
+end of each check.
+
+Run the same check against a development server with a matching browser build:
+
+```sh
+SIGNAL_PLAY_URL='http://127.0.0.1:3000/play.html?server=ws://127.0.0.1:9091/ws' \
+SIGNAL_HEALTH_URL='http://127.0.0.1:9091/health' \
+SIGNAL_EXPECTED_REVISION=0123456 \
+npx --no-install playwright test --config tests/post-deploy-play.config.ts
+```
+
+Set the revision to the commit baked into both builds. The dedicated config
+runs both device checks with zero retries. A failed play check marks the
+workflow as failed and preserves the completed deployment as a separate job
+result. Release candidate safety gates still run before deployment.

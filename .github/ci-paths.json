@@ -121,7 +121,9 @@
       "scope": "test",
       "paths": [
         "playwright.config.ts",
-        "tests/browser-smoke.spec.ts"
+        "tests/browser-smoke.spec.ts",
+        "tests/post-deploy-play.live.ts",
+        "tests/post-deploy-play.config.ts"
       ],
       "lanes": [
         "browser"
