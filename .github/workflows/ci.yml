@@ -206,6 +206,17 @@ jobs:
           npx --no-install playwright install --with-deps chromium
       - name: Run Chromium smoke
         run: npm run smoke
+      - name: Upload active-world profile evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gameplay-profile-${{ github.sha }}
+          path: |
+            test-results/**/profile-environment.json
+            test-results/**/fresh-world.json
+            test-results/**/aged-saved-world.json
+            test-results/**/saved-world-checkpoint.json
+          if-no-files-found: warn
       - name: Upload browser diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

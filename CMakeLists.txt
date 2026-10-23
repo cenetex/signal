@@ -1183,6 +1183,7 @@ if(EMSCRIPTEN)
         "'_get_net_reconcile_death_respawn_events'"
         "'_get_net_reconcile_first_drift_json'"
         "'_signal_zero_latency_gate_report_json'"
+        "'_signal_smoke_profile_advance'"
         "'_signal_smoke_adverse_towable_gate'"
         "'_signal_smoke_adverse_towable_report'"
         "'_get_hud_hint_text'"

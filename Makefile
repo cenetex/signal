@@ -790,8 +790,12 @@ smoke-latency-suite: build-web build-server
 jank-profile-native: build
 	SIGNAL_JANK_PROFILE=1 SIGNAL_LOG_PERSIST=0 ./build/signal
 
+# Two ten-minute samples: fresh authority, then an aged saved authority.
+# Override both durations for a quick local check.
+SIGNAL_JANK_PROFILE_SECONDS ?= 600
+SIGNAL_JANK_AGE_SECONDS ?= 600
 jank-profile-browser: build-web
-	SIGNAL_JANK_PROFILE_SECONDS=60 npx playwright test tests/browser-smoke.spec.ts --project=chromium --grep "fresh and mature play produce attributed jank reports"
+	SIGNAL_JANK_PROFILE_SECONDS=$(SIGNAL_JANK_PROFILE_SECONDS) SIGNAL_JANK_AGE_SECONDS=$(SIGNAL_JANK_AGE_SECONDS) npx --no-install playwright test tests/gameplay-profile.spec.ts --project=chromium --workers=1
 
 RELAY_PROBE_URL ?= ws://127.0.0.1:9091/ws
 RELAY_PROBE_CLIENTS ?= 2
