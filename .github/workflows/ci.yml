@@ -251,10 +251,11 @@ jobs:
             "signal-production:${GITHUB_SHA}" \
             ls --omit=dev --all \
             | tee test-results/container/npm-ls-production.txt
-      - name: Exercise packaged WebRTC gateway static serving
+      - name: Exercise packaged native and WebRTC media serving
         run: |
           docker run --rm \
             --volume "$PWD/scripts/test-webrtc-gateway.mjs:/app/scripts/test-webrtc-gateway.mjs:ro" \
+            --env SIGNAL_TEST_SERVER=/app/signal-server \
             --entrypoint sh \
             "signal-production:${GITHUB_SHA}" \
             -ec 'npm run test:rtc-gateway'

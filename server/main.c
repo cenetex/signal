@@ -6378,6 +6378,7 @@ static bool serve_static_http(struct mg_connection *c,
             "X-Content-Type-Options: nosniff\r\n",
         .mime_types =
             "wasm=application/wasm,"
+            "mpg=video/mpeg,"
             "js=text/javascript,"
             "mjs=text/javascript,"
             "html=text/html; charset=utf-8",
