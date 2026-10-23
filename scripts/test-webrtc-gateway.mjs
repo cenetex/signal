@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -73,12 +74,12 @@ function waitForGateway(child, port) {
   });
 }
 
-function request(port, method) {
+function request(port, method, pathname = '/fixture.mpg') {
   return new Promise((resolve, reject) => {
     const req = http.request({
       host: '127.0.0.1',
       port,
-      path: '/fixture.mpg',
+      path: pathname,
       method,
     }, (res) => {
       const chunks = [];
@@ -112,15 +113,49 @@ async function stopChild(child) {
   await once(child, 'exit');
 }
 
-async function main() {
+async function waitForServer(child, port) {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`native server exited before listening: ${child.exitCode}`);
+    }
+    try {
+      const health = await request(port, 'GET', '/health');
+      if (health.statusCode === 200) return;
+    } catch {
+      // The native server may still be creating its first world.
+    }
+    await delay(100);
+  }
+  throw new Error('native server did not start within 30 seconds');
+}
+
+async function main(serverBinary) {
   const staticDir = fs.mkdtempSync(path.join(os.tmpdir(), 'signal-rtc-static-'));
   fs.writeFileSync(path.join(staticDir, 'fixture.mpg'), FIXTURE);
   const port = await reservePort();
+  const serverPort = serverBinary ? await reservePort() : 1;
+  let server;
+  if (serverBinary) {
+    server = spawn(path.resolve(serverBinary), [], {
+      cwd: staticDir,
+      env: {
+        PATH: process.env.PATH,
+        PORT: String(serverPort),
+        SIGNAL_BIND_HOST: '127.0.0.1',
+        SIGNAL_DATA_DIR: path.join(staticDir, 'data'),
+        SIGNAL_STATIC_DIR: staticDir,
+        SIGNAL_STATION_AUTH_SECRET: 'local-media-response-test',
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    server.stderr.pipe(process.stderr);
+  }
   const gateway = spawn(process.execPath, [
     'scripts/webrtc-gateway.mjs',
     `--listen=127.0.0.1:${port}`,
-    '--upstream=ws://127.0.0.1:1/ws',
-    `--static=${staticDir}`,
+    `--upstream=ws://127.0.0.1:${serverPort}/ws`,
+    serverBinary ? `--proxy=http://127.0.0.1:${serverPort}` : `--static=${staticDir}`,
     '--server-idle-ms=0',
   ], {
     cwd: ROOT,
@@ -129,6 +164,7 @@ async function main() {
 
   try {
     await waitForGateway(gateway, port);
+    if (server) await waitForServer(server, serverPort);
 
     const get = await request(port, 'GET');
     assert.equal(get.statusCode, 200);
@@ -144,9 +180,14 @@ async function main() {
     assert.equal(head.body.length, 0);
   } finally {
     await stopChild(gateway);
+    if (server) await stopChild(server);
     fs.rmSync(staticDir, { recursive: true, force: true });
   }
 }
 
 await main();
 console.log('webrtc-gateway static serving tests passed');
+if (process.env.SIGNAL_TEST_SERVER) {
+  await main(process.env.SIGNAL_TEST_SERVER);
+  console.log('native server through WebRTC gateway media tests passed');
+}
