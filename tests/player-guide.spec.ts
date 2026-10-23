@@ -59,6 +59,10 @@ test('touch guide follows toggle controls and switches to keyboard prompts', asy
   await fixture(page, 7);
   expect(await hint(page)).toContain('[Lock]');
   expect(await hint(page)).toContain('[Exit]');
+  await page.setViewportSize({width: 1280, height: 720});
+  await expect.poll(() => hint(page)).toContain('[E]');
+  await page.setViewportSize({width: 390, height: 844});
+  await expect.poll(() => hint(page)).toContain('[Lock]');
 });
 
 test('guide focus survives a normal local save and reload', async ({page}) => {

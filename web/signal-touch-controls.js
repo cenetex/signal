@@ -391,11 +391,14 @@
     return "Use";
   }
 
-  var guideModeReady = false;
+  var guideTouchVisible = null;
   function refreshControls() {
-    if (!guideModeReady && window.SignalGameWasmReady) {
-      wasmCall("signal_guide_touch_mode", null, ["number"], [installTouchUi ? 1 : 0]);
-      guideModeReady = true;
+    if (window.SignalGameWasmReady) {
+      var visible = !!controlsRoot && window.getComputedStyle(controlsRoot).display !== "none";
+      if (visible !== guideTouchVisible) {
+        wasmCall("signal_guide_touch_mode", null, ["number"], [visible ? 1 : 0]);
+        guideTouchVisible = visible;
+      }
     }
     var recovery = recoveryFlags();
     var recoveryVisible = has(recovery, RECOVERY_FLAG.visible);
