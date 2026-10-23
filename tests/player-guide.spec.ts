@@ -17,6 +17,56 @@ async function fixture(page: Page, state: number) {
 }
 async function hint(page: Page) { return call(page, 'get_hud_hint_text', 'string'); }
 
+// Observe the IDBFS completion assignment in the page. A later autosave can
+// return storage to busy before a cross-process generation poll sees ready.
+async function checkpointInPage(): Promise<{ before: number; saved: number }> {
+  const mod = (window as any).Module;
+  const storage = mod.signalLocalPersistence;
+  const original = Object.getOwnPropertyDescriptor(storage, 'state');
+  if (!original || !('value' in original)) throw new Error('Expected local persistence state');
+  let state = original.value;
+  let pending: { resolve: (generation: number) => void; reject: (error: Error) => void } | undefined;
+  const generation = () => mod.ccall('signal_debug_local_save_generation', 'number', [], []);
+  Object.defineProperty(storage, 'state', {
+    configurable: true, enumerable: original.enumerable,
+    get: () => state,
+    set: value => {
+      state = value;
+      if (pending && value !== 2) {
+        const waiter = pending;
+        pending = undefined;
+        if (value === 1) waiter.resolve(generation());
+        else waiter.reject(new Error(`Local checkpoint failed with storage state ${value}`));
+      }
+    },
+  });
+  const ready = (): Promise<number> => {
+    if (state === 1) return Promise.resolve(generation());
+    if (state !== 2) return Promise.reject(new Error(`Local checkpoint failed with storage state ${state}`));
+    return new Promise((resolve, reject) => { pending = { resolve, reject }; });
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      (async () => {
+        const before = await ready();
+        if (mod.ccall('signal_save_local_world', 'number', [], []) !== 1)
+          throw new Error('Local checkpoint request failed');
+        const saved = await ready();
+        if (saved <= before) throw new Error('Local checkpoint generation should advance');
+        return { before, saved };
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Local checkpoint completion timed out')), 30_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    Object.defineProperty(storage, 'state', { ...original, value: state });
+  }
+}
+
+
 for (const viewport of [{width: 1280, height: 720}, {width: 390, height: 844}]) {
   test(`chosen work and story guide at ${viewport.width}px`, async ({ page }, info) => {
     await page.setViewportSize(viewport);
@@ -66,14 +116,50 @@ test('touch guide follows toggle controls and switches to keyboard prompts', asy
 });
 
 test('guide focus survives a normal local save and reload', async ({page}) => {
+  test.setTimeout(90_000);
   await ready(page);
   await page.keyboard.press('g');
   await expect.poll(() => call(page, 'signal_guide_story_focus')).toBe(1);
-  await expect.poll(() => call(page, 'signal_save_local_world')).toBe(1);
-  await expect.poll(() => call(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+  await expect.poll(() => call(page, 'signal_debug_auth_available'), {timeout: 20_000}).toBe(1);
+  const checkpoint = await page.evaluate(checkpointInPage);
+  expect(checkpoint.saved).toBeGreaterThan(checkpoint.before);
   await page.reload();
   await page.waitForFunction(() => (window as any).SignalGameWasmReady === true);
   await expect.poll(() => call(page, 'signal_guide_story_focus')).toBe(1);
   await page.keyboard.press('g');
   await expect.poll(() => call(page, 'signal_guide_story_focus')).toBe(0);
 });
+
+// Reproduce the ready window closing before the next external browser poll.
+for (const fail of [false, true]) {
+  test(`guide checkpoint completion ${fail ? 'reports storage failure' : 'survives an immediate next autosave'}`, async ({ page }) => {
+    await page.goto('about:blank');
+    await page.evaluate(fail => {
+      const storage = { state: 1 };
+      let saved = 1;
+      (window as any).Module = {
+        signalLocalPersistence: storage,
+        ccall(name: string) {
+          if (name === 'signal_debug_local_save_generation') return storage.state === 1 ? saved : 0;
+          if (name === 'signal_save_local_world') {
+            storage.state = 2;
+            setTimeout(() => {
+              saved++;
+              storage.state = fail ? -1 : 1;
+              // An immediate next save hides the completed generation from polling.
+              if (!fail) storage.state = 2;
+            }, 10);
+            return 1;
+          }
+          throw new Error('Unexpected checkpoint call');
+        },
+      };
+    }, fail);
+    if (fail) await expect(page.evaluate(checkpointInPage)).rejects.toThrow('Local checkpoint failed with storage state -1');
+    else expect(await page.evaluate(checkpointInPage)).toEqual({ before: 1, saved: 2 });
+    expect(await page.evaluate(() => {
+      const descriptor = Object.getOwnPropertyDescriptor((window as any).Module.signalLocalPersistence, 'state');
+      return descriptor && 'value' in descriptor;
+    })).toBe(true);
+  });
+}
