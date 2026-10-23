@@ -7,7 +7,10 @@ server endpoint. Local Sector One has its own scope.
 For shared servers, native clients keep `progress-<key>.txt` beside `identity.key`. Writes flush a
 temporary file and replace the prior record atomically. Browser clients keep
 `signal_progress_v2:<key>` in local storage. A record contains the guide's ten
-flags and the story's eight ordered milestones. Invalid records start at the
+flags and the story's eight ordered milestones. Guide bit 10 saves the player's Story
+focus choice; zero selects Work. Work follows the tracked contract, ready
+refit, or suggested station work. G switches focus, and selecting a contract
+chooses Work. Touch controls provide the same choice through a guide button. Invalid records start at the
 first guide and story steps.
 
 The first selected browser scope receives the old `signal_onboarding` and

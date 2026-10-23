@@ -2064,6 +2064,10 @@ static void init(void) {
                     set_notice(
                         "Local save recovery required. Check the client log, then reload.");
                 } else {
+                    /* Local registration restored the saved generation's
+                     * progress after the first scope load. Refresh its UI. */
+                    g.onboarding.loaded = false;
+                    g.worker_story.loaded = false;
                     onboarding_load();
                     story_runtime_load();
                 }
@@ -5530,6 +5534,7 @@ static void cleanup(void) {
 static void event(const sapp_event* event) {
     switch (event->type) {
         case SAPP_EVENTTYPE_KEY_DOWN: {
+            onboarding_set_touch_controls(false);
             /* Cast to int: sapp_keycode and KEY_COUNT are different enum
              * types and gcc -Werror=enum-compare rejects the direct
              * comparison. key_code values are always non-negative. */
@@ -6081,6 +6086,7 @@ static sapp_keycode mobile_action_key(int action) {
     case 24: return SAPP_KEYCODE_5;
     case 30: return SAPP_KEYCODE_O;          /* autopilot */
     case 31: return SAPP_KEYCODE_ESCAPE;     /* back / close */
+    case 33: return SAPP_KEYCODE_G;          /* guide focus */
     case 32: return SAPP_KEYCODE_ENTER;      /* confirm recovery */
     default: return SAPP_KEYCODE_INVALID;
     }
@@ -6104,6 +6110,12 @@ void signal_mobile_key(int action, int down) {
         g.input.key_down[kc] = false;
     }
 }
+
+EMSCRIPTEN_KEEPALIVE
+void signal_guide_touch_mode(int touch) { onboarding_set_touch_controls(touch != 0); }
+
+EMSCRIPTEN_KEEPALIVE
+int signal_guide_story_focus(void) { return onboarding_story_focus() ? 1 : 0; }
 
 EMSCRIPTEN_KEEPALIVE
 void signal_mobile_clear(void) {

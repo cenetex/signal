@@ -9,6 +9,7 @@
  * real station contract available as the economy spine.
  */
 #include "client.h"
+#include "input.h"
 #include "contract_objective.h"
 #include "story_runtime.h"
 #include "progress_store.h"
@@ -35,6 +36,7 @@ void onboarding_load(void) {
     g.onboarding.viewed_trade         = (flags & (1 << 7)) != 0;
     g.onboarding.boosted              = (flags & (1 << 8)) != 0;
     g.onboarding.welcomed             = (flags & (1 << 9)) != 0;
+    g.onboarding.story_focus = (flags & CLIENT_PROGRESS_STORY_FOCUS) != 0;
     g.onboarding.complete = g.onboarding.moved &&
                             g.onboarding.hailed &&
                             g.onboarding.fractured &&
@@ -54,12 +56,82 @@ static void onboarding_save(void) {
     if (g.onboarding.viewed_trade) flags |= (1 << 7);
     if (g.onboarding.boosted)   flags |= (1 << 8);
     if (g.onboarding.welcomed)  flags |= (1 << 9);
+    if (g.onboarding.story_focus) flags |= CLIENT_PROGRESS_STORY_FOCUS;
     client_progress_save_guide((uint16_t)flags);
 }
 
 /* ------------------------------------------------------------------ */
 /* Step completion                                                     */
 /* ------------------------------------------------------------------ */
+
+static bool touch_controls;
+
+void onboarding_set_touch_controls(bool touch) { touch_controls = touch; }
+bool onboarding_story_focus(void) { return g.onboarding.story_focus; }
+
+void onboarding_choose_story(bool story) {
+    if (g.onboarding.story_focus == story) return;
+    g.onboarding.story_focus = story;
+    onboarding_save();
+}
+
+void onboarding_toggle_focus(void) {
+    onboarding_choose_story(!g.onboarding.story_focus);
+    set_notice(g.onboarding.story_focus
+        ? "Guide: Story. [G] switches to Work."
+        : "Guide: Work. [G] switches to Story.");
+}
+
+/* Translate the shared guide copy at its display boundary. The touch Tow
+ * button toggles the held tractor input; keyboard Space remains a hold. */
+void onboarding_format_controls(char *message, size_t size) {
+    if (!touch_controls || !message || size == 0) return;
+    const char *use = LOCAL_PLAYER.docked ? "[Launch]"
+        : g.plan_mode_active ? (g.plan_target_station < 0 ? "[Lock]" : "[Place]")
+        : LOCAL_PLAYER.ship->towed_scaffold >= 0 ? "[Place]" : "[Dock]";
+    const char *mine = LOCAL_PLAYER.docked ? "[Laser+]" : "[Mine]";
+    const char *service = LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_WORK
+        ? "[Deliver]" : "[Sell]";
+    const char *focus = g.onboarding.story_focus ? "[Work guide]" : "[Story guide]";
+    const struct { const char *key; const char *touch; } replacements[] = {
+        {"HOLD [SPACE]", "TAP [Tow]"}, {"hold [Space]", "tap [Tow]"},
+        {"tap [Space] release", "tap [Release]"},
+        {"TAP [SPACE]", "TAP [Tow On] TO RELEASE"},
+        {"[WASD]", "[Accel] + [<] / [>]"},
+        {"dock [E]", "dock with [Dock]"},
+        {"then [E] to lock", "then [Lock] to lock"},
+        {"Press E to dock.", "Tap [Dock]."},
+        {"[SHIFT]", "[Boost]"}, {"[H]", "[Scan]"},
+        {"[SPACE]", "[Tow]"}, {"[Space]", "[Tow]"},
+        {"[TAB]", "[Panel]"},
+        {"[B]", g.plan_mode_active ? "[Exit]" : "[Plan]"},
+        {"[R]", LOCAL_PLAYER.docked ? "[Repair]" : "[Type]"},
+        {"[G] Story", "[Story guide]"}, {"[G] Work", "[Work guide]"},
+        {"[E]", use}, {"[M]", mine}, {"[S]", service},
+        {"[C]", "[Hold+]"}, {"[T]", "[Tow+]"}, {"[G]", focus},
+    };
+    char source[512];
+    snprintf(source, sizeof(source), "%s", message);
+    size_t used = 0;
+    for (const char *p = source; *p && used + 1 < size;) {
+        const char *replacement = NULL;
+        size_t consumed = 1;
+        for (size_t i = 0; i < sizeof(replacements) / sizeof(replacements[0]); i++) {
+            size_t n = strlen(replacements[i].key);
+            if (strncmp(p, replacements[i].key, n) == 0) {
+                replacement = replacements[i].touch;
+                consumed = n;
+                break;
+            }
+        }
+        if (replacement) {
+            for (const char *r = replacement; *r && used + 1 < size; r++)
+                message[used++] = *r;
+        } else message[used++] = *p;
+        p += consumed;
+    }
+    message[used] = '\0';
+}
 
 static bool onboarding_core_complete(void) {
     return g.onboarding.moved &&
@@ -289,7 +361,7 @@ static bool ship_upgrade_directive(char *label, size_t label_size,
                                     message, message_size);
 }
 
-bool onboarding_hint(char *label, size_t label_size,
+static bool onboarding_hint_raw(char *label, size_t label_size,
                      char *message, size_t message_size) {
     if (label_size > 0) label[0] = '\0';
     onboarding_refresh_complete();
@@ -302,8 +374,8 @@ bool onboarding_hint(char *label, size_t label_size,
                      "SIGNAL // GUIDE // ECONOMY LOOP COMPLETE ::::: MONEY STAYS LOCAL // GOODS TRAVEL");
             return true;
         }
-        if (story_runtime_hint(label, label_size,
-                               message, message_size))
+        if (g.onboarding.story_focus &&
+            story_runtime_hint(label, label_size, message, message_size))
             return true;
         if (tracked_contract_directive(label, label_size,
                                        message, message_size))
@@ -313,6 +385,8 @@ bool onboarding_hint(char *label, size_t label_size,
             return true;
         if (recommended_contract_directive(label, label_size,
                                             message, message_size))
+            return true;
+        if (story_runtime_hint(label, label_size, message, message_size))
             return true;
         if (!g.onboarding.threw && !LOCAL_PLAYER.docked &&
             LOCAL_PLAYER.ship->towed_count > 0) {
@@ -351,4 +425,16 @@ bool onboarding_hint(char *label, size_t label_size,
 
     if (message_size > 0) message[0] = '\0';
     return false;
+}
+
+bool onboarding_hint(char *label, size_t label_size,
+                     char *message, size_t message_size) {
+    bool shown = onboarding_hint_raw(label, label_size, message, message_size);
+    if (shown && g.onboarding.complete && message && message_size > 0) {
+        size_t used = strlen(message);
+        if (used < message_size)
+            snprintf(message + used, message_size - used, " // [G] %s",
+                     g.onboarding.story_focus ? "Work" : "Story");
+    }
+    return shown;
 }

@@ -4,6 +4,7 @@
  */
 #include "client.h"
 #include "story_runtime.h"
+#include "onboarding.h"
 #include "render.h"
 #include "palette.h"
 #include "mining_client.h"
@@ -3879,6 +3880,52 @@ static float draw_station_arrival_brief(const station_t *st,
                                         float panel_w,
                                         bool compact)
 {
+    /* The dock terminal owns the guide while it covers the flight HUD. */
+    contract_objective_t objective;
+    if (g.onboarding.complete && (onboarding_story_focus() ||
+                                 contract_objective_for_tracked(&objective))) {
+        char label[64], message[256];
+        if (onboarding_hint(label, sizeof(label), message, sizeof(message))) {
+            char *switch_hint = strstr(message, " // [G]");
+            if (switch_hint) *switch_hint = '\0';
+            onboarding_format_controls(message, sizeof(message));
+            char heading[64];
+            snprintf(heading, sizeof(heading), "%s // [G] %s",
+                     onboarding_story_focus() ? "STORY" : "WORK",
+                     onboarding_story_focus() ? "Work" : "Story");
+            onboarding_format_controls(heading, sizeof(heading));
+            float y = panel_y + 78.0f;
+            float step = compact ? 14.0f : 15.0f;
+            float x = panel_x + 20.0f;
+            int chars = (int)floorf((panel_w - 40.0f) / 8.0f);
+            if (chars < 1) chars = 1;
+            if (chars > 159) chars = 159;
+            char fit[160];
+            ui_fit_text(heading, chars, fit, sizeof(fit));
+            sdtx_color3b(PAL_STATION_HINT);
+            sdtx_pos(ui_text_pos(x), ui_text_pos(y));
+            sdtx_puts(fit);
+            y += step;
+            const char *next = message;
+            for (int row = 0; row < 5 && *next; row++) {
+                size_t n = strlen(next);
+                if (n > (size_t)chars) {
+                    n = (size_t)chars;
+                    while (n > 0 && next[n] != ' ') n--;
+                    if (n == 0) n = (size_t)chars;
+                }
+                memcpy(fit, next, n);
+                fit[n] = '\0';
+                sdtx_color3b(PAL_TEXT_PRIMARY);
+                sdtx_pos(ui_text_pos(x), ui_text_pos(y));
+                sdtx_puts(fit);
+                y += step;
+                next += n;
+                while (*next == ' ') next++;
+            }
+            return y - (panel_y + 78.0f) + 8.0f;
+        }
+    }
     station_arrival_line_t lines[3];
     int count = build_station_arrival_lines(st, lines, 3);
     if (count <= 0) return 0.0f;
@@ -5829,6 +5876,11 @@ void draw_station_services(const station_ui_state_t* ui) {
         ? dynamic_hint
         : "[TAB] panels";
     if (client_waiting_for_replacement_ship()) hint = "[E] check replacement";
+    char guide_legend[160];
+    snprintf(guide_legend, sizeof(guide_legend), "[G] %s  %s",
+             onboarding_story_focus() ? "Work" : "Story", hint);
+    onboarding_format_controls(guide_legend, sizeof(guide_legend));
+    hint = guide_legend;
     char hint_fit[96];
     int hint_chars = (int)floorf((panel_w - 40.0f) / 8.0f);
     ui_fit_text(hint, hint_chars, hint_fit, sizeof(hint_fit));
