@@ -2484,7 +2484,8 @@ test.describe('Browser smoke tests', () => {
 
   test('fresh play and fracture rendering produce attributed jank reports and smooth accelerated rocks', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'requires the local singleplayer authority');
-    const seconds = Number(process.env.SIGNAL_JANK_PROFILE_SECONDS || '2');
+    // Sustained active-world samples live in gameplay-profile.spec.ts.
+    const seconds = 2;
     test.setTimeout(Math.max(45_000, seconds * 2_000 + 30_000));
 
     const logs = installFatalCollectors(page);

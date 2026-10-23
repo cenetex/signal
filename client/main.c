@@ -2773,6 +2773,24 @@ const char *signal_jank_profile_report_json(void) {
     return gameplay_observability_report_json();
 }
 
+/* Age a docked local authority for profiling, in bounded one-second batches.
+ * Tests save and reload after warm-up, then measure ordinary frame updates. */
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_profile_advance(int ticks) {
+    if (ticks < 1 || ticks > 120 ||
+        !gameplay_observability_enabled() ||
+        !emscripten_run_script_int(
+            "new URLSearchParams(location.search).get('smoke') === '1'") ||
+        !g.local_server.active || !net_is_gameplay_ready() ||
+        g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
+        return 0;
+    const world_t *world = local_server_world_const(&g.local_server);
+    if (!world || !world->players[g.local_player_slot].docked) return 0;
+    for (int i = 0; i < ticks; i++)
+        local_server_step_loopback(&g.local_server, g.local_player_slot, SIM_DT);
+    return ticks;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int signal_smoke_accelerated_asteroid_prediction_gate(void) {
     return asteroid_presentation_acceleration_gate(NULL, NULL) ? 1 : 0;
