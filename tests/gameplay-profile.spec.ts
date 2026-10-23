@@ -55,12 +55,13 @@ async function ready(page: Page): Promise<void> {
   await page.waitForFunction(() => typeof (window as any).Module?.ccall === 'function');
   await expect.poll(() => call<number>(page, 'signal_debug_auth_available'), { timeout: 20_000 }).toBe(1);
   await expect.poll(() => call<number>(page, 'signal_render_queued_vertices')).toBeGreaterThan(0);
-  await expect.poll(() => call<number>(page, 'signal_debug_local_save_generation'), { timeout: 20_000 }).toBeGreaterThan(0);
+  const checkpoint = await page.evaluate(checkpointInPage, false);
+  expect(checkpoint.saved).toBeGreaterThan(0);
   expect(await call(page, 'signal_jank_profile_enabled')).toBe(1);
 }
 // Observe the IDBFS completion assignment in the page. A later autosave can
 // return storage to busy before a cross-process generation poll sees ready.
-async function checkpointInPage(): Promise<{ before: number; saved: number }> {
+async function checkpointInPage(requestSave = true): Promise<{ before: number; saved: number }> {
   const mod = (window as any).Module;
   const storage = mod.signalLocalPersistence;
   const original = Object.getOwnPropertyDescriptor(storage, 'state');
@@ -92,6 +93,7 @@ async function checkpointInPage(): Promise<{ before: number; saved: number }> {
       (async () => {
         const before = await ready();
         if (before <= 0) throw new Error('Expected a completed initial local checkpoint');
+        if (!requestSave) return { before, saved: before };
         if (mod.ccall('signal_save_local_world', 'number', [], []) !== 1)
           throw new Error('Local checkpoint request failed');
         const saved = await ready();
@@ -230,6 +232,40 @@ for (const fail of [false, true]) {
     }, fail);
     if (fail) await expect(page.evaluate(checkpointInPage)).rejects.toThrow('Local checkpoint failed with storage state -1');
     else expect(await page.evaluate(checkpointInPage)).toEqual({ before: 1, saved: 2 });
+    expect(await page.evaluate(() => {
+      const descriptor = Object.getOwnPropertyDescriptor((window as any).Module.signalLocalPersistence, 'state');
+      return descriptor && 'value' in descriptor;
+    })).toBe(true);
+  });
+}
+
+// Boot and reload can also enter while the first autosave is still busy.
+for (const fail of [false, true]) {
+  test(`checkpoint readiness ${fail ? 'reports storage failure' : 'captures a brief ready window'}`, async ({ page }) => {
+    await page.goto('about:blank');
+    await page.evaluate(() => {
+      const storage = { state: 2 };
+      (window as any).Module = {
+        signalLocalPersistence: storage,
+        ccall(name: string) {
+          if (name === 'signal_debug_local_save_generation') return storage.state === 1 ? 3 : 0;
+          throw new Error('Readiness should only read the checkpoint generation');
+        },
+      };
+    });
+    const observed = page.evaluate(checkpointInPage, false);
+    // Attach rejection handling before triggering the storage error.
+    const result = observed.then(value => ({ value, error: '' }), error => ({ value: undefined, error: error.message }));
+    await page.waitForFunction(() => typeof Object.getOwnPropertyDescriptor(
+      (window as any).Module.signalLocalPersistence, 'state')?.get === 'function');
+    await page.evaluate(fail => {
+      const storage = (window as any).Module.signalLocalPersistence;
+      storage.state = fail ? -1 : 1;
+      if (!fail) storage.state = 2;
+    }, fail);
+    const outcome = await result;
+    if (fail) expect(outcome.error).toContain('Local checkpoint failed with storage state -1');
+    else expect(outcome.value).toEqual({ before: 3, saved: 3 });
     expect(await page.evaluate(() => {
       const descriptor = Object.getOwnPropertyDescriptor((window as any).Module.signalLocalPersistence, 'state');
       return descriptor && 'value' in descriptor;

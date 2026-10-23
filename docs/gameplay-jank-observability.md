@@ -71,8 +71,9 @@ Each run writes and attaches these JSON files under its `test-results` folder:
 - `saved-world-checkpoint.json`: the world before aging, after aging, and after reload.
 
 The check writes each report before its assertions so a failed run retains
-its measurements. It observes the browser save completion callback before
-reload, which preserves the completed generation when another autosave starts.
+its measurements. At boot and around reload, it observes the browser save
+completion callback. This preserves the completed generation when another
+autosave starts.
 The raw `snapshots.max_gap_ms` is the largest gap for any observed message
 type. Rare event messages contribute to it alongside regular snapshots.
 Compare runs on the same named hardware and browser. The frame histogram
