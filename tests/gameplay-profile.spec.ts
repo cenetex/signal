@@ -291,23 +291,32 @@ test('active hauling and turns reuse verified history signatures', async ({ page
   await page.waitForTimeout(600);
   await page.keyboard.up('Space');
 
-  const position = async () => ({
-    x: await call<number>(page, 'get_player_pos_x'), y: await call<number>(page, 'get_player_pos_y'),
+  // Keep authority ownership and payment in the same frame. Separate browser
+  // calls can straddle a real smelt, especially while taking a screenshot.
+  const capture = () => page.evaluate(() => {
+    const mod = (window as any).Module;
+    const read = (name: string) => mod.ccall(name, 'number', [], []);
+    return {
+      x: read('get_player_pos_x'), y: read('get_player_pos_y'),
+      tow: read('signal_smoke_tow_lifecycle_state'),
+      balance: JSON.parse(mod.ccall('signal_debug_local_save_summary', 'string', [], [])).credits,
+      profile: JSON.parse(mod.ccall('signal_jank_profile_report_json', 'string', [], [])) as Profile,
+    };
   });
-  const before = await position();
+  const before = await capture();
+  let lastHeldBalance = before.balance;
   for (const [name, keys] of [['tow-straight', ['w']], ['tow-turn', ['w', 'a']], ['tow-coast', []]] as const) {
     await call(page, 'signal_jank_profile_reset', 'void');
-    const start = await position();
-    const balanceBefore = (await summary(page)).credits;
+    const start = await capture();
+    const balanceBefore = start.balance;
     for (const key of keys) await page.keyboard.down(key);
     await page.waitForTimeout(seconds * 1000);
     for (const key of keys) await page.keyboard.up(key);
-    const profile: Profile = JSON.parse(await call<string>(page, 'signal_jank_profile_report_json', 'string'));
-    const end = await position();
-    const tow = await call<number>(page, 'signal_smoke_tow_lifecycle_state');
-    const balanceAfter = (await summary(page)).credits;
+    const end = await capture();
+    const { profile, tow } = end;
+    const balanceAfter = end.balance;
     await attachJson(testInfo, name, {
-      workload: 'active local hauling', seconds, start, end, tow, profile, balanceBefore, balanceAfter,
+      workload: 'active local hauling', seconds, start, end, tow, profile, balanceBefore, balanceAfter, lastHeldBalance,
     });
     expect(profile.fixed_step.completed).toBeGreaterThan(10);
     expect(profile.phases.authority_sim.max_ms).toBeGreaterThan(0);
@@ -317,14 +326,15 @@ test('active hauling and turns reuse verified history signatures', async ({ page
     // Prove a paid delivery when coast consumes it; flight and turns keep it held.
     if (name === 'tow-coast' && (tow & 1) === 0) {
       expect(tow & ((1 << 0) | (1 << 4))).toBe(0);
-      expect(balanceAfter, 'consumed tow must pay into the station balance').toBeGreaterThan(balanceBefore);
+      expect(balanceAfter, 'consumed tow must pay after the last confirmed tow').toBeGreaterThan(lastHeldBalance);
     } else {
       expect(tow & ((1 << 0) | (1 << 4)),
         'authority retains the loaded rock through flight and turns').toBe((1 << 0) | (1 << 4));
+      lastHeldBalance = balanceAfter;
     }
     await testInfo.attach(name, { body: await page.screenshot(), contentType: 'image/png' });
   }
-  const after = await position();
+  const after = await capture();
   expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeGreaterThan(30);
   // Station production appends records during ordinary play. Its next origin
   // scan reads the full history and reuses successful checks for older headers.
