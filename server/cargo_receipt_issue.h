@@ -99,6 +99,8 @@ typedef struct {
     uint64_t hits;
     uint64_t misses;
     uint64_t full_verifications;
+    uint64_t signature_checks;
+    uint64_t signature_hits;
     uint64_t index_builds;
     /* Windows uses native O(1) file metadata whenever the filesystem and
      * runtime support it. Full-file digest scans are the compatibility

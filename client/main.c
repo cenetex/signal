@@ -31,6 +31,7 @@
 #include "legacy_recovery_ui.h"
 #include "gameplay_observability.h"
 #include "asteroid_presentation.h"
+#include "cargo_receipt_issue.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -3638,6 +3639,22 @@ int signal_smoke_prepare_crash_recovery(int all_loaners_used) {
     player->movement_queue_count = 0;
     g.local_server.private_snapshot_dirty = true;
     return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_smoke_origin_signature_stats(void) {
+    static char report[192];
+    if (!gameplay_observability_enabled() || !g.local_server.active ||
+        !emscripten_run_script_int(
+            "new URLSearchParams(location.search).get('smoke') === '1'"))
+        return "{}";
+    cargo_receipt_origin_cache_stats_t stats = cargo_receipt_origin_cache_stats();
+    snprintf(report, sizeof(report),
+             "{\"checks\":%llu,\"hits\":%llu,\"historyScans\":%llu}",
+             (unsigned long long)stats.signature_checks,
+             (unsigned long long)stats.signature_hits,
+             (unsigned long long)stats.full_verifications);
+    return report;
 }
 
 EMSCRIPTEN_KEEPALIVE
