@@ -48,12 +48,4 @@ SIGNAL_HAUL_PROFILE_SECONDS=12 npm run smoke -- tests/gameplay-profile.spec.ts -
 
 The default is three seconds per phase. Each phase accepts up to twelve seconds. This short route runs in normal browser CI alongside the fresh/saved dockside profile. It produces screenshots, complete frame reports, tow state and signature-work counts. `SIGNAL_JANK_PROFILE_SECONDS` continues to control the longer dockside samples separately.
 
-Raw reports, build hashes and phase timing are in [comparison.json](evidence/hauling-signature-cache-2026-10-23/comparison.json). The simulation phase logs are beside it. The images below show the rendered turn near the station. They show two separate runs with their own ship identity and contact timing.
-
-Baseline turn:
-
-![Baseline turn](evidence/hauling-signature-cache-2026-10-23/before-turn.png)
-
-Updated turn with 1,024 cache entries:
-
-![Updated turn](evidence/hauling-signature-cache-2026-10-23/after-turn.png)
+Raw reports, build hashes and phase timing are in [comparison.json](evidence/hauling-signature-cache-2026-10-23/comparison.json). The simulation phase logs are beside it. Rendered turn and station-contact frames were also inspected locally. The browser check attaches fresh screenshots for each route phase.
