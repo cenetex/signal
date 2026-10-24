@@ -1254,14 +1254,24 @@ static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
     sdtx_puts(banner);
 }
 
-/* Nearest station name in the bottom-left when undocked, plus the
+/* Nearest station name beside the flight HUD when undocked, plus the
  * housekeeping that expires a tracked contract once the server retired
  * it. The contract cleanup runs every frame regardless of layout. */
 static void hud_draw_nav_label(float screen_w, float screen_h) {
     if (LOCAL_PLAYER.docked) return;
     const station_t *nav_st = navigation_station_ptr();
     if (nav_st && nav_st->name[0] != '\0') {
-        sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
+        float name_x = 16.0f;
+        float name_y = screen_h - 20.0f;
+        if (onboarding_uses_touch_controls()) {
+            float top_x, top_y, top_w, top_h;
+            float bottom_x, bottom_y, bottom_w, bottom_h;
+            get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h,
+                                &bottom_x, &bottom_y, &bottom_w, &bottom_h);
+            name_x = top_x;
+            name_y = top_y + top_h + 10.0f;
+        }
+        sdtx_pos(ui_text_pos(name_x), ui_text_pos(name_y));
         sdtx_color3b(PAL_TEXT_FADED);
         int name_cols = (int)((screen_w - 24.0f) / 8.0f);
         sdtx_printf("%.*s", name_cols, nav_st->name);
@@ -4047,6 +4057,10 @@ enum {
     SMOKE_LOOP_STATE_GUIDE_CHOICE = 43,
     SMOKE_LOOP_STATE_GUIDE_TRACTOR = 44,
     SMOKE_LOOP_STATE_GUIDE_LOCAL_CREDIT = 45,
+    SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK = 46,
+    SMOKE_LOOP_STATE_GUIDE_GATED_ROCK = 47,
+    SMOKE_LOOP_STATE_GUIDE_EARLY_RETURN = 48,
+    SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK = 49,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -4365,7 +4379,9 @@ void smoke_apply_loop_state_for_frame(void) {
     /* Most fixtures intentionally allow input and timers to evolve after
      * setup. Interaction fixtures must overwrite streamed state at the
      * render boundary to keep their visual telemetry stable. */
-    if (smoke_loop_state_override ==
+    if ((smoke_loop_state_override >= SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK &&
+         smoke_loop_state_override <= SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK) ||
+        smoke_loop_state_override ==
             SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR ||
         smoke_loop_state_override ==
             SMOKE_LOOP_STATE_CARGO_HOPPER_GUIDE) {
@@ -5161,6 +5177,31 @@ static int smoke_apply_loop_state(int state) {
         sp->docked = true;
         g.station_view = STATION_VIEW_TRADE;
         g.onboarding.welcomed = false;
+        return 1;
+    case SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK:
+    case SMOKE_LOOP_STATE_GUIDE_GATED_ROCK:
+    case SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK:
+    case SMOKE_LOOP_STATE_GUIDE_EARLY_RETURN:
+        smoke_set_onboarding_economy_progress(false, false, false);
+        g.onboarding.fractured = false;
+        g.onboarding.tractored = false;
+        g.local_server.active = false;
+        sp->ship->mining_level = 0;
+        for (int i = 0; i < MAX_ASTEROIDS; i++)
+            g.world.asteroids[i].active = false;
+        smoke_seed_asteroid(0, ASTEROID_TIER_M, COMMODITY_FERRITE_ORE,
+                            v2_add(sp->ship->pos, v2(120.0f, 0.0f)), 32.0f, 1.0f, 60.0f);
+        smoke_seed_asteroid(1, ASTEROID_TIER_L, COMMODITY_CUPRITE_ORE,
+                            v2_add(sp->ship->pos, v2(90.0f, 0.0f)), 50.0f, 1.0f, 60.0f);
+        sp->hover_asteroid = state == SMOKE_LOOP_STATE_GUIDE_GATED_ROCK ? 1
+            : state == SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK ? 0 : -1;
+        if (state == SMOKE_LOOP_STATE_GUIDE_EARLY_RETURN) {
+            sp->docked = true;
+            sp->in_dock_range = true;
+            g.station_view = STATION_VIEW_DOCK;
+            g.was_docked = true;
+            g.dock_settle_timer = 0.0f;
+        }
         return 1;
     case SMOKE_LOOP_STATE_GUIDE_LOCAL_CREDIT:
         if (!smoke_apply_loop_state(SMOKE_LOOP_STATE_GUIDE_CHOICE)) return 0;
@@ -6134,7 +6175,13 @@ void draw_hud(void) {
                 float msg_w = (float)strlen(full_msg) * cell;
                 float msg_x = (screen_w * 0.5f - msg_w * 0.5f) / cell;
                 /* Stack upward so the newest line sits at the panel bottom. */
-                float msg_y = (screen_h - 32.0f - (float)(count - 1 - vi) * cell * 1.25f) / cell;
+                /* Touch actions occupy the lower sides of the screen. Keep
+                 * the guide above them in portrait; landscape has a clear
+                 * center lane above its bottom controls. Values are CSS px. */
+                float bottom_gap = onboarding_uses_touch_controls()
+                    ? (ui_window_height() < 520.0f ? 100.0f : 285.0f) / ui_scale()
+                    : 32.0f;
+                float msg_y = (screen_h - bottom_gap - (float)(count - 1 - vi) * cell * 1.25f) / cell;
                 sdtx_pos(msg_x, msg_y);
                 sdtx_color3b(message_r, message_g, message_b);
                 sdtx_puts(full_msg);
@@ -6315,7 +6362,9 @@ void draw_hud(void) {
         for (int li = 0; li < HUD_MSG_LINES; li++) {
             if (message_lines[li][0] != '\0') count = li + 1;
         }
-        float msg_y = screen_h * 0.82f;
+        float msg_y = onboarding_uses_touch_controls()
+            ? screen_h - 285.0f / ui_scale() - (float)(count - 1) * cell * 1.25f
+            : screen_h * 0.82f;
         for (int li = 0; li < count; li++) {
             /* 512 (was 256): GCC -Werror=format-truncation traces the
              * message_label (32) + ": " + a wrapped line (HUD_MSG_LINE_CAP)

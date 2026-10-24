@@ -3273,6 +3273,11 @@ void apply_remote_hail_response(uint8_t station,
     if (contract_objective_track_contract(contract_index, step, sizeof(step)))
         set_notice("Tracking: %s", step);
     onboarding_mark_hailed();
+    if (!g.onboarding.complete) {
+        char label[64], guide[256];
+        if (onboarding_hint(label, sizeof(label), guide, sizeof(guide)))
+            set_notice("%s", guide);
+    }
 }
 
 static NetPlayerState remote_player_render_state_at(int slot, float elapsed) {

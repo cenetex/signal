@@ -67,6 +67,7 @@ static void onboarding_save(void) {
 static bool touch_controls;
 
 void onboarding_set_touch_controls(bool touch) { touch_controls = touch; }
+bool onboarding_uses_touch_controls(void) { return touch_controls; }
 bool onboarding_story_focus(void) { return g.onboarding.story_focus; }
 
 void onboarding_choose_story(bool story) {
@@ -200,9 +201,14 @@ typedef struct {
 } guide_objective_t;
 
 static bool guide_launch(char *message, size_t message_size) {
-    if (g.onboarding.moved || !LOCAL_PLAYER.docked) return false;
+    if (!LOCAL_PLAYER.docked) return false;
+    const char *next = !g.onboarding.hailed
+        ? "SCAN [H], MINE A ROCK, THEN TOW ORE TO A FURNACE"
+        : !g.onboarding.fractured
+        ? "FOLLOW THE RED COMPASS PIP TO A ROCK YOUR LASER CAN MINE"
+        : "TOW AN ORE FRAGMENT INTO A GLOWING FURNACE TO EARN LOCAL CREDITS";
     snprintf(message, message_size,
-             "SIGNAL // GUIDE // LAUNCH FROM DOCK ::::: [E]");
+             "SIGNAL // GUIDE // LAUNCH FROM DOCK ::::: [E] // %s", next);
     return true;
 }
 
@@ -217,13 +223,35 @@ static bool guide_fracture(char *message, size_t message_size) {
     if (!g.onboarding.moved || !g.onboarding.hailed ||
         g.onboarding.fractured || LOCAL_PLAYER.docked)
         return false;
-    if (LOCAL_PLAYER.hover_asteroid >= 0 &&
-        g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
+    int hovered = LOCAL_PLAYER.hover_asteroid;
+    if (hovered >= 0 && hovered < MAX_ASTEROIDS &&
+        mining_level_can_fracture_asteroid(LOCAL_PLAYER.ship->mining_level,
+                                          &g.world.asteroids[hovered])) {
         snprintf(message, message_size,
-                 "SIGNAL // GUIDE // ROCK TARGETED ::::: [M] FRACTURE");
+                 "SIGNAL // GUIDE // ROCK TARGETED ::::: HOLD [M] TO FRACTURE");
     } else {
-        snprintf(message, message_size,
-                 "SIGNAL // GUIDE // AIM AT A LARGE ROCK ::::: [M] FRACTURE");
+        /* Match the red compass pip's nearest compatible rock. */
+        const asteroid_t *nearest = NULL;
+        float best_distance = 1e30f;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            const asteroid_t *rock = &g.world.asteroids[i];
+            if (!mining_level_can_fracture_asteroid(LOCAL_PLAYER.ship->mining_level, rock))
+                continue;
+            float distance = v2_dist_sq(LOCAL_PLAYER.ship->pos, rock->pos);
+            if (distance < best_distance) {
+                nearest = rock;
+                best_distance = distance;
+            }
+        }
+        if (nearest) {
+            snprintf(message, message_size,
+                     "SIGNAL // GUIDE // RED COMPASS PIP: %s %s (%s) // HOLD [M] TO MINE",
+                     commodity_short_name(nearest->commodity),
+                     asteroid_tier_name(nearest->tier), commodity_code(nearest->commodity));
+        } else {
+            snprintf(message, message_size,
+                     "SIGNAL // GUIDE // EXPLORE FOR ROCKS ::::: [H] SCAN // RED PIP MARKS A MINEABLE ROCK");
+        }
     }
     return true;
 }

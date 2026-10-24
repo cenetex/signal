@@ -163,3 +163,75 @@ for (const fail of [false, true]) {
     })).toBe(true);
   });
 }
+
+for (const touch of [false, true]) {
+  test(`first haul keeps a usable target and early-return step on ${touch ? 'touch' : 'desktop'}`, async ({page}, info) => {
+    await page.setViewportSize(touch ? {width: 390, height: 844} : {width: 1280, height: 720});
+    await ready(page, touch);
+    expect(await hint(page)).toContain('LAUNCH FROM DOCK');
+    expect(await hint(page)).toContain('TOW ORE TO A FURNACE');
+    await page.screenshot({path: info.outputPath('first-haul-dock.png')});
+    for (const state of [46, 47]) {
+      await fixture(page, state);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(await hint(page)).toContain('RED COMPASS PIP: Ferrite M (FE)');
+      expect(await hint(page)).toContain(touch ? 'HOLD [Mine]' : 'HOLD [M]');
+    }
+    await page.screenshot({path: info.outputPath('first-haul-target.png')});
+    if (touch) {
+      await page.setViewportSize({width: 844, height: 390});
+      await page.screenshot({path: info.outputPath('first-haul-landscape.png')});
+      await page.setViewportSize({width: 390, height: 844});
+    }
+    await fixture(page, 49);
+    expect(await hint(page)).toContain('ROCK TARGETED');
+    await fixture(page, 48);
+    expect(await hint(page)).toContain('LAUNCH FROM DOCK');
+    expect(await hint(page)).toContain('FOLLOW THE RED COMPASS PIP');
+    expect(await hint(page)).toContain(touch ? '[Launch]' : '[E]');
+    await page.screenshot({path: info.outputPath('first-haul-return.png')});
+    await fixture(page, 44);
+    expect(await hint(page)).toContain(touch ? 'TAP [Tow]' : 'HOLD [SPACE]');
+    await fixture(page, 20);
+    expect(await hint(page)).toContain('GLOWING FURNACE');
+  });
+}
+
+test('first scan keeps the first-haul action visible', async ({page}) => {
+  await ready(page);
+  await page.keyboard.press('e');
+  await page.keyboard.down('w');
+  await page.waitForTimeout(1200);
+  await page.keyboard.up('w');
+  await page.keyboard.press('h');
+  await expect.poll(() => hint(page), {timeout: 2000}).toMatch(/RED COMPASS PIP|ROCK TARGETED/);
+});
+
+test.describe('coarse pointer guide layout', () => {
+  test.use({hasTouch: true, viewport: {width: 932, height: 430}});
+  test('station direction and guide fit a wide touch screen', async ({page}, info) => {
+    await ready(page, true);
+    await fixture(page, 46);
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    await expect(page.locator('.signal-touch-controls')).toHaveClass(/is-flight/);
+    expect(await hint(page)).toContain('RED COMPASS PIP: Ferrite M (FE)');
+    await page.screenshot({path: info.outputPath('first-haul-coarse-landscape.png')});
+  });
+});
+
+test('Escape keeps browser flight and steering active', async ({page}, info) => {
+  await ready(page);
+  await page.keyboard.press('e');
+  await expect.poll(() => call(page, 'get_player_docked')).toBe(0);
+  await page.keyboard.press('Escape');
+  const angle = await call(page, 'get_player_angle');
+  await page.keyboard.down('d');
+  try {
+    await expect.poll(async () => Math.abs(await call(page, 'get_player_angle') - angle)).toBeGreaterThan(0.2);
+  } finally {
+    await page.keyboard.up('d');
+  }
+  expect(await call(page, 'get_player_docked')).toBe(0);
+  expect(await hint(page)).toContain('SIGNAL // GUIDE');
+  await page.screenshot({path: info.outputPath('flight-after-escape.png')});
+});
