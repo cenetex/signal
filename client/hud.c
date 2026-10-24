@@ -5936,7 +5936,29 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
     return true;
 }
 
+static void draw_save_status(void) {
+#ifndef __EMSCRIPTEN__
+    char text[100];
+    client_save_status_text(text, sizeof(text));
+    float width = ui_screen_width();
+    float x = width >= 800.0f ? width - 440.0f : 24.0f;
+    float y = width >= 800.0f ? 24.0f : 128.0f;
+    sdtx_canvas(width, ui_screen_height());
+    sdtx_font(0);
+    sdtx_origin(0.0f, 0.0f);
+    sdtx_color3b(165, 207, 194);
+    sdtx_pos(x / 8.0f, y / 8.0f);
+    sdtx_puts(text);
+    if (local_save_failed(g.local_server.save)) {
+        sdtx_pos(x / 8.0f, y / 8.0f + 2.0f);
+        sdtx_color3b(241, 181, 102);
+        sdtx_puts("[F8] Retry save");
+    }
+#endif
+}
+
 void draw_hud(void) {
+    draw_save_status();
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
 

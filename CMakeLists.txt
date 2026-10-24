@@ -1227,6 +1227,7 @@ if(EMSCRIPTEN)
         "'_signal_debug_player_progress'"
         "'_signal_save_local_world'"
         "'_signal_debug_local_save_generation'"
+        "'_signal_save_status_json'"
         "'_signal_debug_local_save_summary'"
         "'_signal_debug_auth_available'"
         "'_signal_debug_net_connected'"
@@ -1246,7 +1247,8 @@ if(EMSCRIPTEN)
     )
     list(JOIN SIGNAL_EMSCRIPTEN_EXPORTS "," SIGNAL_EMSCRIPTEN_EXPORTS_CSV)
     set_property(TARGET signal APPEND PROPERTY LINK_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/web/local-persistence.js")
+        "${CMAKE_CURRENT_SOURCE_DIR}/web/local-persistence.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/web/save-status.js")
     set_target_properties(signal PROPERTIES SUFFIX ".js")
     target_link_options(signal PRIVATE
         "SHELL:-sWASM=1"
@@ -1262,6 +1264,7 @@ if(EMSCRIPTEN)
         "SHELL:-lwebsocket.js"
         "SHELL:-lidbfs.js"
         "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/web/local-persistence.js"
+        "SHELL:--pre-js ${CMAKE_CURRENT_SOURCE_DIR}/web/save-status.js"
     )
     # Copy static web assets into build-web as real dependencies so JS-only
     # iteration updates the local smoke-test server without forcing a relink.

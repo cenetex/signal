@@ -897,6 +897,7 @@ void get_station_panel_rect(float* x, float* y, float* width, float* height);
 /* HUD drawing (call from render_ui) */
 void draw_hud_panels(void);
 void draw_hud(void);
+void client_save_status_text(char *out, size_t size);
 #ifdef __EMSCRIPTEN__
 void smoke_apply_loop_state_for_frame(void);
 #endif

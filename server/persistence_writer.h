@@ -18,6 +18,7 @@ typedef struct {
     double snapshot_clone_ms;
     double background_write_ms;
     bool write_complete;
+    double completed_at_ms; /* UTC milliseconds, recorded after publication. */
 } persistence_writer_metrics_t;
 
 persistence_writer_t *persistence_writer_create(void);

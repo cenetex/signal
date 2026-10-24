@@ -5293,6 +5293,17 @@ static void legacy_recovery_ui_update_adapter(void) {
     }
 }
 
+void client_save_status_text(char *out, size_t size) {
+    if (g.local_server.save) {
+        local_save_status_text(g.local_server.save, out, size);
+    } else if (g.net_authority_enabled && !g.local_server.active) {
+        snprintf(out, size, "%s", net_is_connected()
+            ? "Online - server-managed saves" : "Connecting to server...");
+    } else {
+        snprintf(out, size, "Local session");
+    }
+}
+
 static void frame(void) {
     gameplay_observability_frame_begin();
     double input_started = gameplay_observability_phase_begin();
@@ -5303,6 +5314,11 @@ static void frame(void) {
     if (g.local_server.active) {
         static uint32_t checkpoint_progress;
         bool failed_before = local_save_failed(g.local_server.save);
+        if (is_key_pressed(SAPP_KEYCODE_F8) && failed_before) {
+            (void)local_save_request(g.local_server.save,
+                local_server_world(&g.local_server), false);
+            g.input.key_pressed[SAPP_KEYCODE_F8] = false;
+        }
         local_save_update(g.local_server.save,
                            local_server_world(&g.local_server), frame_dt);
         uint32_t progress = client_progress_pack_local();
@@ -6176,6 +6192,23 @@ int signal_save_local_world(void) {
     if (!g.local_server.active) return 0;
     return local_save_request(g.local_server.save,
         local_server_world(&g.local_server), false) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *signal_save_status_json(void) {
+    static char json[320];
+    char text[100];
+    client_save_status_text(text, sizeof(text));
+    local_save_status_t status = local_save_status(g.local_server.save);
+    const char *mode = g.local_server.save ? "local"
+        : g.net_authority_enabled && !g.local_server.active ? "online" : "session";
+    snprintf(json, sizeof(json),
+        "{\"mode\":\"%s\",\"state\":%d,\"generation\":%.0f,"
+        "\"completedAt\":%.0f,\"age\":%.3f,\"text\":\"%s\",\"retry\":%s}",
+        mode, (int)status.state, (double)status.completed_generation,
+        status.completed_at_ms, status.completed_age_seconds, text,
+        g.local_server.save && status.state == LOCAL_SAVE_RETRY_NEEDED ? "true" : "false");
+    return json;
 }
 
 EMSCRIPTEN_KEEPALIVE

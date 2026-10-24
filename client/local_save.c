@@ -15,14 +15,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 EM_JS(int, local_save_browser_state, (), {
     return Module.signalLocalPersistence.state;
 })
-EM_JS(void, local_save_browser_flush, (), {
-    Module.signalLocalPersistence.flush();
+EM_JS(void, local_save_browser_flush, (double generation), {
+    Module.signalLocalPersistence.flush(generation);
+})
+EM_JS(double, local_save_browser_completed_generation, (), {
+    return Module.signalLocalPersistence.completedGeneration || 0;
+})
+EM_JS(double, local_save_browser_completed_at, (), {
+    return Module.signalLocalPersistence.completedAt || 0;
 })
 #else
 #include "persistence_writer.h"
@@ -52,6 +59,9 @@ struct local_save {
     int mining_level, hold_level, tractor_level;
     bool ready;
     bool failed;
+    bool writing;
+    uint64_t completed_generation;
+    double completed_at_ms;
     bool was_docked;
 #ifndef __EMSCRIPTEN__
     persistence_writer_t *writer;
@@ -147,6 +157,7 @@ local_save_t *local_save_open(const char *root, world_t *world,
     save->writer = persistence_writer_create();
     if (!save->writer) goto fail;
 #endif
+    save->completed_generation = save->selected.generation;
     return save;
 fail:
     fprintf(stderr, "[local-save] Recovery or exclusive storage access required: %s\n", root);
@@ -175,16 +186,36 @@ bool local_save_restore_player(local_save_t *save, world_t *world, int slot) {
 static void local_save_poll(local_save_t *save, bool wait) {
 #ifdef __EMSCRIPTEN__
     (void)wait;
-    if (local_save_browser_state() == -1) save->failed = true;
+    int state = local_save_browser_state();
+    if (state == -1 && save->writing) {
+        save->failed = true;
+        save->writing = false;
+        save->retry_wait = 5.0f;
+    } else if (state == 1 && save->writing &&
+               local_save_browser_completed_generation() ==
+                   (double)save->selected.generation) {
+        save->completed_generation = save->selected.generation;
+        save->completed_at_ms = local_save_browser_completed_at();
+        save->failed = false;
+        save->writing = false;
+    }
 #else
     persistence_writer_state_t state = wait
         ? persistence_writer_wait(save->writer, &save->selected)
         : persistence_writer_poll(save->writer, &save->selected);
     if (state == PERSISTENCE_WRITER_FAILED) {
         save->failed = true;
+        save->writing = false;
         save->retry_wait = 5.0f;
     }
-    if (state == PERSISTENCE_WRITER_SUCCEEDED) save->failed = false;
+    if (state == PERSISTENCE_WRITER_SUCCEEDED) {
+        persistence_writer_metrics_t metrics = {0};
+        (void)persistence_writer_get_metrics(save->writer, &metrics);
+        save->completed_generation = save->selected.generation;
+        save->completed_at_ms = metrics.completed_at_ms;
+        save->failed = false;
+        save->writing = false;
+    }
 #endif
 }
 
@@ -204,18 +235,27 @@ bool local_save_request(local_save_t *save, world_t *world, bool wait) {
         PERSISTENCE_GENERATION_FAULT_NONE, &published);
     if (ok) {
         save->selected = published;
-        local_save_browser_flush();
+        save->writing = true;
+        save->failed = false;
+        local_save_browser_flush((double)published.generation);
     }
 #else
     if (persistence_writer_active(save->writer)) return false;
     bool ok = persistence_writer_start(save->writer, save->root, save->legacy, world, slots);
+    if (ok) {
+        save->writing = true;
+        save->failed = false;
+    }
     if (ok && wait) {
         local_save_poll(save, true);
         ok = !save->failed;
     }
 #endif
-    save->failed = !ok;
-    if (!ok) save->retry_wait = 5.0f;
+    if (!ok) {
+        save->failed = true;
+        save->writing = false;
+        save->retry_wait = 5.0f;
+    }
     if (ok) {
         save->elapsed = 0.0f;
         save->was_docked = player->docked;
@@ -245,7 +285,8 @@ void local_save_update(local_save_t *save, world_t *world, float dt) {
     int station = player->current_station;
     float balance = station >= 0 && station < MAX_STATIONS
         ? ledger_balance_by_pubkey(&world->stations[station], save->pubkey) : 0.0f;
-    if (save->elapsed >= (player->docked ? 5.0f : 30.0f) ||
+    if (save->failed ||
+        save->elapsed >= (player->docked ? 5.0f : 30.0f) ||
         player->docked != save->was_docked ||
         world->station_count != save->station_count ||
         station != save->station || balance != save->balance ||
@@ -269,10 +310,55 @@ uint64_t local_save_generation(const local_save_t *save) {
     if (!save || save->failed) return 0;
 #ifdef __EMSCRIPTEN__
     if (local_save_browser_state() != 1) return 0;
+    /* Completion observers can run before the next client frame polls. */
+    if (save->writing && local_save_browser_completed_generation() ==
+                         (double)save->selected.generation)
+        return save->selected.generation;
 #endif
-    return save->selected.generation;
+    return save->writing ? 0 : save->completed_generation;
 }
 
 bool local_save_failed(const local_save_t *save) {
     return save && save->failed;
+}
+
+local_save_status_t local_save_status(const local_save_t *save) {
+    local_save_status_t result = {0};
+    if (!save) return result;
+    result.state = save->writing ? LOCAL_SAVE_SAVING
+        : save->failed ? LOCAL_SAVE_RETRY_NEEDED
+        : save->completed_generation ? LOCAL_SAVE_SAVED : LOCAL_SAVE_PREPARING;
+    result.completed_generation = save->completed_generation;
+    result.completed_at_ms = save->completed_at_ms;
+    if (result.completed_at_ms > 0.0) {
+        struct timespec now = {0};
+        (void)timespec_get(&now, TIME_UTC);
+        double now_ms = (double)now.tv_sec * 1000.0 + (double)now.tv_nsec / 1000000.0;
+        result.completed_age_seconds = fmax(0.0, (now_ms - result.completed_at_ms) / 1000.0);
+    }
+    return result;
+}
+
+void local_save_status_text(const local_save_t *save, char *out, size_t size) {
+    if (!out || !size) return;
+    local_save_status_t status = local_save_status(save);
+    const char *label = status.state == LOCAL_SAVE_SAVING ? "Saving..."
+        : status.state == LOCAL_SAVE_RETRY_NEEDED ? "Retry needed"
+        : status.state == LOCAL_SAVE_SAVED ? "Saved" : "Preparing save...";
+    if (status.state == LOCAL_SAVE_SAVED && status.completed_at_ms == 0.0) {
+        snprintf(out, size, "Saved - restored");
+    } else if (status.completed_at_ms > 0.0) {
+        unsigned age = (unsigned)fmin(status.completed_age_seconds, 31536000.0);
+        if (age < 5)
+            snprintf(out, size, "%s%sjust now", label,
+                     status.state == LOCAL_SAVE_SAVED ? " " : " - last saved ");
+        else if (age < 60)
+            snprintf(out, size, "%s%s%us ago", label,
+                     status.state == LOCAL_SAVE_SAVED ? " " : " - last saved ", age);
+        else
+            snprintf(out, size, "%s%s%um ago", label,
+                     status.state == LOCAL_SAVE_SAVED ? " " : " - last saved ", age / 60);
+    } else {
+        snprintf(out, size, "%s", label);
+    }
 }
