@@ -15,11 +15,26 @@ async function ready(page: Page, touch: boolean) {
   await expect.poll(async () => (await status(page)).state).toBe(2);
 }
 
-for (const touch of [false, true]) {
-  test(`save completion, failure and retry on ${touch ? 'touch' : 'desktop'}`, async ({page}, info) => {
+async function expectTouchClearance(page: Page) {
+  const saveBox = (await page.locator('#signal-save-status').boundingBox())!;
+  for (const control of await page.locator('.signal-touch-button:visible').all()) {
+    const box = (await control.boundingBox())!;
+    expect(saveBox.x + saveBox.width <= box.x || box.x + box.width <= saveBox.x ||
+      saveBox.y + saveBox.height <= box.y || box.y + box.height <= saveBox.y,
+      `${await control.textContent()} stays clear of save status`).toBe(true);
+  }
+}
+
+for (const view of [
+  {name:'desktop', touch:false, width:1280, height:720},
+  {name:'touch', touch:true, width:390, height:844},
+  {name:'landscape touch', touch:true, width:844, height:390},
+]) {
+  const {touch} = view;
+  test(`save completion, failure and retry on ${view.name}`, async ({page}, info) => {
     test.skip(!!process.env.SMOKE_URL, 'storage faults use an isolated local world');
     test.setTimeout(90_000);
-    await page.setViewportSize(touch ? {width:390, height:844} : {width:1280, height:720});
+    await page.setViewportSize({width:view.width, height:view.height});
     await ready(page, touch);
     const panel = page.locator('#signal-save-status');
     const first = await status(page);
@@ -68,6 +83,7 @@ for (const touch of [false, true]) {
     await expect(retry).toBeVisible();
     expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     await page.screenshot({path:info.outputPath('retry-needed.png')});
+    if (touch) await expectTouchClearance(page);
     const before = JSON.parse(await call(page, 'signal_debug_local_save_summary', 'string'));
     await page.evaluate(() => {
       const storage = (window as any).Module.signalLocalPersistence;
@@ -85,7 +101,8 @@ for (const touch of [false, true]) {
     const restored = JSON.parse(await call(page, 'signal_debug_local_save_summary', 'string'));
     for (const key of ['seed', 'ship', 'credits', 'stations']) expect(restored[key]).toEqual(before[key]);
     expect(restored.time).toBeGreaterThanOrEqual(before.time);
-    await expect.poll(async () => (await status(page)).state).toBe(2);
+    // A completed receipt remains valid when the next autosave is already active.
+    await expect.poll(async () => (await status(page)).completedAt).toBeGreaterThan(0);
     if (touch) await page.getByRole('button', {name:'Launch', exact:true}).click();
     else {
       await page.locator('canvas').focus();
@@ -100,14 +117,7 @@ for (const touch of [false, true]) {
     await expect.poll(() => call(page, 'signal_save_local_world')).toBe(1);
     await expect(panel).toContainText('Retry needed');
     await page.screenshot({path:info.outputPath('flight-retry-needed.png')});
-    if (touch) {
-      const saveBox = (await panel.boundingBox())!;
-      for (const control of ['Scan', 'Auto', 'Tow', 'Brake', 'Boost']) {
-        const box = await page.getByRole('button', {name:control, exact:true}).boundingBox();
-        if (box) expect(saveBox.x + saveBox.width <= box.x || box.x + box.width <= saveBox.x ||
-          saveBox.y + saveBox.height <= box.y || box.y + box.height <= saveBox.y, `${control} stays clear of save status`).toBe(true);
-      }
-    }
+    if (touch) await expectTouchClearance(page);
   });
 }
 
