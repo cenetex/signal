@@ -213,6 +213,7 @@ test.describe('coarse pointer guide layout', () => {
     await ready(page, true);
     await fixture(page, 46);
     expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    await expect(page.locator('.signal-touch-controls')).toHaveClass(/is-flight/);
     expect(await hint(page)).toContain('RED COMPASS PIP: Ferrite M (FE)');
     await page.screenshot({path: info.outputPath('first-haul-coarse-landscape.png')});
   });
