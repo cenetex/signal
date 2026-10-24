@@ -1,0 +1,2475 @@
+{
+  "description": "Isolated local hauling with release media; the paired diagnostic builds use Emscripten 5.0.4, SIM_PROFILE=ON and --profiling-funcs. These measurements used the 1024-entry cache. Final sizing has a separate deterministic live-sized benchmark.",
+  "hardware": {
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 14,
+    "viewport": [
+      1280,
+      720
+    ]
+  },
+  "load": "Other agents paused builds/browser tests for the baseline and aged comparison. The first part of the updated fresh run overlapped one final build/browser run and one native test process before they paused. User applications remained active.",
+  "fresh": {
+    "before": {
+      "environment": {
+        "source": "94588d6b6594570bdecbc78602d4bb2d7e112abc",
+        "wasmSha256": "9e29c8e9785d99b69722509ae296a279356f892445d8767eb93ad738effdafa3",
+        "cpu": "Apple M4 Max",
+        "logicalCpus": 14,
+        "browser": "148.0.7778.96",
+        "errors": []
+      },
+      "stages": [
+        {
+          "name": "docked",
+          "seconds": 12.06,
+          "keys": [],
+          "tow": 98304,
+          "docked": 1,
+          "hint": "SIGNAL // GUIDE // LAUNCH FROM DOCK ::::: [E]",
+          "episode": 0,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 12.046,
+            "frames": 399,
+            "frame_ms": {
+              "p50": 14.875,
+              "p95": 16.375,
+              "p99": 32.625,
+              "max": 64.8
+            },
+            "simulation_ms": {
+              "p50": 2.375,
+              "p95": 3.625,
+              "p99": 5.375,
+              "max": 52.2
+            },
+            "slow_frames": {
+              "over_16_6": 14,
+              "over_33_3": 3,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 1416,
+              "missed": 18,
+              "accumulator_dropped": 18
+            },
+            "snapshots": {
+              "packets": 1040,
+              "bytes": 103945,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 2219.6
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.091,
+                "max_ms": 18.2,
+                "slow_cause": 2
+              },
+              "simulation": {
+                "avg_ms": 2.498,
+                "max_ms": 52.2,
+                "slow_cause": 2
+              },
+              "interpolation": {
+                "avg_ms": 0.013,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.169,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 12.284,
+                "max_ms": 13.8,
+                "slow_cause": 10
+              },
+              "submission": {
+                "avg_ms": 0.088,
+                "max_ms": 0.4,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.028,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.003,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.684,
+                "max_ms": 50.9,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.008,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "cargo_pod": {
+                "samples": 399,
+                "max_correction_world": 5.0292,
+                "max_velocity_discontinuity": 27.1249,
+                "max_correction_jerk": 7075.8179
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 798,
+                "max_correction_world": 7.347,
+                "max_velocity_discontinuity": 32.9653,
+                "max_correction_jerk": 6585.9517
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "animationFrameIntervalMs": {
+            "p50": 26.30000000000109,
+            "p95": 34.900000000000546,
+            "p99": 91.30000000000018,
+            "max": 175.30000000000018
+          }
+        },
+        {
+          "name": "tow-idle",
+          "seconds": 12.057,
+          "keys": [],
+          "tow": 130931,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // FLIGHT CHECK ::::: [WASD] FLY TOWARD ROCKS",
+          "episode": 0,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 12.016,
+            "frames": 1193,
+            "frame_ms": {
+              "p50": 1.125,
+              "p95": 2.375,
+              "p99": 3.625,
+              "max": 67.1
+            },
+            "simulation_ms": {
+              "p50": 0.875,
+              "p95": 2.125,
+              "p99": 3.375,
+              "max": 66.8
+            },
+            "slow_frames": {
+              "over_16_6": 2,
+              "over_33_3": 2,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 1432,
+              "missed": 1,
+              "accumulator_dropped": 1
+            },
+            "snapshots": {
+              "packets": 1963,
+              "bytes": 158574,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 8191.1
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.006,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 1.139,
+                "max_ms": 66.8,
+                "slow_cause": 2
+              },
+              "interpolation": {
+                "avg_ms": 0.019,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.161,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.016,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.066,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.009,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.002,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.894,
+                "max_ms": 66.7,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.014,
+                "max_ms": 3.5,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1713,
+                "max_correction_world": 5183.7656,
+                "max_velocity_discontinuity": 1039.8271,
+                "max_correction_jerk": 7886.9282
+              },
+              "cargo_pod": {
+                "samples": 1821,
+                "max_correction_world": 3.8888,
+                "max_velocity_discontinuity": 128.6154,
+                "max_correction_jerk": 55998.6016
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 2386,
+                "max_correction_world": 8.1295,
+                "max_velocity_discontinuity": 117.419,
+                "max_correction_jerk": 93562.3281
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "animationFrameIntervalMs": {
+            "p50": 8.400000000001455,
+            "p95": 17.099999999998545,
+            "p99": 18.100000000002183,
+            "max": 73.29999999999927
+          }
+        },
+        {
+          "name": "tow-straight",
+          "seconds": 12.067,
+          "keys": [
+            "w"
+          ],
+          "tow": 99187,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]",
+          "episode": 0,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 12.048,
+            "frames": 687,
+            "frame_ms": {
+              "p50": 1.875,
+              "p95": 5.625,
+              "p99": 10.625,
+              "max": 89.3
+            },
+            "simulation_ms": {
+              "p50": 1.375,
+              "p95": 5.125,
+              "p99": 8.375,
+              "max": 89
+            },
+            "slow_frames": {
+              "over_16_6": 6,
+              "over_33_3": 4,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 1417,
+              "missed": 25,
+              "accumulator_dropped": 25
+            },
+            "snapshots": {
+              "packets": 2609,
+              "bytes": 224774,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 10317
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.057,
+                "max_ms": 16.8,
+                "slow_cause": 2
+              },
+              "simulation": {
+                "avg_ms": 2.297,
+                "max_ms": 89,
+                "slow_cause": 4
+              },
+              "interpolation": {
+                "avg_ms": 0.021,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.176,
+                "max_ms": 0.4,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.015,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.073,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.016,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 1.059,
+                "max_ms": 88.3,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.02,
+                "max_ms": 7.9,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1783,
+                "max_correction_world": 5364.0254,
+                "max_velocity_discontinuity": 173.8839,
+                "max_correction_jerk": 2522.2329
+              },
+              "cargo_pod": {
+                "samples": 3009,
+                "max_correction_world": 12.9391,
+                "max_velocity_discontinuity": 153.1682,
+                "max_correction_jerk": 140398.1875
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1374,
+                "max_correction_world": 11.9207,
+                "max_velocity_discontinuity": 81.6108,
+                "max_correction_jerk": 108301
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "animationFrameIntervalMs": {
+            "p50": 16.299999999995634,
+            "p95": 41.19999999999709,
+            "p99": 75.80000000000291,
+            "max": 91.70000000000073
+          }
+        },
+        {
+          "name": "tow-turn",
+          "seconds": 12.104,
+          "keys": [
+            "w",
+            "a"
+          ],
+          "tow": 99187,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]",
+          "episode": 0,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 12.116,
+            "frames": 528,
+            "frame_ms": {
+              "p50": 2.625,
+              "p95": 4.625,
+              "p99": 6.625,
+              "max": 8.9
+            },
+            "simulation_ms": {
+              "p50": 2.375,
+              "p95": 4.125,
+              "p99": 6.125,
+              "max": 8.5
+            },
+            "slow_frames": {
+              "over_16_6": 0,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 1448,
+              "missed": 2,
+              "accumulator_dropped": 2
+            },
+            "snapshots": {
+              "packets": 2521,
+              "bytes": 230799,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 5101.3
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.009,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 2.508,
+                "max_ms": 8.5,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.024,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.198,
+                "max_ms": 0.4,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.014,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.085,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.021,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.002,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.866,
+                "max_ms": 3.6,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.015,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1694,
+                "max_correction_world": 5353.3154,
+                "max_velocity_discontinuity": 63.0217,
+                "max_correction_jerk": 921.8639
+              },
+              "cargo_pod": {
+                "samples": 2640,
+                "max_correction_world": 4.024,
+                "max_velocity_discontinuity": 43.496,
+                "max_correction_jerk": 14784.2158
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1056,
+                "max_correction_world": 9.4055,
+                "max_velocity_discontinuity": 28.6993,
+                "max_correction_jerk": 28375.125
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "animationFrameIntervalMs": {
+            "p50": 24.099999999998545,
+            "p95": 33.799999999995634,
+            "p99": 59.5,
+            "max": 75
+          }
+        },
+        {
+          "name": "tow-media",
+          "seconds": 8.112,
+          "keys": [
+            "w",
+            "d"
+          ],
+          "tow": 99187,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]",
+          "episode": 13,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.135,
+            "frames": 322,
+            "frame_ms": {
+              "p50": 3.125,
+              "p95": 6.875,
+              "p99": 9.625,
+              "max": 106.1
+            },
+            "simulation_ms": {
+              "p50": 2.875,
+              "p95": 6.125,
+              "p99": 8.375,
+              "max": 105.6
+            },
+            "slow_frames": {
+              "over_16_6": 2,
+              "over_33_3": 1,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 927,
+              "missed": 30,
+              "accumulator_dropped": 30
+            },
+            "snapshots": {
+              "packets": 1596,
+              "bytes": 155270,
+              "max_packet_bytes": 1250,
+              "max_gap_ms": 2254.9
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.061,
+                "max_ms": 17.3,
+                "slow_cause": 1
+              },
+              "simulation": {
+                "avg_ms": 3.351,
+                "max_ms": 105.6,
+                "slow_cause": 1
+              },
+              "interpolation": {
+                "avg_ms": 0.029,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.186,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.019,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.082,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.051,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.003,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.949,
+                "max_ms": 104.1,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.016,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1053,
+                "max_correction_world": 5337.7749,
+                "max_velocity_discontinuity": 299.7401,
+                "max_correction_jerk": 2609.8682
+              },
+              "cargo_pod": {
+                "samples": 1798,
+                "max_correction_world": 5.696,
+                "max_velocity_discontinuity": 76.7502,
+                "max_correction_jerk": 22629.4297
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 644,
+                "max_correction_world": 10.2069,
+                "max_velocity_discontinuity": 31.2476,
+                "max_correction_jerk": 39953.7383
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "animationFrameIntervalMs": {
+            "p50": 24.10000000000582,
+            "p95": 41.799999999995634,
+            "p99": 116.40000000000146,
+            "max": 165.5
+          }
+        },
+        {
+          "name": "tow-coast",
+          "seconds": 8.041,
+          "keys": [],
+          "tow": 99187,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]",
+          "episode": 1,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.026,
+            "frames": 362,
+            "frame_ms": {
+              "p50": 2.375,
+              "p95": 4.625,
+              "p99": 7.125,
+              "max": 9
+            },
+            "simulation_ms": {
+              "p50": 2.125,
+              "p95": 4.125,
+              "p99": 6.875,
+              "max": 8.7
+            },
+            "slow_frames": {
+              "over_16_6": 0,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 951,
+              "missed": 6,
+              "accumulator_dropped": 6
+            },
+            "snapshots": {
+              "packets": 1314,
+              "bytes": 162284,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 2065
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.006,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 2.325,
+                "max_ms": 8.7,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.025,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.181,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.012,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.09,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.021,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.841,
+                "max_ms": 3.3,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.014,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 989,
+                "max_correction_world": 5327.0781,
+                "max_velocity_discontinuity": 24.8026,
+                "max_correction_jerk": 1651.7069
+              },
+              "cargo_pod": {
+                "samples": 2172,
+                "max_correction_world": 4.1798,
+                "max_velocity_discontinuity": 81.008,
+                "max_correction_jerk": 15022.4043
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 724,
+                "max_correction_world": 6.7543,
+                "max_velocity_discontinuity": 21.529,
+                "max_correction_jerk": 24315.418
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "animationFrameIntervalMs": {
+            "p50": 17.700000000004366,
+            "p95": 34.40000000000873,
+            "p99": 75.19999999999709,
+            "max": 91.0
+          }
+        }
+      ]
+    },
+    "after": {
+      "environment": {
+        "source": "d4a24aa5579b3282b0f239e8aba2bb6b1ddac4be",
+        "wasmSha256": "ed6ad418451ef23cf416112b70c61b69de60a76f54908cd3f8ce099896e065b5",
+        "cpu": "Apple M4 Max",
+        "logicalCpus": 14,
+        "browser": "148.0.7778.96",
+        "errors": []
+      },
+      "stages": [
+        {
+          "name": "docked",
+          "seconds": 12.091,
+          "keys": [],
+          "tow": 98304,
+          "docked": 1,
+          "hint": "SIGNAL // GUIDE // LAUNCH FROM DOCK ::::: [E]",
+          "episode": 0,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 12.055,
+            "frames": 419,
+            "frame_ms": {
+              "p50": 14.125,
+              "p95": 16.125,
+              "p99": 18.625,
+              "max": 61.3
+            },
+            "simulation_ms": {
+              "p50": 2.125,
+              "p95": 3.875,
+              "p99": 5.375,
+              "max": 49.5
+            },
+            "slow_frames": {
+              "over_16_6": 17,
+              "over_33_3": 1,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 1439,
+              "missed": 7,
+              "accumulator_dropped": 7
+            },
+            "snapshots": {
+              "packets": 1060,
+              "bytes": 105895,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 2052.6
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.087,
+                "max_ms": 18.4,
+                "slow_cause": 2
+              },
+              "simulation": {
+                "avg_ms": 2.333,
+                "max_ms": 49.5,
+                "slow_cause": 2
+              },
+              "interpolation": {
+                "avg_ms": 0.015,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.161,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 11.808,
+                "max_ms": 13.7,
+                "slow_cause": 13
+              },
+              "submission": {
+                "avg_ms": 0.083,
+                "max_ms": 0.4,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.027,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.003,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.658,
+                "max_ms": 48,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.009,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "cargo_pod": {
+                "samples": 419,
+                "max_correction_world": 5.0292,
+                "max_velocity_discontinuity": 27.1249,
+                "max_correction_jerk": 8228.0449
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 838,
+                "max_correction_world": 7.347,
+                "max_velocity_discontinuity": 32.9653,
+                "max_correction_jerk": 13181.7295
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "signatures": {
+            "checks": 37,
+            "hits": 0,
+            "historyScans": 1
+          },
+          "animationFrameIntervalMs": {
+            "p50": 25.600000000000364,
+            "p95": 34.700000000000045,
+            "p99": 66.20000000000073,
+            "max": 133.39999999999964
+          }
+        },
+        {
+          "name": "tow-idle",
+          "seconds": 12.063,
+          "keys": [],
+          "tow": 130931,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // FLIGHT CHECK ::::: [WASD] FLY TOWARD ROCKS",
+          "episode": 0,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 12.041,
+            "frames": 1076,
+            "frame_ms": {
+              "p50": 1.375,
+              "p95": 2.625,
+              "p99": 4.375,
+              "max": 35.7
+            },
+            "simulation_ms": {
+              "p50": 1.125,
+              "p95": 2.375,
+              "p99": 3.875,
+              "max": 35.3
+            },
+            "slow_frames": {
+              "over_16_6": 4,
+              "over_33_3": 1,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 1452,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 2012,
+              "bytes": 165292,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 7979.6
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.035,
+                "max_ms": 16.6,
+                "slow_cause": 2
+              },
+              "simulation": {
+                "avg_ms": 1.245,
+                "max_ms": 35.3,
+                "slow_cause": 2
+              },
+              "interpolation": {
+                "avg_ms": 0.02,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.161,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.014,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.071,
+                "max_ms": 0.4,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.011,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.866,
+                "max_ms": 34.3,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.014,
+                "max_ms": 3.6,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1732,
+                "max_correction_world": 5183.7656,
+                "max_velocity_discontinuity": 1039.8271,
+                "max_correction_jerk": 7886.9282
+              },
+              "cargo_pod": {
+                "samples": 1705,
+                "max_correction_world": 3.8888,
+                "max_velocity_discontinuity": 128.6154,
+                "max_correction_jerk": 52157.3359
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 2152,
+                "max_correction_world": 9.0272,
+                "max_velocity_discontinuity": 117.3396,
+                "max_correction_jerk": 96647.7422
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "signatures": {
+            "checks": 83,
+            "hits": 128,
+            "historyScans": 7
+          },
+          "animationFrameIntervalMs": {
+            "p50": 8.600000000000364,
+            "p95": 17.69999999999709,
+            "p99": 26.69999999999891,
+            "max": 58.5
+          }
+        },
+        {
+          "name": "tow-straight",
+          "seconds": 12.087,
+          "keys": [
+            "w"
+          ],
+          "tow": 99187,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]",
+          "episode": 0,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 12.069,
+            "frames": 711,
+            "frame_ms": {
+              "p50": 2.125,
+              "p95": 3.625,
+              "p99": 5.125,
+              "max": 37.7
+            },
+            "simulation_ms": {
+              "p50": 1.875,
+              "p95": 3.125,
+              "p99": 4.875,
+              "max": 37.3
+            },
+            "slow_frames": {
+              "over_16_6": 3,
+              "over_33_3": 1,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 1437,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 2673,
+              "bytes": 232460,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 8580.3
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.056,
+                "max_ms": 17.1,
+                "slow_cause": 2
+              },
+              "simulation": {
+                "avg_ms": 1.895,
+                "max_ms": 37.3,
+                "slow_cause": 1
+              },
+              "interpolation": {
+                "avg_ms": 0.021,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.175,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.015,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.079,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.016,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.883,
+                "max_ms": 37.2,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.019,
+                "max_ms": 8.1,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1789,
+                "max_correction_world": 5364.0254,
+                "max_velocity_discontinuity": 155.4761,
+                "max_correction_jerk": 3970.2935
+              },
+              "cargo_pod": {
+                "samples": 2762,
+                "max_correction_world": 12.9391,
+                "max_velocity_discontinuity": 153.1682,
+                "max_correction_jerk": 48834.2852
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1422,
+                "max_correction_world": 10.2015,
+                "max_velocity_discontinuity": 144.2148,
+                "max_correction_jerk": 97224.3672
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "signatures": {
+            "checks": 99,
+            "hits": 279,
+            "historyScans": 10
+          },
+          "animationFrameIntervalMs": {
+            "p50": 16.700000000000728,
+            "p95": 25.200000000000728,
+            "p99": 26.700000000000728,
+            "max": 50.0
+          }
+        },
+        {
+          "name": "tow-turn",
+          "seconds": 12.075,
+          "keys": [
+            "w",
+            "a"
+          ],
+          "tow": 99187,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]",
+          "episode": 0,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 12.097,
+            "frames": 736,
+            "frame_ms": {
+              "p50": 1.875,
+              "p95": 3.125,
+              "p99": 3.875,
+              "max": 29.8
+            },
+            "simulation_ms": {
+              "p50": 1.625,
+              "p95": 2.625,
+              "p99": 3.625,
+              "max": 29.4
+            },
+            "slow_frames": {
+              "over_16_6": 1,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 1443,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 2711,
+              "bytes": 263969,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 10066
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.008,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 1.684,
+                "max_ms": 29.4,
+                "slow_cause": 1
+              },
+              "interpolation": {
+                "avg_ms": 0.021,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.17,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.016,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.073,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.013,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.81,
+                "max_ms": 27.5,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.013,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1586,
+                "max_correction_world": 5353.3154,
+                "max_velocity_discontinuity": 564.5768,
+                "max_correction_jerk": 13472.7344
+              },
+              "cargo_pod": {
+                "samples": 3553,
+                "max_correction_world": 7.2991,
+                "max_velocity_discontinuity": 209.5556,
+                "max_correction_jerk": 47881.4219
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1472,
+                "max_correction_world": 10.8124,
+                "max_velocity_discontinuity": 58.4645,
+                "max_correction_jerk": 144063.0625
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "signatures": {
+            "checks": 107,
+            "hits": 341,
+            "historyScans": 11
+          },
+          "animationFrameIntervalMs": {
+            "p50": 16.599999999998545,
+            "p95": 24.89999999999418,
+            "p99": 25.69999999999709,
+            "max": 41.69999999999709
+          }
+        },
+        {
+          "name": "tow-media",
+          "seconds": 8.083,
+          "keys": [
+            "w",
+            "d"
+          ],
+          "tow": 99187,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]",
+          "episode": 1,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.102,
+            "frames": 440,
+            "frame_ms": {
+              "p50": 2.375,
+              "p95": 3.625,
+              "p99": 4.375,
+              "max": 17
+            },
+            "simulation_ms": {
+              "p50": 1.875,
+              "p95": 3.375,
+              "p99": 3.875,
+              "max": 4.5
+            },
+            "slow_frames": {
+              "over_16_6": 1,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 970,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 1770,
+              "bytes": 166517,
+              "max_packet_bytes": 1250,
+              "max_gap_ms": 2212.7
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.043,
+                "max_ms": 15.4,
+                "slow_cause": 1
+              },
+              "simulation": {
+                "avg_ms": 2.08,
+                "max_ms": 4.5,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.022,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.168,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.014,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.073,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.037,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.002,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.749,
+                "max_ms": 2.9,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.014,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1073,
+                "max_correction_world": 5333.8901,
+                "max_velocity_discontinuity": 118.2938,
+                "max_correction_jerk": 2867.7065
+              },
+              "cargo_pod": {
+                "samples": 2200,
+                "max_correction_world": 5.045,
+                "max_velocity_discontinuity": 27.3626,
+                "max_correction_jerk": 18161.9141
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 880,
+                "max_correction_world": 10.2406,
+                "max_velocity_discontinuity": 117.6767,
+                "max_correction_jerk": 36866.1406
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "signatures": {
+            "checks": 107,
+            "hits": 341,
+            "historyScans": 11
+          },
+          "animationFrameIntervalMs": {
+            "p50": 16.900000000001455,
+            "p95": 25.200000000004366,
+            "p99": 26.5,
+            "max": 33.400000000001455
+          }
+        },
+        {
+          "name": "tow-coast",
+          "seconds": 8.041,
+          "keys": [],
+          "tow": 99187,
+          "docked": 0,
+          "hint": "SIGNAL // GUIDE // SCAN FOR USEFUL ROCKS ::::: [H]",
+          "episode": 1,
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.03,
+            "frames": 438,
+            "frame_ms": {
+              "p50": 2.125,
+              "p95": 3.125,
+              "p99": 4.125,
+              "max": 6.4
+            },
+            "simulation_ms": {
+              "p50": 1.625,
+              "p95": 2.625,
+              "p99": 3.625,
+              "max": 5.9
+            },
+            "slow_frames": {
+              "over_16_6": 0,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 968,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 1325,
+              "bytes": 161186,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 4979.9
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.004,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 1.76,
+                "max_ms": 5.9,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.016,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.168,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.012,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.07,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.016,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.002,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.753,
+                "max_ms": 3.1,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.012,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 987,
+                "max_correction_world": 4564.3838,
+                "max_velocity_discontinuity": 24.5666,
+                "max_correction_jerk": 2073.5535
+              },
+              "cargo_pod": {
+                "samples": 2190,
+                "max_correction_world": 4.8376,
+                "max_velocity_discontinuity": 27.0915,
+                "max_correction_jerk": 17555.457
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 876,
+                "max_correction_world": 10.3174,
+                "max_velocity_discontinuity": 36.8643,
+                "max_correction_jerk": 38050.5586
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "signatures": {
+            "checks": 107,
+            "hits": 341,
+            "historyScans": 11
+          },
+          "animationFrameIntervalMs": {
+            "p50": 16.799999999995634,
+            "p95": 25.20000000001164,
+            "p99": 27.0,
+            "max": 66.69999999999709
+          }
+        }
+      ]
+    }
+  },
+  "aged": {
+    "before": {
+      "variant": "before",
+      "initial": {
+        "seed": 2037,
+        "time": 0.467,
+        "ship": 6,
+        "credits": -200,
+        "stations": 4
+      },
+      "aged": {
+        "seed": 2037,
+        "time": 640.45,
+        "ship": 6,
+        "credits": -200,
+        "stations": 4
+      },
+      "wasmSha256": "9e29c8e9785d99b69722509ae296a279356f892445d8767eb93ad738effdafa3",
+      "records": [
+        {
+          "name": "straight",
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.026,
+            "frames": 733,
+            "frame_ms": {
+              "p50": 1.375,
+              "p95": 2.125,
+              "p99": 3.125,
+              "max": 15.1
+            },
+            "simulation_ms": {
+              "p50": 1.125,
+              "p95": 1.875,
+              "p99": 2.625,
+              "max": 3.3
+            },
+            "slow_frames": {
+              "over_16_6": 0,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 966,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 2017,
+              "bytes": 229234,
+              "max_packet_bytes": 1250,
+              "max_gap_ms": 2036.4
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.026,
+                "max_ms": 13.8,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 1.067,
+                "max_ms": 3.3,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.022,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.149,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.012,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.068,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.009,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.002,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.761,
+                "max_ms": 2.9,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.015,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1450,
+                "max_correction_world": 5365.5674,
+                "max_velocity_discontinuity": 486.6805,
+                "max_correction_jerk": 21685.6113
+              },
+              "cargo_pod": {
+                "samples": 6338,
+                "max_correction_world": 46.1803,
+                "max_velocity_discontinuity": 451.6726,
+                "max_correction_jerk": 644375.0625
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1466,
+                "max_correction_world": 11.3676,
+                "max_velocity_discontinuity": 39.5953,
+                "max_correction_jerk": 149096.4688
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "tow": 99187
+        },
+        {
+          "name": "turn",
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.06,
+            "frames": 569,
+            "frame_ms": {
+              "p50": 1.625,
+              "p95": 2.375,
+              "p99": 3.125,
+              "max": 5.8
+            },
+            "simulation_ms": {
+              "p50": 1.375,
+              "p95": 2.125,
+              "p99": 3.125,
+              "max": 5.3
+            },
+            "slow_frames": {
+              "over_16_6": 0,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 967,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 1819,
+              "bytes": 236503,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 2190.2
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.008,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 1.351,
+                "max_ms": 5.3,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.024,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.153,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.013,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.074,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.008,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.747,
+                "max_ms": 2.7,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.015,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1394,
+                "max_correction_world": 275573.0312,
+                "max_velocity_discontinuity": 57088.3398,
+                "max_correction_jerk": 9649917
+              },
+              "cargo_pod": {
+                "samples": 5121,
+                "max_correction_world": 5.558,
+                "max_velocity_discontinuity": 39.7238,
+                "max_correction_jerk": 71309.875
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1138,
+                "max_correction_world": 14.1018,
+                "max_velocity_discontinuity": 82.0621,
+                "max_correction_jerk": 172289.2656
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "tow": 99187
+        },
+        {
+          "name": "coast",
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.012,
+            "frames": 578,
+            "frame_ms": {
+              "p50": 1.625,
+              "p95": 2.375,
+              "p99": 3.625,
+              "max": 124.1
+            },
+            "simulation_ms": {
+              "p50": 1.375,
+              "p95": 1.875,
+              "p99": 3.125,
+              "max": 123.9
+            },
+            "slow_frames": {
+              "over_16_6": 2,
+              "over_33_3": 1,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 952,
+              "missed": 4,
+              "accumulator_dropped": 4
+            },
+            "snapshots": {
+              "packets": 1281,
+              "bytes": 223189,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 2394.8
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.05,
+                "max_ms": 13.5,
+                "slow_cause": 1
+              },
+              "simulation": {
+                "avg_ms": 1.515,
+                "max_ms": 123.9,
+                "slow_cause": 1
+              },
+              "interpolation": {
+                "avg_ms": 0.021,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.15,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.011,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.068,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.013,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.872,
+                "max_ms": 118.1,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.013,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1358,
+                "max_correction_world": 373802560,
+                "max_velocity_discontinuity": 138828544,
+                "max_correction_jerk": 13203104768
+              },
+              "cargo_pod": {
+                "samples": 5404,
+                "max_correction_world": 4.9543,
+                "max_velocity_discontinuity": 37.6007,
+                "max_correction_jerk": 53671.9258
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1156,
+                "max_correction_world": 10.8973,
+                "max_velocity_discontinuity": 46.1592,
+                "max_correction_jerk": 156921.7031
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "tow": 99072
+        }
+      ],
+      "errors": [],
+      "warmupAndRouteWallSeconds": 81.586,
+      "warmupWallSeconds": 56.263
+    },
+    "after": {
+      "variant": "after",
+      "initial": {
+        "seed": 2037,
+        "time": 0.458,
+        "ship": 6,
+        "credits": -200,
+        "stations": 4
+      },
+      "aged": {
+        "seed": 2037,
+        "time": 640.425,
+        "ship": 6,
+        "credits": -200,
+        "stations": 4
+      },
+      "wasmSha256": "ed6ad418451ef23cf416112b70c61b69de60a76f54908cd3f8ce099896e065b5",
+      "records": [
+        {
+          "name": "straight",
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.027,
+            "frames": 736,
+            "frame_ms": {
+              "p50": 1.125,
+              "p95": 2.125,
+              "p99": 2.875,
+              "max": 14.9
+            },
+            "simulation_ms": {
+              "p50": 0.875,
+              "p95": 1.875,
+              "p99": 2.375,
+              "max": 3.5
+            },
+            "slow_frames": {
+              "over_16_6": 0,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 963,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 2013,
+              "bytes": 243188,
+              "max_packet_bytes": 1725,
+              "max_gap_ms": 2154.7
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.026,
+                "max_ms": 13.5,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 1.054,
+                "max_ms": 3.5,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.021,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.147,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.011,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.065,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.008,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.757,
+                "max_ms": 2.8,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.016,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1448,
+                "max_correction_world": 5365.5674,
+                "max_velocity_discontinuity": 420.3209,
+                "max_correction_jerk": 18720.7773
+              },
+              "cargo_pod": {
+                "samples": 6346,
+                "max_correction_world": 33.7125,
+                "max_velocity_discontinuity": 446.7389,
+                "max_correction_jerk": 352552.375
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1472,
+                "max_correction_world": 11.3675,
+                "max_velocity_discontinuity": 39.593,
+                "max_correction_jerk": 163692.2969
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "tow": 99187,
+          "signatures": {
+            "checks": 149,
+            "hits": 786,
+            "historyScans": 14
+          }
+        },
+        {
+          "name": "turn",
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.059,
+            "frames": 598,
+            "frame_ms": {
+              "p50": 1.625,
+              "p95": 2.375,
+              "p99": 3.375,
+              "max": 3.8
+            },
+            "simulation_ms": {
+              "p50": 1.375,
+              "p95": 2.125,
+              "p99": 3.125,
+              "max": 3.5
+            },
+            "slow_frames": {
+              "over_16_6": 0,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 967,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 1808,
+              "bytes": 243418,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 4997.8
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.007,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 1.297,
+                "max_ms": 3.5,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.02,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.147,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.01,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.072,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.009,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.755,
+                "max_ms": 2.8,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.015,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1393,
+                "max_correction_world": 237896.5312,
+                "max_velocity_discontinuity": 49283.1914,
+                "max_correction_jerk": 8330576
+              },
+              "cargo_pod": {
+                "samples": 5382,
+                "max_correction_world": 5.558,
+                "max_velocity_discontinuity": 39.7238,
+                "max_correction_jerk": 70241.8594
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1196,
+                "max_correction_world": 14.1018,
+                "max_velocity_discontinuity": 82.0621,
+                "max_correction_jerk": 169867.9844
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "tow": 99187,
+          "signatures": {
+            "checks": 149,
+            "hits": 786,
+            "historyScans": 14
+          }
+        },
+        {
+          "name": "coast",
+          "report": {
+            "schema": "signal.gameplay-jank.v1",
+            "enabled": true,
+            "window_sec": 8.016,
+            "frames": 598,
+            "frame_ms": {
+              "p50": 1.625,
+              "p95": 2.375,
+              "p99": 3.125,
+              "max": 3.9
+            },
+            "simulation_ms": {
+              "p50": 1.375,
+              "p95": 1.875,
+              "p99": 2.875,
+              "max": 3.7
+            },
+            "slow_frames": {
+              "over_16_6": 0,
+              "over_33_3": 0,
+              "unexplained": 0
+            },
+            "fixed_step": {
+              "completed": 966,
+              "missed": 0,
+              "accumulator_dropped": 0
+            },
+            "snapshots": {
+              "packets": 1334,
+              "bytes": 228007,
+              "max_packet_bytes": 2025,
+              "max_gap_ms": 2000.7
+            },
+            "phases": {
+              "input_network": {
+                "avg_ms": 0.003,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "simulation": {
+                "avg_ms": 1.299,
+                "max_ms": 3.7,
+                "slow_cause": 0
+              },
+              "interpolation": {
+                "avg_ms": 0.02,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "world_render": {
+                "avg_ms": 0.148,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              },
+              "ui_render": {
+                "avg_ms": 0.009,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "submission": {
+                "avg_ms": 0.07,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "audio_media": {
+                "avg_ms": 0.01,
+                "max_ms": 0.2,
+                "slow_cause": 0
+              },
+              "unattributed": {
+                "avg_ms": 0.001,
+                "max_ms": 0.1,
+                "slow_cause": 0
+              },
+              "authority_sim": {
+                "avg_ms": 0.756,
+                "max_ms": 2.8,
+                "slow_cause": 0
+              },
+              "loopback_codec": {
+                "avg_ms": 0.014,
+                "max_ms": 0.3,
+                "slow_cause": 0
+              }
+            },
+            "entities": {
+              "asteroid": {
+                "samples": 1420,
+                "max_correction_world": 322696192,
+                "max_velocity_discontinuity": 119847864,
+                "max_correction_jerk": 11397972992
+              },
+              "cargo_pod": {
+                "samples": 5382,
+                "max_correction_world": 4.9543,
+                "max_velocity_discontinuity": 37.6007,
+                "max_correction_jerk": 71310.0391
+              },
+              "scaffold": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              },
+              "npc": {
+                "samples": 1196,
+                "max_correction_world": 10.8973,
+                "max_velocity_discontinuity": 46.1592,
+                "max_correction_jerk": 140067.4375
+              },
+              "remote_player": {
+                "samples": 0,
+                "max_correction_world": 0,
+                "max_velocity_discontinuity": 0,
+                "max_correction_jerk": 0
+              }
+            }
+          },
+          "tow": 99187,
+          "signatures": {
+            "checks": 149,
+            "hits": 786,
+            "historyScans": 14
+          }
+        }
+      ],
+      "errors": [],
+      "warmupAndRouteWallSeconds": 80.863,
+      "warmupWallSeconds": 55.565
+    }
+  }
+}

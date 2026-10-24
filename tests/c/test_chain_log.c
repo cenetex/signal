@@ -2550,9 +2550,161 @@ TEST(test_chain_log_fragment_lifecycle_e2e) {
     chain_test_teardown();
 }
 
+/* Compare the full report as well as acceptance: cache hits must preserve
+ * byte commitments, segment counts and the precise first failure. */
+static bool signature_cache_verify_bytes(
+    const uint8_t *bytes, size_t size, const uint8_t pubkey[32],
+    chain_signature_cache_t *cache, chain_log_verify_report_t *report) {
+    FILE *file = tmpfile();
+    if (!file) return false;
+    if (fwrite(bytes, 1, size, file) != size) { fclose(file); return false; }
+    rewind(file);
+    chain_log_verify_report_t plain;
+    bool plain_ok = chain_log_verify_with_pubkey(file, pubkey, &plain);
+    rewind(file);
+    bool cached_ok = chain_log_verify_with_signature_cache(file, pubkey, report, cache);
+    fclose(file);
+    if (plain_ok != cached_ok || memcmp(&plain, report, sizeof(plain)) != 0) {
+        fprintf(stderr, "cached and uncached verification disagree\n");
+        tests_failed++;
+    }
+    return cached_ok;
+}
+
+TEST(test_chain_log_signature_cache_append_and_tamper) {
+    chain_test_setup("signature_cache_append");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    w->rng = 9121; world_reset(w); chain_test_wipe_logs(w);
+    station_t *st = &w->stations[0];
+    st->chain_event_count = 0; memset(st->chain_last_hash, 0, 32);
+    chain_signature_cache_t *cache = calloc(1, sizeof(*cache)); ASSERT(cache != NULL);
+    uint8_t bytes[4096]; size_t size = 0;
+    chain_log_verify_report_t report;
+    ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, "one", 3) == 1);
+    ASSERT(chain_test_read_log(st, bytes, sizeof(bytes), &size));
+    ASSERT(signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(cache->checks == 1 && cache->hits == 0);
+    ASSERT(signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(cache->checks == 1 && cache->hits == 1);
+    ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, "two", 3) == 2);
+    ASSERT(chain_test_read_log(st, bytes, sizeof(bytes), &size));
+    ASSERT(signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(cache->checks == 2 && cache->hits == 2);
+
+    /* The unchanged signed header has a warm entry, but changed payload
+     * bytes still fail before the signature cache can accept the record. */
+    size_t payload = CHAIN_EVENT_HEADER_SIZE + sizeof(uint16_t);
+    bytes[payload] ^= 1;
+    ASSERT(!signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(report.bad_payload_hash == 1);
+    bytes[payload] ^= 1;
+    bytes[120] ^= 1;
+    uint64_t checks = cache->checks;
+    ASSERT(!signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(report.bad_signatures == 1 && cache->checks == checks + 1);
+    ASSERT(!signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(cache->checks == checks + 2); /* Failed signatures stay uncached. */
+    bytes[120] ^= 1;
+    ASSERT(signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(!signature_cache_verify_bytes(bytes, size, w->stations[1].station_pubkey, cache, &report));
+    ASSERT(report.bad_authority == 1);
+    ASSERT(!signature_cache_verify_bytes(bytes, size - 1, st->station_pubkey, cache, &report));
+    free(cache); chain_test_teardown();
+}
+
+TEST(test_chain_log_signature_cache_forks_and_segments) {
+    chain_test_setup("signature_cache_forks");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    w->rng = 9122; world_reset(w); chain_test_wipe_logs(w);
+    station_t *st = &w->stations[0];
+    st->chain_event_count = 0; memset(st->chain_last_hash, 0, 32);
+    chain_signature_cache_t *cache = calloc(1, sizeof(*cache)); ASSERT(cache != NULL);
+    uint8_t a[4096], b[4096], joined[8192]; size_t asize = 0, bsize = 0;
+    chain_log_verify_report_t report;
+    ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, "a", 1) == 1);
+    ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, "b", 1) == 2);
+    ASSERT(chain_test_read_log(st, a, sizeof(a), &asize));
+    ASSERT(signature_cache_verify_bytes(a, asize, st->station_pubkey, cache, &report));
+    chain_log_reset(st);
+    st->chain_event_count = 0; memset(st->chain_last_hash, 0, 32);
+    ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, "c", 1) == 1);
+    ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, "d", 1) == 2);
+    ASSERT(chain_test_read_log(st, b, sizeof(b), &bsize));
+    ASSERT(signature_cache_verify_bytes(b, bsize, st->station_pubkey, cache, &report));
+    ASSERT(cache->checks == 4);
+    size_t record = CHAIN_EVENT_HEADER_SIZE + sizeof(uint16_t) + 1;
+    memcpy(joined, a, record); memcpy(joined + record, b + record, record);
+    ASSERT(!signature_cache_verify_bytes(joined, 2 * record, st->station_pubkey, cache, &report));
+    ASSERT(report.bad_linkage == 1);
+    memcpy(joined, a, asize); memcpy(joined + asize, b, bsize);
+    ASSERT(signature_cache_verify_bytes(joined, asize + bsize, st->station_pubkey, cache, &report));
+    ASSERT(report.segment_count == 2 && cache->checks == 4);
+    free(cache); chain_test_teardown();
+}
+
+TEST(test_chain_log_signature_cache_eviction) {
+    chain_test_setup("signature_cache_eviction");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    w->rng = 9123; world_reset(w); chain_test_wipe_logs(w);
+    station_t *st = &w->stations[0];
+    st->chain_event_count = 0; memset(st->chain_last_hash, 0, 32);
+    chain_signature_cache_t *cache = calloc(1, sizeof(*cache)); ASSERT(cache != NULL);
+    const size_t count = CHAIN_SIGNATURE_CACHE_BUCKETS * CHAIN_SIGNATURE_CACHE_WAYS + 1;
+    size_t capacity = count * (CHAIN_EVENT_HEADER_SIZE + sizeof(uint16_t) + sizeof(uint32_t));
+    uint8_t *bytes = malloc(capacity); ASSERT(bytes != NULL); size_t size = 0;
+    for (uint32_t i = 0; i < count; i++)
+        ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, &i, sizeof(i)) == i + 1u);
+    ASSERT(chain_test_read_log(st, bytes, capacity, &size));
+    chain_log_verify_report_t report;
+    ASSERT(signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(cache->checks == count);
+    ASSERT(signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+    ASSERT(cache->checks > count && cache->hits > 0);
+    ASSERT(report.valid_events == count);
+    free(bytes); free(cache); chain_test_teardown();
+}
+
+TEST(test_chain_log_signature_cache_live_sized_histories) {
+    chain_test_setup("signature_cache_live_size");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    w->rng = 9124; world_reset(w); chain_test_wipe_logs(w);
+    const uint32_t counts[] = {692, 221, 216, 292};
+    const uint64_t total = 1421;
+    chain_signature_cache_t *cache = calloc(1, sizeof(*cache)); ASSERT(cache != NULL);
+    uint8_t *bytes = malloc(256 * 1024); ASSERT(bytes != NULL);
+    for (int station = 0; station < 4; station++) {
+        station_t *st = &w->stations[station];
+        st->chain_event_count = 0; memset(st->chain_last_hash, 0, 32);
+        for (uint32_t i = 0; i < counts[station]; i++)
+            ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, &i, sizeof(i)) == i + 1u);
+    }
+    chain_log_verify_report_t report;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int station = 0; station < 4; station++) {
+            station_t *st = &w->stations[station]; size_t size = 0;
+            ASSERT(chain_test_read_log(st, bytes, 256 * 1024, &size));
+            ASSERT(signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+            ASSERT(report.valid_events == counts[station]);
+        }
+        if (pass == 0) ASSERT(cache->checks == total);
+    }
+    printf("\n[signature-cache] entries=%u records=%llu repeat_checks=%llu repeat_hits=%llu bytes=%zu\n",
+           CHAIN_SIGNATURE_CACHE_BUCKETS * CHAIN_SIGNATURE_CACHE_WAYS,
+           (unsigned long long)total,
+           (unsigned long long)(cache->checks - total),
+           (unsigned long long)cache->hits, sizeof(*cache));
+    ASSERT(cache->checks - total < total / 2);
+    ASSERT(cache->hits > 0);
+    free(bytes); free(cache); chain_test_teardown();
+}
+
 void register_chain_log_tests(void);
 void register_chain_log_tests(void) {
     TEST_SECTION("\n--- Chain Log (#479 C) ---\n");
+    RUN(test_chain_log_signature_cache_append_and_tamper);
+    RUN(test_chain_log_signature_cache_forks_and_segments);
+    RUN(test_chain_log_signature_cache_eviction);
+    RUN(test_chain_log_signature_cache_live_sized_histories);
     RUN(test_chain_log_emit_and_verify);
     RUN(test_chain_log_batch_commits_contiguous_verified_events);
     RUN(test_chain_log_batch_prevalidates_before_any_commit);

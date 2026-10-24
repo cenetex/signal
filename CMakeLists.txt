@@ -1246,6 +1246,7 @@ if(EMSCRIPTEN)
         "'_malloc'"
         "'_free'"
     )
+    list(APPEND SIGNAL_EMSCRIPTEN_EXPORTS "'_signal_smoke_origin_signature_stats'")
     list(JOIN SIGNAL_EMSCRIPTEN_EXPORTS "," SIGNAL_EMSCRIPTEN_EXPORTS_CSV)
     set_property(TARGET signal APPEND PROPERTY LINK_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/web/local-persistence.js"

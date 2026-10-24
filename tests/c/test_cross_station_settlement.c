@@ -1328,6 +1328,8 @@ TEST(test_origin_cache_is_bounded_by_verified_disk_and_registry_state) {
         CARGO_RECEIPT_ORIGIN_RESOLVE_VERIFIED);
     stats = cargo_receipt_origin_cache_stats();
     ASSERT(stats.full_verifications > verified_before);
+    ASSERT(stats.signature_checks == 2);
+    ASSERT(stats.signature_hits == 1);
 
     char original_dir[256];
     snprintf(original_dir, sizeof(original_dir), "%s",

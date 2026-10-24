@@ -133,6 +133,9 @@ static cargo_receipt_origin_authority_cache_entry_t
 static cargo_receipt_origin_cache_stats_t
     g_cargo_receipt_origin_cache_stats;
 static uint64_t g_cargo_receipt_origin_cache_clock;
+/* Appends rebuild the origin index. Reuse successful checks for exact old
+ * headers while every snapshot still receives full record validation. */
+static chain_signature_cache_t g_cargo_receipt_origin_signatures;
 #if defined(SIGNAL_CARGO_RECEIPT_TESTING)
 static cargo_receipt_origin_cache_test_build_hook_t
     g_cargo_receipt_origin_cache_test_build_hook;
@@ -156,6 +159,8 @@ void cargo_receipt_origin_cache_reset(void) {
     memset(&g_cargo_receipt_origin_cache_stats, 0,
            sizeof(g_cargo_receipt_origin_cache_stats));
     g_cargo_receipt_origin_cache_clock = 0;
+    memset(&g_cargo_receipt_origin_signatures, 0,
+           sizeof(g_cargo_receipt_origin_signatures));
 #if defined(SIGNAL_CARGO_RECEIPT_TESTING)
     g_cargo_receipt_origin_cache_test_build_hook = NULL;
     g_cargo_receipt_origin_cache_test_build_hook_user = NULL;
@@ -169,7 +174,10 @@ void cargo_receipt_origin_cache_reset(void) {
 
 cargo_receipt_origin_cache_stats_t
 cargo_receipt_origin_cache_stats(void) {
-    return g_cargo_receipt_origin_cache_stats;
+    cargo_receipt_origin_cache_stats_t stats = g_cargo_receipt_origin_cache_stats;
+    stats.signature_checks = g_cargo_receipt_origin_signatures.checks;
+    stats.signature_hits = g_cargo_receipt_origin_signatures.hits;
+    return stats;
 }
 
 #if defined(SIGNAL_CARGO_RECEIPT_TESTING)
@@ -1178,8 +1186,9 @@ cargo_receipt_origin_authority_cache_build(
         chain_log_verify_report_t report;
         memset(&report, 0, sizeof(report));
         g_cargo_receipt_origin_cache_stats.full_verifications++;
-        bool verified = chain_log_verify_with_pubkey(
-            verified_snapshot, authority, &report);
+        bool verified = chain_log_verify_with_signature_cache(
+            verified_snapshot, authority, &report,
+            &g_cargo_receipt_origin_signatures);
         bool verification_io_failure =
             ferror(verified_snapshot) != 0;
         if (!verified) {

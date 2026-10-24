@@ -103,9 +103,49 @@ static void verify_hash_full(const chain_event_header_t *h, uint8_t out[32]) {
     sha256_bytes(packed, CHAIN_EVENT_HEADER_SIZE, out);
 }
 
+_Static_assert(sizeof(chain_signature_cache_t) < 384u * 1024u,
+               "signature cache must stay below 384 KiB");
+
+static bool verify_signature(const chain_event_header_t *header,
+                             const uint8_t raw[CHAIN_EVENT_HEADER_SIZE],
+                             const uint8_t hash[32],
+                             chain_signature_cache_t *cache) {
+    unsigned bucket = ((unsigned)hash[0] | ((unsigned)hash[1] << 8)) %
+                      CHAIN_SIGNATURE_CACHE_BUCKETS;
+    if (cache) {
+        for (unsigned i = 0; i < CHAIN_SIGNATURE_CACHE_WAYS; i++) {
+            const chain_signature_cache_entry_t *entry = &cache->entries[bucket][i];
+            if (entry->valid && memcmp(entry->header, raw, CHAIN_EVENT_HEADER_SIZE) == 0) {
+                cache->hits++;
+                return true;
+            }
+        }
+        cache->checks++;
+    }
+    uint8_t unsigned_blob[CHAIN_UNSIGNED_HEADER_SIZE];
+    verify_pack_unsigned(header, unsigned_blob);
+    if (!signal_crypto_verify(header->signature, unsigned_blob,
+                              CHAIN_UNSIGNED_HEADER_SIZE, header->authority))
+        return false;
+    if (cache) {
+        unsigned slot = cache->next[bucket];
+        chain_signature_cache_entry_t *entry = &cache->entries[bucket][slot];
+        memcpy(entry->header, raw, CHAIN_EVENT_HEADER_SIZE);
+        entry->valid = true;
+        cache->next[bucket] = (uint8_t)((slot + 1u) % CHAIN_SIGNATURE_CACHE_WAYS);
+    }
+    return true;
+}
+
 bool chain_log_verify_with_pubkey(FILE *f,
                                   const uint8_t station_pubkey[32],
                                   chain_log_verify_report_t *out_report) {
+    return chain_log_verify_with_signature_cache(f, station_pubkey, out_report, NULL);
+}
+
+bool chain_log_verify_with_signature_cache(
+    FILE *f, const uint8_t station_pubkey[32],
+    chain_log_verify_report_t *out_report, chain_signature_cache_t *cache) {
     chain_log_verify_report_t local;
     chain_log_verify_report_t *r = out_report ? out_report : &local;
     memset(r, 0, sizeof(*r));
@@ -230,11 +270,9 @@ bool chain_log_verify_with_pubkey(FILE *f,
             }
             break;
         }
-        uint8_t unsigned_blob[CHAIN_UNSIGNED_HEADER_SIZE];
-        verify_pack_unsigned(&hdr, unsigned_blob);
-        if (!signal_crypto_verify(hdr.signature, unsigned_blob,
-                                  CHAIN_UNSIGNED_HEADER_SIZE,
-                                  hdr.authority)) {
+        uint8_t header_hash[32];
+        verify_hash_full(&hdr, header_hash);
+        if (!verify_signature(&hdr, hdr_bytes, header_hash, cache)) {
             r->bad_signatures++;
             ok = false;
             if (r->first_fail_event_id == 0) {
@@ -256,7 +294,7 @@ bool chain_log_verify_with_pubkey(FILE *f,
             r->tail_valid_events = 0;
             expected_event_id = 1;
         }
-        verify_hash_full(&hdr, prev_hash);
+        memcpy(prev_hash, header_hash, sizeof(prev_hash));
         memcpy(r->tail_hash, prev_hash, sizeof(r->tail_hash));
         /* The record exactly as stored: header, raw length, payload. */
         sha256_update(&valid_ctx, hdr_bytes, CHAIN_EVENT_HEADER_SIZE);
