@@ -298,18 +298,30 @@ test('active hauling and turns reuse verified history signatures', async ({ page
   for (const [name, keys] of [['tow-straight', ['w']], ['tow-turn', ['w', 'a']], ['tow-coast', []]] as const) {
     await call(page, 'signal_jank_profile_reset', 'void');
     const start = await position();
+    const balanceBefore = (await summary(page)).credits;
     for (const key of keys) await page.keyboard.down(key);
     await page.waitForTimeout(seconds * 1000);
     for (const key of keys) await page.keyboard.up(key);
     const profile: Profile = JSON.parse(await call<string>(page, 'signal_jank_profile_report_json', 'string'));
     const end = await position();
     const tow = await call<number>(page, 'signal_smoke_tow_lifecycle_state');
-    await attachJson(testInfo, name, { workload: 'active local hauling', seconds, start, end, tow, profile });
+    const balanceAfter = (await summary(page)).credits;
+    await attachJson(testInfo, name, {
+      workload: 'active local hauling', seconds, start, end, tow, profile, balanceBefore, balanceAfter,
+    });
     expect(profile.fixed_step.completed).toBeGreaterThan(10);
     expect(profile.phases.authority_sim.max_ms).toBeGreaterThan(0);
     expect(profile.snapshots.packets).toBeGreaterThan(0);
     expect([end.x, end.y].every(Number.isFinite)).toBe(true);
-    expect(tow & (1 << 4), 'authority retains the rock tow through flight and turns').toBe(1 << 4);
+    // A refinery can smelt this loaded rock during the final dock approach.
+    // Prove a paid delivery when coast consumes it; flight and turns keep it held.
+    if (name === 'tow-coast' && (tow & 1) === 0) {
+      expect(tow & ((1 << 0) | (1 << 4))).toBe(0);
+      expect(balanceAfter, 'consumed tow must pay into the station balance').toBeGreaterThan(balanceBefore);
+    } else {
+      expect(tow & ((1 << 0) | (1 << 4)),
+        'authority retains the loaded rock through flight and turns').toBe((1 << 0) | (1 << 4));
+    }
     await testInfo.attach(name, { body: await page.screenshot(), contentType: 'image/png' });
   }
   const after = await position();
