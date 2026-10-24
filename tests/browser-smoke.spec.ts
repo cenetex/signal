@@ -2277,7 +2277,9 @@ test.describe('Browser smoke tests', () => {
       }, allLoanersUsed);
       expect(prepared).toBe(1);
       await expect.poll(() => wasmNumber(page, 'get_net_reconcile_death_respawn_events')).toBe(1);
-      await page.waitForTimeout(8_000);
+      await expect.poll(() => wasmNumber(page, 'signal_smoke_death_recovery_ready'), {
+        timeout: 15_000,
+      }).toBe(1);
       await tap(page, 'E');
       if (allLoanersUsed) {
         await expect.poll(() => hudHintText(page)).toContain('Waiting for a station loaner');
@@ -2291,6 +2293,53 @@ test.describe('Browser smoke tests', () => {
       expectNoFatalErrors(logs);
     });
   }
+
+  test('recovery launch is ready in real time at two frames per second', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'recovery pacing uses an isolated local world');
+    await page.addInitScript(() => {
+      const state = window as typeof window & {
+        signalSlowRecoveryFrames?: boolean;
+        signalRecoveryFrameCount?: number;
+      };
+      const requestFrame = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (callback) => requestFrame((time) => {
+        if (state.signalSlowRecoveryFrames) {
+          window.setTimeout(() => {
+            state.signalRecoveryFrameCount = (state.signalRecoveryFrameCount || 0) + 1;
+            callback(performance.now());
+          }, 500);
+        } else callback(time);
+      });
+    });
+    const logs = installFatalCollectors(page);
+    const canvas = await loadGame(page, false, { singleplayer: true });
+    await canvas.click();
+    const prepared = await page.evaluate(() => {
+      const state = window as unknown as {
+        signalSlowRecoveryFrames: boolean;
+        signalRecoveryFrameCount: number;
+        Module: { ccall: (name: string, type: string, types: string[], args: number[]) => number };
+      };
+      state.signalSlowRecoveryFrames = true;
+      state.signalRecoveryFrameCount = 0;
+      return state.Module.ccall('signal_smoke_prepare_crash_recovery', 'number', ['number'], [0]);
+    });
+    expect(prepared).toBe(1);
+    await expect.poll(() => wasmNumber(page, 'get_net_reconcile_death_respawn_events')).toBe(1);
+    // The launch pause is a real-time promise even when most simulation ticks drop.
+    await page.waitForTimeout(8_000);
+    const frames = await page.evaluate(() => (window as unknown as {
+      signalRecoveryFrameCount: number;
+    }).signalRecoveryFrameCount);
+    expect(frames).toBeGreaterThanOrEqual(8);
+    expect(frames).toBeLessThan(24);
+    await tap(page, 'E');
+    await expect.poll(() => wasmNumber(page, 'get_player_docked'), {timeout: 4_000}).toBe(0);
+    await page.waitForTimeout(1_000);
+    expect(await wasmNumber(page, 'get_player_docked')).toBe(0);
+    expect(await wasmNumber(page, 'get_net_reconcile_death_respawn_events')).toBe(1);
+    expectNoFatalErrors(logs);
+  });
 
   test('E launches a living replacement ship after self-destruct', async ({ page }) => {
     test.skip(usesLiveSmokeUrl(), 'death and launch use the local test world');
@@ -2306,8 +2355,9 @@ test.describe('Browser smoke tests', () => {
       .toBe(1);
     await expect.poll(() => wasmNumber(page, 'get_player_docked')).toBe(1);
 
-    // Let the wreckage animation and launch menu finish their fade.
-    await page.waitForTimeout(8_000);
+    await expect.poll(() => wasmNumber(page, 'signal_smoke_death_recovery_ready'), {
+      timeout: 15_000,
+    }).toBe(1);
     await tap(page, 'E');
     await expect.poll(() => wasmNumber(page, 'get_player_docked')).toBe(0);
     await page.waitForTimeout(1_000);

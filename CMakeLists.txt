@@ -1189,6 +1189,7 @@ if(EMSCRIPTEN)
         "'_get_hud_hint_text'"
         "'_get_hud_action_text'"
         "'_set_smoke_loop_state'"
+        "'_signal_smoke_death_recovery_ready'"
         "'_signal_smoke_prepare_crash_recovery'"
         "'_signal_hopper_guide_draw_count'"
         "'_signal_hopper_guide_station'"
