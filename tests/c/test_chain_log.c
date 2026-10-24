@@ -2664,12 +2664,47 @@ TEST(test_chain_log_signature_cache_eviction) {
     free(bytes); free(cache); chain_test_teardown();
 }
 
+TEST(test_chain_log_signature_cache_live_sized_histories) {
+    chain_test_setup("signature_cache_live_size");
+    WORLD_HEAP w = calloc(1, sizeof(world_t)); ASSERT(w != NULL);
+    w->rng = 9124; world_reset(w); chain_test_wipe_logs(w);
+    const uint32_t counts[] = {692, 221, 216, 292};
+    const uint64_t total = 1421;
+    chain_signature_cache_t *cache = calloc(1, sizeof(*cache)); ASSERT(cache != NULL);
+    uint8_t *bytes = malloc(256 * 1024); ASSERT(bytes != NULL);
+    for (int station = 0; station < 4; station++) {
+        station_t *st = &w->stations[station];
+        st->chain_event_count = 0; memset(st->chain_last_hash, 0, 32);
+        for (uint32_t i = 0; i < counts[station]; i++)
+            ASSERT(chain_log_emit(w, st, CHAIN_EVT_LEDGER, &i, sizeof(i)) == i + 1u);
+    }
+    chain_log_verify_report_t report;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int station = 0; station < 4; station++) {
+            station_t *st = &w->stations[station]; size_t size = 0;
+            ASSERT(chain_test_read_log(st, bytes, 256 * 1024, &size));
+            ASSERT(signature_cache_verify_bytes(bytes, size, st->station_pubkey, cache, &report));
+            ASSERT(report.valid_events == counts[station]);
+        }
+        if (pass == 0) ASSERT(cache->checks == total);
+    }
+    printf("\n[signature-cache] entries=%u records=%llu repeat_checks=%llu repeat_hits=%llu bytes=%zu\n",
+           CHAIN_SIGNATURE_CACHE_BUCKETS * CHAIN_SIGNATURE_CACHE_WAYS,
+           (unsigned long long)total,
+           (unsigned long long)(cache->checks - total),
+           (unsigned long long)cache->hits, sizeof(*cache));
+    ASSERT(cache->checks - total < total / 2);
+    ASSERT(cache->hits > 0);
+    free(bytes); free(cache); chain_test_teardown();
+}
+
 void register_chain_log_tests(void);
 void register_chain_log_tests(void) {
     TEST_SECTION("\n--- Chain Log (#479 C) ---\n");
     RUN(test_chain_log_signature_cache_append_and_tamper);
     RUN(test_chain_log_signature_cache_forks_and_segments);
     RUN(test_chain_log_signature_cache_eviction);
+    RUN(test_chain_log_signature_cache_live_sized_histories);
     RUN(test_chain_log_emit_and_verify);
     RUN(test_chain_log_batch_commits_contiguous_verified_events);
     RUN(test_chain_log_batch_prevalidates_before_any_commit);

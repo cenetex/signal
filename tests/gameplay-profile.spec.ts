@@ -275,7 +275,8 @@ for (const fail of [false, true]) {
 
 test('active hauling and turns reuse verified history signatures', async ({ page }, testInfo) => {
   test.skip(!!process.env.SMOKE_URL, 'hauling profiling uses an isolated browser world');
-  const seconds = Math.max(3, Math.floor(sampleSeconds / 3));
+  const seconds = secondsFromEnv('SIGNAL_HAUL_PROFILE_SECONDS', 3);
+  if (seconds > 12) throw new Error('Hauling phases must be at most 12 seconds');
   test.setTimeout(90_000 + seconds * 3000);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));

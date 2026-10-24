@@ -668,9 +668,9 @@ bool chain_log_verify_with_pubkey(FILE *log,
 /* Caller-owned, zero-initialized cache of successful signature checks.
  * Every read still validates the authority, record order, links and payload.
  * A hit requires the exact header bytes, including the public key and signature.
- * Four slots per hash bucket bound both lookup work and storage (under 192 KiB).
+ * Four slots per hash bucket bound both lookup work and storage (under 384 KiB).
  * Keep each cache on one thread, or protect it with the caller's lock. */
-enum { CHAIN_SIGNATURE_CACHE_BUCKETS = 256, CHAIN_SIGNATURE_CACHE_WAYS = 4 };
+enum { CHAIN_SIGNATURE_CACHE_BUCKETS = 512, CHAIN_SIGNATURE_CACHE_WAYS = 4 };
 typedef struct {
     bool valid;
     uint8_t header[CHAIN_EVENT_HEADER_SIZE];

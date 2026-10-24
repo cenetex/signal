@@ -126,3 +126,7 @@ it for at most 0.25 seconds. Invalid or extreme samples are rejected or
 clamped. After 0.25 seconds the asteroid coasts, so a lost packet cannot make
 an old force estimate run away. This is presentation-only and never changes
 the authoritative simulation.
+
+## Active hauling and history checks
+
+The browser profile file also runs a short loaded-tow route through forward flight, a turn and coast. It records frame reports, screenshots and cargo-history signature work. `SIGNAL_HAUL_PROFILE_SECONDS` sets each phase from one to twelve seconds (default three), independently of the long dockside sample length. See [hauling history-check evidence](hauling-history-check-evidence.md) for the measured production stalls, exact-header signature cache and size comparison.

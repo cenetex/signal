@@ -103,14 +103,15 @@ static void verify_hash_full(const chain_event_header_t *h, uint8_t out[32]) {
     sha256_bytes(packed, CHAIN_EVENT_HEADER_SIZE, out);
 }
 
-_Static_assert(sizeof(chain_signature_cache_t) < 192u * 1024u,
-               "signature cache must stay below 192 KiB");
+_Static_assert(sizeof(chain_signature_cache_t) < 384u * 1024u,
+               "signature cache must stay below 384 KiB");
 
 static bool verify_signature(const chain_event_header_t *header,
                              const uint8_t raw[CHAIN_EVENT_HEADER_SIZE],
                              const uint8_t hash[32],
                              chain_signature_cache_t *cache) {
-    unsigned bucket = hash[0];
+    unsigned bucket = ((unsigned)hash[0] | ((unsigned)hash[1] << 8)) %
+                      CHAIN_SIGNATURE_CACHE_BUCKETS;
     if (cache) {
         for (unsigned i = 0; i < CHAIN_SIGNATURE_CACHE_WAYS; i++) {
             const chain_signature_cache_entry_t *entry = &cache->entries[bucket][i];
