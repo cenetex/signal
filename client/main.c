@@ -5297,7 +5297,7 @@ void client_save_status_text(char *out, size_t size) {
     if (g.local_server.save) {
         local_save_status_text(g.local_server.save, out, size);
     } else if (g.net_authority_enabled && !g.local_server.active) {
-        snprintf(out, size, "%s", net_is_connected()
+        snprintf(out, size, "%s", net_is_gameplay_ready()
             ? "Online - server-managed saves" : "Connecting to server...");
     } else {
         snprintf(out, size, "Local session");

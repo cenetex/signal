@@ -1,4 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 
 async function call(page: Page, name: string, type = 'number') {
   return page.evaluate(({name, type}) => (window as any).Module.ccall(name, type, [], []), {name, type});
@@ -83,6 +85,29 @@ for (const touch of [false, true]) {
     const restored = JSON.parse(await call(page, 'signal_debug_local_save_summary', 'string'));
     for (const key of ['seed', 'ship', 'credits', 'stations']) expect(restored[key]).toEqual(before[key]);
     expect(restored.time).toBeGreaterThanOrEqual(before.time);
+    await expect.poll(async () => (await status(page)).state).toBe(2);
+    if (touch) await page.getByRole('button', {name:'Launch', exact:true}).click();
+    else {
+      await page.locator('canvas').focus();
+      await page.keyboard.press('e', {delay:80});
+    }
+    await expect.poll(() => call(page, 'get_player_docked')).toBe(0);
+    await page.screenshot({path:info.outputPath('flight-saved.png')});
+    await page.evaluate(() => {
+      const storage = (window as any).Module.signalLocalPersistence;
+      storage.flush = () => { storage.state = -1; };
+    });
+    await expect.poll(() => call(page, 'signal_save_local_world')).toBe(1);
+    await expect(panel).toContainText('Retry needed');
+    await page.screenshot({path:info.outputPath('flight-retry-needed.png')});
+    if (touch) {
+      const saveBox = (await panel.boundingBox())!;
+      for (const control of ['Scan', 'Auto', 'Tow', 'Brake', 'Boost']) {
+        const box = await page.getByRole('button', {name:control, exact:true}).boundingBox();
+        if (box) expect(saveBox.x + saveBox.width <= box.x || box.x + box.width <= saveBox.x ||
+          saveBox.y + saveBox.height <= box.y || box.y + box.height <= saveBox.y, `${control} stays clear of save status`).toBe(true);
+      }
+    }
   });
 }
 
@@ -97,6 +122,57 @@ test('online status follows server authority', async ({page}) => {
   expect(online.generation).toBe(0);
   expect(online.completedAt).toBe(0);
   expect(online.retry).toBe(false);
-  expect(online.text).toMatch(/Connecting to server|Online - server-managed saves/);
+  expect(online.text).toBe('Connecting to server...');
   await expect(page.getByRole('button', {name:'Retry save', exact:true})).toBeHidden();
+});
+
+
+test('storage receipts follow completed transactions and retain prior success on error', () => {
+  const callbacks: ((error?: Error) => void)[] = [];
+  let clock = 1000;
+  let throwOnWrite = false;
+  const module: any = {};
+  runInNewContext(readFileSync('web/local-persistence.js', 'utf8'), {
+    Module: module, URLSearchParams,
+    Date: {now: () => clock}, console: {warn() {}, error() {}},
+    window: {location: {search:'?singleplayer=1'}, addEventListener() {}},
+    document: {addEventListener() {}},
+    navigator: {locks: {request: (_name: string, _options: unknown, fn: Function) => {
+      fn({}); return Promise.resolve();
+    }}},
+    addRunDependency() {}, removeRunDependency() {}, IDBFS: {},
+    FS: {mkdir() {}, mount() {}, syncfs(read: boolean, callback: (error?: Error) => void) {
+      if (read) callback();
+      else if (throwOnWrite) throw new Error('write setup failed');
+      else callbacks.push(callback);
+    }},
+  });
+  module.preRun[0]();
+  const storage = module.signalLocalPersistence;
+  storage.flush(7);
+  expect(storage.state).toBe(2);
+  expect(storage.completedGeneration).toBe(0);
+  expect(storage.completedAt).toBe(0);
+  clock = 9000;
+  callbacks[0]();
+  expect(storage.completedGeneration).toBe(7);
+  expect(storage.completedAt).toBe(9000);
+  storage.flush(8);
+  callbacks[1](new Error('transaction failed'));
+  expect(storage.state).toBe(-1);
+  expect(storage.completedGeneration).toBe(7);
+  expect(storage.completedAt).toBe(9000);
+  throwOnWrite = true;
+  storage.flush(9);
+  expect(storage.state).toBe(-1);
+  expect(storage.completedGeneration).toBe(7);
+  throwOnWrite = false;
+  storage.flush(10);
+  callbacks[0](); // An old callback cannot complete the retry.
+  expect(storage.state).toBe(2);
+  clock = 14000;
+  callbacks[2]();
+  expect(storage.state).toBe(1);
+  expect(storage.completedGeneration).toBe(10);
+  expect(storage.completedAt).toBe(14000);
 });

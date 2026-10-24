@@ -13,8 +13,15 @@ Module['postRun'].push(function () {
       background:#112a25; font:inherit; cursor:pointer; touch-action:manipulation; }
     #signal-save-status button[hidden] { display:none; }
     #signal-save-status button:focus-visible { outline:2px solid #fff; outline-offset:2px; }
-    @media(max-width:799px) { #signal-save-status { top:124px; right:24px; left:24px;
-      font-size:11px; flex-wrap:wrap; } }
+    @media(max-width:799px) { #signal-save-status { top:auto; bottom:12px;
+      left:calc(max(12px, env(safe-area-inset-left)) + 130px);
+      right:calc(max(12px, env(safe-area-inset-right)) + 146px);
+      max-width:none; box-sizing:border-box;
+      font-size:10px; flex-direction:column; align-items:stretch; gap:4px; padding:6px; }
+      #signal-save-status button { padding:6px 4px; } }
+    @media(max-width:560px) { #signal-save-status {
+      left:calc(max(10px, env(safe-area-inset-left)) + 120px);
+      right:calc(max(10px, env(safe-area-inset-right)) + 134px); } }
   `;
   document.head.appendChild(style);
   var panel = document.createElement('div');
