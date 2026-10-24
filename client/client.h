@@ -613,6 +613,9 @@ typedef struct {
         float spin;
         float age;
         float menu_alpha;  /* eased toward 1 in phase 1 */
+        double started_at; /* monotonic presentation clock, in seconds */
+        double closed_at;
+        float closing_alpha;
         float fragments[8][6]; /* per-shard: dx, dy, vx, vy, angle, spin */
     } death_cinematic;
     /* --- Episode & Music --- */

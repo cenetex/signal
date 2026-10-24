@@ -1064,6 +1064,31 @@ static void sim_on_outpost_placed(const sim_event_t *ev) {
     }
 }
 
+/* Recovery is presentation time. A slow frame may drop simulation ticks,
+ * while the player still gets the launch menu after the same short pause. */
+static void death_cinematic_update_clock(void) {
+    double now = gameplay_observability_now();
+    if (!isfinite(now)) return;
+    if (g.death_cinematic.active) {
+        double elapsed = now - g.death_cinematic.started_at;
+        if (elapsed >= 0.0 && isfinite(elapsed))
+            g.death_cinematic.age = fmaxf(g.death_cinematic.age, (float)elapsed);
+        if (g.death_cinematic.age >= DEATH_CINEMATIC_WORLD_PHASE_SEC) {
+            g.death_cinematic.phase = 1;
+            float menu_age = g.death_cinematic.age - DEATH_CINEMATIC_WORLD_PHASE_SEC;
+            g.death_cinematic.menu_alpha = 1.0f - expf(-menu_age / 0.5f);
+        }
+    } else if (g.death_cinematic.phase == 2 && g.death_cinematic.menu_alpha > 0.0f) {
+        double elapsed = now - g.death_cinematic.closed_at;
+        if (elapsed >= 0.0 && isfinite(elapsed)) {
+            g.death_cinematic.menu_alpha =
+                g.death_cinematic.closing_alpha * expf(-(float)elapsed / 0.5f);
+            if (g.death_cinematic.menu_alpha < 0.005f)
+                g.death_cinematic.menu_alpha = 0.0f;
+        }
+    }
+}
+
 /* Spawn the 8 shards + cinematic state for a death event. */
 static void death_cinematic_spawn(const sim_event_t *ev) {
     float impact_speed = sqrtf(ev->death.vel_x * ev->death.vel_x +
@@ -1085,6 +1110,9 @@ static void death_cinematic_spawn(const sim_event_t *ev) {
     g.death_cinematic.spin = spin_dir * clampf(3.0f + impact_speed / 45.0f, 5.0f, 16.0f);
     g.death_cinematic.age = 0.0f;
     g.death_cinematic.menu_alpha = 0.0f;
+    g.death_cinematic.started_at = gameplay_observability_now();
+    g.death_cinematic.closed_at = 0.0;
+    g.death_cinematic.closing_alpha = 0.0f;
     g.thrusting = false;
     LOCAL_PLAYER.beam_active = false;
     LOCAL_PLAYER.beam_hit = false;
@@ -1639,31 +1667,19 @@ static void sim_step(float dt) {
         LOCAL_PLAYER.beam_active = false;
         LOCAL_PLAYER.beam_hit = false;
         LOCAL_PLAYER.ship->tractor_active = false;
-        if (g.death_cinematic.phase == 0 &&
-            g.death_cinematic.age >= DEATH_CINEMATIC_WORLD_PHASE_SEC) {
-            g.death_cinematic.phase = 1;
-        }
         if (g.death_cinematic.phase == 1 && g.death_cinematic.menu_alpha >= 0.85f
             && is_key_pressed(SAPP_KEYCODE_E)) {
             g.death_cinematic.active = false;
             g.death_cinematic.phase = 2;
+            g.death_cinematic.closed_at = gameplay_observability_now();
+            g.death_cinematic.closing_alpha = g.death_cinematic.menu_alpha;
             music_exit_death(&g.music);
             /* Don't consume the E press — normal input below picks it
              * up and launches the (now-respawned) docked ship. */
         }
     }
 
-    /* Menu alpha — eases in during phase 1, eases out otherwise.
-     * Lives outside the active block so it keeps fading after release. */
-    {
-        float menu_target = (g.death_cinematic.active && g.death_cinematic.phase >= 1) ? 1.0f : 0.0f;
-        float mk = 1.0f - expf(-dt / 0.5f);
-        g.death_cinematic.menu_alpha += (menu_target - g.death_cinematic.menu_alpha) * mk;
-        if (g.death_cinematic.menu_alpha < 0.005f) g.death_cinematic.menu_alpha = 0.0f;
-    }
-
     if (g.death_cinematic.active) {
-        g.death_cinematic.age += dt;
         /* Wreckage hull drift with mild damping */
         g.death_cinematic.pos.x += g.death_cinematic.vel.x * dt;
         g.death_cinematic.pos.y += g.death_cinematic.vel.y * dt;
@@ -3610,6 +3626,12 @@ int signal_smoke_known_ledger_sync_state(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+int signal_smoke_death_recovery_ready(void) {
+    return g.death_cinematic.active && g.death_cinematic.phase == 1 &&
+           g.death_cinematic.menu_alpha >= 0.85f;
+}
+
+EMSCRIPTEN_KEEPALIVE
 int signal_smoke_prepare_crash_recovery(int all_loaners_used) {
     if (!g.local_server.active || !net_is_loopback() ||
         !emscripten_run_script_int(
@@ -5521,6 +5543,7 @@ static void frame(void) {
     gameplay_observability_phase_end(
         GAMEPLAY_PHASE_INPUT_NETWORK, input_started);
 
+    death_cinematic_update_clock();
     double simulation_started = gameplay_observability_phase_begin();
     advance_simulation_frame(frame_dt);
     gameplay_observability_phase_end(
