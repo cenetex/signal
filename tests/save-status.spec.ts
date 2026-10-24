@@ -12,7 +12,7 @@ async function ready(page: Page, touch: boolean) {
   await page.goto(`/play.html?singleplayer=1&smoke=1${touch ? '&touch=1' : ''}`);
   await page.waitForFunction(() => (window as any).SignalGameWasmReady === true);
   await expect(page.locator('#loading')).toHaveClass('done');
-  await expect.poll(async () => (await status(page)).state, {timeout:30_000}).toBe(2);
+  await expect.poll(async () => (await status(page)).completedAt, {timeout:30_000}).toBeGreaterThan(0);
 }
 
 async function expectTouchClearance(page: Page) {
@@ -41,18 +41,27 @@ for (const view of [
     await ready(page, touch);
     expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(view.coarse);
     const panel = page.locator('#signal-save-status');
-    const first = await status(page);
-    expect(first.generation).toBeGreaterThan(0);
-    expect(first.completedAt).toBeGreaterThan(0);
-    await page.evaluate(() => {
-      const storage = (window as any).Module.signalLocalPersistence;
+    // Hold the next real checkpoint, including one requested by autosave.
+    // Capture its preceding receipt in the same callback to avoid idle-window races.
+    const first = await page.evaluate(() => new Promise<{generation:number; completedAt:number; age:number}>((resolve, reject) => {
+      const mod = (window as any).Module;
+      const storage = mod.signalLocalPersistence;
       storage.originalFlush = storage.flush;
+      const timeout = setTimeout(() => {
+        storage.flush = storage.originalFlush;
+        reject(new Error('Next checkpoint did not reach storage'));
+      }, 30_000);
       storage.flush = (generation: number) => {
         storage.heldGeneration = generation;
         storage.state = 2;
+        clearTimeout(timeout);
+        resolve({generation:storage.completedGeneration, completedAt:storage.completedAt,
+          age:(Date.now() - storage.completedAt) / 1000});
       };
-    });
-    expect(await call(page, 'signal_save_local_world')).toBe(1);
+      mod.ccall('signal_save_local_world', 'number', [], []);
+    }));
+    expect(first.generation).toBeGreaterThan(0);
+    expect(first.completedAt).toBeGreaterThan(0);
     await expect(panel).toContainText('Saving...');
     await page.waitForTimeout(1200);
     const delayed = await status(page);
@@ -99,13 +108,18 @@ for (const view of [
     await page.screenshot({path:info.outputPath('retry-needed.png')});
     if (touch) await expectTouchClearance(page);
     const before = JSON.parse(await call(page, 'signal_debug_local_save_summary', 'string'));
-    await page.evaluate(() => {
+    // Keep automatic retries failing until the real button click starts the retry.
+    await retry.evaluate(button => button.addEventListener('click', () => {
       const storage = (window as any).Module.signalLocalPersistence;
       storage.flush = storage.originalFlush;
-    });
+      storage.retryClicks = (storage.retryClicks || 0) + 1;
+    }, {capture:true, once:true}));
     await retry.click();
+    expect(await page.evaluate(() => (window as any).Module.signalLocalPersistence.retryClicks)).toBe(1);
     await expect.poll(async () => (await status(page)).generation, {timeout:30_000}).toBeGreaterThan(failed.generation);
-    await expect(panel).toContainText('Saved', {timeout:30_000});
+    // The completed retry remains durable while a later autosave is active.
+    await expect(panel).toHaveAttribute('data-state', /^[12]$/);
+    await expect(panel.getByRole('status')).toHaveText(/^(Saved |Saving\.\.\. - last saved )/);
     await expect(retry).toBeHidden();
     await page.screenshot({path:info.outputPath('saved.png')});
     await page.reload();
