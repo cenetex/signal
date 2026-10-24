@@ -206,3 +206,14 @@ test('first scan keeps the first-haul action visible', async ({page}) => {
   await page.keyboard.press('h');
   await expect.poll(() => hint(page), {timeout: 2000}).toMatch(/RED COMPASS PIP|ROCK TARGETED/);
 });
+
+test.describe('coarse pointer guide layout', () => {
+  test.use({hasTouch: true, viewport: {width: 932, height: 430}});
+  test('station direction and guide fit a wide touch screen', async ({page}, info) => {
+    await ready(page, true);
+    await fixture(page, 46);
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    expect(await hint(page)).toContain('RED COMPASS PIP: Ferrite M (FE)');
+    await page.screenshot({path: info.outputPath('first-haul-coarse-landscape.png')});
+  });
+});

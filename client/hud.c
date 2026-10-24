@@ -1254,14 +1254,24 @@ static void hud_draw_alpha_banner_and_connection(float screen_w, bool compact) {
     sdtx_puts(banner);
 }
 
-/* Nearest station name in the bottom-left when undocked, plus the
+/* Nearest station name beside the flight HUD when undocked, plus the
  * housekeeping that expires a tracked contract once the server retired
  * it. The contract cleanup runs every frame regardless of layout. */
 static void hud_draw_nav_label(float screen_w, float screen_h) {
     if (LOCAL_PLAYER.docked) return;
     const station_t *nav_st = navigation_station_ptr();
     if (nav_st && nav_st->name[0] != '\0') {
-        sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
+        float name_x = 16.0f;
+        float name_y = screen_h - 20.0f;
+        if (onboarding_uses_touch_controls()) {
+            float top_x, top_y, top_w, top_h;
+            float bottom_x, bottom_y, bottom_w, bottom_h;
+            get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h,
+                                &bottom_x, &bottom_y, &bottom_w, &bottom_h);
+            name_x = top_x;
+            name_y = top_y + top_h + 10.0f;
+        }
+        sdtx_pos(ui_text_pos(name_x), ui_text_pos(name_y));
         sdtx_color3b(PAL_TEXT_FADED);
         int name_cols = (int)((screen_w - 24.0f) / 8.0f);
         sdtx_printf("%.*s", name_cols, nav_st->name);
