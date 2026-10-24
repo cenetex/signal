@@ -2299,40 +2299,38 @@ test.describe('Browser smoke tests', () => {
     await page.addInitScript(() => {
       const state = window as typeof window & {
         signalSlowRecoveryFrames?: boolean;
-        signalRecoveryFrameCount?: number;
       };
       const requestFrame = window.requestAnimationFrame.bind(window);
       window.requestAnimationFrame = (callback) => requestFrame((time) => {
         if (state.signalSlowRecoveryFrames) {
           window.setTimeout(() => {
-            state.signalRecoveryFrameCount = (state.signalRecoveryFrameCount || 0) + 1;
             callback(performance.now());
           }, 500);
         } else callback(time);
       });
     });
     const logs = installFatalCollectors(page);
-    const canvas = await loadGame(page, false, { singleplayer: true });
+    await page.goto(addQueryParam(smokeUrl({ singleplayer: true }), 'jankprofile', '1'));
+    const canvas = page.locator('canvas');
+    await waitForRenderedGame(page, canvas, false);
     await canvas.click();
     const prepared = await page.evaluate(() => {
       const state = window as unknown as {
         signalSlowRecoveryFrames: boolean;
-        signalRecoveryFrameCount: number;
         Module: { ccall: (name: string, type: string, types: string[], args: number[]) => number };
       };
       state.signalSlowRecoveryFrames = true;
-      state.signalRecoveryFrameCount = 0;
+      state.Module.ccall('signal_jank_profile_reset', 'number', [], []);
       return state.Module.ccall('signal_smoke_prepare_crash_recovery', 'number', ['number'], [0]);
     });
     expect(prepared).toBe(1);
     await expect.poll(() => wasmNumber(page, 'get_net_reconcile_death_respawn_events')).toBe(1);
     // The launch pause is a real-time promise even when most simulation ticks drop.
     await page.waitForTimeout(8_000);
-    const frames = await page.evaluate(() => (window as unknown as {
-      signalRecoveryFrameCount: number;
-    }).signalRecoveryFrameCount);
-    expect(frames).toBeGreaterThanOrEqual(8);
-    expect(frames).toBeLessThan(24);
+    const profile = await jankProfileReport(page);
+    expect(profile.frames).toBeGreaterThanOrEqual(8);
+    expect(profile.frames).toBeLessThan(24);
+    expect(profile.fixed_step.completed).toBeLessThan(200);
     await tap(page, 'E');
     await expect.poll(() => wasmNumber(page, 'get_player_docked'), {timeout: 4_000}).toBe(0);
     await page.waitForTimeout(1_000);
