@@ -13,7 +13,7 @@ Module['postRun'].push(function () {
       background:#112a25; font:inherit; cursor:pointer; touch-action:manipulation; }
     #signal-save-status button[hidden] { display:none; }
     #signal-save-status button:focus-visible { outline:2px solid #fff; outline-offset:2px; }
-    @media(max-width:859px) { #signal-save-status { top:auto; bottom:12px;
+    @media(max-width:859px), (pointer:coarse) { #signal-save-status { top:auto; bottom:12px;
       left:calc(max(12px, env(safe-area-inset-left)) + 130px);
       right:calc(max(12px, env(safe-area-inset-right)) + 146px);
       max-width:none; box-sizing:border-box;
@@ -22,7 +22,8 @@ Module['postRun'].push(function () {
     @media(max-width:560px) { #signal-save-status {
       left:calc(max(10px, env(safe-area-inset-left)) + 120px);
       right:calc(max(10px, env(safe-area-inset-right)) + 134px); } }
-    @media(max-height:520px) and (max-width:859px) { #signal-save-status {
+    @media(max-height:520px) and (max-width:859px),
+      (max-height:520px) and (pointer:coarse) { #signal-save-status {
       flex-direction:row; align-items:center; gap:8px; font-size:11px; }
       #signal-save-status button { flex-shrink:0; padding:6px 12px; } }
   `;

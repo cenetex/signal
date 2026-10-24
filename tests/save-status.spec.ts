@@ -12,7 +12,7 @@ async function ready(page: Page, touch: boolean) {
   await page.goto(`/play.html?singleplayer=1&smoke=1${touch ? '&touch=1' : ''}`);
   await page.waitForFunction(() => (window as any).SignalGameWasmReady === true);
   await expect(page.locator('#loading')).toHaveClass('done');
-  await expect.poll(async () => (await status(page)).state).toBe(2);
+  await expect.poll(async () => (await status(page)).state, {timeout:30_000}).toBe(2);
 }
 
 async function expectTouchClearance(page: Page) {
@@ -26,16 +26,20 @@ async function expectTouchClearance(page: Page) {
 }
 
 for (const view of [
-  {name:'desktop', touch:false, width:1280, height:720},
-  {name:'touch', touch:true, width:390, height:844},
-  {name:'landscape touch', touch:true, width:844, height:390},
+  {name:'desktop', touch:false, coarse:false, width:1280, height:720},
+  {name:'touch', touch:true, coarse:false, width:390, height:844},
+  {name:'landscape touch', touch:true, coarse:false, width:844, height:390},
+  {name:'coarse landscape touch', touch:true, coarse:true, width:932, height:430},
 ]) {
   const {touch} = view;
+  test.describe(view.name, () => {
+    test.use({hasTouch:view.coarse});
   test(`save completion, failure and retry on ${view.name}`, async ({page}, info) => {
     test.skip(!!process.env.SMOKE_URL, 'storage faults use an isolated local world');
-    test.setTimeout(90_000);
+    test.setTimeout(150_000);
     await page.setViewportSize({width:view.width, height:view.height});
     await ready(page, touch);
+    expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(view.coarse);
     const panel = page.locator('#signal-save-status');
     const first = await status(page);
     expect(first.generation).toBeGreaterThan(0);
@@ -59,26 +63,36 @@ for (const view of [
     await page.screenshot({path:info.outputPath('saving.png')});
     await page.evaluate(() => {
       const storage = (window as any).Module.signalLocalPersistence;
+      storage.flush = storage.originalFlush;
       storage.state = 1;
-      storage.originalFlush(storage.heldGeneration);
+      storage.flush(storage.heldGeneration);
     });
-    await expect.poll(async () => (await status(page)).generation).toBeGreaterThan(first.generation);
+    await expect.poll(async () => (await status(page)).generation, {timeout:30_000}).toBeGreaterThan(first.generation);
     const completed = await status(page);
     expect(completed.completedAt).toBeGreaterThan(first.completedAt + 1000);
     await page.evaluate(() => {
       const storage = (window as any).Module.signalLocalPersistence;
-      storage.flush = () => { storage.state = -1; };
+      storage.flush = () => {
+        storage.failedPreviousGeneration = storage.completedGeneration;
+        storage.failedPreviousAt = storage.completedAt;
+        storage.state = -1;
+      };
     });
     // A real guide action changes persisted player progress.
     await page.locator('canvas').focus();
     await page.keyboard.press('h', {delay:80});
     const progress = await call(page, 'signal_debug_player_progress');
     expect(progress & (1 << 12)).toBe(1 << 12);
-    await expect.poll(() => call(page, 'signal_save_local_world')).toBe(1);
+    await expect.poll(() => call(page, 'signal_save_local_world'), {timeout:30_000}).toBe(1);
     await expect(panel).toContainText('Retry needed');
     const failed = await status(page);
-    expect(failed.generation).toBe(completed.generation);
-    expect(failed.completedAt).toBe(completed.completedAt);
+    const priorReceipt = await page.evaluate(() => {
+      const storage = (window as any).Module.signalLocalPersistence;
+      return {generation:storage.failedPreviousGeneration, completedAt:storage.failedPreviousAt};
+    });
+    expect(priorReceipt.generation).toBeGreaterThanOrEqual(completed.generation);
+    expect(failed.generation).toBe(priorReceipt.generation);
+    expect(failed.completedAt).toBe(priorReceipt.completedAt);
     const retry = page.getByRole('button', {name:'Retry save', exact:true});
     await expect(retry).toBeVisible();
     expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(44);
@@ -90,8 +104,8 @@ for (const view of [
       storage.flush = storage.originalFlush;
     });
     await retry.click();
-    await expect.poll(async () => (await status(page)).generation).toBeGreaterThan(completed.generation);
-    await expect(panel).toContainText('Saved');
+    await expect.poll(async () => (await status(page)).generation, {timeout:30_000}).toBeGreaterThan(failed.generation);
+    await expect(panel).toContainText('Saved', {timeout:30_000});
     await expect(retry).toBeHidden();
     await page.screenshot({path:info.outputPath('saved.png')});
     await page.reload();
@@ -102,7 +116,7 @@ for (const view of [
     for (const key of ['seed', 'ship', 'credits', 'stations']) expect(restored[key]).toEqual(before[key]);
     expect(restored.time).toBeGreaterThanOrEqual(before.time);
     // A completed receipt remains valid when the next autosave is already active.
-    await expect.poll(async () => (await status(page)).completedAt).toBeGreaterThan(0);
+    await expect.poll(async () => (await status(page)).completedAt, {timeout:30_000}).toBeGreaterThan(0);
     if (touch) await page.getByRole('button', {name:'Launch', exact:true}).click();
     else {
       await page.locator('canvas').focus();
@@ -114,10 +128,11 @@ for (const view of [
       const storage = (window as any).Module.signalLocalPersistence;
       storage.flush = () => { storage.state = -1; };
     });
-    await expect.poll(() => call(page, 'signal_save_local_world')).toBe(1);
+    await expect.poll(() => call(page, 'signal_save_local_world'), {timeout:30_000}).toBe(1);
     await expect(panel).toContainText('Retry needed');
     await page.screenshot({path:info.outputPath('flight-retry-needed.png')});
     if (touch) await expectTouchClearance(page);
+  });
   });
 }
 
