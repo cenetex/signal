@@ -173,10 +173,16 @@ for (const touch of [false, true]) {
     await page.screenshot({path: info.outputPath('first-haul-dock.png')});
     for (const state of [46, 47]) {
       await fixture(page, state);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       expect(await hint(page)).toContain('RED COMPASS PIP: Ferrite M (FE)');
       expect(await hint(page)).toContain(touch ? 'HOLD [Mine]' : 'HOLD [M]');
     }
     await page.screenshot({path: info.outputPath('first-haul-target.png')});
+    if (touch) {
+      await page.setViewportSize({width: 844, height: 390});
+      await page.screenshot({path: info.outputPath('first-haul-landscape.png')});
+      await page.setViewportSize({width: 390, height: 844});
+    }
     await fixture(page, 49);
     expect(await hint(page)).toContain('ROCK TARGETED');
     await fixture(page, 48);
@@ -198,5 +204,5 @@ test('first scan keeps the first-haul action visible', async ({page}) => {
   await page.waitForTimeout(1200);
   await page.keyboard.up('w');
   await page.keyboard.press('h');
-  await expect.poll(() => hint(page)).toMatch(/RED COMPASS PIP|ROCK TARGETED/);
+  await expect.poll(() => hint(page), {timeout: 2000}).toMatch(/RED COMPASS PIP|ROCK TARGETED/);
 });

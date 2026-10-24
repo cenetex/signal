@@ -3891,7 +3891,7 @@ static float draw_station_arrival_brief(const station_t *st,
             onboarding_format_controls(message, sizeof(message));
             char heading[64];
             if (!g.onboarding.complete) {
-                snprintf(heading, sizeof(heading), "FIRST HAUL // ORE TO LOCAL CREDITS");
+                snprintf(heading, sizeof(heading), "FIRST HAUL // EARN LOCALLY");
                 const char *prefix = "SIGNAL // GUIDE // ";
                 if (strncmp(message, prefix, strlen(prefix)) == 0)
                     memmove(message, message + strlen(prefix), strlen(message + strlen(prefix)) + 1);

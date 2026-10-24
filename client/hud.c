@@ -4369,7 +4369,9 @@ void smoke_apply_loop_state_for_frame(void) {
     /* Most fixtures intentionally allow input and timers to evolve after
      * setup. Interaction fixtures must overwrite streamed state at the
      * render boundary to keep their visual telemetry stable. */
-    if (smoke_loop_state_override ==
+    if ((smoke_loop_state_override >= SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK &&
+         smoke_loop_state_override <= SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK) ||
+        smoke_loop_state_override ==
             SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR ||
         smoke_loop_state_override ==
             SMOKE_LOOP_STATE_CARGO_HOPPER_GUIDE) {
@@ -6163,7 +6165,13 @@ void draw_hud(void) {
                 float msg_w = (float)strlen(full_msg) * cell;
                 float msg_x = (screen_w * 0.5f - msg_w * 0.5f) / cell;
                 /* Stack upward so the newest line sits at the panel bottom. */
-                float msg_y = (screen_h - 32.0f - (float)(count - 1 - vi) * cell * 1.25f) / cell;
+                /* Touch actions occupy the lower sides of the screen. Keep
+                 * the guide above them in portrait; landscape has a clear
+                 * center lane above its bottom controls. Values are CSS px. */
+                float bottom_gap = onboarding_uses_touch_controls()
+                    ? (ui_window_height() < 520.0f ? 100.0f : 285.0f) / ui_scale()
+                    : 32.0f;
+                float msg_y = (screen_h - bottom_gap - (float)(count - 1 - vi) * cell * 1.25f) / cell;
                 sdtx_pos(msg_x, msg_y);
                 sdtx_color3b(message_r, message_g, message_b);
                 sdtx_puts(full_msg);
@@ -6344,7 +6352,9 @@ void draw_hud(void) {
         for (int li = 0; li < HUD_MSG_LINES; li++) {
             if (message_lines[li][0] != '\0') count = li + 1;
         }
-        float msg_y = screen_h * 0.82f;
+        float msg_y = onboarding_uses_touch_controls()
+            ? screen_h - 285.0f / ui_scale() - (float)(count - 1) * cell * 1.25f
+            : screen_h * 0.82f;
         for (int li = 0; li < count; li++) {
             /* 512 (was 256): GCC -Werror=format-truncation traces the
              * message_label (32) + ": " + a wrapped line (HUD_MSG_LINE_CAP)

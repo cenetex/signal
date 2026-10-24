@@ -67,6 +67,7 @@ static void onboarding_save(void) {
 static bool touch_controls;
 
 void onboarding_set_touch_controls(bool touch) { touch_controls = touch; }
+bool onboarding_uses_touch_controls(void) { return touch_controls; }
 bool onboarding_story_focus(void) { return g.onboarding.story_focus; }
 
 void onboarding_choose_story(bool story) {
@@ -244,7 +245,7 @@ static bool guide_fracture(char *message, size_t message_size) {
         }
         if (nearest) {
             snprintf(message, message_size,
-                     "SIGNAL // GUIDE // RED COMPASS PIP: %s %s (%s) ::::: AIM, HOLD [M] TO FRACTURE",
+                     "SIGNAL // GUIDE // RED COMPASS PIP: %s %s (%s) // HOLD [M] TO MINE",
                      commodity_short_name(nearest->commodity),
                      asteroid_tier_name(nearest->tier), commodity_code(nearest->commodity));
         } else {

@@ -13,6 +13,7 @@ void onboarding_choose_story(bool story);
 void onboarding_toggle_focus(void);
 bool onboarding_story_focus(void);
 void onboarding_set_touch_controls(bool touch);
+bool onboarding_uses_touch_controls(void);
 void onboarding_format_controls(char *message, size_t size);
 void onboarding_mark_moved(void);
 void onboarding_mark_fractured(void);
