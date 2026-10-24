@@ -39,3 +39,21 @@ reload and authentication path. Shared save tests cover repeated hull reloads,
 borrower identity after network slot reuse, rejection of a foreign hull save,
 and v84 world upgrade. The rejected foreign save preserves the authority
 digest. Local guidance follows the recovered generation.
+
+The save status shows `Saving...` while the complete checkpoint is being
+written, `Saved` after completion, and `Retry needed` after a failed write.
+Its age starts at the native writer's publication or the IndexedDB transaction's
+completion. During a write or a failure, the age refers to the previous
+completed checkpoint. A restored checkpoint starts with `Saved - restored`;
+its completion time becomes known when this session completes a new save.
+
+Choose **Retry save** in the browser, or press **F8** in the native client, to
+retry the current world and player checkpoint. The normal save loop also retries
+a failed write after five seconds. Desktop and touch browsers share the same
+status and a touch-sized retry button. The previous completed generation stays
+the recovery point while a new write is pending or fails.
+
+Online sessions show `Online - server-managed saves` once connected. The server
+owns that world's saves. The local completion age and retry control apply to
+local sessions; server completion receipts would be needed to show an online
+save time.

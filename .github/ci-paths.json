@@ -124,6 +124,7 @@
         "tests/browser-smoke.spec.ts",
         "tests/gameplay-profile.spec.ts",
         "tests/player-guide.spec.ts",
+        "tests/save-status.spec.ts",
         "tests/post-deploy-play.config.ts",
         "tests/post-deploy-play.live.ts"
       ],

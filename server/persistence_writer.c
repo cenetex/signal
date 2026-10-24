@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -11,7 +12,6 @@
 #include <windows.h>
 #else
 #include <pthread.h>
-#include <time.h>
 #endif
 
 struct persistence_writer {
@@ -80,6 +80,10 @@ static void persistence_writer_run(persistence_writer_t *writer) {
     writer_lock(writer);
     writer->metrics.background_write_ms =
         (persistence_writer_now() - write_started) * 1000.0;
+    struct timespec completed = {0};
+    (void)timespec_get(&completed, TIME_UTC);
+    writer->metrics.completed_at_ms =
+        (double)completed.tv_sec * 1000.0 + (double)completed.tv_nsec / 1000000.0;
     writer->metrics.write_complete = true;
     if (ok) writer->published = published;
     writer->state = ok

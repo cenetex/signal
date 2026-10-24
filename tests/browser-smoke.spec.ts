@@ -2029,8 +2029,12 @@ test.describe('Browser smoke tests', () => {
 
   test('local world storage has one active browser owner', async ({ page, context }) => {
     test.skip(usesLiveSmokeUrl(), 'local save lock test uses isolated browser storage');
+    const completedGeneration = (target: Page) => target.evaluate(() => {
+      const mod = (window as any).Module;
+      return JSON.parse(mod.ccall('signal_save_status_json', 'string', [], [])).generation;
+    });
     await loadGame(page, false);
-    await expect.poll(() => wasmNumber(page, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    await expect.poll(() => completedGeneration(page), {timeout:30_000}).toBeGreaterThan(0);
     const second = await context.newPage();
     await second.goto('/play.html?singleplayer=1&smoke=1');
     await expect(second.locator('#loading')).toHaveText(
@@ -2038,7 +2042,7 @@ test.describe('Browser smoke tests', () => {
     await page.close();
     await second.reload();
     await waitForRenderedGame(second, second.locator('canvas'), false);
-    await expect.poll(() => wasmNumber(second, 'signal_debug_local_save_generation')).toBeGreaterThan(0);
+    await expect.poll(() => completedGeneration(second), {timeout:30_000}).toBeGreaterThan(0);
     await second.close();
   });
 

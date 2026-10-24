@@ -2,6 +2,17 @@
 #include "local_save.h"
 #include "persistence_generation.h"
 #include "progress_store.h"
+#include <sys/stat.h>
+#include <time.h>
+#ifdef _WIN32
+#include <direct.h>
+#include <windows.h>
+#define SAVE_MKDIR(path) _mkdir(path)
+#define SAVE_RMDIR(path) _rmdir(path)
+#else
+#define SAVE_MKDIR(path) mkdir(path, 0700)
+#define SAVE_RMDIR(path) rmdir(path)
+#endif
 
 static const uint8_t local_test_pubkey[32] = {19, 7, 11};
 
@@ -141,8 +152,87 @@ TEST(test_local_save_keeps_invalid_generation_for_recovery) {
     ASSERT_EQ_INT(persistence_generation_resolve(root, &selected), PERSISTENCE_GENERATION_INVALID);
 }
 
+TEST(test_local_save_status_tracks_completion_failure_and_retry) {
+    WORLD_DECL;
+    world_reset(&w);
+    bool fresh;
+    const char *root = TMP("local-save-status");
+    local_save_t *save = local_save_open(root, &w, local_test_pubkey, &fresh);
+    ASSERT(save != NULL);
+    ASSERT(local_test_authenticate(&w, 0, 8));
+    ASSERT(local_save_restore_player(save, &w, 0));
+    ASSERT_EQ_INT(local_save_status(save).state, LOCAL_SAVE_PREPARING);
+    ASSERT(local_save_request(save, &w, false));
+    ASSERT_EQ_INT(local_save_status(save).state, LOCAL_SAVE_SAVING);
+    ASSERT_EQ_INT(local_save_status(save).completed_generation, 0);
+    time_t deadline = time(NULL) + 10;
+    while (local_save_status(save).state == LOCAL_SAVE_SAVING && time(NULL) < deadline) {
+        local_save_update(save, &w, 0.0f);
+#ifdef _WIN32
+        Sleep(1);
+#else
+        struct timespec pause = {0, 1000000};
+        nanosleep(&pause, NULL);
+#endif
+    }
+    local_save_status_t first = local_save_status(save);
+    ASSERT_EQ_INT(first.state, LOCAL_SAVE_SAVED);
+    ASSERT(first.completed_generation > 0);
+    ASSERT(first.completed_at_ms > 0.0);
+    ASSERT(first.completed_age_seconds >= 0.0);
+
+    /* A blocked marker publication leaves the previous generation valid. */
+    char blocker[512];
+    snprintf(blocker, sizeof(blocker), "%s/CURRENT.tmp", root);
+    ASSERT_EQ_INT(SAVE_MKDIR(blocker), 0);
+    w.tick = 300u * 120u;
+    w.time = world_time_from_tick(w.tick);
+    w.players[0].ship->hull = 41.0f;
+    uint32_t ship_id = w.players[0].ship_asset_id;
+    ledger_earn_by_pubkey(&w.stations[0], local_test_pubkey, 117.0f);
+    float credits = ledger_balance_by_pubkey(&w.stations[0], local_test_pubkey);
+    snprintf(w.stations[1].name, sizeof(w.stations[1].name), "Retry Yard");
+    ASSERT(!local_save_request(save, &w, true));
+    local_save_status_t failed = local_save_status(save);
+    ASSERT_EQ_INT(failed.state, LOCAL_SAVE_RETRY_NEEDED);
+    ASSERT(failed.completed_generation == first.completed_generation);
+    ASSERT(failed.completed_at_ms == first.completed_at_ms);
+    persistence_generation_paths_t selected;
+    ASSERT_EQ_INT(persistence_generation_resolve(root, &selected), PERSISTENCE_GENERATION_CURRENT);
+    ASSERT(selected.generation == first.completed_generation);
+    char label[100];
+    local_save_status_text(save, label, sizeof(label));
+    ASSERT(strstr(label, "Retry needed") != NULL);
+
+    ASSERT_EQ_INT(SAVE_RMDIR(blocker), 0);
+    ASSERT(local_save_request(save, &w, true));
+    local_save_status_t retried = local_save_status(save);
+    ASSERT_EQ_INT(retried.state, LOCAL_SAVE_SAVED);
+    ASSERT(retried.completed_generation > first.completed_generation);
+    ASSERT(retried.completed_at_ms >= first.completed_at_ms);
+    local_save_close(save, NULL);
+
+    world_reset(&w);
+    save = local_save_open(root, &w, local_test_pubkey, &fresh);
+    ASSERT(save != NULL);
+    ASSERT(!fresh);
+    ASSERT_EQ_INT(w.tick, 300u * 120u);
+    ASSERT(strcmp(w.stations[1].name, "Retry Yard") == 0);
+    ASSERT(local_test_authenticate(&w, 0, 9));
+    ASSERT(local_save_restore_player(save, &w, 0));
+    ASSERT_EQ_FLOAT(w.players[0].ship->hull, 41.0f, 0.01f);
+    ASSERT_EQ_INT(w.players[0].ship_asset_id, ship_id);
+    ASSERT_EQ_FLOAT(ledger_balance_by_pubkey(&w.stations[0], local_test_pubkey), credits, 0.01f);
+    ASSERT_EQ_INT(local_save_status(save).state, LOCAL_SAVE_SAVED);
+    ASSERT(local_save_status(save).completed_at_ms == 0.0);
+    local_save_status_text(save, label, sizeof(label));
+    ASSERT(strcmp(label, "Saved - restored") == 0);
+    local_save_close(save, NULL);
+}
+
 void register_local_save_tests(void) {
     RUN(test_local_save_restart_restores_world_player_and_currency);
+    RUN(test_local_save_status_tracks_completion_failure_and_retry);
     RUN(test_local_save_rejects_overlapping_owner_and_wrong_player);
     RUN(test_local_save_recovers_previous_complete_generation);
     RUN(test_local_save_keeps_invalid_generation_for_recovery);

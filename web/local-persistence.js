@@ -2,7 +2,9 @@
  * in one IndexedDB transaction. A Web Lock owns the origin's local authority. */
 Module['preRun'] = Module['preRun'] || [];
 Module['preRun'].push(function () {
-  var storage = Module.signalLocalPersistence = { state: 0 };
+  var storage = Module.signalLocalPersistence = {
+    state: 0, completedGeneration: 0, completedAt: 0, flushAttempt: 0
+  };
   var params = new URLSearchParams(window.location.search);
   var remote = !params.has('singleplayer') &&
     (params.get('server') || window.SIGNAL_SERVER);
@@ -30,13 +32,20 @@ Module['preRun'].push(function () {
       fail('Local save storage needs access. Check browser storage, then reload.', error);
     }
   }
-  storage.flush = function () {
+  storage.flush = function (generation) {
     if (storage.state === 2) return;
     storage.state = 2;
-    FS.syncfs(false, function (error) {
+    var attempt = ++storage.flushAttempt;
+    function completed(error) {
+      if (attempt !== storage.flushAttempt || storage.state !== 2) return;
+      if (!error) {
+        storage.completedGeneration = generation;
+        storage.completedAt = Date.now();
+      }
       storage.state = error ? -1 : 1;
       if (error) console.warn('[local-save] Save retry required.', error);
-    });
+    }
+    try { FS.syncfs(false, completed); } catch (error) { completed(error); }
   };
   function checkpoint() {
     if (Module['_signal_save_local_world']) Module['_signal_save_local_world']();
