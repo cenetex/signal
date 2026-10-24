@@ -5581,7 +5581,9 @@ static void event(const sapp_event* event) {
                 } else if (!LOCAL_PLAYER.docked &&
                            !g.death_cinematic.active &&
                            g.death_cinematic.menu_alpha <= 0.001f) {
+#ifndef __EMSCRIPTEN__
                     sapp_request_quit();
+#endif
                 }
             }
             break;

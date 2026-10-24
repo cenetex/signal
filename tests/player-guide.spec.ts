@@ -218,3 +218,20 @@ test.describe('coarse pointer guide layout', () => {
     await page.screenshot({path: info.outputPath('first-haul-coarse-landscape.png')});
   });
 });
+
+test('Escape keeps browser flight and steering active', async ({page}, info) => {
+  await ready(page);
+  await page.keyboard.press('e');
+  await expect.poll(() => call(page, 'get_player_docked')).toBe(0);
+  await page.keyboard.press('Escape');
+  const angle = await call(page, 'get_player_angle');
+  await page.keyboard.down('d');
+  try {
+    await expect.poll(async () => Math.abs(await call(page, 'get_player_angle') - angle)).toBeGreaterThan(0.2);
+  } finally {
+    await page.keyboard.up('d');
+  }
+  expect(await call(page, 'get_player_docked')).toBe(0);
+  expect(await hint(page)).toContain('SIGNAL // GUIDE');
+  await page.screenshot({path: info.outputPath('flight-after-escape.png')});
+});
