@@ -3882,17 +3882,24 @@ static float draw_station_arrival_brief(const station_t *st,
 {
     /* The dock terminal owns the guide while it covers the flight HUD. */
     contract_objective_t objective;
-    if (g.onboarding.complete && (onboarding_story_focus() ||
-                                 contract_objective_for_tracked(&objective))) {
+    if (!g.onboarding.complete || onboarding_story_focus() ||
+        contract_objective_for_tracked(&objective)) {
         char label[64], message[256];
         if (onboarding_hint(label, sizeof(label), message, sizeof(message))) {
             char *switch_hint = strstr(message, " // [G]");
             if (switch_hint) *switch_hint = '\0';
             onboarding_format_controls(message, sizeof(message));
             char heading[64];
-            snprintf(heading, sizeof(heading), "%s // [G] %s",
-                     strncmp(label, "STORY", 5) == 0 ? "STORY" : "WORK",
-                     onboarding_story_focus() ? "Work" : "Story");
+            if (!g.onboarding.complete) {
+                snprintf(heading, sizeof(heading), "FIRST HAUL // ORE TO LOCAL CREDITS");
+                const char *prefix = "SIGNAL // GUIDE // ";
+                if (strncmp(message, prefix, strlen(prefix)) == 0)
+                    memmove(message, message + strlen(prefix), strlen(message + strlen(prefix)) + 1);
+            } else {
+                snprintf(heading, sizeof(heading), "%s // [G] %s",
+                         strncmp(label, "STORY", 5) == 0 ? "STORY" : "WORK",
+                         onboarding_story_focus() ? "Work" : "Story");
+            }
             onboarding_format_controls(heading, sizeof(heading));
             float y = panel_y + 78.0f;
             float step = compact ? 14.0f : 15.0f;

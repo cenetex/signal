@@ -1364,6 +1364,13 @@ static void sim_on_hail_response(const sim_event_t *ev) {
     if (story_runtime_mark_hail(hs, story_notice, sizeof(story_notice)))
         set_notice("%s", story_notice);
 
+    /* The first scan should lead straight to the first mineable rock. The
+     * station response and tracked job remain available in their own panels. */
+    if (!g.onboarding.complete) {
+        char label[64], guide[256];
+        if (onboarding_hint(label, sizeof(label), guide, sizeof(guide)))
+            set_notice("%s", guide);
+    }
 }
 
 static void sim_on_module_activated(const sim_event_t *ev) {

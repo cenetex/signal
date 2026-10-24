@@ -4047,6 +4047,10 @@ enum {
     SMOKE_LOOP_STATE_GUIDE_CHOICE = 43,
     SMOKE_LOOP_STATE_GUIDE_TRACTOR = 44,
     SMOKE_LOOP_STATE_GUIDE_LOCAL_CREDIT = 45,
+    SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK = 46,
+    SMOKE_LOOP_STATE_GUIDE_GATED_ROCK = 47,
+    SMOKE_LOOP_STATE_GUIDE_EARLY_RETURN = 48,
+    SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK = 49,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -5161,6 +5165,31 @@ static int smoke_apply_loop_state(int state) {
         sp->docked = true;
         g.station_view = STATION_VIEW_TRADE;
         g.onboarding.welcomed = false;
+        return 1;
+    case SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK:
+    case SMOKE_LOOP_STATE_GUIDE_GATED_ROCK:
+    case SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK:
+    case SMOKE_LOOP_STATE_GUIDE_EARLY_RETURN:
+        smoke_set_onboarding_economy_progress(false, false, false);
+        g.onboarding.fractured = false;
+        g.onboarding.tractored = false;
+        g.local_server.active = false;
+        sp->ship->mining_level = 0;
+        for (int i = 0; i < MAX_ASTEROIDS; i++)
+            g.world.asteroids[i].active = false;
+        smoke_seed_asteroid(0, ASTEROID_TIER_M, COMMODITY_FERRITE_ORE,
+                            v2_add(sp->ship->pos, v2(120.0f, 0.0f)), 32.0f, 1.0f, 60.0f);
+        smoke_seed_asteroid(1, ASTEROID_TIER_L, COMMODITY_CUPRITE_ORE,
+                            v2_add(sp->ship->pos, v2(90.0f, 0.0f)), 50.0f, 1.0f, 60.0f);
+        sp->hover_asteroid = state == SMOKE_LOOP_STATE_GUIDE_GATED_ROCK ? 1
+            : state == SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK ? 0 : -1;
+        if (state == SMOKE_LOOP_STATE_GUIDE_EARLY_RETURN) {
+            sp->docked = true;
+            sp->in_dock_range = true;
+            g.station_view = STATION_VIEW_DOCK;
+            g.was_docked = true;
+            g.dock_settle_timer = 0.0f;
+        }
         return 1;
     case SMOKE_LOOP_STATE_GUIDE_LOCAL_CREDIT:
         if (!smoke_apply_loop_state(SMOKE_LOOP_STATE_GUIDE_CHOICE)) return 0;
