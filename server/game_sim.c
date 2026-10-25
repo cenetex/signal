@@ -11614,6 +11614,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     float net_turn   = sp->input.turn;
     float net_thrust = sp->input.thrust;
     bool  net_mine   = sp->input.mine;
+    bool  net_tractor = sp->input.tractor_hold;
     int   net_target = sp->input.mining_target_hint;
 
     /* Autopilot requires 80%+ signal strength. If signal drops below
@@ -11628,13 +11629,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         }
     }
 
-    /* Manual override: any directional / mining input cancels autopilot.
+    /* Manual override: directional, mining, or tractor input cancels autopilot.
      * Checks the snapshot, NOT sp->input — autopilot writes don't count. */
     if (sp->autopilot_mode && !w->player_only_mode) {
         bool manual_input =
             fabsf(net_turn) > 0.01f ||
             fabsf(net_thrust) > 0.01f ||
             net_mine ||
+            net_tractor ||
             sp->input.release_tow ||
             sp->input.reset;
         if (manual_input) {
@@ -12083,6 +12085,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         sp->input.turn = net_turn;
         sp->input.thrust = net_thrust;
         sp->input.mine = net_mine;
+        sp->input.tractor_hold = net_tractor;
         sp->input.mining_target_hint = net_target;
     }
 }
