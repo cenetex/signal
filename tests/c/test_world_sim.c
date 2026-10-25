@@ -3420,6 +3420,55 @@ TEST(test_claimed_manifest_contract_rejects_other_player_before_receipt_append) 
         0);
 }
 
+TEST(test_hauler_tractor_collects_loose_cargo_and_fragment) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+
+    vec2 pos = v2_add(w.stations[0].pos, v2(1100.0f, 0.0f));
+    server_player_t *sp = test_prepare_undocked_tractor_player(&w, pos);
+    ASSERT(sp != NULL);
+    actor_principal_t owner = actor_principal_none();
+    ASSERT(test_make_verified_player_principal(sp, 0x74, &owner));
+    sp->ship->hull_class = HULL_CLASS_HAULER;
+    sp->ship->hull = ship_max_hull(sp->ship);
+    ASSERT(ship_has_module(sp->ship, SHIP_MODULE_TRACTOR));
+    ASSERT_EQ_INT(sp->ship->tractor_level, 0);
+
+    int pod_idx = test_spawn_exact_pod(&w, v2_add(pos, v2(-90.0f, 0.0f)),
+                                       COMMODITY_FRAME, 1);
+    ASSERT(pod_idx >= 0);
+    w.asteroids[0] = (asteroid_t){
+        .active = true,
+        .tier = ASTEROID_TIER_S,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .pos = {pos.x + 90.0f, pos.y},
+        .radius = 8.0f,
+        .ore = 4.0f,
+        .max_ore = 4.0f,
+        .hp = 4.0f,
+        .max_hp = 4.0f,
+        .fracture_child = true,
+    };
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT(sp->ship->tractor_active);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship->towed_pods[0], pod_idx);
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[pod_idx]), 0);
+    ASSERT(actor_principal_equal(&w.cargo_pods[pod_idx].tow_owner_principal,
+                                 &owner));
+    ASSERT_EQ_INT(sp->ship->towed_count, 1);
+    ASSERT_EQ_INT(sp->ship->towed_fragments[0], 0);
+
+    /* Ending a hold keeps both bodies latched through the authority loop. */
+    sp->input.tractor_hold = false;
+    for (int tick = 0; tick < 30; tick++) world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 1);
+    ASSERT_EQ_INT(sp->ship->towed_count, 1);
+}
+
 static server_player_t *test_tractor_feedback_world(world_t *w) {
     world_reset(w);
     memset(w->asteroids, 0, sizeof(w->asteroids));
@@ -12952,6 +13001,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_towed_fragment_loads_raw_contract_at_dock);
     RUN(test_claimed_raw_contract_rejects_other_player_fragment_delivery);
     RUN(test_claimed_manifest_contract_rejects_other_player_before_receipt_append);
+    RUN(test_hauler_tractor_collects_loose_cargo_and_fragment);
     RUN(test_tow_capacity_counts_pods_against_fragment_pickup);
     RUN(test_tow_capacity_counts_fragments_against_pod_pickup);
     RUN(test_gas_rich_asteroid_emits_gas_pod);
