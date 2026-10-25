@@ -702,7 +702,31 @@ int main(int argc, char **argv) {
             sp->input.tractor_hold = false;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
+        int previous_pods[10], previous_custody[10];
+        int previous_count = sp->ship->towed_pod_count;
+        float previous_distance[10];
+        for (int t = 0; t < previous_count; t++) {
+            previous_pods[t] = sp->ship->towed_pods[t];
+            const cargo_pod_t *pod = &w->cargo_pods[previous_pods[t]];
+            previous_custody[t] = cargo_pod_custody_station(pod);
+            previous_distance[t] = v2_len(v2_sub(sp->ship->pos, pod->pos));
+        }
         world_sim_step(w, dt);
+        for (int t = 0; t < previous_count; t++) {
+            const cargo_pod_t *pod = &w->cargo_pods[previous_pods[t]];
+            if (pod->active && cargo_pod_player_tractor(pod) == 0) continue;
+            int station = -1, module = -1;
+            (void)cargo_pod_module_tractor_indices(pod, &station, &module);
+            fprintf(stderr, "tow ended %.2f pod=%d commodity=%d origin=%u quantity=%u "
+                "distance=%.2f/%.2f limit=%.2f custody=%d/%d module=%d/%d "
+                "active=%d pickup=%d release=%d stage=%d\n", tick * dt,
+                previous_pods[t], pod->commodity,
+                pod->manifest_count ? pod->manifest_units[0].origin_station : 255,
+                pod->quantity, previous_distance[t], v2_len(v2_sub(sp->ship->pos, pod->pos)),
+                ship_tractor_range(sp->ship) * 1.5f, previous_custody[t],
+                cargo_pod_custody_station(pod), station, module, pod->active,
+                sp->input.tractor_hold, sp->input.release_tow, stage);
+        }
         if (sp->ship_asset_id != starter_asset ||
             (fracture && sp->ship->stat_asteroids_fractured == 0)) {
             fprintf(stderr, "route stopped after ship loss at %.2f seconds\n", tick * dt);
