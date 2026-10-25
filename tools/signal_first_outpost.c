@@ -647,7 +647,10 @@ int main(int argc, char **argv) {
             vec2 exit = exit_route_target(&w->stations[home], sp->ship);
             apply_flight(&sp->input, steer_through_lane(sp->ship, exit));
             sp->input.thrust = fminf(sp->input.thrust * 3.333333f, 1.0f);
-            if (v2_dist_sq(sp->ship->pos, w->stations[home].pos) > 1450 * 1450) {
+            int pod = local_frame_pod(w, sp->ship, true);
+            if (pod < 0) {
+                stage = PHASE_DOCK; path = (nav_path_t){0};
+            } else if (cargo_pod_custody_station(&w->cargo_pods[pod]) < 0) {
                 stage = PHASE_DELIVER_FRAMES; path = (nav_path_t){0};
             }
         } else if (stage == PHASE_DELIVER_FRAMES) {
@@ -692,11 +695,13 @@ int main(int argc, char **argv) {
                 int pod = local_frame_pod(w, sp->ship, false);
                 if (pod >= 0) {
                     vec2 goal = w->cargo_pods[pod].pos;
-                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
-                                                            goal, 30, 40, dt));
-                    if (v2_len_sq(sp->ship->vel) > 40.0f * 40.0f)
-                        apply_flight(&sp->input, flight_brake(sp->ship));
                     float pickup_range = ship_tractor_range(sp->ship);
+                    bool approaching_pickup = v2_dist_sq(sp->ship->pos, goal) <=
+                        4.0f * pickup_range * pickup_range;
+                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                        goal, 30, approaching_pickup ? 40 : 100, dt));
+                    if (approaching_pickup && v2_len_sq(sp->ship->vel) > 40.0f * 40.0f)
+                        apply_flight(&sp->input, flight_brake(sp->ship));
                     sp->input.tractor_hold = tick >= frame_pickup_after &&
                         v2_len_sq(sp->ship->vel) <= 40.0f * 40.0f &&
                         v2_dist_sq(sp->ship->pos, goal) <= pickup_range * pickup_range;
