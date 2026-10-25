@@ -24,7 +24,7 @@ static bool flight_heading_blocked(const world_t *w, const ship_t *ship,
     float speed = v2_len(ship->vel);
     float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
     vec2 probe_end = v2_add(ship->pos, v2_scale(fwd, lookahead));
-    return !nav_segment_clear(w, ship->pos, probe_end, clearance);
+    return !nav_station_segment_clear(w, ship->pos, probe_end, clearance);
 }
 
 void flight_avoid_station_wall(const world_t *w, const ship_t *ship,
