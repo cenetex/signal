@@ -731,6 +731,20 @@ int main(int argc, char **argv) {
                 for (int t = 0; t < sp->ship->towed_pod_count; t++) {
                     int index = sp->ship->towed_pods[t];
                     const cargo_pod_t *pod = &w->cargo_pods[index];
+                    cargo_pod_t identity = *pod;
+                    identity.custody_station = 0;
+                    cargo_pod_clear_custody_charge_anchor(&identity);
+                    uint8_t source[32], payout_id[32];
+                    bool digest = cargo_pod_selection_digest(&identity, source) &&
+                        station_payout_identity(st, STATION_PAYOUT_POD_INTAKE,
+                                                source, payout_id);
+                    bool replay = digest && station_payout_find(w, payout_id) != NULL;
+                    fprintf(stderr, "delivery gate pod=%d exact=%d digest=%d replay=%d "
+                        "owner=%u canonical=%d quarantine=%d journal=%u\n", index,
+                        cargo_pod_has_exact_manifest(pod, COMMODITY_FERRITE_INGOT),
+                        digest, replay, pod->tow_owner_principal.kind,
+                        actor_principal_is_canonical(&pod->tow_owner_principal),
+                        pod->tow_owner_quarantine_record_id != 0, w->payout_journal.count);
                     for (int m = 0; m < st->module_count; m++) {
                         const station_module_t *module = &st->modules[m];
                         if (m != hopper && module->type != MODULE_FRAME_PRESS) continue;
@@ -780,6 +794,9 @@ int main(int argc, char **argv) {
     }
     if (active_outpost)
         checkpoints_ok = checkpoint_roundtrip(w, argv[2], pubkey, secret);
+    else
+        fprintf(stderr, "failure checkpoint=%d\n",
+                checkpoint_roundtrip(w, argv[2], pubkey, secret));
     int selected_frame = local_frame_pod(w, sp->ship, false);
     if (selected_frame >= 0) {
         const cargo_pod_t *pod = &w->cargo_pods[selected_frame];
