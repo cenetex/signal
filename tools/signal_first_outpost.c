@@ -725,6 +725,29 @@ int main(int argc, char **argv) {
                 sp->ship->hold_level, ship_finished_count(sp->ship, COMMODITY_FRAME),
                 station_finished_count(&w->stations[home], COMMODITY_FRAME));
             fflush(stdout);
+            if (stage == PHASE_DELIVER_INGOTS) {
+                const station_t *st = &w->stations[home];
+                int hopper = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+                for (int t = 0; t < sp->ship->towed_pod_count; t++) {
+                    int index = sp->ship->towed_pods[t];
+                    const cargo_pod_t *pod = &w->cargo_pods[index];
+                    for (int m = 0; m < st->module_count; m++) {
+                        const station_module_t *module = &st->modules[m];
+                        if (m != hopper && module->type != MODULE_FRAME_PRESS) continue;
+                        vec2 center = module_world_pos_ring(st, module->ring, module->slot);
+                        vec2 mouth = v2_add(center, v2_scale(v2_norm(v2_sub(center, st->pos)),
+                            STATION_MODULE_COL_RADIUS + pod->radius + 8.0f));
+                        fprintf(stderr, "delivery pod=%d kind=%d qty=%d origin=%u custody=%d "
+                            "player=%d shipment=%u manifest=%u module=%d type=%d center=%.1f "
+                            "mouth=%.1f ship=%.1f\n", index, pod->kind, pod->quantity,
+                            pod->manifest_count ? pod->manifest_units[0].origin_station : 255,
+                            cargo_pod_custody_station(pod), cargo_pod_player_tractor(pod),
+                            pod->shipment_id, pod->manifest_count, m, module->type,
+                            v2_len(v2_sub(pod->pos, center)), v2_len(v2_sub(pod->pos, mouth)),
+                            v2_len(v2_sub(sp->ship->pos, center)));
+                    }
+                }
+            }
             if (stage == PHASE_WAIT_FRAMES) {
                 int hopper = station_find_hopper_for(&w->stations[home], COMMODITY_FRAME);
                 vec2 goal = module_world_pos_ring(&w->stations[home], w->stations[home].modules[hopper].ring,
