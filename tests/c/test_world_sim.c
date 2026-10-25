@@ -3466,6 +3466,37 @@ TEST(test_tractor_feedback_held_and_usable_priority) {
     ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
 }
 
+TEST(test_tractor_feedback_loose_and_held_cargo) {
+    WORLD_DECL;
+    server_player_t *sp = test_tractor_feedback_world(&w);
+    int idx = test_spawn_exact_pod(&w,
+        v2_add(sp->ship->pos, v2(100.0f, 0.0f)), COMMODITY_FRAME, 1);
+    ASSERT(idx >= 0);
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
+    w.cargo_pods[idx].pos = v2_add(sp->ship->pos,
+        v2(ship_tractor_range(sp->ship) + 1.0f, 0.0f));
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_CLOSER);
+    cargo_pod_set_player_tractor(&w.cargo_pods[idx], 1);
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_HELD);
+}
+
+TEST(test_tractor_feedback_survives_prediction_counter_reset) {
+    WORLD_DECL;
+    server_player_t *sp = test_tractor_feedback_world(&w);
+    asteroid_t *a = &w.asteroids[0];
+    *a = (asteroid_t){.active = true, .tier = ASTEROID_TIER_S,
+        .commodity = COMMODITY_FERRITE_ORE, .radius = 8.0f,
+        .ore = 4.0f, .hp = 4.0f};
+    a->pos = v2_add(sp->ship->pos, v2(100.0f, 0.0f));
+    sp->nearby_fragments = 1;
+    sp->tractor_fragments = 1;
+    world_sim_step_player_only(&w, 0, SIM_DT);
+    ASSERT_EQ_INT(sp->nearby_fragments, 0);
+    ASSERT_EQ_INT(sp->tractor_fragments, 0);
+    ASSERT_EQ_INT(ship_towed_fragment_count(sp->ship), 0);
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
+}
+
 TEST(test_tractor_feedback_scaffold_uses_smaller_pickup_range) {
     WORLD_DECL;
     server_player_t *sp = test_tractor_feedback_world(&w);
@@ -12829,6 +12860,8 @@ TEST(test_npc_miner_drops_fragment_when_tow_band_snaps) {
 
 void register_world_sim_basic_tests(void) {
     RUN(test_tractor_feedback_mine_range_and_real_pickup);
+    RUN(test_tractor_feedback_loose_and_held_cargo);
+    RUN(test_tractor_feedback_survives_prediction_counter_reset);
     RUN(test_tractor_feedback_held_and_usable_priority);
     RUN(test_tractor_feedback_scaffold_uses_smaller_pickup_range);
     TEST_SECTION("\nWorld sim tests:\n");
