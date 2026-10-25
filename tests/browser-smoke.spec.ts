@@ -3373,6 +3373,15 @@ test.describe('Browser smoke tests', () => {
     await expect.poll(async () => (await towLifecycleState(page)) & 0b1100).toBe(0);
     await page.waitForTimeout(300);
     expect((await towLifecycleState(page)) & held).toBe(held);
+    const report = await page.evaluate(() => {
+      const mod = (window as any).Module;
+      const first = mod.ccall('signal_smoke_tow_report_json', 'string', [], []);
+      const second = mod.ccall('signal_smoke_tow_report_json', 'string', [], []);
+      if (first !== second) throw new Error('tow query changed state');
+      return JSON.parse(first);
+    });
+    expect(report).toMatchObject({ finite: true, rocks: 1, pods: 1, serverLinks: 2, towSnapshot: true });
+    expect(report.range).toBeGreaterThan(0);
 
     // A distinct tap that starts with cargo still releases the whole tow.
     const releaseState = await tapTowOnNextSample(page);

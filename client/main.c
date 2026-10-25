@@ -3686,6 +3686,85 @@ const char *signal_smoke_origin_signature_stats(void) {
     return report;
 }
 
+/* Read-only diagnosis of ordinary remote pickup attempts. Slot numbers are
+ * transient world references; the report contains no player identity. */
+EMSCRIPTEN_KEEPALIVE
+const char *signal_smoke_tow_report_json(void) {
+    static char report[1536];
+    if (!emscripten_run_script_int(
+            "new URLSearchParams(location.search).get('smoke') === '1'") ||
+        !LOCAL_PLAYER.ship) return "{}";
+    const ship_t *ship = LOCAL_PLAYER.ship;
+    bool finite = isfinite(ship->pos.x) && isfinite(ship->pos.y) &&
+                  isfinite(ship->vel.x) && isfinite(ship->vel.y);
+    vec2 pos = finite ? ship->pos : v2(0.0f, 0.0f);
+    int fragment = -1, pod = -1, mineable = -1, links = 0;
+    float fragment_d2 = 1e30f, pod_d2 = 1e30f, mineable_d2 = 1e30f;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *body = &g.world.asteroids[i];
+        if (mining_level_can_fracture_asteroid(ship->mining_level, body)) {
+            float d2 = v2_dist_sq(pos, body->pos);
+            if (isfinite(d2) && d2 < mineable_d2) {
+                mineable = i;
+                mineable_d2 = d2;
+            }
+        }
+        if (!body->active || body->tier != ASTEROID_TIER_S ||
+            asteroid_has_tractor(body)) continue;
+        float d2 = v2_dist_sq(pos, body->pos);
+        if (isfinite(d2) && d2 < fragment_d2) {
+            fragment = i;
+            fragment_d2 = d2;
+        }
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *body = &g.world.cargo_pods[i];
+        if (!body->active || cargo_pod_has_player_tractor(body) ||
+            cargo_pod_has_module_tractor(body) ||
+            cargo_pod_custody_station(body) >= 0) continue;
+        float d2 = v2_dist_sq(pos, body->pos);
+        if (isfinite(d2) && d2 < pod_d2) {
+            pod = i;
+            pod_d2 = d2;
+        }
+    }
+    for (int i = 0; i < MAX_TOW_LINKS; i++) {
+        const tow_link_t *link = &g.world.tow_links[i];
+        if (link->active && link->source.kind == ENTITY_KIND_SHIP &&
+            link->source.index == WORLD_PLAYER_SHIP_BASE + g.local_player_slot)
+            links++;
+    }
+    const asteroid_t *rock = fragment >= 0 ? &g.world.asteroids[fragment] : NULL;
+    const cargo_pod_t *cargo = pod >= 0 ? &g.world.cargo_pods[pod] : NULL;
+    const asteroid_t *ore = mineable >= 0 ? &g.world.asteroids[mineable] : NULL;
+    snprintf(report, sizeof(report),
+        "{\"finite\":%s,\"x\":%.3f,\"y\":%.3f,\"vx\":%.3f,\"vy\":%.3f,"
+        "\"angle\":%.5f,\"docked\":%s,\"range\":%.3f,\"capacity\":%d,"
+        "\"rocks\":%d,\"pods\":%d,\"scaffold\":%d,\"tractor\":%s,"
+        "\"keyHeld\":%s,\"sentFlags\":%u,\"autopilot\":%d,"
+        "\"serverLinks\":%d,\"towSnapshot\":%s,\"towRevision\":%u,"
+        "\"fragment\":{\"index\":%d,\"x\":%.3f,\"y\":%.3f,\"distance\":%.3f,\"radius\":%.3f},"
+        "\"unboundPod\":{\"index\":%d,\"x\":%.3f,\"y\":%.3f,\"distance\":%.3f,\"radius\":%.3f},"
+        "\"mineable\":{\"index\":%d,\"x\":%.3f,\"y\":%.3f,\"distance\":%.3f,\"radius\":%.3f}}",
+        finite ? "true" : "false", pos.x, pos.y,
+        finite ? ship->vel.x : 0.0f, finite ? ship->vel.y : 0.0f,
+        isfinite(ship->angle) ? ship->angle : 0.0f,
+        LOCAL_PLAYER.docked ? "true" : "false", ship_tractor_range(ship),
+        ship_tow_body_capacity(ship), ship_towed_fragment_count(ship),
+        ship_towed_pod_count(ship), ship->towed_scaffold,
+        ship->tractor_active ? "true" : "false",
+        is_key_down(SAPP_KEYCODE_SPACE) ? "true" : "false",
+        (unsigned)g.net_last_sent_flags, LOCAL_PLAYER.autopilot_mode,
+        links, g.tow_snapshot_received ? "true" : "false", g.tow_snapshot_revision,
+        fragment, rock ? rock->pos.x : 0.0f, rock ? rock->pos.y : 0.0f,
+        rock ? fixp_sqrtf(fragment_d2) : -1.0f, rock ? rock->radius : 0.0f,
+        pod, cargo ? cargo->pos.x : 0.0f, cargo ? cargo->pos.y : 0.0f,
+        cargo ? fixp_sqrtf(pod_d2) : -1.0f, cargo ? cargo->radius : 0.0f,
+        mineable, ore ? ore->pos.x : 0.0f, ore ? ore->pos.y : 0.0f,
+        ore ? fixp_sqrtf(mineable_d2) : -1.0f, ore ? ore->radius : 0.0f);
+    return report;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int signal_smoke_prepare_tow_lifecycle(void) {
     if (!g.local_server.active || !net_is_loopback()) return 0;
