@@ -3492,6 +3492,9 @@ static void frame_camera_on_authoritative_undock(const server_player_t *sp,
 
 void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id >= NET_MAX_PLAYERS) return;
+    if (!isfinite(state->x) || !isfinite(state->y) ||
+        !isfinite(state->vx) || !isfinite(state->vy) ||
+        !isfinite(state->angle)) return;
 
     if (state->player_id == net_local_id()) {
         /* Reconcile local prediction with server-authoritative position. */
@@ -3547,6 +3550,19 @@ void apply_remote_player_state(const NetPlayerState* state) {
             has_unacked_input, force_rebase);
 
         if (!g.net_local_state_ready) {
+            accept_initial_local_player_state(state, sp);
+            return;
+        }
+
+        /* A damaged local pose must accept the next finite server baseline.
+         * Distance comparisons and smoothing preserve NaNs, which can leave
+         * the ship and camera lost even while fresh snapshots keep arriving. */
+        if (!isfinite(sp->ship->pos.x) || !isfinite(sp->ship->pos.y) ||
+            !isfinite(sp->ship->vel.x) || !isfinite(sp->ship->vel.y) ||
+            !isfinite(sp->ship->angle) ||
+            !isfinite(g.local_player_render_offset.x) ||
+            !isfinite(g.local_player_render_offset.y) ||
+            !isfinite(g.camera_pos.x) || !isfinite(g.camera_pos.y)) {
             accept_initial_local_player_state(state, sp);
             return;
         }
