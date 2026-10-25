@@ -76,6 +76,7 @@
 #include "wire_codec.h"
 #include <math.h>
 #include <limits.h>
+#include <float.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -9164,6 +9165,8 @@ static float cargo_pod_module_candidate_score(const world_t *w,
                                               int module_idx,
                                               float distance_sq,
                                               float acquire_sq) {
+    /* Range is checked before scoring. Load chooses among reachable modules;
+     * callers start at FLT_MAX so an occupied receiver remains eligible. */
     int load = cargo_pod_module_tractor_load(w, station_idx, module_idx);
     return distance_sq + (float)load * (acquire_sq +
                                         HOPPER_PULL_RANGE * HOPPER_PULL_RANGE);
@@ -9180,7 +9183,7 @@ static bool cargo_pod_find_furnace_shell_hopper(const world_t *w,
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_score = beam_intake_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    float best_score = FLT_MAX;
 
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
@@ -9222,7 +9225,7 @@ static bool cargo_pod_find_matching_hopper_module(const world_t *w,
     const float acquire_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    float best_score = FLT_MAX;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -9266,7 +9269,7 @@ static bool cargo_pod_find_producer_output_module(const world_t *w,
     const float acquire_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    float best_score = FLT_MAX;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -9303,7 +9306,7 @@ static bool cargo_pod_find_module_input_module(const world_t *w,
     const float acquire_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    float best_score = FLT_MAX;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -9352,7 +9355,7 @@ static bool cargo_pod_find_shell_frame_module(const world_t *w,
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_station = -1;
     int best_module = -1;
-    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    float best_score = FLT_MAX;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -9394,7 +9397,7 @@ static bool cargo_pod_find_station_work_module(const world_t *w,
     const float acquire_sq =
         HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE;
     int best_module = -1;
-    float best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    float best_score = FLT_MAX;
     bool frame_pod = cargo_pod_has_exact_manifest(pod, COMMODITY_FRAME);
 
     if (frame_pod) {
@@ -9419,7 +9422,7 @@ static bool cargo_pod_find_station_work_module(const world_t *w,
             return true;
         }
 
-        best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+        best_score = FLT_MAX;
         for (int m = 0; m < st->module_count &&
                         m < MAX_MODULES_PER_STATION; m++) {
             vec2 anchor;
@@ -9445,7 +9448,7 @@ static bool cargo_pod_find_station_work_module(const world_t *w,
         }
     }
 
-    best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    best_score = FLT_MAX;
     for (int m = 0; m < st->module_count &&
                     m < MAX_MODULES_PER_STATION; m++) {
         if (!station_hopper_matches_pod(st, m, pod)) continue;
@@ -9465,7 +9468,7 @@ static bool cargo_pod_find_station_work_module(const world_t *w,
         return true;
     }
 
-    best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    best_score = FLT_MAX;
     for (int m = 0; m < st->module_count &&
                     m < MAX_MODULES_PER_STATION; m++) {
         int hopper_idx = -1;
@@ -9493,7 +9496,7 @@ static bool cargo_pod_find_station_work_module(const world_t *w,
         return true;
     }
 
-    best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    best_score = FLT_MAX;
     for (int m = 0; m < st->module_count &&
                     m < MAX_MODULES_PER_STATION; m++) {
         if (!station_producer_can_tractor_output_pod(st, m, pod))
@@ -9515,7 +9518,7 @@ static bool cargo_pod_find_station_work_module(const world_t *w,
     }
 
     if (frame_pod) {
-        best_score = acquire_sq + HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+        best_score = FLT_MAX;
         for (int m = 0; m < st->module_count &&
                         m < MAX_MODULES_PER_STATION; m++) {
             if (!station_module_can_tractor_shell_frame_pod(st, m, pod))
