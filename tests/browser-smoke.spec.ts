@@ -3035,10 +3035,10 @@ test.describe('Browser smoke tests', () => {
     expect(await hudActionText(page)).toContain('Hold [Space] tractor // 3 nearby');
 
     await setSmokeLoopState(page, smokeLoopState.tractorReaching);
-    expect(await hudActionText(page)).toContain('Tractor reaching // 4 nearby');
+    expect(await hudActionText(page)).toContain('Move closer // target center inside 150u');
 
     await setSmokeLoopState(page, smokeLoopState.tractorLock);
-    expect(await hudActionText(page)).toContain('Tractor lock // 2 frags');
+    expect(await hudActionText(page)).toContain('Target in range // tractor active');
 
     await setSmokeLoopState(page, smokeLoopState.towing);
     expect(await hudActionText(page)).toContain('Towing 1 // needed at Prospect');
