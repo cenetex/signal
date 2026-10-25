@@ -724,12 +724,11 @@ sim_body_contact_t sim_body_resolve_static_circle(
     if (dist_sq >= min_dist * min_dist) return contact;
 
     float dist = v2_len(delta);
-    if (dist < 0.001f) {
-        dist = 0.001f;
-        delta = v2(1.0f, 0.0f);
-    }
     contact.collided = true;
-    contact.normal = v2_scale(delta, 1.0f / dist);
+    /* Coincident centers need a unit direction; keep the real distance
+     * for separation so the fallback adds only the overlap. */
+    contact.normal = dist < 0.001f
+        ? v2(1.0f, 0.0f) : v2_scale(delta, 1.0f / dist);
     vec2 relative_vel = v2_sub(*body.vel, obstacle_vel);
     contact.closing_speed = -v2_dot(relative_vel, contact.normal);
 
@@ -990,11 +989,9 @@ static void resolve_asteroid_collision_pair(
     float dist_sq = v2_len_sq(delta);
     if (dist_sq >= min_dist * min_dist) return;
     float dist = v2_len(delta);
-    if (dist < 0.001f) {
-        dist = 0.001f;
-        delta = v2(1.0f, 0.0f);
-    }
-    vec2 normal = v2_scale(delta, 1.0f / dist);
+    /* Use the same unit fallback as body-circle contacts. */
+    vec2 normal = dist < 0.001f
+        ? v2(1.0f, 0.0f) : v2_scale(delta, 1.0f / dist);
     float overlap = min_dist - dist;
     /* Push apart: heavier (larger radius) moves less. */
     float mass_a = a->radius * a->radius;

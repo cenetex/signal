@@ -1480,6 +1480,61 @@ TEST(test_bug42_station_gravity_ignores_mass) {
     ASSERT(accel_s > accel_xl * 1.5f);
 }
 
+TEST(test_static_circle_coincident_centers_keep_unit_normal) {
+    const float offsets[] = {0.0f, 0.0005f};
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        vec2 pos = v2(offsets[i], 0.0f);
+        vec2 vel = v2(1.0f, 3.0f);
+        sim_body_contact_t contact = sim_body_resolve_static_circle(
+            (sim_body_t){.pos = &pos, .vel = &vel, .radius = 2.0f},
+            v2(0.0f, 0.0f), 3.0f, v2(2.0f, 0.0f), 1.0f, 1.0f);
+
+        ASSERT(contact.collided);
+        ASSERT_EQ_FLOAT(v2_len(contact.normal), 1.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(contact.closing_speed, 1.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(pos.x, 6.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(pos.y, 0.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(vel.x, 2.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(vel.y, 3.0f, 0.0001f);
+    }
+}
+
+TEST(test_asteroid_collision_coincident_centers_keep_bounded_impulse) {
+    WORLD_DECL;
+    const float offsets[] = {0.0f, 0.0005f};
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        world_reset(&w);
+        for (int j = 0; j < MAX_ASTEROIDS; j++) w.asteroids[j].active = false;
+        asteroid_t *a = &w.asteroids[0];
+        asteroid_t *b = &w.asteroids[1];
+        a->active = b->active = true;
+        a->tier = b->tier = ASTEROID_TIER_M;
+        a->radius = 10.0f;
+        b->radius = 20.0f;
+        a->pos = v2(offsets[i], 0.0f);
+        b->pos = v2(0.0f, 0.0f);
+        a->vel = v2(-2.0f, 3.0f);
+        b->vel = v2(0.0f, 3.0f);
+        float momentum = 100.0f * a->vel.x + 400.0f * b->vel.x;
+
+        spatial_grid_build(&w);
+        asteroid_pair_plan_t plan;
+        ASSERT(asteroid_pair_plan_build(&w, &plan));
+        resolve_asteroid_collisions(&w, &plan);
+
+        ASSERT_EQ_FLOAT(a->pos.x - b->pos.x, 30.0f, 0.001f);
+        ASSERT_EQ_FLOAT(a->pos.x - offsets[i], -4.0f * b->pos.x, 0.001f);
+        ASSERT_EQ_FLOAT(a->pos.y, 0.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(b->pos.y, 0.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(a->vel.x, -0.4f, 0.0001f);
+        ASSERT_EQ_FLOAT(b->vel.x, -0.4f, 0.0001f);
+        ASSERT_EQ_FLOAT(a->vel.y, 3.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(b->vel.y, 3.0f, 0.0001f);
+        ASSERT_EQ_FLOAT(100.0f * a->vel.x + 400.0f * b->vel.x,
+                        momentum, 0.001f);
+    }
+}
+
 TEST(test_asteroid_collision_uses_deterministic_length_reference) {
     WORLD_DECL;
     world_reset(&w);
@@ -2810,6 +2865,8 @@ void register_bug_regression_batch5_tests(void) {
     TEST_SECTION("\nBug regression batch 5 (bugs 41-50):\n");
     RUN(test_bug41_gravity_asymmetric);
     RUN(test_bug42_station_gravity_ignores_mass);
+    RUN(test_static_circle_coincident_centers_keep_unit_normal);
+    RUN(test_asteroid_collision_coincident_centers_keep_bounded_impulse);
     RUN(test_asteroid_collision_uses_deterministic_length_reference);
     RUN(test_asteroid_station_corridor_uses_deterministic_angle_reference);
     RUN(test_bug43_fracture_children_inside_station);
