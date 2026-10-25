@@ -4731,6 +4731,67 @@ int signal_smoke_local_tow_replay_stability_check(void) {
     return net_smoke_local_tow_replay_stability_check();
 }
 
+/* Isolated recovery gate: each case starts with a valid server pose and
+ * one damaged local motion field. Keep this behind the local smoke setup. */
+EMSCRIPTEN_KEEPALIVE
+int signal_smoke_nonfinite_motion_recovery_check(void) {
+    if (!emscripten_run_script_int(
+            "new URLSearchParams(location.search).get('smoke') === '1'") ||
+        !g.local_server.active || !net_is_loopback() ||
+        g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS)
+        return 0;
+    server_player_t *sp = &LOCAL_PLAYER;
+    vec2 position = sp->ship->pos;
+    g.local_server.active = false;
+    g.net_authority_enabled = true;
+    int passed = 0;
+    for (int field = 0; field < 5; field++) {
+        net_replay_reset();
+        g.net_input_tick_protocol = false;
+        g.net_prediction_tick_valid = false;
+        g.net_local_state_ready = true;
+        g.was_docked = false;
+        g.action_predict_timer = 0.0f;
+        sp->docked = false;
+        sp->ship->pos = position;
+        sp->ship->vel = v2(0.0f, 0.0f);
+        sp->ship->angle = 0.0f;
+        g.local_player_render_offset = v2(0.0f, 0.0f);
+        g.camera_pos = position;
+        if (field == 0) sp->ship->pos.x = NAN;
+        if (field == 1) sp->ship->vel.y = NAN;
+        if (field == 2) sp->ship->angle = NAN;
+        if (field == 3) g.local_player_render_offset.x = NAN;
+        if (field == 4) g.camera_pos.y = NAN;
+        NetPlayerState state = {0};
+        state.player_id = (uint8_t)g.local_player_slot;
+        state.active = true;
+        state.x = position.x;
+        state.y = position.y;
+        state.server_tick = g.world.tick;
+        apply_remote_player_state(&state);
+        if (isfinite(sp->ship->pos.x) && isfinite(sp->ship->pos.y) &&
+            isfinite(sp->ship->vel.x) && isfinite(sp->ship->vel.y) &&
+            isfinite(sp->ship->angle) &&
+            isfinite(g.local_player_render_offset.x) &&
+            isfinite(g.local_player_render_offset.y) &&
+            isfinite(g.camera_pos.x) && isfinite(g.camera_pos.y))
+            passed |= 1 << field;
+    }
+    NetPlayerState invalid = {0};
+    invalid.player_id = (uint8_t)g.local_player_slot;
+    invalid.active = true;
+    invalid.x = position.x + 10000.0f;
+    invalid.y = position.y + 2000.0f;
+    invalid.vy = NAN;
+    apply_remote_player_state(&invalid);
+    if (sp->ship->pos.x == position.x && sp->ship->pos.y == position.y &&
+        sp->ship->vel.x == 0.0f && sp->ship->vel.y == 0.0f &&
+        g.camera_pos.x == position.x && g.camera_pos.y == position.y)
+        passed |= 1 << 5;
+    return passed;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int signal_smoke_prepare_local_generation_mismatch_tether(void) {
     const int pod_idx = MAX_CARGO_PODS - 2;
