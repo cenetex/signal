@@ -582,7 +582,6 @@ int main(int argc, char **argv) {
                     sp->input.upgrade_hold = true;
                 } else if (sp->ship->hold_level &&
                         ship_finished_count(sp->ship, COMMODITY_FRAME) >= 48) {
-                    sp->input.release_tow = sp->ship->towed_pod_count > 0;
                     stage = PHASE_TOW_RELAY; path = (nav_path_t){0};
                     fprintf(stderr, "activation frames %.2f held=%d\n", tick * dt,
                             ship_finished_count(sp->ship, COMMODITY_FRAME));
@@ -722,7 +721,12 @@ int main(int argc, char **argv) {
         } else if (stage == PHASE_TOW_RELAY) {
             if (sp->docked) sp->input.launch = true;
             int scaffold = sp->ship->towed_scaffold;
-            if (scaffold >= 0) {
+            if (sp->ship->towed_pod_count > 0) {
+                /* Release is accepted in flight. Clear spare cargo before
+                 * approaching the relay so cargo settling cannot mask pickup. */
+                sp->input.release_tow = !sp->docked;
+                apply_flight(&sp->input, flight_brake(sp->ship));
+            } else if (scaffold >= 0) {
                 if (v2_dist_sq(sp->ship->pos, w->stations[1].pos) < 1000 * 1000)
                     apply_flight(&sp->input, steer_through_lane(sp->ship,
                         exit_route_target(&w->stations[1], sp->ship)));
