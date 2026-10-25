@@ -585,7 +585,6 @@ int main(int argc, char **argv) {
                 break;
             }
             apply_flight(&sp->input, steer_through_lane(sp->ship, goal));
-            sp->input.tractor_hold = true;
             if (!has_undelivered_ingots(w, sp->ship, home)) {
                 sp->input.release_tow = true;
                 sp->input.tractor_hold = false;
@@ -683,7 +682,9 @@ int main(int argc, char **argv) {
             }
         }
         if (!sp->input.release_tow && sp->ship->towed_pod_count > 0 && (stage == PHASE_HAUL || stage == PHASE_DOCK || stage == PHASE_DELIVER_INGOTS)) {
-            sp->input.tractor_hold = true;
+            /* Existing tows persist after pickup ends. Leave pickup off here
+             * so a sold pod can stay with its receiving station. */
+            sp->input.tractor_hold = false;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
         world_sim_step(w, dt);
