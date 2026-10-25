@@ -3331,6 +3331,56 @@ test.describe('Browser smoke tests', () => {
     expectNoFatalErrors(logs);
   });
 
+  test('remote empty tractor tap sends pickup input through the websocket', async ({ page }) => {
+    test.skip(usesLiveSmokeUrl(), 'wire capture uses the isolated browser bundle');
+    await installAuthFixture(page);
+    const packets: Buffer[] = [];
+    const remoteUrl = 'ws://signal-tractor-input.invalid/ws';
+    await page.routeWebSocket(remoteUrl, ws => {
+      ws.onMessage(message => {
+        const packet = Buffer.from(message);
+        if (packet[0] === 0x20) ws.send(Buffer.from([0x70, ...Array(32).fill(0x59)]));
+        if (packet[0] === 0x3f) ws.send(authoritativeLocalStatePacket());
+        if (packet[0] === 0x04) packets.push(packet);
+      });
+      ws.send(Buffer.from([0x01, 0x00]));
+      ws.send(protocolInfoPacket(currentProtocolVersion));
+    });
+    await page.goto(`/play.html?smoke=1&pv=${currentProtocolVersion}&server=${encodeURIComponent(remoteUrl)}`);
+    await expect.poll(() => wasmNumber(page, 'signal_debug_auth_available')).toBe(1);
+    await page.locator('canvas').focus();
+    await page.keyboard.press('Space', { delay: 80 });
+    await expect.poll(() => packets.some(packet => (packet[1] & (1 << 5)) !== 0)).toBe(true);
+    await expect.poll(() => packets.at(-1)?.[1] ?? -1).toBe(0);
+    await page.waitForTimeout(300);
+    expect(packets.filter(packet => packet[2] === 27), 'empty-start tap keeps its pickup').toHaveLength(0);
+  });
+
+  rootBundleSmokeTest('a short empty tractor press keeps its new tow attached', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    const canvas = await loadGame(page, false, { singleplayer: true });
+    await canvas.click();
+    expect(await prepareTowLifecycle(page)).toBeGreaterThan(0);
+    const held = 0b1110001110000;
+    await expect.poll(async () => (await towLifecycleState(page)) & 0b1100000011).toBe(0b1100000011);
+    expect((await towLifecycleState(page)) & held).toBe(0);
+
+    // Release the touch/Space control after its first sampled frame. The
+    // same press can collect a body before key-up reaches the authority.
+    const tapState = await tapTowOnNextSample(page);
+    expect(tapState & (1 << 17), 'an empty-start tap is a pickup').toBe(0);
+    await expect.poll(async () => (await towLifecycleState(page)) & held).toBe(held);
+    await expect.poll(async () => (await towLifecycleState(page)) & 0b1100).toBe(0);
+    await page.waitForTimeout(300);
+    expect((await towLifecycleState(page)) & held).toBe(held);
+
+    // A distinct tap that starts with cargo still releases the whole tow.
+    const releaseState = await tapTowOnNextSample(page);
+    expect(releaseState & (1 << 17)).toBe(1 << 17);
+    await expect.poll(async () => (await towLifecycleState(page)) & held).toBe(0);
+    expectNoFatalErrors(logs);
+  });
+
   rootBundleSmokeTest('hooks, holds, and releases a towable through the real loopback lifecycle', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });

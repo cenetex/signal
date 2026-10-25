@@ -87,6 +87,7 @@ void clear_input_state(void) {
     memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
     g.input.tractor_press_time = 0.0f;
     g.input.tractor_press_active = false;
+    g.input.tractor_press_had_tow = false;
     g.input.tractor_release_tap_pending = false;
     g.input.brake_stop_latched = false;
     g.input.reverse_thrust_active = false;
@@ -101,16 +102,23 @@ void input_tractor_key_down(void) {
     g.input.tractor_press_time =
         isfinite(g.net_time) && g.net_time > 0.0f ? g.net_time : 0.0f;
     g.input.tractor_press_active = true;
+    const ship_t *ship = LOCAL_PLAYER.ship;
+    g.input.tractor_press_had_tow = ship &&
+        (ship_has_towed_bodies(ship) || ship->towed_scaffold >= 0);
     g.input.tractor_release_tap_pending = false;
 }
 
 void input_tractor_key_up(void) {
     if (!g.input.tractor_press_active) return;
     float held = g.net_time - g.input.tractor_press_time;
-    if (isfinite(held) && held >= 0.0f && held < TRACTOR_TAP_MAX_SEC)
+    /* A new pickup can arrive between down and up. Capture release intent
+     * at the down edge so that the first short press keeps that pickup. */
+    if (g.input.tractor_press_had_tow &&
+        isfinite(held) && held >= 0.0f && held < TRACTOR_TAP_MAX_SEC)
         g.input.tractor_release_tap_pending = true;
     g.input.tractor_press_time = 0.0f;
     g.input.tractor_press_active = false;
+    g.input.tractor_press_had_tow = false;
 }
 
 void set_notice(const char* fmt, ...) {
@@ -338,6 +346,7 @@ static void sample_tractor(input_intent_t *intent) {
     if (LOCAL_PLAYER.docked || g.plan_mode_active) {
         g.input.tractor_press_time = 0.0f;
         g.input.tractor_press_active = false;
+        g.input.tractor_press_had_tow = false;
         g.input.tractor_release_tap_pending = false;
         return;
     }
