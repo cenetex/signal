@@ -249,10 +249,12 @@ for (const viewport of [{width: 1280, height: 720}, {width: 390, height: 844}]) 
       [54, 'Move closer // scaffold pickup 80u'],
       [55, 'Target in range // tractor active'],
       [56, 'Tractor active // approach small fragments or cargo'],
+      [57, 'Cargo reserved // choose loose cargo'],
     ];
     for (const [state, expected] of cases) {
       await fixture(page, state);
       expect(await call(page, 'get_hud_action_text', 'string')).toBe(expected);
+      expect(await hint(page)).toContain(expected);
       if (state === 50 || state === 54)
         await page.screenshot({path: info.outputPath(`tractor-${state}-${viewport.width}.png`)});
     }

@@ -651,6 +651,9 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
             case TRACTOR_FEEDBACK_HELD:
                 snprintf(out.reason, sizeof(out.reason), "Target held by another tractor // find a loose target");
                 break;
+            case TRACTOR_FEEDBACK_RESERVED:
+                snprintf(out.reason, sizeof(out.reason), "Cargo reserved // choose loose cargo");
+                break;
             case TRACTOR_FEEDBACK_READY:
                 snprintf(out.reason, sizeof(out.reason), "Target in range // tractor active");
                 break;
@@ -3884,6 +3887,18 @@ static bool build_hud_message_raw(char* label, size_t label_size, char* message,
         return true;
     }
 
+    /* Active pickup feedback also belongs in the subtitle: the guide panel
+     * hides the action row on both desktop and touch layouts. */
+    if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship->tractor_active) {
+        hud_action_t action = hud_classify_action(0, 0, 0.0f);
+        if (action.kind == HUD_ACTION_TRACTOR_FEEDBACK) {
+            snprintf(label, label_size, "TRACTOR");
+            snprintf(message, message_size, "%s", action.reason);
+            *r = 255; *g0 = 196; *b = 90;
+            return true;
+        }
+    }
+
     hud_snapping_scaffold_t snap;
     if (hud_find_snapping_scaffold(&snap)) {
         snprintf(label, label_size, "SCAFFOLD SNAP");
@@ -4108,6 +4123,7 @@ enum {
     SMOKE_LOOP_STATE_TRACTOR_SCAFFOLD = 54,
     SMOKE_LOOP_STATE_TRACTOR_READY = 55,
     SMOKE_LOOP_STATE_TRACTOR_SEARCH = 56,
+    SMOKE_LOOP_STATE_TRACTOR_RESERVED = 57,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -4427,7 +4443,7 @@ void smoke_apply_loop_state_for_frame(void) {
      * setup. Interaction fixtures must overwrite streamed state at the
      * render boundary to keep their visual telemetry stable. */
     if ((smoke_loop_state_override >= SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK &&
-         smoke_loop_state_override <= SMOKE_LOOP_STATE_TRACTOR_SEARCH) ||
+         smoke_loop_state_override <= SMOKE_LOOP_STATE_TRACTOR_RESERVED) ||
         smoke_loop_state_override ==
             SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR ||
         smoke_loop_state_override ==
@@ -4712,6 +4728,7 @@ static int smoke_apply_loop_state(int state) {
     case SMOKE_LOOP_STATE_TRACTOR_SCAFFOLD:
     case SMOKE_LOOP_STATE_TRACTOR_READY:
     case SMOKE_LOOP_STATE_TRACTOR_SEARCH:
+    case SMOKE_LOOP_STATE_TRACTOR_RESERVED:
         for (int i = 0; i < MAX_ASTEROIDS; i++) g.world.asteroids[i].active = false;
         for (int i = 0; i < MAX_CARGO_PODS; i++) g.world.cargo_pods[i].active = false;
         sp->ship->tractor_level = 0;
@@ -4720,6 +4737,14 @@ static int smoke_apply_loop_state(int state) {
         g.camera_pos = sp->ship->pos;
         g.camera_initialized = true;
         if (state == SMOKE_LOOP_STATE_TRACTOR_SEARCH) return 1;
+        if (state == SMOKE_LOOP_STATE_TRACTOR_RESERVED) {
+            g.world.cargo_pods[0] = (cargo_pod_t){
+                .active = true, .kind = CARGO_POD_CARGO, .quantity = 1,
+                .commodity = COMMODITY_FRAME, .radius = 12.0f,
+                .tow_owner_quarantine_record_id = 1,
+                .pos = v2_add(sp->ship->pos, v2(100.0f, 0.0f))};
+            return 1;
+        }
         if (state == SMOKE_LOOP_STATE_TRACTOR_SCAFFOLD) {
             g.world.scaffolds[0] = (scaffold_t){
                 .active = true, .state = SCAFFOLD_LOOSE,

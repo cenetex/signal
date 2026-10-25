@@ -925,6 +925,7 @@ typedef enum {
     TRACTOR_FEEDBACK_CLOSER,
     TRACTOR_FEEDBACK_FULL,
     TRACTOR_FEEDBACK_HELD,
+    TRACTOR_FEEDBACK_RESERVED,
     TRACTOR_FEEDBACK_MINE,
 } tractor_feedback_kind_t;
 typedef struct {

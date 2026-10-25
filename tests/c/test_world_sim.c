@@ -3480,6 +3480,30 @@ TEST(test_tractor_feedback_loose_and_held_cargo) {
     ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_HELD);
 }
 
+TEST(test_tractor_feedback_cargo_custody_is_separate_from_live_binding) {
+    WORLD_DECL;
+    server_player_t *sp = test_tractor_feedback_world(&w);
+    int idx = test_spawn_exact_pod(&w,
+        v2_add(sp->ship->pos, v2(100.0f, 0.0f)), COMMODITY_FRAME, 1);
+    ASSERT(idx >= 0);
+    cargo_pod_t *pod = &w.cargo_pods[idx];
+    pod->tow_owner_principal = actor_principal_unattributed();
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_RESERVED);
+    ASSERT(!world_cargo_pod_set_player_tractor(&w, idx, 0));
+    pod->tow_owner_principal = actor_principal_none();
+    pod->tow_owner_quarantine_record_id = 1;
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_RESERVED);
+    ASSERT(!world_cargo_pod_set_player_tractor(&w, idx, 0));
+    pod->tow_owner_quarantine_record_id = 0;
+    actor_principal_t own;
+    ASSERT(test_make_verified_player_principal(sp, 0x74, &own));
+    pod->tow_owner_principal = own;
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
+    pod->tow_owner_principal.id[0] ^= 1;
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_RESERVED);
+    ASSERT(!world_cargo_pod_set_player_tractor(&w, idx, 0));
+}
+
 TEST(test_tractor_feedback_survives_prediction_counter_reset) {
     WORLD_DECL;
     server_player_t *sp = test_tractor_feedback_world(&w);
@@ -12861,6 +12885,7 @@ TEST(test_npc_miner_drops_fragment_when_tow_band_snaps) {
 void register_world_sim_basic_tests(void) {
     RUN(test_tractor_feedback_mine_range_and_real_pickup);
     RUN(test_tractor_feedback_loose_and_held_cargo);
+    RUN(test_tractor_feedback_cargo_custody_is_separate_from_live_binding);
     RUN(test_tractor_feedback_survives_prediction_counter_reset);
     RUN(test_tractor_feedback_held_and_usable_priority);
     RUN(test_tractor_feedback_scaffold_uses_smaller_pickup_range);

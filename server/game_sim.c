@@ -8598,11 +8598,33 @@ static void tractor_feedback_consider(tractor_feedback_t *out, int *best_rank,
     int rank = kind == TRACTOR_FEEDBACK_READY ? 0 :
                kind == TRACTOR_FEEDBACK_FULL ? 1 :
                kind == TRACTOR_FEEDBACK_CLOSER ? 2 :
-               kind == TRACTOR_FEEDBACK_HELD ? 3 : 4;
+               (kind == TRACTOR_FEEDBACK_HELD || kind == TRACTOR_FEEDBACK_RESERVED) ? 3 : 4;
     if (rank > *best_rank ||
         (rank == *best_rank && distance >= out->distance)) return;
     *best_rank = rank;
     *out = (tractor_feedback_t){kind, target_kind, distance, range};
+}
+
+/* Clients may receive less identity evidence than the authority. Only report
+ * a custody restriction supported by the local snapshot; READY still means
+ * range, while the authoritative tow link confirms attachment. */
+static bool tractor_feedback_cargo_reserved(const cargo_pod_t *pod,
+                                             const server_player_t *sp) {
+    if (pod->tow_owner_quarantine_record_id != 0 ||
+        !actor_principal_is_canonical(&pod->tow_owner_principal)) return true;
+    switch ((actor_principal_kind_t)pod->tow_owner_principal.kind) {
+    case ACTOR_PRINCIPAL_NONE:
+        return false;
+    case ACTOR_PRINCIPAL_UNATTRIBUTED:
+        return true; /* Live attachments were skipped by the caller. */
+    case ACTOR_PRINCIPAL_PLAYER: {
+        actor_principal_t player = actor_principal_none();
+        return actor_principal_from_verified_player(sp, &player) &&
+            !actor_principal_equal(&pod->tow_owner_principal, &player);
+    }
+    default:
+        return true;
+    }
 }
 
 tractor_feedback_t player_tractor_feedback(const world_t *w,
@@ -8643,6 +8665,7 @@ tractor_feedback_t player_tractor_feedback(const world_t *w,
             (!cargo_pod_module_tractor_player_collectible(w, pod) &&
              cargo_pod_station_trade_owner(w, pod) < 0);
         tractor_feedback_kind_t kind = held ? TRACTOR_FEEDBACK_HELD
+            : tractor_feedback_cargo_reserved(pod, sp) ? TRACTOR_FEEDBACK_RESERVED
             : distance > range ? TRACTOR_FEEDBACK_CLOSER
             : full ? TRACTOR_FEEDBACK_FULL : TRACTOR_FEEDBACK_READY;
         tractor_feedback_consider(&out, &best_rank, kind,
