@@ -8226,9 +8226,12 @@ static void resolve_towed_fragment_neighbors(world_t *w,
         if (ab_sq < sep * sep && ab_sq > 0.1f) {
             float abd = fixp_sqrtf(ab_sq);
             float overlap = (sep - abd) * 0.5f;
-            vec2 n = v2_scale(ab, overlap / abd);
-            a->pos = v2_sub(a->pos, n);
-            b->pos = v2_add(b->pos, n);
+            vec2 n = v2_scale(ab, 1.0f / abd);
+            vec2 separation = v2_scale(n, overlap);
+            a->pos = v2_sub(a->pos, separation);
+            b->pos = v2_add(b->pos, separation);
+            /* Contact velocity uses a unit normal. Penetration depth only
+             * moves the bodies apart; it must not amplify their impulse. */
             float closing = v2_dot(v2_sub(b->vel, a->vel), n);
             if (closing < 0.0f) {
                 vec2 impulse = v2_scale(n, -closing * 0.5f);
@@ -11614,6 +11617,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     float net_turn   = sp->input.turn;
     float net_thrust = sp->input.thrust;
     bool  net_mine   = sp->input.mine;
+    bool  net_tractor = sp->input.tractor_hold;
     int   net_target = sp->input.mining_target_hint;
 
     /* Autopilot requires 80%+ signal strength. If signal drops below
@@ -11628,13 +11632,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         }
     }
 
-    /* Manual override: any directional / mining input cancels autopilot.
+    /* Manual override: directional, mining, or tractor input cancels autopilot.
      * Checks the snapshot, NOT sp->input — autopilot writes don't count. */
     if (sp->autopilot_mode && !w->player_only_mode) {
         bool manual_input =
             fabsf(net_turn) > 0.01f ||
             fabsf(net_thrust) > 0.01f ||
             net_mine ||
+            net_tractor ||
             sp->input.release_tow ||
             sp->input.reset;
         if (manual_input) {
@@ -12083,6 +12088,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         sp->input.turn = net_turn;
         sp->input.thrust = net_thrust;
         sp->input.mine = net_mine;
+        sp->input.tractor_hold = net_tractor;
         sp->input.mining_target_hint = net_target;
     }
 }

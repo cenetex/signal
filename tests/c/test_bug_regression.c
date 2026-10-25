@@ -2021,6 +2021,34 @@ static void setup_two_towed_fragment_prediction_world(world_t *w) {
     world_tow_links_reconcile(w);
 }
 
+TEST(test_towed_fragment_overlap_keeps_collision_impulse_bounded) {
+    WORLD_DECL_NAME(authority);
+    WORLD_DECL_NAME(predicted);
+    setup_two_towed_fragment_prediction_world(&authority);
+    setup_two_towed_fragment_prediction_world(&predicted);
+    world_t *worlds[] = {&authority, &predicted};
+    for (int i = 0; i < 2; i++) {
+        worlds[i]->asteroids[0].vel = v2(10.0f, 0.0f);
+        worlds[i]->asteroids[1].vel = v2(-10.0f, 0.0f);
+    }
+
+    world_sim_step(&authority, SIM_DT);
+    world_sim_step_player_only(&predicted, 0, SIM_DT);
+
+    /* A gentle closing contact should separate the rocks without turning
+     * their penetration depth into a large velocity multiplier. */
+    for (int i = 0; i < 2; i++) {
+        for (int body = 0; body < 2; body++) {
+            vec2 velocity = worlds[i]->asteroids[body].vel;
+            ASSERT(isfinite(velocity.x) && isfinite(velocity.y));
+            if (v2_len(velocity) >= 40.0f)
+                fprintf(stderr, "tow overlap: world=%d body=%d speed=%.3f\n",
+                        i, body, v2_len(velocity));
+            ASSERT(v2_len(velocity) < 40.0f);
+        }
+    }
+}
+
 TEST(test_player_only_predicts_towed_fragment_separation) {
     WORLD_DECL_NAME(authority);
     WORLD_DECL_NAME(predicted);
@@ -2798,6 +2826,7 @@ void register_bug_regression_batch5_tests(void) {
     RUN(test_station_vortex_marks_asteroid_motion_for_fast_replication);
     RUN(test_ship_tow_excludes_hidden_station_fragment_forces);
     RUN(test_asteroid_speed_is_capped);
+    RUN(test_towed_fragment_overlap_keeps_collision_impulse_bounded);
     RUN(test_player_only_predicts_towed_fragment_separation);
     RUN(test_player_only_predicts_towed_scaffold_motion);
     RUN(test_player_only_ship_asset_references_live_component);
