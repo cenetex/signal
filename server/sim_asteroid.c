@@ -240,7 +240,8 @@ static void fracture_begin_claim_window(world_t *w, int asteroid_idx) {
     state->active = true;
     state->challenge_dirty = true;
     state->fracture_id = w->next_fracture_id;
-    state->deadline_ms = (uint32_t)(w->time * 1000.0f) + FRACTURE_CLAIM_WINDOW_MS;
+    state->challenge_last_ms = world_time_ms_from_tick(w->tick);
+    state->deadline_ms = state->challenge_last_ms + FRACTURE_CLAIM_WINDOW_MS;
     state->burst_cap = mining_burst_cap_for_position(a->pos);
     a->grade = MINING_GRADE_COMMON;
     memset(a->fragment_pub, 0, sizeof(a->fragment_pub));
@@ -657,8 +658,8 @@ bool submit_fracture_claim(world_t *w, int player_id, uint32_t fracture_id,
      * having run this tick. Without this, a claim arriving between the
      * deadline passing and the next step runs could still count, which
      * is race-dependent behaviour. */
-    now_ms = (uint32_t)(w->time * 1000.0f);
-    if (now_ms >= state->deadline_ms) return false;
+    now_ms = world_time_ms_from_tick(w->tick);
+    if (world_time_ms_reached(now_ms, state->deadline_ms)) return false;
     if (player_id < 0 || player_id >= MAX_PLAYERS) return false;
     if (burst_nonce >= state->burst_cap) return false;
     if (!player_can_claim_fracture(w, player_id, asteroid_idx)) return false;
@@ -690,7 +691,7 @@ bool submit_fracture_claim(world_t *w, int player_id, uint32_t fracture_id,
 }
 
 void step_fracture_claims(world_t *w) {
-    uint32_t now_ms = (uint32_t)(w->time * 1000.0f);
+    uint32_t now_ms = world_time_ms_from_tick(w->tick);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         fracture_claim_state_t *state = &w->fracture_claims[i];
@@ -705,11 +706,11 @@ void step_fracture_claims(world_t *w) {
          * initial broadcast is driven by challenge_dirty being set in
          * fracture_begin_claim_window; subsequent re-arms happen here. */
         if (!state->resolved &&
-            now_ms >= state->challenge_last_ms + FRACTURE_CHALLENGE_REBROADCAST_MS) {
+            (uint32_t)(now_ms - state->challenge_last_ms) >= FRACTURE_CHALLENGE_REBROADCAST_MS) {
             state->challenge_dirty = true;
             state->challenge_last_ms = now_ms;
         }
-        if (now_ms < state->deadline_ms) continue;
+        if (!world_time_ms_reached(now_ms, state->deadline_ms)) continue;
         if (fracture_claim_has_best(state))
             fracture_commit_resolution(w, i, state->best_player_pub,
                                        state->best_nonce,

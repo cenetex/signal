@@ -6153,6 +6153,39 @@ TEST(test_fracture_challenge_rebroadcast_suppresses_seen_players) {
     ASSERT_EQ_INT((int)w.players[2].replication->fracture_challenge_sent_id[3], 9001);
 }
 
+TEST(test_fracture_resolve_retry_clock_wrap_and_long_uptime) {
+    WORLD_DECL;
+    test_world_bind_ship_slots(&w);
+    const uint32_t starts[] = {515396070u, UINT32_MAX - 240u};
+    packet_capture_t cap;
+    for (size_t c = 0; c < sizeof(starts) / sizeof(starts[0]); c++) {
+        pending_resolve_t *pr = &w.pending_resolves[0];
+        memset(pr, 0, sizeof(*pr));
+        pr->active = true;
+        pr->fracture_id = (uint32_t)c + 1u;
+        memset(&cap, 0, sizeof(cap));
+        w.tick = starts[c];
+        w.time = world_time_from_tick(w.tick);
+        server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
+        ASSERT_EQ_INT(pr->tx_count, 1);
+        ASSERT(pr->last_tx_ms == (uint32_t)((uint64_t)w.tick * 1000u / 120u));
+        w.tick += 6u; /* 50ms, including the millisecond wrap */
+        w.time = world_time_from_tick(w.tick);
+        server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
+        ASSERT_EQ_INT(pr->tx_count, 1);
+        w.tick += 6u; /* exactly 100ms */
+        w.time = world_time_from_tick(w.tick);
+        server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
+        ASSERT_EQ_INT(pr->tx_count, 2);
+        ASSERT(pr->active);
+        w.tick += 12u;
+        w.time = world_time_from_tick(w.tick);
+        server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
+        ASSERT_EQ_INT(pr->tx_count, 3);
+        ASSERT(!pr->active);
+    }
+}
+
 TEST(test_fracture_resolve_retry_suppresses_seen_players) {
     WORLD_DECL;
     test_world_bind_ship_slots(&w);
@@ -6194,7 +6227,8 @@ TEST(test_fracture_resolve_retry_suppresses_seen_players) {
     ASSERT_EQ_INT(w.pending_resolves[0].tx_count, 1);
     ASSERT(w.pending_resolves[0].active);
 
-    w.time = 0.2f;
+    w.tick = 24u;
+    w.time = world_time_from_tick(w.tick);
     memset(&cap, 0, sizeof(cap));
     server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
     ASSERT_EQ_INT(cap.count, 0);
@@ -6204,7 +6238,8 @@ TEST(test_fracture_resolve_retry_suppresses_seen_players) {
     w.players[2].connected = true;
     w.players[2].session_ready = true;
     w.players[2].ship->pos = v2(100000.0f, 0.0f);
-    w.time = 0.4f;
+    w.tick = 48u;
+    w.time = world_time_from_tick(w.tick);
     server_emit_fracture_updates(&w, -1, player_packet_capture_sink, &cap);
 
     ASSERT_EQ_INT(cap.count, 1);
@@ -10202,6 +10237,7 @@ void register_protocol_main_tests(void) {
     RUN(test_station_snapshot_emitter_sequence_shared);
     RUN(test_fracture_update_emitter_shared);
     RUN(test_fracture_challenge_rebroadcast_suppresses_seen_players);
+    RUN(test_fracture_resolve_retry_clock_wrap_and_long_uptime);
     RUN(test_fracture_resolve_retry_suppresses_seen_players);
     RUN(test_input_applied_emitter_sends_only_on_sequence_change);
     RUN(test_pending_input_ack_coalesces_to_latest_sequence);
