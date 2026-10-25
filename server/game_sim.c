@@ -8226,9 +8226,12 @@ static void resolve_towed_fragment_neighbors(world_t *w,
         if (ab_sq < sep * sep && ab_sq > 0.1f) {
             float abd = fixp_sqrtf(ab_sq);
             float overlap = (sep - abd) * 0.5f;
-            vec2 n = v2_scale(ab, overlap / abd);
-            a->pos = v2_sub(a->pos, n);
-            b->pos = v2_add(b->pos, n);
+            vec2 n = v2_scale(ab, 1.0f / abd);
+            vec2 separation = v2_scale(n, overlap);
+            a->pos = v2_sub(a->pos, separation);
+            b->pos = v2_add(b->pos, separation);
+            /* Contact velocity uses a unit normal. Penetration depth only
+             * moves the bodies apart; it must not amplify their impulse. */
             float closing = v2_dot(v2_sub(b->vel, a->vel), n);
             if (closing < 0.0f) {
                 vec2 impulse = v2_scale(n, -closing * 0.5f);
