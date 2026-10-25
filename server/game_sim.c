@@ -8589,6 +8589,84 @@ static bool cargo_pod_module_tractor_player_collectible(const world_t *w,
     return module_instance_output(module) == pod->commodity;
 }
 
+/* Keep feedback next to the pickup predicates. Prefer a usable target over
+ * nearby scenery; show the nearest body within each reason. */
+static void tractor_feedback_consider(tractor_feedback_t *out, int *best_rank,
+                                      tractor_feedback_kind_t kind,
+                                      entity_kind_t target_kind,
+                                      float distance, float range) {
+    int rank = kind == TRACTOR_FEEDBACK_READY ? 0 :
+               kind == TRACTOR_FEEDBACK_FULL ? 1 :
+               kind == TRACTOR_FEEDBACK_CLOSER ? 2 :
+               kind == TRACTOR_FEEDBACK_HELD ? 3 : 4;
+    if (rank > *best_rank ||
+        (rank == *best_rank && distance >= out->distance)) return;
+    *best_rank = rank;
+    *out = (tractor_feedback_t){kind, target_kind, distance, range};
+}
+
+tractor_feedback_t player_tractor_feedback(const world_t *w,
+                                            const server_player_t *sp) {
+    tractor_feedback_t out = {0};
+    if (!w || !sp || !sp->ship || sp->docked) return out;
+    int player_idx = player_slot_for_ptr(w, sp);
+    if (player_idx < 0) return out;
+    float range = ship_tractor_range(sp->ship);
+    float nearby = fmaxf(range, FRAGMENT_NEARBY_RANGE);
+    bool full = ship_tow_body_space(sp->ship) <= 0;
+    commodity_t filter = autopilot_tow_collection_filter(w, sp);
+    int best_rank = 5;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active || asteroid_tractor_player(a) == player_idx) continue;
+        if (filter != COMMODITY_COUNT && a->commodity != filter) continue;
+        float distance_sq = v2_dist_sq(sp->ship->pos, a->pos);
+        if (distance_sq > nearby * nearby) continue;
+        float distance = sqrtf(distance_sq);
+        tractor_feedback_kind_t kind = a->tier != ASTEROID_TIER_S
+            ? TRACTOR_FEEDBACK_MINE : asteroid_has_tractor(a)
+            ? TRACTOR_FEEDBACK_HELD : distance > range
+            ? TRACTOR_FEEDBACK_CLOSER : full
+            ? TRACTOR_FEEDBACK_FULL : TRACTOR_FEEDBACK_READY;
+        tractor_feedback_consider(&out, &best_rank, kind,
+                                  ENTITY_KIND_ASTEROID, distance, range);
+    }
+    for (int i = 0; i < MAX_CARGO_PODS; i++) {
+        const cargo_pod_t *pod = &w->cargo_pods[i];
+        if (!pod->active || ship_is_towing_pod(sp->ship, i)) continue;
+        if (filter != COMMODITY_COUNT && pod->commodity != filter) continue;
+        float distance_sq = v2_dist_sq(sp->ship->pos, pod->pos);
+        if (distance_sq > nearby * nearby) continue;
+        float distance = sqrtf(distance_sq);
+        int owner = cargo_pod_player_tractor(pod);
+        bool held = (owner >= 0 && owner != player_idx) ||
+            (!cargo_pod_module_tractor_player_collectible(w, pod) &&
+             cargo_pod_station_trade_owner(w, pod) < 0);
+        tractor_feedback_kind_t kind = held ? TRACTOR_FEEDBACK_HELD
+            : distance > range ? TRACTOR_FEEDBACK_CLOSER
+            : full ? TRACTOR_FEEDBACK_FULL : TRACTOR_FEEDBACK_READY;
+        tractor_feedback_consider(&out, &best_rank, kind,
+                                  ENTITY_KIND_CARGO_POD, distance, range);
+    }
+    if (sp->ship->towed_scaffold < 0) {
+        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+            const scaffold_t *sc = &w->scaffolds[i];
+            if (!sc->active || (sc->state != SCAFFOLD_LOOSE &&
+                                sc->state != SCAFFOLD_TOWING)) continue;
+            float distance_sq = v2_dist_sq(sp->ship->pos, sc->pos);
+            if (distance_sq > nearby * nearby) continue;
+            float distance = sqrtf(distance_sq);
+            tractor_feedback_kind_t kind = sc->state != SCAFFOLD_LOOSE
+                ? TRACTOR_FEEDBACK_HELD : distance > SCAFFOLD_PICKUP_RANGE
+                ? TRACTOR_FEEDBACK_CLOSER : TRACTOR_FEEDBACK_READY;
+            tractor_feedback_consider(&out, &best_rank, kind,
+                                      ENTITY_KIND_SCAFFOLD, distance,
+                                      SCAFFOLD_PICKUP_RANGE);
+        }
+    }
+    return out;
+}
+
 static bool station_hopper_can_tractor_pod(const station_t *st,
                                            int module_idx,
                                            const cargo_pod_t *pod) {
@@ -10440,7 +10518,6 @@ static void step_cargo_pods(world_t *w, float dt) {
  * classes). The actual cap scales with the towing ship's accel so
  * a powerful engine can pull harder. */
 static const float SCAFFOLD_TOW_SPEED_BASE = 55.0f;
-static const float SCAFFOLD_PICKUP_RANGE = 80.0f;    /* how close to grab one */
 
 /* Compute the effective tow speed cap for a ship hull. Engine
  * horsepower (accel) is the only input — bigger accel pulls the

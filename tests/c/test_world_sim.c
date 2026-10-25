@@ -3420,6 +3420,70 @@ TEST(test_claimed_manifest_contract_rejects_other_player_before_receipt_append) 
         0);
 }
 
+static server_player_t *test_tractor_feedback_world(world_t *w) {
+    world_reset(w);
+    memset(w->asteroids, 0, sizeof(w->asteroids));
+    memset(w->cargo_pods, 0, sizeof(w->cargo_pods));
+    memset(w->scaffolds, 0, sizeof(w->scaffolds));
+    return test_prepare_undocked_tractor_player(
+        w, v2_add(w->stations[0].pos, v2(900.0f, 0.0f)));
+}
+
+TEST(test_tractor_feedback_mine_range_and_real_pickup) {
+    WORLD_DECL;
+    server_player_t *sp = test_tractor_feedback_world(&w);
+    asteroid_t *a = &w.asteroids[0];
+    *a = (asteroid_t){.active = true, .tier = ASTEROID_TIER_M,
+        .commodity = COMMODITY_FERRITE_ORE, .radius = 8.0f,
+        .ore = 4.0f, .max_ore = 4.0f, .hp = 4.0f, .max_hp = 4.0f};
+    a->pos = v2_add(sp->ship->pos, v2(100.0f, 0.0f));
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_MINE);
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(ship_towed_fragment_count(sp->ship), 0);
+    a->tier = ASTEROID_TIER_S;
+    a->pos = v2_add(sp->ship->pos, v2(ship_tractor_range(sp->ship) + 1.0f, 0.0f));
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_CLOSER);
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(ship_towed_fragment_count(sp->ship), 0);
+    a->pos = v2_add(sp->ship->pos, v2(ship_tractor_range(sp->ship) - 1.0f, 0.0f));
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(ship_towed_fragment_count(sp->ship), 1);
+}
+
+TEST(test_tractor_feedback_held_and_usable_priority) {
+    WORLD_DECL;
+    server_player_t *sp = test_tractor_feedback_world(&w);
+    asteroid_t *a = &w.asteroids[0];
+    *a = (asteroid_t){.active = true, .tier = ASTEROID_TIER_S,
+        .commodity = COMMODITY_FERRITE_ORE};
+    a->pos = v2_add(sp->ship->pos, v2(60.0f, 0.0f));
+    asteroid_set_npc_tractor(a, 0);
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_HELD);
+    w.asteroids[1] = *a;
+    asteroid_clear_tractor(&w.asteroids[1]);
+    w.asteroids[1].pos = v2_add(sp->ship->pos, v2(100.0f, 0.0f));
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
+}
+
+TEST(test_tractor_feedback_scaffold_uses_smaller_pickup_range) {
+    WORLD_DECL;
+    server_player_t *sp = test_tractor_feedback_world(&w);
+    scaffold_t *sc = &w.scaffolds[0];
+    *sc = (scaffold_t){.active = true, .state = SCAFFOLD_LOOSE,
+        .module_type = MODULE_SIGNAL_RELAY, .radius = 12.0f};
+    sc->pos = v2_add(sp->ship->pos, v2(120.0f, 0.0f));
+    tractor_feedback_t feedback = player_tractor_feedback(&w, sp);
+    ASSERT_EQ_INT(feedback.kind, TRACTOR_FEEDBACK_CLOSER);
+    ASSERT_EQ_FLOAT(feedback.range, 80.0f, 0.001f);
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(sp->ship->towed_scaffold, -1);
+    sc->pos = v2_add(sp->ship->pos, v2(70.0f, 0.0f));
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(sp->ship->towed_scaffold, 0);
+}
+
 TEST(test_tow_capacity_counts_pods_against_fragment_pickup) {
     WORLD_DECL;
     world_reset(&w);
@@ -3452,6 +3516,7 @@ TEST(test_tow_capacity_counts_pods_against_fragment_pickup) {
     frag->fracture_child = true;
 
     ASSERT_EQ_INT(ship_tow_body_capacity(sp->ship), 2);
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_FULL);
     ASSERT_EQ_INT(ship_tow_body_space(sp->ship), 0);
     world_sim_step(&w, SIM_DT);
 
@@ -12763,6 +12828,9 @@ TEST(test_npc_miner_drops_fragment_when_tow_band_snaps) {
 }
 
 void register_world_sim_basic_tests(void) {
+    RUN(test_tractor_feedback_mine_range_and_real_pickup);
+    RUN(test_tractor_feedback_held_and_usable_priority);
+    RUN(test_tractor_feedback_scaffold_uses_smaller_pickup_range);
     TEST_SECTION("\nWorld sim tests:\n");
     RUN(test_world_reset_creates_stations);
     RUN(test_world_reset_spawns_asteroids);

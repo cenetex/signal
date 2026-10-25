@@ -90,6 +90,7 @@ static const float SHIP_BRAKE = 180.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
 static const float FRAGMENT_NEARBY_RANGE = 220.0f;
+static const float SCAFFOLD_PICKUP_RANGE = 80.0f;
 static const int FIELD_ASTEROID_TARGET = 220;
 static const float FIELD_ASTEROID_RESPAWN_DELAY = 0.2f;
 static const float FRACTURE_CHILD_CLEANUP_AGE = 30.0f;
@@ -915,6 +916,26 @@ typedef struct {
     uint16_t handoff_consumed_ticket_count;
     uint16_t handoff_consumed_ticket_next;
 } world_t;
+
+/* Read-only pickup feedback uses current bodies, including between remote
+ * snapshots. READY describes range/eligibility; a tow link confirms pickup. */
+typedef enum {
+    TRACTOR_FEEDBACK_SEARCH = 0,
+    TRACTOR_FEEDBACK_READY,
+    TRACTOR_FEEDBACK_CLOSER,
+    TRACTOR_FEEDBACK_FULL,
+    TRACTOR_FEEDBACK_HELD,
+    TRACTOR_FEEDBACK_MINE,
+} tractor_feedback_kind_t;
+typedef struct {
+    tractor_feedback_kind_t kind;
+    entity_kind_t target_kind;
+    float distance;
+    float range;
+} tractor_feedback_t;
+tractor_feedback_t player_tractor_feedback(const world_t *w,
+                                            const server_player_t *sp);
+
 
 enum {
     WORLD_PLAYER_SHIP_BASE = 0,

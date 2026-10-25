@@ -193,6 +193,7 @@ typedef enum {
     HUD_ACTION_TRACTOR_LOCK,       /* int_a = tractor_fragments, int_b = nearby_fragments */
     HUD_ACTION_TRACTOR_REACHING,   /* tractor active, no frag yet — int_b = nearby_fragments */
     HUD_ACTION_FRAGMENTS_NEARBY,   /* tractor inactive, frags in range — int_b = nearby_fragments */
+    HUD_ACTION_TRACTOR_FEEDBACK,
     HUD_ACTION_HOLD_FULL,
     HUD_ACTION_LEDGER_BALANCE,     /* int_a = strongest station balance,
                                     * int_b = other stations with balance,
@@ -628,6 +629,38 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
     out.kind = HUD_ACTION_IDLE;
     out.grade = (int)MINING_GRADE_COMMON;
     if (LOCAL_PLAYER.docked) { out.kind = HUD_ACTION_DOCKED; return out; }
+    if (LOCAL_PLAYER.ship->tractor_active) {
+        tractor_feedback_t feedback = player_tractor_feedback(&g.world, &LOCAL_PLAYER);
+        if (feedback.kind == TRACTOR_FEEDBACK_FULL ||
+            (ship_towed_body_count(LOCAL_PLAYER.ship) == 0 &&
+             LOCAL_PLAYER.ship->towed_scaffold < 0)) {
+            out.kind = HUD_ACTION_TRACTOR_FEEDBACK;
+            switch (feedback.kind) {
+            case TRACTOR_FEEDBACK_MINE:
+                snprintf(out.reason, sizeof(out.reason), "Mine rock into small fragments first");
+                break;
+            case TRACTOR_FEEDBACK_CLOSER:
+                snprintf(out.reason, sizeof(out.reason),
+                         feedback.target_kind == ENTITY_KIND_SCAFFOLD
+                             ? "Move closer // scaffold pickup %.0fu"
+                             : "Move closer // target center inside %.0fu", feedback.range);
+                break;
+            case TRACTOR_FEEDBACK_FULL:
+                snprintf(out.reason, sizeof(out.reason), "Tow slots full // deliver or release cargo");
+                break;
+            case TRACTOR_FEEDBACK_HELD:
+                snprintf(out.reason, sizeof(out.reason), "Target held by another tractor // find a loose target");
+                break;
+            case TRACTOR_FEEDBACK_READY:
+                snprintf(out.reason, sizeof(out.reason), "Target in range // tractor active");
+                break;
+            default:
+                snprintf(out.reason, sizeof(out.reason), "Tractor active // approach small fragments or cargo");
+                break;
+            }
+            return out;
+        }
+    }
     /* Target asteroid (laser-pointed). */
     if (LOCAL_PLAYER.hover_asteroid >= 0 &&
         g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
@@ -842,6 +875,9 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
     case HUD_ACTION_FRAGMENTS_NEARBY:
         snprintf(out, out_size, "hold [Space] TRACTOR // %d nearby", a->int_b);
         return;
+    case HUD_ACTION_TRACTOR_FEEDBACK:
+        snprintf(out, out_size, "%s", a->reason);
+        return;
     case HUD_ACTION_HOLD_FULL:
         snprintf(out, out_size, "Hold full. Dock to sell.");
         return;
@@ -943,6 +979,9 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
     case HUD_ACTION_FRAGMENTS_NEARBY:
         snprintf(out, out_size, "Hold [Space] tractor // %d nearby", a->int_b);
         return;
+    case HUD_ACTION_TRACTOR_FEEDBACK:
+        snprintf(out, out_size, "%s", a->reason);
+        return;
     case HUD_ACTION_HOLD_FULL:
         snprintf(out, out_size, "Hold full. Dock to sell.");
         return;
@@ -980,6 +1019,7 @@ static void hud_set_action_color(const hud_action_t *a) {
     case HUD_ACTION_FRAGMENTS_NEARBY:
         hud_set_grade_color((uint8_t)a->grade);
         return;
+    case HUD_ACTION_TRACTOR_FEEDBACK:
     case HUD_ACTION_HOLD_FULL:
     case HUD_ACTION_LEDGER_BALANCE:
         sdtx_color3b(PAL_ORE_AMBER);
@@ -4061,6 +4101,13 @@ enum {
     SMOKE_LOOP_STATE_GUIDE_GATED_ROCK = 47,
     SMOKE_LOOP_STATE_GUIDE_EARLY_RETURN = 48,
     SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK = 49,
+    SMOKE_LOOP_STATE_TRACTOR_MINE = 50,
+    SMOKE_LOOP_STATE_TRACTOR_CLOSER = 51,
+    SMOKE_LOOP_STATE_TRACTOR_FULL = 52,
+    SMOKE_LOOP_STATE_TRACTOR_HELD = 53,
+    SMOKE_LOOP_STATE_TRACTOR_SCAFFOLD = 54,
+    SMOKE_LOOP_STATE_TRACTOR_READY = 55,
+    SMOKE_LOOP_STATE_TRACTOR_SEARCH = 56,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -4380,7 +4427,7 @@ void smoke_apply_loop_state_for_frame(void) {
      * setup. Interaction fixtures must overwrite streamed state at the
      * render boundary to keep their visual telemetry stable. */
     if ((smoke_loop_state_override >= SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK &&
-         smoke_loop_state_override <= SMOKE_LOOP_STATE_GUIDE_MATCHING_ROCK) ||
+         smoke_loop_state_override <= SMOKE_LOOP_STATE_TRACTOR_SEARCH) ||
         smoke_loop_state_override ==
             SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR ||
         smoke_loop_state_override ==
@@ -4655,13 +4702,41 @@ static int smoke_apply_loop_state(int state) {
         sp->nearby_fragments = 3;
         return 1;
     case SMOKE_LOOP_STATE_TRACTOR_REACHING:
-        sp->nearby_fragments = 4;
-        sp->ship->tractor_active = true;
-        return 1;
+        return smoke_apply_loop_state(SMOKE_LOOP_STATE_TRACTOR_CLOSER);
     case SMOKE_LOOP_STATE_TRACTOR_LOCK:
-        sp->nearby_fragments = 5;
-        sp->tractor_fragments = 2;
+        return smoke_apply_loop_state(SMOKE_LOOP_STATE_TRACTOR_READY);
+    case SMOKE_LOOP_STATE_TRACTOR_MINE:
+    case SMOKE_LOOP_STATE_TRACTOR_CLOSER:
+    case SMOKE_LOOP_STATE_TRACTOR_FULL:
+    case SMOKE_LOOP_STATE_TRACTOR_HELD:
+    case SMOKE_LOOP_STATE_TRACTOR_SCAFFOLD:
+    case SMOKE_LOOP_STATE_TRACTOR_READY:
+    case SMOKE_LOOP_STATE_TRACTOR_SEARCH:
+        for (int i = 0; i < MAX_ASTEROIDS; i++) g.world.asteroids[i].active = false;
+        for (int i = 0; i < MAX_CARGO_PODS; i++) g.world.cargo_pods[i].active = false;
+        sp->ship->tractor_level = 0;
         sp->ship->tractor_active = true;
+        g.local_server.active = false;
+        g.camera_pos = sp->ship->pos;
+        g.camera_initialized = true;
+        if (state == SMOKE_LOOP_STATE_TRACTOR_SEARCH) return 1;
+        if (state == SMOKE_LOOP_STATE_TRACTOR_SCAFFOLD) {
+            g.world.scaffolds[0] = (scaffold_t){
+                .active = true, .state = SCAFFOLD_LOOSE,
+                .module_type = MODULE_SIGNAL_RELAY, .radius = 12.0f,
+                .pos = v2_add(sp->ship->pos, v2(120.0f, 0.0f))};
+            return 1;
+        }
+        smoke_seed_asteroid(0,
+            state == SMOKE_LOOP_STATE_TRACTOR_MINE ? ASTEROID_TIER_M : ASTEROID_TIER_S,
+            COMMODITY_FERRITE_ORE,
+            v2_add(sp->ship->pos, v2(state == SMOKE_LOOP_STATE_TRACTOR_CLOSER
+                ? ship_tractor_range(sp->ship) + 30.0f : 100.0f, 0.0f)),
+            15.0f, 1.0f, 7.0f);
+        if (state == SMOKE_LOOP_STATE_TRACTOR_HELD)
+            asteroid_set_npc_tractor(&g.world.asteroids[0], 0);
+        if (state == SMOKE_LOOP_STATE_TRACTOR_FULL)
+            sp->ship->towed_pod_count = ship_tow_body_capacity(sp->ship);
         return 1;
     case SMOKE_LOOP_STATE_TOWING:
         if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))

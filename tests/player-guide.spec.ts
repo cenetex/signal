@@ -235,3 +235,26 @@ test('Escape keeps browser flight and steering active', async ({page}, info) => 
   expect(await hint(page)).toContain('SIGNAL // GUIDE');
   await page.screenshot({path: info.outputPath('flight-after-escape.png')});
 });
+
+
+for (const viewport of [{width: 1280, height: 720}, {width: 390, height: 844}]) {
+  test(`active tractor explains pickup at ${viewport.width}px`, async ({page}, info) => {
+    await page.setViewportSize(viewport);
+    await ready(page, viewport.width < 500);
+    const cases: [number, string][] = [
+      [50, 'Mine rock into small fragments first'],
+      [51, 'Move closer // target center inside 150u'],
+      [52, 'Tow slots full // deliver or release cargo'],
+      [53, 'Target held by another tractor // find a loose target'],
+      [54, 'Move closer // scaffold pickup 80u'],
+      [55, 'Target in range // tractor active'],
+      [56, 'Tractor active // approach small fragments or cargo'],
+    ];
+    for (const [state, expected] of cases) {
+      await fixture(page, state);
+      expect(await call(page, 'get_hud_action_text', 'string')).toBe(expected);
+      if (state === 50 || state === 54)
+        await page.screenshot({path: info.outputPath(`tractor-${state}-${viewport.width}.png`)});
+    }
+  });
+}
