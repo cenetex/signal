@@ -3529,6 +3529,40 @@ TEST(test_tractor_feedback_loose_and_held_cargo) {
     ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_HELD);
 }
 
+TEST(test_tractor_feedback_module_output_uses_received_origin_summary) {
+    WORLD_DECL;
+    server_player_t *sp = test_tractor_feedback_world(&w);
+    station_t *st = &w.stations[1];
+    int press = -1, shipyard = -1;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) press = i;
+        if (st->modules[i].type == MODULE_SHIPYARD) shipyard = i;
+    }
+    ASSERT(press >= 0 && shipyard >= 0);
+    int idx = test_spawn_exact_pod(&w,
+        v2_add(sp->ship->pos, v2(100.0f, 0.0f)), COMMODITY_FRAME, 1);
+    ASSERT(idx >= 0);
+    cargo_pod_t *pod = &w.cargo_pods[idx];
+    pod->manifest_units[0].origin_station = 1;
+    cargo_pod_set_module_tractor(pod, 1, press);
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
+
+    /* Decoded cargo snapshots keep the count and public summary, while
+     * apply_remote_cargo_pods clears the authoritative manifest rows. */
+    memset(pod->manifest_units, 0, sizeof(pod->manifest_units));
+    pod->summary_flags = CARGO_POD_SUMMARY_EXACT_MATERIAL;
+    pod->summary_origin_station = 2; /* Kepler index + 1 */
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_READY);
+    ASSERT_EQ_INT(pod->manifest_units[0].origin_station, 0);
+    pod->summary_origin_station = 1; /* Different source */
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_HELD);
+    pod->summary_origin_station = 0; /* Mixed or unknown source */
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_HELD);
+    pod->summary_origin_station = 2;
+    cargo_pod_set_module_tractor(pod, 1, shipyard);
+    ASSERT_EQ_INT(player_tractor_feedback(&w, sp).kind, TRACTOR_FEEDBACK_HELD);
+}
+
 TEST(test_tractor_feedback_cargo_custody_is_separate_from_live_binding) {
     WORLD_DECL;
     server_player_t *sp = test_tractor_feedback_world(&w);
@@ -12934,6 +12968,7 @@ TEST(test_npc_miner_drops_fragment_when_tow_band_snaps) {
 void register_world_sim_basic_tests(void) {
     RUN(test_tractor_feedback_mine_range_and_real_pickup);
     RUN(test_tractor_feedback_loose_and_held_cargo);
+    RUN(test_tractor_feedback_module_output_uses_received_origin_summary);
     RUN(test_tractor_feedback_cargo_custody_is_separate_from_live_binding);
     RUN(test_tractor_feedback_survives_prediction_counter_reset);
     RUN(test_tractor_feedback_held_and_usable_priority);

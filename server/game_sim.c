@@ -8592,6 +8592,24 @@ static bool cargo_pod_module_tractor_player_collectible(const world_t *w,
     return module_instance_output(module) == pod->commodity;
 }
 
+/* Feedback reads decoded pod summaries when the client has no manifest
+ * rows. The authority's pickup predicate above keeps its full-row check. */
+static bool tractor_feedback_module_output_collectible(const world_t *w,
+                                                        const cargo_pod_t *pod) {
+    if (!(pod->summary_flags & CARGO_POD_SUMMARY_EXACT_MATERIAL) ||
+        !cargo_pod_has_module_tractor(pod))
+        return cargo_pod_module_tractor_player_collectible(w, pod);
+    int station_idx = -1, module_idx = -1;
+    if (!w || !cargo_pod_module_tractor_indices(pod, &station_idx, &module_idx) ||
+        pod->summary_origin_station != (uint8_t)(station_idx + 1))
+        return false;
+    const station_t *st = &w->stations[station_idx];
+    if (!station_is_active(st) || module_idx >= st->module_count) return false;
+    const station_module_t *module = &st->modules[module_idx];
+    return !module->scaffold && module->type != MODULE_DOCK &&
+        module_instance_output(module) == pod->commodity;
+}
+
 /* Keep feedback next to the pickup predicates. Prefer a usable target over
  * nearby scenery; show the nearest body within each reason. */
 static void tractor_feedback_consider(tractor_feedback_t *out, int *best_rank,
@@ -8665,7 +8683,7 @@ tractor_feedback_t player_tractor_feedback(const world_t *w,
         float distance = fixp_sqrtf(distance_sq);
         int owner = cargo_pod_player_tractor(pod);
         bool held = (owner >= 0 && owner != player_idx) ||
-            (!cargo_pod_module_tractor_player_collectible(w, pod) &&
+            (!tractor_feedback_module_output_collectible(w, pod) &&
              cargo_pod_station_trade_owner(w, pod) < 0);
         tractor_feedback_kind_t kind = held ? TRACTOR_FEEDBACK_HELD
             : tractor_feedback_cargo_reserved(pod, sp) ? TRACTOR_FEEDBACK_RESERVED

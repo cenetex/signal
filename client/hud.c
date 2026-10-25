@@ -4124,6 +4124,10 @@ enum {
     SMOKE_LOOP_STATE_TRACTOR_READY = 55,
     SMOKE_LOOP_STATE_TRACTOR_SEARCH = 56,
     SMOKE_LOOP_STATE_TRACTOR_RESERVED = 57,
+    SMOKE_LOOP_STATE_TRACTOR_RECEIVED_OUTPUT = 58,
+    SMOKE_LOOP_STATE_TRACTOR_RECEIVED_INPUT = 59,
+    SMOKE_LOOP_STATE_TRACTOR_RECEIVED_FOREIGN = 60,
+    SMOKE_LOOP_STATE_TRACTOR_RECEIVED_MIXED = 61,
 };
 
 static int smoke_remembered_work_mode = -1;
@@ -4443,7 +4447,7 @@ void smoke_apply_loop_state_for_frame(void) {
      * setup. Interaction fixtures must overwrite streamed state at the
      * render boundary to keep their visual telemetry stable. */
     if ((smoke_loop_state_override >= SMOKE_LOOP_STATE_GUIDE_FIRST_ROCK &&
-         smoke_loop_state_override <= SMOKE_LOOP_STATE_TRACTOR_RESERVED) ||
+         smoke_loop_state_override <= SMOKE_LOOP_STATE_TRACTOR_RECEIVED_MIXED) ||
         smoke_loop_state_override ==
             SMOKE_LOOP_STATE_MODULE_CARGO_TRACTOR ||
         smoke_loop_state_override ==
@@ -4729,6 +4733,10 @@ static int smoke_apply_loop_state(int state) {
     case SMOKE_LOOP_STATE_TRACTOR_READY:
     case SMOKE_LOOP_STATE_TRACTOR_SEARCH:
     case SMOKE_LOOP_STATE_TRACTOR_RESERVED:
+    case SMOKE_LOOP_STATE_TRACTOR_RECEIVED_OUTPUT:
+    case SMOKE_LOOP_STATE_TRACTOR_RECEIVED_INPUT:
+    case SMOKE_LOOP_STATE_TRACTOR_RECEIVED_FOREIGN:
+    case SMOKE_LOOP_STATE_TRACTOR_RECEIVED_MIXED:
         for (int i = 0; i < MAX_ASTEROIDS; i++) g.world.asteroids[i].active = false;
         for (int i = 0; i < MAX_CARGO_PODS; i++) g.world.cargo_pods[i].active = false;
         sp->ship->tractor_level = 0;
@@ -4737,6 +4745,34 @@ static int smoke_apply_loop_state(int state) {
         g.camera_pos = sp->ship->pos;
         g.camera_initialized = true;
         if (state == SMOKE_LOOP_STATE_TRACTOR_SEARCH) return 1;
+        if (state >= SMOKE_LOOP_STATE_TRACTOR_RECEIVED_OUTPUT &&
+            state <= SMOKE_LOOP_STATE_TRACTOR_RECEIVED_MIXED) {
+            station_t *st = &g.world.stations[1];
+            module_type_t type = state == SMOKE_LOOP_STATE_TRACTOR_RECEIVED_INPUT
+                ? MODULE_SHIPYARD : MODULE_FRAME_PRESS;
+            int module = -1;
+            for (int i = 0; i < st->module_count; i++)
+                if (!st->modules[i].scaffold && st->modules[i].type == type) module = i;
+            if (module < 0) return 0;
+            NetCargoPodState received = {
+                .index = 0, .kind = CARGO_POD_CARGO, .commodity = COMMODITY_FRAME,
+                .tractor_player = -1, .tractor_station = 2,
+                .tractor_module = (uint8_t)(module + 1),
+                .pos_x = sp->ship->pos.x + 100.0f, .pos_y = sp->ship->pos.y,
+                .radius = 18.0f, .quantity = 1, .manifest_count = 1,
+                .summary_flags = CARGO_POD_SUMMARY_EXACT_MATERIAL,
+                .summary_origin_station = state == SMOKE_LOOP_STATE_TRACTOR_RECEIVED_FOREIGN
+                    ? 1 : state == SMOKE_LOOP_STATE_TRACTOR_RECEIVED_MIXED ? 0 : 2,
+            };
+            memset(&g.cargo_pod_interp, 0, sizeof(g.cargo_pod_interp));
+            bool saved_tow_snapshot = g.tow_snapshot_received;
+            g.tow_snapshot_received = false;
+            apply_remote_cargo_pods(&received, 1);
+            g.tow_snapshot_received = saved_tow_snapshot;
+            g.world.cargo_pods[0] = g.cargo_pod_interp.curr[0];
+            return g.world.cargo_pods[0].manifest_count == 1 &&
+                g.world.cargo_pods[0].manifest_units[0].origin_station == 0;
+        }
         if (state == SMOKE_LOOP_STATE_TRACTOR_RESERVED) {
             g.world.cargo_pods[0] = (cargo_pod_t){
                 .active = true, .kind = CARGO_POD_CARGO, .quantity = 1,
