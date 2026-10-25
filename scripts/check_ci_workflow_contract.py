@@ -267,6 +267,23 @@ def action_pin_failures(sources: dict[str, str]) -> list[str]:
     return failures
 
 
+def linux_runner_pin_failures(sources: dict[str, str]) -> list[str]:
+    # These shipping lanes share the tested static OpenSSL and Playwright host.
+    failures: list[str] = []
+    for name in ("ci.yml", "deploy-fly.yml", "replay.yml", "release.yml"):
+        for lineno, line in enumerate(sources.get(name, "").splitlines(), start=1):
+            match = re.fullmatch(
+                r"\s*(?:runs-on|(?:-\s*)?os):\s*['\"]?(ubuntu-[\w.-]+)['\"]?\s*(?:#.*)?",
+                line,
+            )
+            if match and match.group(1) != "ubuntu-24.04":
+                failures.append(
+                    f"{name}:{lineno}: Linux runner must be pinned to "
+                    f"ubuntu-24.04 (got {match.group(1)})"
+                )
+    return failures
+
+
 def contract_failures(
     sources: dict[str, str],
     policy: dict,
@@ -633,6 +650,7 @@ def contract_failures(
             )
 
     failures.extend(action_pin_failures(sources))
+    failures.extend(linux_runner_pin_failures(sources))
     for name, source in sources.items():
         if re.search(r"\bnpx\s+(?!.*--no-install)", source):
             failures.append(

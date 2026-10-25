@@ -63,7 +63,7 @@ env:
 jobs:
   verify:
     name: Verify release candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Provision verified media before candidate checks
@@ -107,7 +107,7 @@ jobs:
   deploy:
     name: Launch or deploy app
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
@@ -210,7 +210,7 @@ jobs:
       SIGNAL_STATION_AUTH_SECRET: ''
     needs: deploy
     if: github.event_name != 'workflow_dispatch' || inputs.deploy == true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
