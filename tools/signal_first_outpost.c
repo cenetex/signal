@@ -437,6 +437,7 @@ int main(int argc, char **argv) {
     float last_payout = 0;
     int last_pod_count = 0;
     bool settling_cargo = false;
+    bool relay_departed = false;
     int shipyard_wait_until = 0;
     int frame_pickup_after = 0;
     for (int i = 0; i < w->station_count; i++) {
@@ -727,7 +728,11 @@ int main(int argc, char **argv) {
                 sp->input.release_tow = !sp->docked;
                 apply_flight(&sp->input, flight_brake(sp->ship));
             } else if (scaffold >= 0) {
-                if (v2_dist_sq(sp->ship->pos, w->stations[1].pos) < 1000 * 1000)
+                /* Once clear, keep the frontier leg even if its path curves
+                 * back inside the departure radius. */
+                if (v2_dist_sq(sp->ship->pos, w->stations[1].pos) >= 1000 * 1000)
+                    relay_departed = true;
+                if (!relay_departed)
                     apply_flight(&sp->input, steer_through_lane(sp->ship,
                         exit_route_target(&w->stations[1], sp->ship)));
                 else
@@ -740,6 +745,7 @@ int main(int argc, char **argv) {
                 home = SIGNAL_FIRST_OUTPOST_INDEX;
                 stage = PHASE_DOCK; path = (nav_path_t){0};
             } else {
+                relay_departed = false;
                 scaffold = owned_relay_scaffold(w);
                 if (scaffold >= 0 && w->scaffolds[scaffold].state == SCAFFOLD_LOOSE) {
                     const station_t *st = &w->stations[1];
