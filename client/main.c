@@ -3696,7 +3696,8 @@ const char *signal_smoke_tow_report_json(void) {
         !LOCAL_PLAYER.ship) return "{}";
     const ship_t *ship = LOCAL_PLAYER.ship;
     bool finite = isfinite(ship->pos.x) && isfinite(ship->pos.y) &&
-                  isfinite(ship->vel.x) && isfinite(ship->vel.y);
+                  isfinite(ship->vel.x) && isfinite(ship->vel.y) &&
+                  isfinite(ship->angle);
     vec2 pos = finite ? ship->pos : v2(0.0f, 0.0f);
     int fragment = -1, pod = -1, mineable = -1, links = 0;
     float fragment_d2 = 1e30f, pod_d2 = 1e30f, mineable_d2 = 1e30f;
