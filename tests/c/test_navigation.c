@@ -105,6 +105,52 @@ TEST(test_autopilot_ignores_fragments_targets_rocks) {
     ASSERT(sp->autopilot_target >= 0);
 }
 
+TEST(test_autopilot_manual_tractor_takes_control_and_collects) {
+    WORLD_DECL;
+    setup_autopilot_world(&w);
+    server_player_t *sp = &w.players[0];
+    memset(w.contracts, 0, sizeof(w.contracts));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    seed_test_asteroid(&w.asteroids[0], ASTEROID_TIER_S,
+                      v2_add(sp->ship->pos, v2(90.0f, 0.0f)), 12.0f);
+    sp->autopilot_mode = 1;
+    sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+    sp->autopilot_target = -1;
+    sp->input.tractor_hold = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(sp->autopilot_mode, 0);
+    ASSERT(sp->ship->tractor_active);
+    ASSERT_EQ_INT(sp->ship->towed_count, 1);
+    ASSERT_EQ_INT(sp->ship->towed_fragments[0], 0);
+}
+
+TEST(test_autopilot_tractor_output_preserves_manual_input_across_ticks) {
+    WORLD_DECL;
+    setup_autopilot_world(&w);
+    server_player_t *sp = &w.players[0];
+    memset(w.contracts, 0, sizeof(w.contracts));
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    seed_test_asteroid(&w.asteroids[0], ASTEROID_TIER_M,
+                      v2_add(sp->ship->pos, v2(140.0f, 0.0f)), 42.0f);
+    sp->autopilot_mode = 1;
+    sp->autopilot_state = AUTOPILOT_STEP_MINE;
+    sp->autopilot_target = 0;
+    sp->input.tractor_hold = false;
+
+    for (int tick = 0; tick < 3; tick++) {
+        world_sim_step(&w, SIM_DT);
+        ASSERT_EQ_INT(sp->autopilot_mode, 1);
+        ASSERT(sp->ship->tractor_active);
+        ASSERT(!sp->input.tractor_hold);
+    }
+    sp->input.toggle_autopilot = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(sp->autopilot_mode, 0);
+    ASSERT(!sp->ship->tractor_active);
+}
+
 TEST(test_nav_approach_speed_basic) {
     /* Far away = max speed */
     ASSERT_EQ_FLOAT(nav_approach_speed(10000.0f, 150.0f), 150.0f, 0.1f);
@@ -1732,6 +1778,8 @@ void register_navigation_autopilot_mining_tests(void) {
     RUN(test_autopilot_prefers_nearest_mineable_asteroid);
     RUN(test_autopilot_prefers_clear_mineable_asteroid_over_blocked_one);
     RUN(test_autopilot_ignores_fragments_targets_rocks);
+    RUN(test_autopilot_manual_tractor_takes_control_and_collects);
+    RUN(test_autopilot_tractor_output_preserves_manual_input_across_ticks);
 }
 
 void register_navigation_nav_tests(void) {
