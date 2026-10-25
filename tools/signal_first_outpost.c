@@ -654,7 +654,8 @@ int main(int argc, char **argv) {
             vec2 goal = module_world_pos_ring(st, st->modules[hopper].ring,
                                               st->modules[hopper].slot);
             vec2 approach = v2_add(goal, v2_scale(v2_norm(v2_sub(goal, st->pos)), 60));
-            if (v2_dist_sq(sp->ship->pos, st->pos) > 450 * 450)
+            float clearance = ship_hull_def(sp->ship)->ship_radius + 30.0f;
+            if (!nav_station_segment_clear(w, sp->ship->pos, approach, clearance))
                 approach = dock_route_target(st, sp->ship);
             apply_flight(&sp->input, steer_through_lane(sp->ship, approach));
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
