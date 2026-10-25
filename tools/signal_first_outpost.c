@@ -151,7 +151,8 @@ static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
             float outside = fmaxf(radius, STATION_RING_RADIUS[ring] + 100);
             return v2_add(st->pos, v2_scale(v2_from_angle(waypoint_angle), outside));
         }
-        return station_ring_open_gap_lane_pos(st, ring, inner);
+        /* Cross the phase boundary before the controller settles at its target. */
+        return station_ring_open_gap_lane_pos(st, ring, inner - 20.0f);
     }
     return station_approach_target(st, ship->pos);
 }
@@ -565,7 +566,8 @@ int main(int argc, char **argv) {
                 home = 1; stage = PHASE_DOCK; path = (nav_path_t){0};
             }
         } else if (stage == PHASE_UNPACK_INGOTS) {
-            if (sp->ship->mining_level) {
+            if (sp->ship->mining_level && (sp->ship->towed_pod_count > 0 ||
+                    ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) > 0)) {
                 stage = PHASE_HAUL; path = (nav_path_t){0};
             } else if (ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) >= 8 &&
                 sp->ship->towed_pod_count < 2) {
