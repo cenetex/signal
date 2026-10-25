@@ -8,6 +8,7 @@
 #include "signal_crypto.h"
 #include "chain_log.h"
 #include "persistence_generation.h"
+#include "cargo_receipt_trust.h"
 #include <errno.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -275,6 +276,25 @@ static int local_frame_pod(const world_t *w, const ship_t *ship, bool towed_only
         for (int t = 0; t < ship->towed_pod_count; t++)
             towed = towed || ship->towed_pods[t] == i;
         if (towed_only && !towed) continue;
+        if (!towed) {
+            /* Collect loose frames, producer output, or trade cargo.
+             * Shipyard/hopper inputs already belong to that delivery. */
+            if (cargo_pod_has_player_tractor(pod)) continue;
+            if (cargo_pod_has_module_tractor(pod) &&
+                cargo_pod_custody_station(pod) < 0) {
+                int station = -1, module = -1;
+                if (!cargo_pod_module_tractor_indices(pod, &station, &module))
+                    continue;
+                const station_t *st = &w->stations[station];
+                if (module >= st->module_count) continue;
+                const station_module_t *source = &st->modules[module];
+                if (source->scaffold) continue;
+                bool trade = source->type == MODULE_DOCK;
+                bool output = station_is_active(st) && pod_origin_is(pod, station) &&
+                    module_instance_output(source) == pod->commodity;
+                if (!trade && !output) continue;
+            }
+        }
         float d = v2_dist_sq(ship->pos, pod->pos);
         if (d < distance) { distance = d; best = i; }
     }
@@ -706,6 +726,43 @@ int main(int argc, char **argv) {
                 sp->ship->hold_level, ship_finished_count(sp->ship, COMMODITY_FRAME),
                 station_finished_count(&w->stations[home], COMMODITY_FRAME));
             fflush(stdout);
+            if (stage == PHASE_DELIVER_INGOTS) {
+                const station_t *st = &w->stations[home];
+                int hopper = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+                for (int t = 0; t < sp->ship->towed_pod_count; t++) {
+                    int index = sp->ship->towed_pods[t];
+                    const cargo_pod_t *pod = &w->cargo_pods[index];
+                    cargo_pod_t identity = *pod;
+                    identity.custody_station = 0;
+                    cargo_pod_clear_custody_charge_anchor(&identity);
+                    uint8_t source[32], payout_id[32];
+                    bool digest = cargo_pod_selection_digest(&identity, source) &&
+                        station_payout_identity(st, STATION_PAYOUT_POD_INTAKE,
+                                                source, payout_id);
+                    bool replay = digest && station_payout_find(w, payout_id) != NULL;
+                    fprintf(stderr, "delivery gate pod=%d exact=%d digest=%d replay=%d "
+                        "owner=%u canonical=%d quarantine=%d journal=%u\n", index,
+                        cargo_pod_has_exact_manifest(pod, COMMODITY_FERRITE_INGOT),
+                        digest, replay, pod->tow_owner_principal.kind,
+                        actor_principal_is_canonical(&pod->tow_owner_principal),
+                        pod->tow_owner_quarantine_record_id != 0, w->payout_journal.count);
+                    for (int m = 0; m < st->module_count; m++) {
+                        const station_module_t *module = &st->modules[m];
+                        if (m != hopper && module->type != MODULE_FRAME_PRESS) continue;
+                        vec2 center = module_world_pos_ring(st, module->ring, module->slot);
+                        vec2 mouth = v2_add(center, v2_scale(v2_norm(v2_sub(center, st->pos)),
+                            STATION_MODULE_COL_RADIUS + pod->radius + 8.0f));
+                        fprintf(stderr, "delivery pod=%d kind=%d qty=%d origin=%u custody=%d "
+                            "player=%d shipment=%u manifest=%u module=%d type=%d center=%.1f "
+                            "mouth=%.1f ship=%.1f\n", index, pod->kind, pod->quantity,
+                            pod->manifest_count ? pod->manifest_units[0].origin_station : 255,
+                            cargo_pod_custody_station(pod), cargo_pod_player_tractor(pod),
+                            pod->shipment_id, pod->manifest_count, m, module->type,
+                            v2_len(v2_sub(pod->pos, center)), v2_len(v2_sub(pod->pos, mouth)),
+                            v2_len(v2_sub(sp->ship->pos, center)));
+                    }
+                }
+            }
             if (stage == PHASE_WAIT_FRAMES) {
                 int hopper = station_find_hopper_for(&w->stations[home], COMMODITY_FRAME);
                 vec2 goal = module_world_pos_ring(&w->stations[home], w->stations[home].modules[hopper].ring,
@@ -738,9 +795,49 @@ int main(int argc, char **argv) {
     }
     if (active_outpost)
         checkpoints_ok = checkpoint_roundtrip(w, argv[2], pubkey, secret);
+    else
+        fprintf(stderr, "failure checkpoint=%d\n",
+                checkpoint_roundtrip(w, argv[2], pubkey, secret));
+    int selected_frame = local_frame_pod(w, sp->ship, false);
+    if (selected_frame >= 0) {
+        const cargo_pod_t *pod = &w->cargo_pods[selected_frame];
+        int station = -1, module = -1;
+        (void)cargo_pod_module_tractor_indices(pod, &station, &module);
+        int module_type = station >= 0 && module >= 0 &&
+            module < w->stations[station].module_count
+            ? (int)w->stations[station].modules[module].type : -1;
+        actor_principal_t player = actor_principal_none();
+        bool verified = actor_principal_from_verified_player(sp, &player);
+        fprintf(stderr, "pickup target=%d distance=%.3f range=%.3f docked=%d hold=%d "
+                "tow_space=%d tractor=%u player=%d module=%d/%d module_type=%d "
+                "custody_station=%d owner_kind=%u canonical=%d same_player=%d quarantined=%d\n",
+                selected_frame, v2_len(v2_sub(pod->pos, sp->ship->pos)),
+                ship_tractor_range(sp->ship), sp->docked, sp->input.tractor_hold,
+                ship_tow_body_space(sp->ship), pod->tractor.kind,
+                cargo_pod_player_tractor(pod), station, module, module_type,
+                cargo_pod_custody_station(pod), pod->tow_owner_principal.kind,
+                actor_principal_is_canonical(&pod->tow_owner_principal),
+                verified && actor_principal_equal(&player, &pod->tow_owner_principal),
+                pod->tow_owner_quarantine_record_id != 0);
+    }
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
+        int owner = -1, module = -1;
+        if (pod->commodity == COMMODITY_FRAME &&
+            cargo_pod_module_tractor_indices(pod, &owner, &module)) {
+            vec2 anchor = {0};
+            bool valid = cargo_pod_module_tractor_anchor(w, pod, owner, module, &anchor);
+            int trusted = 0;
+            for (uint16_t u = 0; u < pod->manifest_count; u++)
+                trusted += cargo_receipt_evaluate_physical_origin_at_station(
+                    w, owner, &pod->manifest_units[u]).accepted;
+            fprintf(stderr, "frame input pod=%d module=%d/%d anchor=%d distance=%.1f "
+                "arrived=%d trusted=%d/%u\n", i, owner, module, valid,
+                valid ? v2_len(v2_sub(pod->pos, anchor)) : -1.0f,
+                cargo_pod_module_tractor_arrived(w, pod, owner, module),
+                trusted, pod->manifest_count);
+        }
         fprintf(stderr, "remaining pod=%d commodity=%s quantity=%d origin=%u pos=%.0f/%.0f custody=%u\n",
                 i, commodity_short_name(pod->commodity), pod->quantity,
                 pod->manifest_count ? pod->manifest_units[0].origin_station : 255,

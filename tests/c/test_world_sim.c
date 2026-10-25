@@ -2972,6 +2972,92 @@ TEST(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper) {
                     earned_after, 0.001f);
 }
 
+/* A busy intake still has room for another physical pod. Range gates and
+ * load balancing remain separate from the score used to choose a receiver. */
+TEST(test_occupied_hopper_accepts_towed_and_loose_cargo_within_range) {
+    WORLD_DECL;
+    world_reset(&w);
+    test_world_clear_npcs(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    memset(w.contracts, 0, sizeof(w.contracts));
+    station_t *st = &w.stations[1];
+    int hopper = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+    ASSERT(hopper >= 0);
+    station_module_t receiver = st->modules[hopper];
+    st->modules[0] = receiver;
+    st->module_count = 1;
+    vec2 center = module_world_pos_ring(st, receiver.ring, receiver.slot);
+    vec2 outward = v2_norm(v2_sub(center, st->pos));
+    vec2 mouth = v2_add(center, v2_scale(outward,
+        STATION_MODULE_COL_RADIUS + 18.0f + 8.0f));
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x59, sizeof(sp->session_token));
+
+    int held = test_spawn_exact_pod(&w, mouth, COMMODITY_FERRITE_INGOT, 2);
+    int incoming = test_spawn_exact_pod(&w,
+        v2_add(mouth, v2_scale(outward, 100.0f)), COMMODITY_FERRITE_INGOT, 3);
+    ASSERT(held >= 0 && incoming >= 0);
+    ASSERT(world_cargo_pod_set_module_tractor(&w, held, 1, 0));
+    ASSERT(world_cargo_pod_set_player_tractor(&w, incoming, 0));
+    step_station_cargo_pod_tractors(&w, 0.0f);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[incoming], 1, 0));
+    ASSERT_EQ_INT(cargo_pod_custody_station(&w.cargo_pods[incoming]), 1);
+    ASSERT_EQ_INT(w.cargo_pods[incoming].quantity, 3);
+    ASSERT_EQ_INT(sp->ship->towed_pod_count, 0);
+    ASSERT(sp->ship->stat_credits_earned > 0.0f);
+    float earned = sp->ship->stat_credits_earned;
+
+    int loose = test_spawn_exact_pod(&w,
+        v2_add(mouth, v2_scale(outward, 80.0f)), COMMODITY_FERRITE_INGOT, 5);
+    int distant = test_spawn_exact_pod(&w,
+        v2_add(mouth, v2_scale(outward, HOPPER_PULL_RANGE + 1.0f)),
+        COMMODITY_FERRITE_INGOT, 4);
+    ASSERT(loose >= 0 && distant >= 0);
+    ASSERT(world_cargo_pod_set_player_tractor(&w, distant, 0));
+    step_station_cargo_pod_tractors(&w, 0.0f);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[loose], 1, 0));
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[held], 1, 0));
+    ASSERT_EQ_INT(cargo_pod_player_tractor(&w.cargo_pods[distant]), 0);
+    ASSERT_EQ_FLOAT(sp->ship->stat_credits_earned, earned, 0.001f);
+}
+
+TEST(test_occupied_hopper_selection_prefers_less_loaded_then_nearer) {
+    WORLD_DECL;
+    world_reset(&w);
+    test_world_clear_npcs(&w);
+    memset(w.cargo_pods, 0, sizeof(w.cargo_pods));
+    station_t *st = &w.stations[1];
+    int hopper = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+    ASSERT(hopper >= 0);
+    station_module_t receiver = st->modules[hopper];
+    st->modules[0] = receiver;
+    st->modules[1] = receiver;
+    st->modules[1].slot = 1;
+    st->module_count = 2;
+    vec2 mouths[2];
+    for (int m = 0; m < 2; m++) {
+        vec2 center = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
+        mouths[m] = v2_add(center, v2_scale(v2_norm(v2_sub(center, st->pos)),
+            STATION_MODULE_COL_RADIUS + 18.0f + 8.0f));
+    }
+    vec2 incoming_pos = v2_add(v2_scale(v2_add(mouths[0], mouths[1]), 0.5f),
+        v2_scale(v2_norm(v2_sub(mouths[0], mouths[1])), 30.0f));
+    int held = test_spawn_exact_pod(&w, mouths[0], COMMODITY_FERRITE_INGOT, 2);
+    int first = test_spawn_exact_pod(&w, incoming_pos, COMMODITY_FERRITE_INGOT, 3);
+    ASSERT(held >= 0 && first >= 0);
+    ASSERT(world_cargo_pod_set_module_tractor(&w, held, 1, 0));
+    step_station_cargo_pod_tractors(&w, 0.0f);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[first], 1, 1));
+
+    int next = test_spawn_exact_pod(&w, incoming_pos, COMMODITY_FERRITE_INGOT, 4);
+    ASSERT(next >= 0);
+    step_station_cargo_pod_tractors(&w, 0.0f);
+    ASSERT(cargo_pod_is_tractored_by_module(&w.cargo_pods[next], 1, 0));
+}
+
 TEST(test_towed_cargo_pod_intake_full_ledger_is_inert) {
     WORLD_DECL;
     world_reset(&w);
@@ -13030,6 +13116,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_manifest_cargo_pod_sale_preserves_exact_units);
     RUN(test_towed_cargo_pod_row_sell_requires_physical_intake_when_hopper_full);
     RUN(test_towed_cargo_pod_intake_handoff_moves_whole_pod_to_hopper);
+    RUN(test_occupied_hopper_accepts_towed_and_loose_cargo_within_range);
+    RUN(test_occupied_hopper_selection_prefers_less_loaded_then_nearer);
     RUN(test_towed_cargo_pod_intake_full_ledger_is_inert);
     RUN(test_docking_works_while_towing_cargo_pod);
     RUN(test_space_release_slingshots_cargo_pod_like_fragment);
