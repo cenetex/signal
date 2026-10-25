@@ -133,11 +133,11 @@ static bool checkpoint_roundtrip(world_t *w, const char *root,
     return ok;
 }
 
-static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
+static vec2 station_inward_target(const station_t *st, const ship_t *ship,
+                                  float inner_radius, bool close_approach, vec2 final_target) {
     vec2 relative = v2_sub(ship->pos, st->pos);
     float radius = v2_len(relative);
-    if (radius < DOCK_APPROACH_RANGE + 40)
-        return station_approach_target(st, ship->pos);
+    if (radius < inner_radius) return final_target;
     float angle = fixp_atan2f(relative.y, relative.x);
     if (radius > STATION_RING_RADIUS[station_max_ring(st)] + 200)
         return station_entry_target(st, ship->pos);
@@ -149,13 +149,20 @@ static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
         float difference = wrap_angle(lane - angle);
         if (fabsf(difference) > 0.12f) {
             float waypoint_angle = angle + clampf(difference, -0.3f, 0.3f);
-            float outside = fmaxf(radius, STATION_RING_RADIUS[ring] + 100);
+            float outside = close_approach
+                ? STATION_RING_RADIUS[ring] + ship_hull_def(ship)->ship_radius + 24.0f
+                : fmaxf(radius, STATION_RING_RADIUS[ring] + 100);
             return v2_add(st->pos, v2_scale(v2_from_angle(waypoint_angle), outside));
         }
         /* Cross the phase boundary before the controller settles at its target. */
         return station_ring_open_gap_lane_pos(st, ring, inner - 20.0f);
     }
-    return station_approach_target(st, ship->pos);
+    return final_target;
+}
+
+static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
+    return station_inward_target(st, ship, DOCK_APPROACH_RANGE + 40, false,
+                                  station_approach_target(st, ship->pos));
 }
 
 static vec2 exit_route_target(const station_t *st, const ship_t *ship) {
@@ -730,8 +737,10 @@ int main(int argc, char **argv) {
             } else {
                 scaffold = owned_relay_scaffold(w);
                 if (scaffold >= 0 && w->scaffolds[scaffold].state == SCAFFOLD_LOOSE) {
-                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
-                        w->scaffolds[scaffold].pos, 30, 100, dt));
+                    const station_t *st = &w->stations[1];
+                    vec2 pickup = station_inward_target(st, sp->ship,
+                        STATION_RING_RADIUS[1] - 70.0f, true, w->scaffolds[scaffold].pos);
+                    apply_flight(&sp->input, steer_through_lane(sp->ship, pickup));
                     sp->input.tractor_hold = true;
                 }
             }
