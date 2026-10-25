@@ -461,7 +461,6 @@ int main(int argc, char **argv) {
                     w->asteroids[target].pos, 40, 120, dt));
             } else stage = PHASE_SELECT_ROCK;
         } else if (stage == PHASE_DELIVER_ORE) {
-            sp->input.tractor_hold = true;
             flight_cmd_t cmd = flight_steer_to(w, sp->ship, &path,
                 drop_point(&w->stations[home]), 80, 120, dt);
             flight_avoid_station_wall(w, sp->ship, &cmd);
@@ -598,7 +597,6 @@ int main(int argc, char **argv) {
             if (sp->docked) sp->input.launch = true;
             vec2 exit = exit_route_target(&w->stations[home], sp->ship);
             apply_flight(&sp->input, steer_through_lane(sp->ship, exit));
-            sp->input.tractor_hold = true;
             sp->input.thrust = fminf(sp->input.thrust * 3.333333f, 1.0f);
             if (v2_dist_sq(sp->ship->pos, w->stations[home].pos) > 1450 * 1450) {
                 stage = PHASE_DELIVER_FRAMES; path = (nav_path_t){0};
@@ -615,7 +613,6 @@ int main(int argc, char **argv) {
             if (v2_dist_sq(sp->ship->pos, st->pos) > 450 * 450)
                 approach = dock_route_target(st, sp->ship);
             apply_flight(&sp->input, steer_through_lane(sp->ship, approach));
-            sp->input.tractor_hold = true;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
             if (pod < 0 || v2_dist_sq(w->cargo_pods[pod].pos, goal) <
                     HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE) {
@@ -665,7 +662,6 @@ int main(int argc, char **argv) {
                 else
                     apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
                                                             frontier, 40, 70, dt));
-                sp->input.tractor_hold = true;
                 sp->input.thrust = fminf(sp->input.thrust, 0.3f);
                 if (can_place_outpost(w, w->scaffolds[scaffold].pos))
                     sp->input.place_outpost = true;
