@@ -85,6 +85,16 @@ static const float SIM_DT = 1.0f / 120.0f;
 static inline double world_time_from_tick(uint32_t tick) {
     return (double)tick / 120.0;
 }
+/* Fracture save/packet clocks retain their uint32 millisecond format.
+ * Widen before scaling, then narrow with defined modulo arithmetic. */
+static inline uint32_t world_time_ms_from_tick(uint32_t tick) {
+    return (uint32_t)((uint64_t)tick * 1000u / 120u);
+}
+/* Short deadlines (under half the uint32 range) remain ordered across
+ * the millisecond wrap. Fracture windows last only 1500 milliseconds. */
+static inline bool world_time_ms_reached(uint32_t now_ms, uint32_t deadline_ms) {
+    return (uint32_t)(now_ms - deadline_ms) < UINT32_C(0x80000000);
+}
 static const float MINING_RANGE = 170.0f;
 static const float SHIP_BRAKE = 180.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
@@ -185,7 +195,7 @@ typedef struct {
     bool     challenge_dirty;   /* transport still needs to broadcast challenge */
     bool     resolved_dirty;    /* transport still needs to broadcast resolution */
     uint32_t fracture_id;       /* monotonic runtime id */
-    uint32_t deadline_ms;       /* world clock deadline */
+    uint32_t deadline_ms;       /* world tick milliseconds, modulo 2^32 */
     uint16_t burst_cap;         /* client search cap for this fracture */
     uint16_t _pad0;
     uint32_t best_nonce;        /* winning nonce */

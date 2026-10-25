@@ -792,7 +792,8 @@ TEST(test_fracture_claim_resolves_best_verified_grade) {
     ASSERT(memcmp(state->seen_claimant_tokens[0],
                   w->players[0].session_token, 8) == 0);
 
-    w->time = 1.0f;
+    w->tick = 120u;
+    w->time = world_time_from_tick(w->tick);
     step_fracture_claims(w);
     mining_fragment_pub_compute(a->fracture_seed, player_pub, best_nonce, expected_pub);
 
@@ -832,7 +833,8 @@ TEST(test_fracture_claim_fallback_resolves_without_claims) {
 
     mining_find_best_claim(a->fracture_seed, zero_pub, MINING_BURST_PER_FRAGMENT,
                            &best_nonce, &best_grade);
-    w->time = 1.0f;
+    w->tick = 120u;
+    w->time = world_time_from_tick(w->tick);
     step_fracture_claims(w);
     mining_fragment_pub_compute(a->fracture_seed, zero_pub, best_nonce, expected_pub);
 
@@ -969,13 +971,15 @@ TEST(test_fracture_claim_rebroadcasts_challenge_for_late_joiners) {
     state->challenge_last_ms = 0;
 
     /* Tick shortly after — cadence not elapsed yet, no re-arm. */
-    w->time = 0.05f; /* 50ms */
+    w->tick = 6u; /* 50ms */
+    w->time = world_time_from_tick(w->tick);
     step_fracture_claims(w);
     ASSERT(!state->challenge_dirty);
 
     /* After REBROADCAST_MS elapses, dirty must be re-armed so transport
      * retransmits to anyone who entered range since the initial send. */
-    w->time = 0.2f; /* 200ms — past the 100ms rebroadcast period */
+    w->tick = 24u; /* 200ms — past the 100ms rebroadcast period */
+    w->time = world_time_from_tick(w->tick);
     step_fracture_claims(w);
     ASSERT(state->challenge_dirty);
     /* Timestamp must advance so the next tick doesn't re-arm again
@@ -1008,7 +1012,8 @@ TEST(test_fracture_resolve_pushes_to_pending_queue) {
                                  (uint8_t)best_grade));
 
     /* Advance past deadline and resolve. */
-    w->time = 1.0f;
+    w->tick = 120u;
+    w->time = world_time_from_tick(w->tick);
     step_fracture_claims(w);
     ASSERT(state->resolved);
 
@@ -1080,8 +1085,86 @@ static void setup_fracture_claim_scenario(world_t *w, int asteroid_idx, int play
     state->burst_cap = FRACTURE_CHALLENGE_BURST_CAP;
 }
 
+TEST(test_fracture_claim_clock_wrap_and_long_uptime) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(w && loaded);
+    const uint32_t starts[] = {515396070u, UINT32_MAX - 240u};
+    const char *path = TMP("fracture_clock_wrap.sav");
+    for (size_t c = 0; c < sizeof(starts) / sizeof(starts[0]); c++) {
+        world_reset(w);
+        w->tick = starts[c];
+        w->time = world_time_from_tick(w->tick);
+        asteroid_t *parent = &w->asteroids[0];
+        clear_asteroid(parent);
+        parent->active = true;
+        parent->tier = ASTEROID_TIER_M;
+        parent->commodity = COMMODITY_FERRITE_ORE;
+        parent->ore = parent->max_ore = 4.0f;
+        parent->radius = 16.0f;
+        parent->pos = w->stations[0].pos;
+        fracture_asteroid(w, 0, v2(1.0f, 0.0f), -1);
+        int first = -1, second = -1;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!w->fracture_claims[i].active) continue;
+            if (first < 0) first = i;
+            else if (second < 0) second = i;
+        }
+        ASSERT(first >= 0 && second >= 0);
+        fracture_claim_state_t *state = &w->fracture_claims[first];
+        uint32_t start_ms = (uint32_t)((uint64_t)starts[c] * 1000u / 120u);
+        ASSERT(state->deadline_ms == start_ms + FRACTURE_CLAIM_WINDOW_MS);
+        state->challenge_dirty = false;
+        state->challenge_last_ms = start_ms;
+
+        /* Fifty milliseconds crosses the first uint32 millisecond wrap.
+         * The open window survives an exact save/load at that point. */
+        w->tick = starts[c] + 6u;
+        w->time = world_time_from_tick(w->tick);
+        step_fracture_claims(w);
+        ASSERT(state->active && !state->resolved && !state->challenge_dirty);
+        ASSERT(world_save(w, path));
+        ASSERT(world_load(loaded, path));
+        ASSERT(loaded->fracture_claims[first].deadline_ms == state->deadline_ms);
+        step_fracture_claims(loaded);
+        ASSERT(loaded->fracture_claims[first].active);
+
+        w->tick = starts[c] + 12u;
+        w->time = world_time_from_tick(w->tick);
+        step_fracture_claims(w);
+        ASSERT(state->challenge_dirty && !state->resolved);
+        ASSERT(state->challenge_last_ms == start_ms + 100u);
+
+        w->players[0].connected = true;
+        w->players[0].session_ready = true;
+        memset(w->players[0].session_token, 0x5A, 8);
+        w->players[0].ship->pos = w->stations[0].pos;
+        w->tick = starts[c] + 179u;
+        w->time = world_time_from_tick(w->tick);
+        ASSERT(submit_fracture_claim(w, 0, state->fracture_id, 0,
+                                     MINING_GRADE_COMMON));
+        step_fracture_claims(w);
+        ASSERT(state->active && !state->resolved);
+
+        /* The second child has no prior claimant: this checks the deadline
+         * itself, before the resolution sweep, rather than token dedup. */
+        w->tick = starts[c] + 180u;
+        w->time = world_time_from_tick(w->tick);
+        ASSERT(!submit_fracture_claim(w, 0,
+            w->fracture_claims[second].fracture_id, 0, MINING_GRADE_COMMON));
+        step_fracture_claims(w);
+        ASSERT(state->resolved && !state->active);
+        ASSERT(w->fracture_claims[second].resolved);
+        loaded->tick = w->tick;
+        loaded->time = world_time_from_tick(loaded->tick);
+        step_fracture_claims(loaded);
+        ASSERT(loaded->fracture_claims[first].resolved);
+    }
+    remove(path);
+}
+
 TEST(test_fracture_claim_rejects_past_deadline) {
-    /* Once w->time has crossed deadline_ms, submit_fracture_claim must
+    /* Once the world tick has crossed deadline_ms, submit_fracture_claim must
      * refuse the claim — even before step_fracture_claims runs. This
      * guards against timing-race ordering between wire delivery and
      * the server's per-tick claim sweep. */
@@ -1100,7 +1183,8 @@ TEST(test_fracture_claim_rejects_past_deadline) {
     mining_find_best_claim(a->fracture_seed, player_pub, state->burst_cap,
                            &best_nonce, &best_grade);
 
-    w->time = (float)(state->deadline_ms + 1u) / 1000.0f;
+    w->tick = 61u; /* First tick after the 500ms deadline. */
+    w->time = world_time_from_tick(w->tick);
     ASSERT(!submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                   (uint8_t)best_grade));
     /* State should still be pristine (no best recorded, no seen claimants). */
@@ -1330,6 +1414,7 @@ void register_manifest_tests(void) {
     RUN(test_hash_product_accepts_engine_three_material_inputs);
     RUN(test_fracture_claim_resolves_best_verified_grade);
     RUN(test_fracture_claim_fallback_resolves_without_claims);
+    RUN(test_fracture_claim_clock_wrap_and_long_uptime);
     RUN(test_fracture_claim_rejects_past_deadline);
     RUN(test_fracture_claim_rejects_out_of_signal_range);
     RUN(test_fracture_claim_rejects_duplicate_token);
