@@ -582,6 +582,7 @@ int main(int argc, char **argv) {
                     sp->input.upgrade_hold = true;
                 } else if (sp->ship->hold_level &&
                         ship_finished_count(sp->ship, COMMODITY_FRAME) >= 48) {
+                    sp->input.release_tow = sp->ship->towed_pod_count > 0;
                     stage = PHASE_TOW_RELAY; path = (nav_path_t){0};
                     fprintf(stderr, "activation frames %.2f held=%d\n", tick * dt,
                             ship_finished_count(sp->ship, COMMODITY_FRAME));
@@ -748,7 +749,8 @@ int main(int argc, char **argv) {
                         apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
                             scaffold_pos, 30, 100, dt));
                     }
-                    sp->input.tractor_hold = true;
+                    sp->input.tractor_hold = v2_dist_sq(sp->ship->pos, scaffold_pos) <=
+                        SCAFFOLD_PICKUP_RANGE * SCAFFOLD_PICKUP_RANGE;
                 }
             }
         }
