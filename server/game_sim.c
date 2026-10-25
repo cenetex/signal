@@ -8644,7 +8644,7 @@ tractor_feedback_t player_tractor_feedback(const world_t *w,
         if (filter != COMMODITY_COUNT && a->commodity != filter) continue;
         float distance_sq = v2_dist_sq(sp->ship->pos, a->pos);
         if (distance_sq > nearby * nearby) continue;
-        float distance = sqrtf(distance_sq);
+        float distance = fixp_sqrtf(distance_sq);
         tractor_feedback_kind_t kind = a->tier != ASTEROID_TIER_S
             ? TRACTOR_FEEDBACK_MINE : asteroid_has_tractor(a)
             ? TRACTOR_FEEDBACK_HELD : distance > range
@@ -8659,7 +8659,7 @@ tractor_feedback_t player_tractor_feedback(const world_t *w,
         if (filter != COMMODITY_COUNT && pod->commodity != filter) continue;
         float distance_sq = v2_dist_sq(sp->ship->pos, pod->pos);
         if (distance_sq > nearby * nearby) continue;
-        float distance = sqrtf(distance_sq);
+        float distance = fixp_sqrtf(distance_sq);
         int owner = cargo_pod_player_tractor(pod);
         bool held = (owner >= 0 && owner != player_idx) ||
             (!cargo_pod_module_tractor_player_collectible(w, pod) &&
@@ -8678,7 +8678,7 @@ tractor_feedback_t player_tractor_feedback(const world_t *w,
                                 sc->state != SCAFFOLD_TOWING)) continue;
             float distance_sq = v2_dist_sq(sp->ship->pos, sc->pos);
             if (distance_sq > nearby * nearby) continue;
-            float distance = sqrtf(distance_sq);
+            float distance = fixp_sqrtf(distance_sq);
             tractor_feedback_kind_t kind = sc->state != SCAFFOLD_LOOSE
                 ? TRACTOR_FEEDBACK_HELD : distance > SCAFFOLD_PICKUP_RANGE
                 ? TRACTOR_FEEDBACK_CLOSER : TRACTOR_FEEDBACK_READY;
