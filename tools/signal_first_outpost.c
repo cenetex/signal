@@ -292,7 +292,11 @@ static bool pod_origin_is(const cargo_pod_t *pod, int station) {
     return true;
 }
 
+static int owned_relay_scaffold(const world_t *w);
+
 static int local_frame_pod(const world_t *w, const ship_t *ship, bool towed_only) {
+    int relay = owned_relay_scaffold(w);
+    bool assembling = relay >= 0 && w->scaffolds[relay].state == SCAFFOLD_NASCENT;
     int best = -1;
     float distance = 1e30f;
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
@@ -304,10 +308,11 @@ static int local_frame_pod(const world_t *w, const ship_t *ship, bool towed_only
         if (towed_only && !towed) continue;
         if (!towed) {
             /* Collect loose frames, producer output, or trade cargo.
-             * Shipyard/hopper inputs already belong to that delivery. */
+             * Leave relay inputs with their receiver during assembly,
+             * including station-owned cargo that could be bought again. */
             if (cargo_pod_has_player_tractor(pod)) continue;
             if (cargo_pod_has_module_tractor(pod) &&
-                cargo_pod_custody_station(pod) < 0) {
+                (assembling || cargo_pod_custody_station(pod) < 0)) {
                 int station = -1, module = -1;
                 if (!cargo_pod_module_tractor_indices(pod, &station, &module))
                     continue;
