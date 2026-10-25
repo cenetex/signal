@@ -9,6 +9,7 @@
 #include "chain_log.h"
 #include "persistence_generation.h"
 #include "cargo_receipt_trust.h"
+#include "tractor.h"
 #include <errno.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -229,6 +230,30 @@ static flight_cmd_t steer_through_lane(const ship_t *ship, vec2 target) {
     };
 }
 
+static bool cargo_tow_settled(const world_t *w, const ship_t *ship) {
+    vec2 source = ship_tow_hardpoint_world(ship);
+    for (int t = 0; t < ship->towed_pod_count; t++) {
+        const cargo_pod_t *pod = &w->cargo_pods[ship->towed_pods[t]];
+        int hardpoint = cargo_pod_tow_hardpoint(pod);
+        vec2 attachment = v2_add(pod->pos, cargo_pod_hardpoint_offset(pod, hardpoint));
+        float span = TRACTOR_TOW_BAND_REST_LENGTH + 40.0f;
+        if (v2_dist_sq(source, attachment) > span * span ||
+            v2_len_sq(v2_sub(ship->vel, pod->vel)) > 20.0f * 20.0f)
+            return false;
+    }
+    return v2_len_sq(ship->vel) <= 10.0f * 10.0f;
+}
+
+static bool cargo_tow_stretched(const world_t *w, const ship_t *ship) {
+    float distance = ship_tractor_range(ship) * 1.2f;
+    for (int t = 0; t < ship->towed_pod_count; t++) {
+        const cargo_pod_t *pod = &w->cargo_pods[ship->towed_pods[t]];
+        if (v2_dist_sq(ship->pos, pod->pos) > distance * distance)
+            return true;
+    }
+    return false;
+}
+
 static void apply_flight(input_intent_t *input, flight_cmd_t command) {
     input->turn = command.turn;
     input->thrust = command.thrust;
@@ -399,6 +424,7 @@ int main(int argc, char **argv) {
     int home = sp->current_station;
     float last_payout = 0;
     int last_pod_count = 0;
+    bool settling_cargo = false;
     int shipyard_wait_until = 0;
     int frame_pickup_after = 0;
     for (int i = 0; i < w->station_count; i++) {
@@ -661,9 +687,12 @@ int main(int argc, char **argv) {
                 if (pod >= 0) {
                     vec2 goal = w->cargo_pods[pod].pos;
                     apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
-                                                            goal, 30, 100, dt));
+                                                            goal, 30, 40, dt));
+                    if (v2_len_sq(sp->ship->vel) > 40.0f * 40.0f)
+                        apply_flight(&sp->input, flight_brake(sp->ship));
                     float pickup_range = ship_tractor_range(sp->ship);
                     sp->input.tractor_hold = tick >= frame_pickup_after &&
+                        v2_len_sq(sp->ship->vel) <= 40.0f * 40.0f &&
                         v2_dist_sq(sp->ship->pos, goal) <= pickup_range * pickup_range;
                 } else {
                     fprintf(stderr, "more ore %.2f frames=%d\n", tick * dt,
@@ -701,6 +730,21 @@ int main(int argc, char **argv) {
              * so a sold pod can stay with its receiving station. */
             sp->input.tractor_hold = false;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
+        }
+        if (sp->ship->towed_pod_count == 0) settling_cargo = false;
+        if (settling_cargo && cargo_tow_settled(w, sp->ship)) {
+            settling_cargo = false;
+            fprintf(stderr, "cargo settled %.2f\n", tick * dt);
+        }
+        if (!sp->docked && !sp->input.release_tow && sp->ship->towed_pod_count > 0) {
+            /* Let a new tow reach its normal rest length before leaving.
+             * Brake stretched or fast tows before the real leash limit. */
+            sp->input.tractor_hold = false;
+            if (settling_cargo || cargo_tow_stretched(w, sp->ship) ||
+                v2_len_sq(sp->ship->vel) > 35.0f * 35.0f)
+                apply_flight(&sp->input, flight_brake(sp->ship));
+            else
+                sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
         int previous_pods[10], previous_custody[10];
         int previous_count = sp->ship->towed_pod_count;
@@ -754,6 +798,7 @@ int main(int argc, char **argv) {
             checkpoint_frames = next_frames;
         }
         if (sp->ship->towed_pod_count != last_pod_count) {
+            if (sp->ship->towed_pod_count > last_pod_count) settling_cargo = true;
             last_pod_count = sp->ship->towed_pod_count;
             fprintf(stderr, "pod count %.2f count=%d stage=%d pos=%.0f/%.0f\n", tick * dt, last_pod_count, stage, sp->ship->pos.x, sp->ship->pos.y);
         }
