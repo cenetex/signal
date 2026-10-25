@@ -9,6 +9,7 @@
 #include "chain_log.h"
 #include "persistence_generation.h"
 #include "cargo_receipt_trust.h"
+#include "tractor.h"
 #include <errno.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -132,11 +133,11 @@ static bool checkpoint_roundtrip(world_t *w, const char *root,
     return ok;
 }
 
-static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
+static vec2 station_inward_target(const station_t *st, const ship_t *ship,
+                                  float inner_radius, bool close_approach, vec2 final_target) {
     vec2 relative = v2_sub(ship->pos, st->pos);
     float radius = v2_len(relative);
-    if (radius < DOCK_APPROACH_RANGE + 40)
-        return station_approach_target(st, ship->pos);
+    if (radius < inner_radius) return final_target;
     float angle = fixp_atan2f(relative.y, relative.x);
     if (radius > STATION_RING_RADIUS[station_max_ring(st)] + 200)
         return station_entry_target(st, ship->pos);
@@ -148,13 +149,20 @@ static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
         float difference = wrap_angle(lane - angle);
         if (fabsf(difference) > 0.12f) {
             float waypoint_angle = angle + clampf(difference, -0.3f, 0.3f);
-            float outside = fmaxf(radius, STATION_RING_RADIUS[ring] + 100);
+            float outside = close_approach
+                ? STATION_RING_RADIUS[ring] + ship_hull_def(ship)->ship_radius + 24.0f
+                : fmaxf(radius, STATION_RING_RADIUS[ring] + 100);
             return v2_add(st->pos, v2_scale(v2_from_angle(waypoint_angle), outside));
         }
         /* Cross the phase boundary before the controller settles at its target. */
         return station_ring_open_gap_lane_pos(st, ring, inner - 20.0f);
     }
-    return station_approach_target(st, ship->pos);
+    return final_target;
+}
+
+static vec2 dock_route_target(const station_t *st, const ship_t *ship) {
+    return station_inward_target(st, ship, DOCK_APPROACH_RANGE + 40, false,
+                                  station_approach_target(st, ship->pos));
 }
 
 static vec2 exit_route_target(const station_t *st, const ship_t *ship) {
@@ -229,6 +237,30 @@ static flight_cmd_t steer_through_lane(const ship_t *ship, vec2 target) {
     };
 }
 
+static bool cargo_tow_settled(const world_t *w, const ship_t *ship) {
+    vec2 source = ship_tow_hardpoint_world(ship);
+    for (int t = 0; t < ship->towed_pod_count; t++) {
+        const cargo_pod_t *pod = &w->cargo_pods[ship->towed_pods[t]];
+        int hardpoint = cargo_pod_tow_hardpoint(pod);
+        vec2 attachment = v2_add(pod->pos, cargo_pod_hardpoint_offset(pod, hardpoint));
+        float span = TRACTOR_TOW_BAND_REST_LENGTH + 40.0f;
+        if (v2_dist_sq(source, attachment) > span * span ||
+            v2_len_sq(v2_sub(ship->vel, pod->vel)) > 20.0f * 20.0f)
+            return false;
+    }
+    return v2_len_sq(ship->vel) <= 10.0f * 10.0f;
+}
+
+static bool cargo_tow_stretched(const world_t *w, const ship_t *ship) {
+    float distance = ship_tractor_range(ship) * 1.2f;
+    for (int t = 0; t < ship->towed_pod_count; t++) {
+        const cargo_pod_t *pod = &w->cargo_pods[ship->towed_pods[t]];
+        if (v2_dist_sq(ship->pos, pod->pos) > distance * distance)
+            return true;
+    }
+    return false;
+}
+
 static void apply_flight(input_intent_t *input, flight_cmd_t command) {
     input->turn = command.turn;
     input->thrust = command.thrust;
@@ -267,7 +299,11 @@ static bool pod_origin_is(const cargo_pod_t *pod, int station) {
     return true;
 }
 
+static int owned_relay_scaffold(const world_t *w);
+
 static int local_frame_pod(const world_t *w, const ship_t *ship, bool towed_only) {
+    int relay = owned_relay_scaffold(w);
+    bool assembling = relay >= 0 && w->scaffolds[relay].state == SCAFFOLD_NASCENT;
     int best = -1;
     float distance = 1e30f;
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
@@ -279,10 +315,11 @@ static int local_frame_pod(const world_t *w, const ship_t *ship, bool towed_only
         if (towed_only && !towed) continue;
         if (!towed) {
             /* Collect loose frames, producer output, or trade cargo.
-             * Shipyard/hopper inputs already belong to that delivery. */
+             * Leave relay inputs with their receiver during assembly,
+             * including station-owned cargo that could be bought again. */
             if (cargo_pod_has_player_tractor(pod)) continue;
             if (cargo_pod_has_module_tractor(pod) &&
-                cargo_pod_custody_station(pod) < 0) {
+                (assembling || cargo_pod_custody_station(pod) < 0)) {
                 int station = -1, module = -1;
                 if (!cargo_pod_module_tractor_indices(pod, &station, &module))
                     continue;
@@ -399,6 +436,8 @@ int main(int argc, char **argv) {
     int home = sp->current_station;
     float last_payout = 0;
     int last_pod_count = 0;
+    bool settling_cargo = false;
+    bool relay_departed = false;
     int shipyard_wait_until = 0;
     int frame_pickup_after = 0;
     for (int i = 0; i < w->station_count; i++) {
@@ -477,6 +516,8 @@ int main(int argc, char **argv) {
             }
         } else if (stage == PHASE_DOCK) {
             station_t *st = &w->stations[home];
+            if (sp->docked && sp->current_station != home)
+                sp->input.launch = true;
             vec2 approach = dock_route_target(st, sp->ship);
             flight_cmd_t approach_cmd = v2_dist_sq(sp->ship->pos, st->pos) < 1000 * 1000
                 ? steer_through_lane(sp->ship, approach)
@@ -486,7 +527,10 @@ int main(int argc, char **argv) {
                 sp->input.dock = true;
                 sp->input.thrust = 0;
             }
-            if (sp->docked) { stage = home == 0 ? PHASE_UNPACK_INGOTS : PHASE_REFIT; fprintf(stderr, "dock %.2f\n", tick * dt); }
+            if (sp->docked && sp->current_station == home) {
+                stage = home == 0 ? PHASE_UNPACK_INGOTS : PHASE_REFIT;
+                fprintf(stderr, "dock %.2f\n", tick * dt);
+            }
         } else if (stage == PHASE_REFIT) {
             station_t *st = &w->stations[home];
             if (home >= SIGNAL_FIRST_OUTPOST_INDEX) {
@@ -502,6 +546,10 @@ int main(int argc, char **argv) {
             } else if (has_undelivered_ingots(w, sp->ship, home)) {
                 /* Sell physical tows at intake before spending dock credit. */
                 stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
+            } else if (sp->ship->mining_level &&
+                       ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) > 0) {
+                sp->input.service_sell = true;
+                sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
             } else if (!sp->ship->mining_level) {
                 if (can_afford_upgrade(st, sp->ship, SHIP_UPGRADE_MINING,
                                        ledger_balance_by_pubkey(st, pubkey))) {
@@ -512,7 +560,7 @@ int main(int argc, char **argv) {
                 } else {
                     fprintf(stderr, "more refit cargo %.2f balance=%.1f\n", tick * dt,
                         ledger_balance_by_pubkey(st, pubkey));
-                    home = 0; stage = PHASE_LAUNCH; path = (nav_path_t){0};
+                    home = 0; stage = PHASE_DOCK; path = (nav_path_t){0};
                 }
             } else if (!relay_ordered) {
                 sp->input.buy_scaffold_kit = true;
@@ -607,7 +655,10 @@ int main(int argc, char **argv) {
             vec2 exit = exit_route_target(&w->stations[home], sp->ship);
             apply_flight(&sp->input, steer_through_lane(sp->ship, exit));
             sp->input.thrust = fminf(sp->input.thrust * 3.333333f, 1.0f);
-            if (v2_dist_sq(sp->ship->pos, w->stations[home].pos) > 1450 * 1450) {
+            int pod = local_frame_pod(w, sp->ship, true);
+            if (pod < 0) {
+                stage = PHASE_DOCK; path = (nav_path_t){0};
+            } else if (cargo_pod_custody_station(&w->cargo_pods[pod]) < 0) {
                 stage = PHASE_DELIVER_FRAMES; path = (nav_path_t){0};
             }
         } else if (stage == PHASE_DELIVER_FRAMES) {
@@ -619,7 +670,8 @@ int main(int argc, char **argv) {
             vec2 goal = module_world_pos_ring(st, st->modules[hopper].ring,
                                               st->modules[hopper].slot);
             vec2 approach = v2_add(goal, v2_scale(v2_norm(v2_sub(goal, st->pos)), 60));
-            if (v2_dist_sq(sp->ship->pos, st->pos) > 450 * 450)
+            float clearance = ship_hull_def(sp->ship)->ship_radius + 30.0f;
+            if (!nav_station_segment_clear(w, sp->ship->pos, approach, clearance))
                 approach = dock_route_target(st, sp->ship);
             apply_flight(&sp->input, steer_through_lane(sp->ship, approach));
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
@@ -651,22 +703,36 @@ int main(int argc, char **argv) {
                 int pod = local_frame_pod(w, sp->ship, false);
                 if (pod >= 0) {
                     vec2 goal = w->cargo_pods[pod].pos;
-                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
-                                                            goal, 30, 100, dt));
                     float pickup_range = ship_tractor_range(sp->ship);
+                    bool approaching_pickup = v2_dist_sq(sp->ship->pos, goal) <=
+                        4.0f * pickup_range * pickup_range;
+                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                        goal, 30, approaching_pickup ? 40 : 100, dt));
+                    if (approaching_pickup && v2_len_sq(sp->ship->vel) > 40.0f * 40.0f)
+                        apply_flight(&sp->input, flight_brake(sp->ship));
                     sp->input.tractor_hold = tick >= frame_pickup_after &&
+                        v2_len_sq(sp->ship->vel) <= 40.0f * 40.0f &&
                         v2_dist_sq(sp->ship->pos, goal) <= pickup_range * pickup_range;
                 } else {
                     fprintf(stderr, "more ore %.2f frames=%d\n", tick * dt,
                             ship_finished_count(sp->ship, COMMODITY_FRAME));
-                    home = 0; stage = PHASE_LAUNCH; path = (nav_path_t){0};
+                    home = 0; stage = PHASE_DOCK; path = (nav_path_t){0};
                 }
             }
         } else if (stage == PHASE_TOW_RELAY) {
             if (sp->docked) sp->input.launch = true;
             int scaffold = sp->ship->towed_scaffold;
-            if (scaffold >= 0) {
-                if (v2_dist_sq(sp->ship->pos, w->stations[1].pos) < 1000 * 1000)
+            if (sp->ship->towed_pod_count > 0) {
+                /* Release is accepted in flight. Clear spare cargo before
+                 * approaching the relay so cargo settling cannot mask pickup. */
+                sp->input.release_tow = !sp->docked;
+                apply_flight(&sp->input, flight_brake(sp->ship));
+            } else if (scaffold >= 0) {
+                /* Once clear, keep the frontier leg even if its path curves
+                 * back inside the departure radius. */
+                if (v2_dist_sq(sp->ship->pos, w->stations[1].pos) >= 1000 * 1000)
+                    relay_departed = true;
+                if (!relay_departed)
                     apply_flight(&sp->input, steer_through_lane(sp->ship,
                         exit_route_target(&w->stations[1], sp->ship)));
                 else
@@ -679,11 +745,22 @@ int main(int argc, char **argv) {
                 home = SIGNAL_FIRST_OUTPOST_INDEX;
                 stage = PHASE_DOCK; path = (nav_path_t){0};
             } else {
+                relay_departed = false;
                 scaffold = owned_relay_scaffold(w);
                 if (scaffold >= 0 && w->scaffolds[scaffold].state == SCAFFOLD_LOOSE) {
-                    apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
-                        w->scaffolds[scaffold].pos, 30, 100, dt));
-                    sp->input.tractor_hold = true;
+                    const station_t *st = &w->stations[1];
+                    vec2 scaffold_pos = w->scaffolds[scaffold].pos;
+                    if (v2_dist_sq(scaffold_pos, st->pos) <
+                        STATION_RING_RADIUS[1] * STATION_RING_RADIUS[1]) {
+                        vec2 pickup = station_inward_target(st, sp->ship,
+                            STATION_RING_RADIUS[1] - 70.0f, true, scaffold_pos);
+                        apply_flight(&sp->input, steer_through_lane(sp->ship, pickup));
+                    } else {
+                        apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                            scaffold_pos, 30, 100, dt));
+                    }
+                    sp->input.tractor_hold = v2_dist_sq(sp->ship->pos, scaffold_pos) <=
+                        SCAFFOLD_PICKUP_RANGE * SCAFFOLD_PICKUP_RANGE;
                 }
             }
         }
@@ -693,7 +770,48 @@ int main(int argc, char **argv) {
             sp->input.tractor_hold = false;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
+        if (sp->ship->towed_pod_count == 0) settling_cargo = false;
+        if (settling_cargo && cargo_tow_settled(w, sp->ship)) {
+            settling_cargo = false;
+            fprintf(stderr, "cargo settled %.2f\n", tick * dt);
+        }
+        if (!sp->docked && !sp->input.release_tow && sp->ship->towed_pod_count > 0) {
+            /* Let a new tow reach its normal rest length before leaving.
+             * Brake stretched or fast tows before the real leash limit. */
+            sp->input.tractor_hold = false;
+            if (settling_cargo || cargo_tow_stretched(w, sp->ship) ||
+                v2_len_sq(sp->ship->vel) > 35.0f * 35.0f)
+                apply_flight(&sp->input, flight_brake(sp->ship));
+            else
+                sp->input.thrust = fminf(sp->input.thrust, 0.3f);
+        }
+        bool previous_pickup = sp->input.tractor_hold;
+        bool previous_release = sp->input.release_tow;
+        int previous_pods[10], previous_custody[10];
+        int previous_count = sp->ship->towed_pod_count;
+        float previous_distance[10];
+        for (int t = 0; t < previous_count; t++) {
+            previous_pods[t] = sp->ship->towed_pods[t];
+            const cargo_pod_t *pod = &w->cargo_pods[previous_pods[t]];
+            previous_custody[t] = cargo_pod_custody_station(pod);
+            previous_distance[t] = v2_len(v2_sub(sp->ship->pos, pod->pos));
+        }
         world_sim_step(w, dt);
+        for (int t = 0; t < previous_count; t++) {
+            const cargo_pod_t *pod = &w->cargo_pods[previous_pods[t]];
+            if (pod->active && cargo_pod_player_tractor(pod) == 0) continue;
+            int station = -1, module = -1;
+            (void)cargo_pod_module_tractor_indices(pod, &station, &module);
+            fprintf(stderr, "tow ended %.2f pod=%d commodity=%d origin=%u quantity=%u "
+                "distance=%.2f/%.2f limit=%.2f custody=%d/%d module=%d/%d "
+                "active=%d pickup=%d release=%d stage=%d\n", tick * dt,
+                previous_pods[t], pod->commodity,
+                pod->manifest_count ? pod->manifest_units[0].origin_station : 255,
+                pod->quantity, previous_distance[t], v2_len(v2_sub(sp->ship->pos, pod->pos)),
+                ship_tractor_range(sp->ship) * 1.5f, previous_custody[t],
+                cargo_pod_custody_station(pod), station, module, pod->active,
+                previous_pickup, previous_release, stage);
+        }
         if (sp->ship_asset_id != starter_asset ||
             (fracture && sp->ship->stat_asteroids_fractured == 0)) {
             fprintf(stderr, "route stopped after ship loss at %.2f seconds\n", tick * dt);
@@ -721,6 +839,7 @@ int main(int argc, char **argv) {
             checkpoint_frames = next_frames;
         }
         if (sp->ship->towed_pod_count != last_pod_count) {
+            if (sp->ship->towed_pod_count > last_pod_count) settling_cargo = true;
             last_pod_count = sp->ship->towed_pod_count;
             fprintf(stderr, "pod count %.2f count=%d stage=%d pos=%.0f/%.0f\n", tick * dt, last_pod_count, stage, sp->ship->pos.x, sp->ship->pos.y);
         }
