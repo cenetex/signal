@@ -275,6 +275,25 @@ static int local_frame_pod(const world_t *w, const ship_t *ship, bool towed_only
         for (int t = 0; t < ship->towed_pod_count; t++)
             towed = towed || ship->towed_pods[t] == i;
         if (towed_only && !towed) continue;
+        if (!towed) {
+            /* Collect loose frames, producer output, or trade cargo.
+             * Shipyard/hopper inputs already belong to that delivery. */
+            if (cargo_pod_has_player_tractor(pod)) continue;
+            if (cargo_pod_has_module_tractor(pod) &&
+                cargo_pod_custody_station(pod) < 0) {
+                int station = -1, module = -1;
+                if (!cargo_pod_module_tractor_indices(pod, &station, &module))
+                    continue;
+                const station_t *st = &w->stations[station];
+                if (module >= st->module_count) continue;
+                const station_module_t *source = &st->modules[module];
+                if (source->scaffold) continue;
+                bool trade = source->type == MODULE_DOCK;
+                bool output = station_is_active(st) && pod_origin_is(pod, station) &&
+                    module_instance_output(source) == pod->commodity;
+                if (!trade && !output) continue;
+            }
+        }
         float d = v2_dist_sq(ship->pos, pod->pos);
         if (d < distance) { distance = d; best = i; }
     }
