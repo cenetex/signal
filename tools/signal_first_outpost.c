@@ -499,6 +499,9 @@ int main(int argc, char **argv) {
                     active_outpost = true;
                     break;
                 }
+            } else if (has_undelivered_ingots(w, sp->ship, home)) {
+                /* Sell physical tows at intake before spending dock credit. */
+                stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
             } else if (!sp->ship->mining_level) {
                 sp->input.upgrade_mining = true;
                 sp->input.service_sell = !can_afford_upgrade(st, sp->ship,
@@ -512,8 +515,6 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "ordered %.2f balance=%.1f\n", tick * dt,
                             ledger_balance_by_pubkey(st, pubkey));
                 }
-            } else if (has_undelivered_ingots(w, sp->ship, home)) {
-                stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
             } else {
                 int frames = local_frame_pod(w, sp->ship, true);
                 int relay = owned_relay_scaffold(w);
