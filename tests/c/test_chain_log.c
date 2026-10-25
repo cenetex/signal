@@ -1282,7 +1282,8 @@ TEST(test_chain_log_claim_fragment_emits_event) {
     claim->fracture_id = 44;
     claim->deadline_ms = 1;
     claim->burst_cap = FRACTURE_CHALLENGE_BURST_CAP;
-    w->time = 1.0;
+    w->tick = 120u;
+    w->time = world_time_from_tick(w->tick);
 
     step_fracture_claims(w);
 

@@ -42,6 +42,10 @@ bool nav_find_path(const world_t *w, vec2 start, vec2 goal,
 bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal,
                        float clearance);
 
+/* Station geometry only, for the station-wall steering pass. */
+bool nav_station_segment_clear(const world_t *w, vec2 start, vec2 goal,
+                               float clearance);
+
 /* Advance along a computed path, returning the next waypoint. */
 vec2 nav_next_waypoint(nav_path_t *path, vec2 ship_pos, vec2 final_target, float dt);
 

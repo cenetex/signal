@@ -282,7 +282,7 @@ static bool local_server_loopback_send(const uint8_t *data, int len, void *user)
         .handoff_ticket_sink = local_server_handoff_ticket_sink,
         .handoff_result_sink = local_server_handoff_result_sink,
     };
-    uint32_t now_ms = (uint32_t)(LS_WORLD(ls).time * 1000.0f);
+    uint32_t now_ms = world_time_ms_from_tick(LS_WORLD(ls).tick);
     if (server_dispatch_gameplay_packet(
             &LS_WORLD(ls), pid, data, len, now_ms, &gameplay_policy)) {
         return true;

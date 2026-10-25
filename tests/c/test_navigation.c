@@ -1182,6 +1182,38 @@ TEST(test_flight_hover_near_brakes_with_deterministic_speed) {
     ASSERT_EQ_FLOAT(cmd.thrust, 1.0f, 0.001f);
 }
 
+TEST(test_flight_station_wall_preserves_rock_avoidance) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+    asteroid_t *rock = &w->asteroids[0];
+    rock->active = true;
+    rock->tier = ASTEROID_TIER_L;
+    rock->radius = 50.0f;
+    rock->pos = v2(5080.0f, 5010.0f);
+    spatial_grid_build(w);
+
+    SHIP_DECL(ship);
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(5000.0f, 5000.0f);
+    ship.vel = v2(0.0f, 0.0f);
+    ship.angle = 0.0f;
+    vec2 probe = v2_add(ship.pos, v2(100.0f, 0.0f));
+    ASSERT(!nav_segment_clear(w, ship.pos, probe, 46.0f));
+    ASSERT(nav_station_segment_clear(w, ship.pos, probe, 46.0f));
+
+    nav_path_t path = {0};
+    path.goal = v2(5500.0f, 5000.0f);
+    flight_cmd_t cmd = flight_steer_to(w, &ship, &path, path.goal,
+                                       0.0f, 150.0f, SIM_DT);
+    ASSERT(fabsf(cmd.turn) > 0.1f);
+    flight_cmd_t rock_avoidance = cmd;
+    flight_avoid_station_wall(w, &ship, &cmd);
+    ASSERT_EQ_FLOAT(cmd.turn, rock_avoidance.turn, 0.0001f);
+    ASSERT_EQ_FLOAT(cmd.thrust, rock_avoidance.thrust, 0.0001f);
+    ASSERT_EQ_INT(cmd.reverse_thrust, rock_avoidance.reverse_thrust);
+}
+
 TEST(test_flight_steer_to_escapes_station_ring_wall) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -1300,6 +1332,7 @@ TEST(test_nav_segment_clear_blocks_station_ring_wall) {
 
     vec2 wall_goal = v2_add(wall_pos, v2_scale(wall_vel, 100.0f / speed));
     ASSERT(!nav_segment_clear(w, wall_pos, wall_goal, 46.0f));
+    ASSERT(!nav_station_segment_clear(w, wall_pos, wall_goal, 46.0f));
 
     float open_ang = station_ring_open_gap_angle(kepler, 2);
     vec2 open_pos = v2_add(kepler->pos, v2(cosf(open_ang) * start_r,
@@ -1309,6 +1342,7 @@ TEST(test_nav_segment_clear_blocks_station_ring_wall) {
 
     vec2 open_goal = v2_add(open_pos, v2_scale(open_vel, 100.0f / speed));
     ASSERT(nav_segment_clear(w, open_pos, open_goal, 46.0f));
+    ASSERT(nav_station_segment_clear(w, open_pos, open_goal, 46.0f));
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
@@ -1801,6 +1835,7 @@ void register_navigation_nav_tests(void) {
     RUN(test_flight_brake_uses_deterministic_velocity_heading);
     RUN(test_flight_hover_near_uses_deterministic_target_heading);
     RUN(test_flight_hover_near_brakes_with_deterministic_speed);
+    RUN(test_flight_station_wall_preserves_rock_avoidance);
     RUN(test_flight_steer_to_escapes_station_ring_wall);
     RUN(test_autopilot_exits_station_before_mining_route);
     RUN(test_nav_forward_clearance_empty);

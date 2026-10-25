@@ -39,6 +39,33 @@ class WorkflowContractTests(unittest.TestCase):
             [],
         )
 
+    def test_shipping_linux_runner_stays_on_tested_image(self) -> None:
+        for workflow in ("ci.yml", "deploy-fly.yml", "replay.yml", "release.yml"):
+            for runner in ("ubuntu-latest", "ubuntu-26.04"):
+                with self.subTest(workflow=workflow, runner=runner):
+                    failures = self.failures(
+                        workflow=workflow,
+                        before="runs-on: ubuntu-24.04",
+                        after=f"runs-on: {runner}",
+                    )
+                    self.assertTrue(any(
+                        "Linux runner must be pinned to ubuntu-24.04" in failure
+                        for failure in failures
+                    ), failures)
+
+    def test_shipping_linux_matrix_stays_on_tested_image(self) -> None:
+        for workflow in ("ci.yml", "release.yml"):
+            with self.subTest(workflow=workflow):
+                failures = self.failures(
+                    workflow=workflow,
+                    before="- os: ubuntu-24.04",
+                    after="- os: ubuntu-latest",
+                )
+                self.assertTrue(any(
+                    "Linux runner must be pinned to ubuntu-24.04" in failure
+                    for failure in failures
+                ), failures)
+
     def test_policy_node_dependency_cannot_become_a_static_import(
         self,
     ) -> None:

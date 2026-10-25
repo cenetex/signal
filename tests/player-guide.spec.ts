@@ -250,6 +250,10 @@ for (const viewport of [{width: 1280, height: 720}, {width: 390, height: 844}]) 
       [55, 'Target in range // tractor active'],
       [56, 'Tractor active // approach small fragments or cargo'],
       [57, 'Cargo reserved // choose loose cargo'],
+      [58, 'Target in range // tractor active'],
+      [59, 'Target held by another tractor // find a loose target'],
+      [60, 'Target held by another tractor // find a loose target'],
+      [61, 'Target held by another tractor // find a loose target'],
     ];
     for (const [state, expected] of cases) {
       await fixture(page, state);

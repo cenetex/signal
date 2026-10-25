@@ -68,7 +68,7 @@ jobs:
   native-wasm-replay:
     if: github.event_name != 'schedule'
     name: Linux x64 native and WASM replay
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -263,7 +263,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Cross-runner replay bundle
     needs: [native-wasm-replay, macos-arm-replay]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
@@ -295,7 +295,7 @@ jobs:
   scheduled-ai-eval-native:
     if: github.event_name == 'schedule'
     name: Scheduled native AI evaluation corpus
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6

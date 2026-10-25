@@ -119,7 +119,7 @@ bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgra
     int from_station = units_needed - (units_needed < in_cargo ? units_needed : in_cargo);
     float credit_cost = upgrade_station_credit_cost(station, ship, upgrade,
                                                     from_station);
-    if (balance + FLOAT_EPSILON < credit_cost) return false;
+    if (credit_cost > 0.0f && balance + FLOAT_EPSILON < credit_cost) return false;
     return true;
 }
 

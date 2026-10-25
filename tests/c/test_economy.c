@@ -2307,6 +2307,21 @@ TEST(test_can_afford_upgrade_cargo_only_no_credits_needed) {
     ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,0.0f));
 }
 
+TEST(test_can_afford_upgrade_cargo_with_station_debt) {
+    SHIP_DECL(ship);
+    STATION_DECL(station);
+    ship.hull_class = HULL_CLASS_MINER;
+    int need = (int)ceilf(upgrade_product_cost(&ship, SHIP_UPGRADE_HOLD));
+    ASSERT(test_set_station_finished_units(&station, COMMODITY_FRAME, 1));
+    station.base_price[COMMODITY_FRAME] = 22.0f;
+    ASSERT(test_set_ship_finished_units(&ship, COMMODITY_FRAME, need - 1,
+                                        MINING_GRADE_COMMON));
+    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, -145.5f));
+    ASSERT(test_set_ship_finished_units(&ship, COMMODITY_FRAME, need,
+                                        MINING_GRADE_COMMON));
+    ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, -145.5f));
+}
+
 TEST(test_can_afford_upgrade_rejects_float_only_finished_goods) {
     SHIP_DECL(ship);
     STATION_DECL(station);
@@ -5380,6 +5395,7 @@ void register_economy_basic_tests(void) {
     RUN(test_consumed_starter_refit_marker_reserves_contract_slot);
     RUN(test_can_afford_upgrade_no_product_anywhere);
     RUN(test_can_afford_upgrade_cargo_only_no_credits_needed);
+    RUN(test_can_afford_upgrade_cargo_with_station_debt);
     RUN(test_can_afford_upgrade_rejects_float_only_finished_goods);
     RUN(test_commodity_volume_kit_dense);
     RUN(test_ship_total_cargo_kit_density);

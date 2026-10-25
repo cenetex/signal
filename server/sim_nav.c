@@ -172,7 +172,8 @@ void nav_force_replan(nav_path_t *path) {
  * We walk cells along the segment's bounding box (expanded by the max
  * asteroid radius + clearance margin) and only test asteroids in those
  * cells. */
-static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
+static bool nav_line_clear_geometry(const world_t *w, vec2 a, vec2 b,
+                                           float clearance, bool include_asteroids) {
     /* Defensive: reject non-finite endpoints. A single corrupt station
      * pos (NaN from a partially-overwritten save) used to blow
      * spatial_grid_cell into a multi-billion-cell sweep and hang the
@@ -193,7 +194,7 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
      * max possible asteroid radius (~120u for XL) + 2x clearance so we
      * don't miss rocks whose center is outside the tight corridor but
      * whose body overlaps. */
-    {
+    if (include_asteroids) {
         const spatial_grid_t *g = &w->asteroid_grid;
         const float margin = 150.0f + clearance * 2.0f;
         float min_x = fminf(a.x, b.x) - margin;
@@ -298,6 +299,15 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
         }
     }
     return true;
+}
+
+static bool nav_line_clear(const world_t *w, vec2 start, vec2 goal, float clearance) {
+    return nav_line_clear_geometry(w, start, goal, clearance, true);
+}
+
+bool nav_station_segment_clear(const world_t *w, vec2 start, vec2 goal,
+                               float clearance) {
+    return nav_line_clear_geometry(w, start, goal, clearance, false);
 }
 
 bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal, float clearance) {

@@ -6501,7 +6501,7 @@ static inline void server_emit_fracture_updates(
     server_player_packet_sink_fn send,
     void *send_user) {
     if (!w || !send) return;
-    uint32_t now_ms = (uint32_t)(w->time * 1000.0f);
+    uint32_t now_ms = world_time_ms_from_tick(w->tick);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         fracture_claim_state_t *state = &w->fracture_claims[i];
@@ -6549,7 +6549,7 @@ static inline void server_emit_fracture_updates(
         pending_resolve_t *pr = &w->pending_resolves[p];
         if (!pr->active) continue;
         if (pr->tx_count > 0 &&
-            now_ms < pr->last_tx_ms + FRACTURE_RESOLVE_RETRY_PERIOD_MS) {
+            (uint32_t)(now_ms - pr->last_tx_ms) < FRACTURE_RESOLVE_RETRY_PERIOD_MS) {
             continue;
         }
         uint8_t buf[FRACTURE_RESOLVED_SIZE];

@@ -19,7 +19,7 @@ env:
 jobs:
   classify:
     name: Classify changed paths
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       policy: ${{ steps.paths.outputs.policy }}
       native: ${{ steps.paths.outputs.native }}
@@ -56,7 +56,7 @@ jobs:
   policy:
     name: CI policy and script contracts
     needs: classify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Validate workflow and script syntax
@@ -112,7 +112,7 @@ jobs:
     name: Linux native, sanitizer, and static gates
     needs: classify
     if: needs.classify.outputs.native == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
@@ -133,7 +133,7 @@ jobs:
     name: Functional soak
     needs: classify
     if: needs.classify.outputs.soak == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -155,7 +155,7 @@ jobs:
     name: Receipt and crypto fuzz
     needs: classify
     if: needs.classify.outputs.fuzz == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -179,7 +179,7 @@ jobs:
     name: Release WASM and Chromium smoke
     needs: classify
     if: needs.classify.outputs.browser == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
@@ -231,7 +231,7 @@ jobs:
     name: Production container lock
     needs: classify
     if: needs.classify.outputs.container == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -314,7 +314,7 @@ jobs:
     name: Standalone tool builds and tests
     needs: classify
     if: needs.classify.outputs.tools == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -364,7 +364,7 @@ jobs:
     name: Locked deployment packages and entrypoints
     needs: classify
     if: needs.classify.outputs.deployment == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -398,7 +398,7 @@ jobs:
     name: Burn-to-mint locked manifests
     needs: classify
     if: needs.classify.outputs.programs == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       RUST_TOOLCHAIN: '1.85.0'
@@ -451,7 +451,7 @@ jobs:
       - tools
       - programs
       - deployment
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CI_RESULT_CLASSIFY: ${{ needs.classify.result }}
       CI_RESULT_POLICY: ${{ needs.policy.result }}

@@ -3734,7 +3734,8 @@ static bool sr_run_provenance_script(const sr_config_t *config,
             return false;
         }
 
-        w->time = 1.0f;
+        w->tick = 120u;
+        w->time = world_time_from_tick(w->tick);
         step_fracture_claims(w);
         mining_fragment_pub_compute(a->fracture_seed, player_pub,
                                     best_nonce, expected_pub);
