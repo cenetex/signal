@@ -254,6 +254,7 @@ typedef struct {
     bool key_pressed[KEY_COUNT];
     float tractor_press_time;  /* client monotonic time when Space was pressed */
     bool tractor_press_active;
+    bool tractor_press_had_tow; /* a short press releases only an existing tow */
     bool tractor_release_tap_pending;
     double self_destruct_hold_time; /* world time when X press began; 0 = not held */
     bool brake_stop_latched;   /* S/Down hold began while moving; do not reverse */
