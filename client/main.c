@@ -4778,6 +4778,17 @@ int signal_smoke_nonfinite_motion_recovery_check(void) {
             isfinite(g.camera_pos.x) && isfinite(g.camera_pos.y))
             passed |= 1 << field;
     }
+    NetPlayerState invalid = {0};
+    invalid.player_id = (uint8_t)g.local_player_slot;
+    invalid.active = true;
+    invalid.x = position.x + 10000.0f;
+    invalid.y = position.y + 2000.0f;
+    invalid.vy = NAN;
+    apply_remote_player_state(&invalid);
+    if (sp->ship->pos.x == position.x && sp->ship->pos.y == position.y &&
+        sp->ship->vel.x == 0.0f && sp->ship->vel.y == 0.0f &&
+        g.camera_pos.x == position.x && g.camera_pos.y == position.y)
+        passed |= 1 << 5;
     return passed;
 }
 

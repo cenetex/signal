@@ -3219,7 +3219,7 @@ test.describe('Browser smoke tests', () => {
   rootBundleSmokeTest('recovers local motion and camera from a valid server pose', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await loadGame(page, false, { singleplayer: true });
-    expect(await wasmNumber(page, 'signal_smoke_nonfinite_motion_recovery_check')).toBe(31);
+    expect(await wasmNumber(page, 'signal_smoke_nonfinite_motion_recovery_check')).toBe(63);
     const player = await playerStateSnapshot(page);
     expect(player).not.toBeNull();
     expect(Object.values(player!).every(Number.isFinite)).toBe(true);
