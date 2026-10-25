@@ -477,6 +477,8 @@ int main(int argc, char **argv) {
             }
         } else if (stage == PHASE_DOCK) {
             station_t *st = &w->stations[home];
+            if (sp->docked && sp->current_station != home)
+                sp->input.launch = true;
             vec2 approach = dock_route_target(st, sp->ship);
             flight_cmd_t approach_cmd = v2_dist_sq(sp->ship->pos, st->pos) < 1000 * 1000
                 ? steer_through_lane(sp->ship, approach)
@@ -486,7 +488,10 @@ int main(int argc, char **argv) {
                 sp->input.dock = true;
                 sp->input.thrust = 0;
             }
-            if (sp->docked) { stage = home == 0 ? PHASE_UNPACK_INGOTS : PHASE_REFIT; fprintf(stderr, "dock %.2f\n", tick * dt); }
+            if (sp->docked && sp->current_station == home) {
+                stage = home == 0 ? PHASE_UNPACK_INGOTS : PHASE_REFIT;
+                fprintf(stderr, "dock %.2f\n", tick * dt);
+            }
         } else if (stage == PHASE_REFIT) {
             station_t *st = &w->stations[home];
             if (home >= SIGNAL_FIRST_OUTPOST_INDEX) {
@@ -502,6 +507,10 @@ int main(int argc, char **argv) {
             } else if (has_undelivered_ingots(w, sp->ship, home)) {
                 /* Sell physical tows at intake before spending dock credit. */
                 stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
+            } else if (sp->ship->mining_level &&
+                       ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) > 0) {
+                sp->input.service_sell = true;
+                sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
             } else if (!sp->ship->mining_level) {
                 if (can_afford_upgrade(st, sp->ship, SHIP_UPGRADE_MINING,
                                        ledger_balance_by_pubkey(st, pubkey))) {
@@ -512,7 +521,7 @@ int main(int argc, char **argv) {
                 } else {
                     fprintf(stderr, "more refit cargo %.2f balance=%.1f\n", tick * dt,
                         ledger_balance_by_pubkey(st, pubkey));
-                    home = 0; stage = PHASE_LAUNCH; path = (nav_path_t){0};
+                    home = 0; stage = PHASE_DOCK; path = (nav_path_t){0};
                 }
             } else if (!relay_ordered) {
                 sp->input.buy_scaffold_kit = true;
@@ -659,7 +668,7 @@ int main(int argc, char **argv) {
                 } else {
                     fprintf(stderr, "more ore %.2f frames=%d\n", tick * dt,
                             ship_finished_count(sp->ship, COMMODITY_FRAME));
-                    home = 0; stage = PHASE_LAUNCH; path = (nav_path_t){0};
+                    home = 0; stage = PHASE_DOCK; path = (nav_path_t){0};
                 }
             }
         } else if (stage == PHASE_TOW_RELAY) {
