@@ -651,8 +651,9 @@ int main(int argc, char **argv) {
                     vec2 goal = w->cargo_pods[pod].pos;
                     apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
                                                             goal, 30, 100, dt));
+                    float pickup_range = ship_tractor_range(sp->ship);
                     sp->input.tractor_hold = tick >= frame_pickup_after &&
-                        v2_dist_sq(sp->ship->pos, goal) < 100 * 100;
+                        v2_dist_sq(sp->ship->pos, goal) <= pickup_range * pickup_range;
                 } else {
                     fprintf(stderr, "more ore %.2f frames=%d\n", tick * dt,
                             ship_finished_count(sp->ship, COMMODITY_FRAME));
