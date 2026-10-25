@@ -746,6 +746,8 @@ int main(int argc, char **argv) {
             else
                 sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
+        bool previous_pickup = sp->input.tractor_hold;
+        bool previous_release = sp->input.release_tow;
         int previous_pods[10], previous_custody[10];
         int previous_count = sp->ship->towed_pod_count;
         float previous_distance[10];
@@ -769,7 +771,7 @@ int main(int argc, char **argv) {
                 pod->quantity, previous_distance[t], v2_len(v2_sub(sp->ship->pos, pod->pos)),
                 ship_tractor_range(sp->ship) * 1.5f, previous_custody[t],
                 cargo_pod_custody_station(pod), station, module, pod->active,
-                sp->input.tractor_hold, sp->input.release_tow, stage);
+                previous_pickup, previous_release, stage);
         }
         if (sp->ship_asset_id != starter_asset ||
             (fracture && sp->ship->stat_asteroids_fractured == 0)) {
