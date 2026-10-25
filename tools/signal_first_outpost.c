@@ -8,6 +8,7 @@
 #include "signal_crypto.h"
 #include "chain_log.h"
 #include "persistence_generation.h"
+#include "cargo_receipt_trust.h"
 #include <errno.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -822,6 +823,21 @@ int main(int argc, char **argv) {
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
+        int owner = -1, module = -1;
+        if (pod->commodity == COMMODITY_FRAME &&
+            cargo_pod_module_tractor_indices(pod, &owner, &module)) {
+            vec2 anchor = {0};
+            bool valid = cargo_pod_module_tractor_anchor(w, pod, owner, module, &anchor);
+            int trusted = 0;
+            for (uint16_t u = 0; u < pod->manifest_count; u++)
+                trusted += cargo_receipt_evaluate_physical_origin_at_station(
+                    w, owner, &pod->manifest_units[u]).accepted;
+            fprintf(stderr, "frame input pod=%d module=%d/%d anchor=%d distance=%.1f "
+                "arrived=%d trusted=%d/%u\n", i, owner, module, valid,
+                valid ? v2_len(v2_sub(pod->pos, anchor)) : -1.0f,
+                cargo_pod_module_tractor_arrived(w, pod, owner, module),
+                trusted, pod->manifest_count);
+        }
         fprintf(stderr, "remaining pod=%d commodity=%s quantity=%d origin=%u pos=%.0f/%.0f custody=%u\n",
                 i, commodity_short_name(pod->commodity), pod->quantity,
                 pod->manifest_count ? pod->manifest_units[0].origin_station : 255,
