@@ -738,9 +738,16 @@ int main(int argc, char **argv) {
                 scaffold = owned_relay_scaffold(w);
                 if (scaffold >= 0 && w->scaffolds[scaffold].state == SCAFFOLD_LOOSE) {
                     const station_t *st = &w->stations[1];
-                    vec2 pickup = station_inward_target(st, sp->ship,
-                        STATION_RING_RADIUS[1] - 70.0f, true, w->scaffolds[scaffold].pos);
-                    apply_flight(&sp->input, steer_through_lane(sp->ship, pickup));
+                    vec2 scaffold_pos = w->scaffolds[scaffold].pos;
+                    if (v2_dist_sq(scaffold_pos, st->pos) <
+                        STATION_RING_RADIUS[1] * STATION_RING_RADIUS[1]) {
+                        vec2 pickup = station_inward_target(st, sp->ship,
+                            STATION_RING_RADIUS[1] - 70.0f, true, scaffold_pos);
+                        apply_flight(&sp->input, steer_through_lane(sp->ship, pickup));
+                    } else {
+                        apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
+                            scaffold_pos, 30, 100, dt));
+                    }
                     sp->input.tractor_hold = true;
                 }
             }
