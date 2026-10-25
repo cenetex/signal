@@ -738,6 +738,28 @@ int main(int argc, char **argv) {
     }
     if (active_outpost)
         checkpoints_ok = checkpoint_roundtrip(w, argv[2], pubkey, secret);
+    int selected_frame = local_frame_pod(w, sp->ship, false);
+    if (selected_frame >= 0) {
+        const cargo_pod_t *pod = &w->cargo_pods[selected_frame];
+        int station = -1, module = -1;
+        (void)cargo_pod_module_tractor_indices(pod, &station, &module);
+        int module_type = station >= 0 && module >= 0 &&
+            module < w->stations[station].module_count
+            ? (int)w->stations[station].modules[module].type : -1;
+        actor_principal_t player = actor_principal_none();
+        bool verified = actor_principal_from_verified_player(sp, &player);
+        fprintf(stderr, "pickup target=%d distance=%.3f range=%.3f docked=%d hold=%d "
+                "tow_space=%d tractor=%u player=%d module=%d/%d module_type=%d "
+                "custody_station=%d owner_kind=%u canonical=%d same_player=%d quarantined=%d\n",
+                selected_frame, v2_len(v2_sub(pod->pos, sp->ship->pos)),
+                ship_tractor_range(sp->ship), sp->docked, sp->input.tractor_hold,
+                ship_tow_body_space(sp->ship), pod->tractor.kind,
+                cargo_pod_player_tractor(pod), station, module, module_type,
+                cargo_pod_custody_station(pod), pod->tow_owner_principal.kind,
+                actor_principal_is_canonical(&pod->tow_owner_principal),
+                verified && actor_principal_equal(&player, &pod->tow_owner_principal),
+                pod->tow_owner_quarantine_record_id != 0);
+    }
     for (int i = 0; i < MAX_CARGO_PODS; i++) {
         cargo_pod_t *pod = &w->cargo_pods[i];
         if (!pod->active) continue;
