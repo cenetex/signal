@@ -461,7 +461,6 @@ int main(int argc, char **argv) {
                     w->asteroids[target].pos, 40, 120, dt));
             } else stage = PHASE_SELECT_ROCK;
         } else if (stage == PHASE_DELIVER_ORE) {
-            sp->input.tractor_hold = true;
             flight_cmd_t cmd = flight_steer_to(w, sp->ship, &path,
                 drop_point(&w->stations[home]), 80, 120, dt);
             flight_avoid_station_wall(w, sp->ship, &cmd);
@@ -499,11 +498,21 @@ int main(int argc, char **argv) {
                     active_outpost = true;
                     break;
                 }
+            } else if (has_undelivered_ingots(w, sp->ship, home)) {
+                /* Sell physical tows at intake before spending dock credit. */
+                stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
             } else if (!sp->ship->mining_level) {
-                sp->input.upgrade_mining = true;
-                sp->input.service_sell = !can_afford_upgrade(st, sp->ship,
-                    SHIP_UPGRADE_MINING, ledger_balance_by_pubkey(st, pubkey));
-                sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+                if (can_afford_upgrade(st, sp->ship, SHIP_UPGRADE_MINING,
+                                       ledger_balance_by_pubkey(st, pubkey))) {
+                    sp->input.upgrade_mining = true;
+                } else if (ship_finished_count(sp->ship, COMMODITY_FERRITE_INGOT) > 0) {
+                    sp->input.service_sell = true;
+                    sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+                } else {
+                    fprintf(stderr, "more refit cargo %.2f balance=%.1f\n", tick * dt,
+                        ledger_balance_by_pubkey(st, pubkey));
+                    home = 0; stage = PHASE_LAUNCH; path = (nav_path_t){0};
+                }
             } else if (!relay_ordered) {
                 sp->input.buy_scaffold_kit = true;
                 sp->input.scaffold_kit_module = MODULE_SIGNAL_RELAY;
@@ -512,8 +521,6 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "ordered %.2f balance=%.1f\n", tick * dt,
                             ledger_balance_by_pubkey(st, pubkey));
                 }
-            } else if (has_undelivered_ingots(w, sp->ship, home)) {
-                stage = PHASE_DELIVER_INGOTS; path = (nav_path_t){0};
             } else {
                 int frames = local_frame_pod(w, sp->ship, true);
                 int relay = owned_relay_scaffold(w);
@@ -539,7 +546,7 @@ int main(int argc, char **argv) {
             if (sp->ship->towed_pod_count) {
                 fprintf(stderr, "bought %.2f units=%d\n", tick * dt,
                     w->cargo_pods[sp->ship->towed_pods[0]].quantity);
-                stage = PHASE_HAUL; path = (nav_path_t){0};
+                stage = PHASE_UNPACK_INGOTS; path = (nav_path_t){0};
             } else if (pod >= 0) {
                 sp->input.buy_product = true;
                 sp->input.buy_commodity = COMMODITY_FERRITE_INGOT;
@@ -584,7 +591,6 @@ int main(int argc, char **argv) {
                 break;
             }
             apply_flight(&sp->input, steer_through_lane(sp->ship, goal));
-            sp->input.tractor_hold = true;
             if (!has_undelivered_ingots(w, sp->ship, home)) {
                 sp->input.release_tow = true;
                 sp->input.tractor_hold = false;
@@ -598,7 +604,6 @@ int main(int argc, char **argv) {
             if (sp->docked) sp->input.launch = true;
             vec2 exit = exit_route_target(&w->stations[home], sp->ship);
             apply_flight(&sp->input, steer_through_lane(sp->ship, exit));
-            sp->input.tractor_hold = true;
             sp->input.thrust = fminf(sp->input.thrust * 3.333333f, 1.0f);
             if (v2_dist_sq(sp->ship->pos, w->stations[home].pos) > 1450 * 1450) {
                 stage = PHASE_DELIVER_FRAMES; path = (nav_path_t){0};
@@ -615,7 +620,6 @@ int main(int argc, char **argv) {
             if (v2_dist_sq(sp->ship->pos, st->pos) > 450 * 450)
                 approach = dock_route_target(st, sp->ship);
             apply_flight(&sp->input, steer_through_lane(sp->ship, approach));
-            sp->input.tractor_hold = true;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
             if (pod < 0 || v2_dist_sq(w->cargo_pods[pod].pos, goal) <
                     HOPPER_INTAKE_STAGING_RANGE * HOPPER_INTAKE_STAGING_RANGE) {
@@ -647,8 +651,9 @@ int main(int argc, char **argv) {
                     vec2 goal = w->cargo_pods[pod].pos;
                     apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
                                                             goal, 30, 100, dt));
+                    float pickup_range = ship_tractor_range(sp->ship);
                     sp->input.tractor_hold = tick >= frame_pickup_after &&
-                        v2_dist_sq(sp->ship->pos, goal) < 100 * 100;
+                        v2_dist_sq(sp->ship->pos, goal) <= pickup_range * pickup_range;
                 } else {
                     fprintf(stderr, "more ore %.2f frames=%d\n", tick * dt,
                             ship_finished_count(sp->ship, COMMODITY_FRAME));
@@ -665,7 +670,6 @@ int main(int argc, char **argv) {
                 else
                     apply_flight(&sp->input, flight_steer_to(w, sp->ship, &path,
                                                             frontier, 40, 70, dt));
-                sp->input.tractor_hold = true;
                 sp->input.thrust = fminf(sp->input.thrust, 0.3f);
                 if (can_place_outpost(w, w->scaffolds[scaffold].pos))
                     sp->input.place_outpost = true;
@@ -682,7 +686,9 @@ int main(int argc, char **argv) {
             }
         }
         if (!sp->input.release_tow && sp->ship->towed_pod_count > 0 && (stage == PHASE_HAUL || stage == PHASE_DOCK || stage == PHASE_DELIVER_INGOTS)) {
-            sp->input.tractor_hold = true;
+            /* Existing tows persist after pickup ends. Leave pickup off here
+             * so a sold pod can stay with its receiving station. */
+            sp->input.tractor_hold = false;
             sp->input.thrust = fminf(sp->input.thrust, 0.3f);
         }
         world_sim_step(w, dt);
