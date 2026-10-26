@@ -1,0 +1,27 @@
+{
+  "schema": "rati.receipt.v1",
+  "profile": "example.check.v1",
+  "subject": {
+    "kind": "example",
+    "id": "example:α/🌱"
+  },
+  "claim": "The recorded checks pass.",
+  "rules": {
+    "id": "example.rules",
+    "version": "1",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "facts": {
+    "media_type": "application/json",
+    "content": "{\"amount\":1.0,\"large\":18446744073709551615,\"name\":\"α 🌱\",\"missing\":null,\"quote\":\"a\\nb\"}"
+  },
+  "result": {
+    "media_type": "application/json",
+    "content": "{\"passed\":true,\"checks\":[\"example\"]}"
+  },
+  "outcome": "pass",
+  "evaluated_at_unix_ms": "1792972800000",
+  "validity": "snapshot",
+  "issuer": "example-checker",
+  "sha256": "0e307a2b5327fc8d8e3c0bfeaa4f5f4b197ffe9345a475f4498bd19af099c816"
+}
