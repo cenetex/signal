@@ -668,3 +668,20 @@ stack limit to the same 64 MiB contract used by the Make targets. A raw
 - The browser target uses WebGL 2 via Emscripten.
 - Browser audio may stay muted until the page receives a click or key press to
   unlock WebAudio.
+
+## Shared RATi receipts
+
+Export the native station-log check in the [shared receipt format](contracts/rati-receipt/v1/README.md):
+
+```sh
+python3 scripts/export_rati_receipt.py station.chain --verifier build/signal_rati_receipt --station-pubkey <base58> > receipt.json
+python3 scripts/export_rati_receipt.py station.chain --verifier build/signal_rati_receipt --station-pubkey <base58> --verify-receipt receipt.json
+```
+
+The exporter checks an immutable copy of the log with the existing native tool.
+It keeps the native proof levels, signatures, event IDs, and mining-proof flags.
+It replaces the temporary source path with the log digest. The rules commitment
+binds the native executable and both Python files. Keep these exact files and
+the original log for replay. A pass covers the station-log checks. Each cargo
+record retains its own stated proof level. The supplied station key is the
+caller's trust anchor.
