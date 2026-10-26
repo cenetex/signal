@@ -2,8 +2,10 @@ name: Nightly Valgrind
 
 on:
   schedule:
-    # Keep Valgrind off the deploy path; run it once per night on main.
-    - cron: "17 10 * * *"
+    # Keep Valgrind off the deploy path. Sunday always runs all shards;
+    # other nights may reuse recent, identical successful coverage.
+    - cron: "17 10 * * 1-6"
+    - cron: "17 10 * * 0"
   workflow_dispatch:
 
 permissions:
@@ -17,7 +19,34 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  plan:
+    name: Check previous Valgrind coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.guard.outputs.run }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - name: Fingerprint current environment
+        id: environment
+        run: python3 scripts/valgrind_guard.py fingerprint
+      - name: Decide whether full coverage is required
+        id: guard
+        env:
+          VALGRIND_FINGERPRINT: ${{ steps.environment.outputs.fingerprint }}
+          VALGRIND_SCHEDULE: ${{ github.event.schedule }}
+        run: python3 scripts/valgrind_guard.py decide
+      - name: Reuse previous complete Valgrind run
+        if: steps.guard.outputs.run == 'false'
+        run: echo 'All 16 matching shards passed within seven days; see job summary.'
+
   test-valgrind:
+    name: Valgrind shard ${{ matrix.shard }}/16
+    needs: plan
+    # Guard errors, missing outputs, and unfamiliar history retain all coverage.
+    if: ${{ !cancelled() && (needs.plan.result != 'success' || needs.plan.outputs.run != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -32,6 +61,10 @@ jobs:
 
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Fingerprint shard environment
+        id: environment
+        run: python3 scripts/valgrind_guard.py fingerprint
 
       - name: Valgrind memcheck (shard ${{ matrix.shard }}/16)
         run: |
@@ -69,3 +102,9 @@ jobs:
             valgrind-${{ matrix.shard }}.log
             test-${{ matrix.shard }}.log
           if-no-files-found: error
+
+      # This successful step is public read-only evidence, scoped to this
+      # workflow/run attempt. It is emitted only after this shard passes.
+      - name: Valgrind coverage fingerprint ${{ steps.environment.outputs.fingerprint }}
+        if: success() && steps.environment.outputs.fingerprint != ''
+        run: echo 'Full shard coverage completed with the recorded environment.'
